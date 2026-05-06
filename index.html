@@ -513,7 +513,7 @@ function renderClientes() {
                 <td>${c.nombre}</td>
                 <td><span class="dept-tag">${c.cedis_asignado || '—'}</span></td>
                 <td style="text-align:right;font-weight:600;">${numProds}</td>
-                <td><button class="icon-btn" onclick="abrirModal('detalle-cliente','${c.codigo}')">${ICONS.list}</button></td>
+                <td><button class="icon-btn" onclick="abrirModal('detalle-cliente','${c.codigo}')" title="Ver detalle">${ICONS.list}</button> <button class="icon-btn" onclick="abrirModal('editar-cliente','${c.codigo}')" title="Editar">${ICONS.edit}</button></td>
               </tr>`;
             }).join('')
           }
@@ -574,9 +574,9 @@ function renderProductosPT() {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:right;">Cli.</th></tr></thead>
+        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:right;">Cli.</th><th></th></tr></thead>
         <tbody>
-          ${arr.length === 0 ? `<tr><td colspan="10" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
+          ${arr.length === 0 ? `<tr><td colspan="11" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
             arr.slice(0, 100).map(p => {
               const medida = p.fuelle > 0 ? `${p.ancho}+${p.fuelle}x${p.largo}` : `${p.ancho}x${p.largo}`;
               const clis = state.cliente_productos.filter(cp => cp.producto_codigo === p.codigo).length;
@@ -605,6 +605,9 @@ function renderProductosPT() {
                   `}
                 </td>
                 <td style="text-align:right;font-size:11px;">${clis}</td>
+                <td style="text-align:right;">
+                  ${puedeEditar ? `<button class="icon-btn" onclick="abrirModal('editar-producto-pt','${p.codigo}')" title="Editar">${ICONS.edit}</button>` : ''}
+                </td>
               </tr>`;
             }).join('')
           }
@@ -925,39 +928,84 @@ function renderListaODPs(odps) {
 function renderModal() {
   const m = state.modal;
   if (m === 'crear-cliente') return modalCrearCliente();
+  if (m === 'editar-cliente') return modalEditarCliente();
   if (m === 'detalle-cliente') return modalDetalleCliente();
   if (m === 'programar-odp') return modalProgramarODP();
   if (m === 'crear-producto-pt') return modalCrearProductoPT();
+  if (m === 'editar-producto-pt') return modalEditarProductoPT();
   return '';
 }
 
 function modalCrearCliente() {
+  return modalFormCliente(null);
+}
+function modalEditarCliente() {
+  const c = window.getCliente(state.modalData);
+  if (!c) return '';
+  return modalFormCliente(c);
+}
+
+// Modal compartido para crear/editar cliente
+function modalFormCliente(cliente) {
+  const esEditar = !!cliente;
+  const c = cliente || {};
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal">
+      <div class="modal" style="max-width:680px;">
         <div class="modal-header">
-          <h2 style="font-size:18px;font-weight:800;">Nuevo cliente</h2>
+          <h2 style="font-size:18px;font-weight:800;">${esEditar ? 'Editar cliente' : 'Nuevo cliente'}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
           <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
-            <div class="field"><label class="field-label">Código *</label><input class="input text-mono" id="cli-cod" style="text-transform:uppercase;" /></div>
-            <div class="field"><label class="field-label">Nombre *</label><input class="input" id="cli-nom" /></div>
+            <div class="field"><label class="field-label">Código *</label><input class="input text-mono" id="cli-cod" style="text-transform:uppercase;" value="${c.codigo || ''}" ${esEditar ? 'readonly' : ''} /></div>
+            <div class="field"><label class="field-label">Nombre / Razón social *</label><input class="input" id="cli-nom" value="${c.nombre || ''}" /></div>
           </div>
-          <div class="field"><label class="field-label">Contacto</label><input class="input" id="cli-cont" /></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-            <div class="field"><label class="field-label">Correo</label><input class="input" id="cli-correo" type="email" /></div>
-            <div class="field"><label class="field-label">Teléfono</label><input class="input" id="cli-tel" /></div>
+          
+          <div class="field"><label class="field-label">RFC</label><input class="input text-mono" id="cli-rfc" style="text-transform:uppercase;" value="${c.rfc || ''}" placeholder="Ej: ABC850515ABC" /></div>
+          
+          <div style="margin-top:18px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
+            <strong style="font-size:13px;display:block;margin-bottom:10px;">📞 Contacto</strong>
+            <div class="field"><label class="field-label">Persona de contacto</label><input class="input" id="cli-cont" value="${c.contacto || ''}" placeholder="Ej: Juan Pérez" /></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field"><label class="field-label">Correo</label><input class="input" id="cli-correo" type="email" value="${c.correo || ''}" /></div>
+              <div class="field"><label class="field-label">Teléfono</label><input class="input" id="cli-tel" value="${c.telefono || ''}" placeholder="(81) 1234-5678" /></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field"><label class="field-label">Celular / WhatsApp</label><input class="input" id="cli-cel" value="${c.celular || ''}" /></div>
+              <div class="field"><label class="field-label">Comprador / Encargado</label><input class="input" id="cli-comprador" value="${c.comprador || ''}" /></div>
+            </div>
           </div>
-          <div class="field"><label class="field-label">CEDIS asignado</label>
-            <select class="input" id="cli-cedis">
-              ${state.almacenes.filter(a => a.tipo === 'cedis').map(a => `<option value="${a.codigo}">${a.nombre}</option>`).join('')}
-            </select>
+          
+          <div style="margin-top:14px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
+            <strong style="font-size:13px;display:block;margin-bottom:10px;">📍 Dirección de entrega</strong>
+            <div class="field"><label class="field-label">Calle y número</label><input class="input" id="cli-calle" value="${c.calle || ''}" /></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;">
+              <div class="field"><label class="field-label">Colonia</label><input class="input" id="cli-colonia" value="${c.colonia || ''}" /></div>
+              <div class="field"><label class="field-label">CP</label><input class="input" id="cli-cp" value="${c.cp || ''}" /></div>
+              <div class="field"><label class="field-label">Municipio</label><input class="input" id="cli-municipio" value="${c.municipio || ''}" /></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field"><label class="field-label">Estado</label><input class="input" id="cli-estado" value="${c.estado || ''}" placeholder="Nuevo León" /></div>
+              <div class="field"><label class="field-label">País</label><input class="input" id="cli-pais" value="${c.pais || 'México'}" /></div>
+            </div>
+            <div class="field"><label class="field-label">Referencias / Indicaciones</label><textarea class="input" id="cli-referencias" style="min-height:60px;">${c.referencias || ''}</textarea></div>
           </div>
+          
+          <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field"><label class="field-label">CEDIS asignado</label>
+              <select class="input" id="cli-cedis">
+                ${state.almacenes.filter(a => a.tipo === 'cedis').map(a => `<option value="${a.codigo}" ${c.cedis_asignado === a.codigo ? 'selected' : ''}>${a.nombre}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label class="field-label">Días de crédito</label><input class="input" id="cli-credito" type="number" min="0" value="${c.dias_credito || 0}" /></div>
+          </div>
+          
+          <div class="field"><label class="field-label">Notas internas</label><textarea class="input" id="cli-notas" style="min-height:60px;">${c.notas || ''}</textarea></div>
         </div>
-        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="crearCliente()">${ICONS.check} Crear</button>
+          <button class="btn-primary" onclick="${esEditar ? `editarCliente('${c.codigo}')` : 'crearCliente()'}">${ICONS.check} ${esEditar ? 'Guardar cambios' : 'Crear cliente'}</button>
         </div>
       </div>
     </div>
@@ -1141,6 +1189,127 @@ const TIPOS_PRODUCTO = TIPOS_GEN.map(x => x.nombre);
 const COLORES = COLORES_GEN.map(x => x.nombre);
 const ADITIVOS = ADITIVOS_GEN.map(x => x.nombre);
 
+function modalEditarProductoPT() {
+  const p = state.productos_pt.find(x => x.codigo === state.modalData);
+  if (!p) return '';
+  
+  // Pre-poblar form si no existe
+  if (!state.modalForm) {
+    // Buscar relaciones cliente-producto existentes
+    const relacionesExistentes = {};
+    state.cliente_productos.filter(cp => cp.producto_codigo === p.codigo).forEach(cp => {
+      relacionesExistentes[cp.cliente_codigo] = {
+        precio: cp.precio || '',
+        codigo_cliente_interno: cp.codigo_cliente_interno || '',
+        cp_id: cp.id
+      };
+    });
+    
+    state.modalForm = {
+      descripcion: p.descripcion || '',
+      um: (p.um || 'kg').toLowerCase(),
+      tipo_empaque: p.tipo_empaque || '',
+      cant_empaque: p.cant_empaque || '',
+      um_empaque: p.um_empaque || '',
+      busqClientes: '',
+      clientesAsignados: relacionesExistentes,
+      relacionesOriginales: { ...relacionesExistentes } // para detectar cambios
+    };
+  }
+  const f = state.modalForm;
+  
+  const busqCli = (f.busqClientes || '').toLowerCase();
+  let clientesFiltrados = state.clientes;
+  if (busqCli) {
+    clientesFiltrados = state.clientes.filter(c => 
+      (c.codigo + ' ' + (c.nombre || '')).toLowerCase().includes(busqCli)
+    );
+  }
+  const numAsignados = Object.keys(f.clientesAsignados).length;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModalPT()">
+      <div class="modal" style="max-width:780px;max-height:92vh;">
+        <div class="modal-header">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">Editar Producto PT</h2>
+            <div class="text-mono" style="font-size:12px;color:#64748b;margin-top:2px;">${p.codigo}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModalPT()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="padding:12px;background:#fef3c7;border-radius:10px;margin-bottom:14px;font-size:11px;color:#854d0e;">
+            ℹ️ El código del producto no se puede cambiar (es la "matrícula" del producto). Si necesitas cambiar materiales, medidas o calibres, crea un producto nuevo y este desactívalo.
+          </div>
+          
+          <!-- Datos actuales (solo lectura) -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;background:#f8fafc;padding:12px;border-radius:8px;margin-bottom:14px;">
+            <div><strong>Material:</strong> ${p.material || '—'}</div>
+            <div><strong>Tipo:</strong> ${p.tipo || '—'}</div>
+            <div><strong>Medidas:</strong> ${p.fuelle > 0 ? `${p.ancho}+${p.fuelle}x${p.largo}` : `${p.ancho}x${p.largo}`}</div>
+            <div><strong>Calibre:</strong> ${p.calibre}</div>
+            <div><strong>Color:</strong> ${p.color || '—'}</div>
+            <div><strong>Aditivo:</strong> ${p.aditivo || '—'}</div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Descripción</label>
+            <input class="input form-pt-edit" data-field="descripcion" value="${f.descripcion}" />
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
+            <div class="field">
+              <label class="field-label">UM venta</label>
+              <select class="input form-pt-edit" data-field="um">
+                ${UM_OPCIONES.map(u => `<option value="${u}" ${f.um === u ? 'selected' : ''}>${UM_LABELS[u]}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label class="field-label">Empaque</label><input class="input form-pt-edit" data-field="tipo_empaque" value="${f.tipo_empaque}" /></div>
+            <div class="field"><label class="field-label">Cant.</label><input class="input form-pt-edit" data-field="cant_empaque" type="number" value="${f.cant_empaque}" /></div>
+            <div class="field"><label class="field-label">UM emp.</label><input class="input form-pt-edit" data-field="um_empaque" value="${f.um_empaque}" /></div>
+          </div>
+          
+          <!-- Asignación a clientes -->
+          <div style="margin-top:18px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+              <strong style="font-size:13px;">${ICONS.users} Clientes asignados</strong>
+              <span style="font-size:11px;color:#64748b;">${numAsignados} cliente(s)</span>
+            </div>
+            <input class="input" id="pt-busq-cli" placeholder="Buscar cliente por código o nombre..." value="${f.busqClientes}" autocomplete="off" />
+            <div style="max-height:240px;overflow-y:auto;margin-top:10px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;">
+              ${clientesFiltrados.length === 0 ? `
+                <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No se encontraron clientes</div>
+              ` : clientesFiltrados.slice(0, 80).map(c => {
+                const asignado = !!f.clientesAsignados[c.codigo];
+                const asign = f.clientesAsignados[c.codigo] || {};
+                return `
+                  <div style="padding:8px 10px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;${asignado ? 'background:#f0fdf4;' : ''}">
+                    <input type="checkbox" class="cli-asign-check" data-cliente="${c.codigo}" ${asignado ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;" />
+                    <div style="flex:1;min-width:0;">
+                      <div style="font-weight:600;font-size:12px;">${c.codigo} <span style="color:#475569;font-weight:400;">— ${c.nombre}</span></div>
+                    </div>
+                    ${asignado ? `
+                      <input type="number" class="cli-asign-precio" data-cliente="${c.codigo}" placeholder="Precio" min="0" step="0.01" value="${asign.precio || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
+                      <input type="text" class="cli-asign-codint" data-cliente="${c.codigo}" placeholder="Cód. cli." value="${asign.codigo_cliente_interno || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
+                    ` : ''}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
+          <button class="btn-secondary" onclick="if(confirm('¿Desactivar este producto? Ya no aparecerá en las búsquedas.'))desactivarProductoPT('${p.codigo}')" style="background:#fee2e2;color:#dc2626;">${ICONS.trash} Desactivar</button>
+          <button class="btn-secondary" onclick="cerrarModalPT()" style="margin-left:auto;">Cancelar</button>
+          <button class="btn-primary" onclick="guardarProductoPT('${p.codigo}')">${ICONS.check} Guardar cambios</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function modalCrearProductoPT() {
   // Estado del formulario en state.modalForm para mantenerlo entre renders
   if (!state.modalForm) {
@@ -1202,13 +1371,13 @@ function modalCrearProductoPT() {
         <div class="modal-body">
           
           <!-- Vista previa código generado -->
-          <div style="padding:14px;background:${codigoGen && todoLleno ? (yaExiste ? '#fee2e2' : '#dcfce7') : '#f1f5f9'};border-radius:10px;margin-bottom:16px;border:2px solid ${codigoGen && todoLleno ? (yaExiste ? '#dc2626' : '#16a34a') : '#e2e8f0'};">
+          <div id="pt-preview-box" style="padding:14px;background:${codigoGen && todoLleno ? (yaExiste ? '#fee2e2' : '#dcfce7') : '#f1f5f9'};border-radius:10px;margin-bottom:16px;border:2px solid ${codigoGen && todoLleno ? (yaExiste ? '#dc2626' : '#16a34a') : '#e2e8f0'};">
             <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:4px;">Código generado</div>
-            <div class="text-mono" style="font-size:18px;font-weight:800;color:${yaExiste ? '#dc2626' : '#0f172a'};">
+            <div id="pt-preview-codigo" class="text-mono" style="font-size:18px;font-weight:800;color:${yaExiste ? '#dc2626' : '#0f172a'};">
               ${codigoGen || '— captura los datos abajo —'}
             </div>
-            ${yaExiste ? `<div style="font-size:11px;color:#dc2626;margin-top:6px;font-weight:600;">⚠️ Ya existe este código. Cambia la secuencia.</div>` : ''}
-            ${descGen && todoLleno ? `<div style="font-size:11px;color:#475569;margin-top:6px;font-style:italic;">${descGen}</div>` : ''}
+            <div id="pt-preview-warn" style="font-size:11px;color:#dc2626;margin-top:6px;font-weight:600;display:${yaExiste ? 'block' : 'none'};">⚠️ Ya existe este código. Cambia la secuencia.</div>
+            <div id="pt-preview-desc" style="font-size:11px;color:#475569;margin-top:6px;font-style:italic;">${(descGen && todoLleno) ? descGen : ''}</div>
           </div>
           
           <!-- 1. Material y Tipo -->
@@ -1299,7 +1468,7 @@ function modalCrearProductoPT() {
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
           ${numAsignados > 0 ? `<span style="font-size:11px;color:#64748b;margin-right:auto;">Se crearán ${numAsignados} relación(es) cliente-producto</span>` : ''}
           <button class="btn-secondary" onclick="cerrarModalPT()">Cancelar</button>
-          <button class="btn-primary" onclick="crearProductoPT()" ${(!todoLleno || yaExiste) ? 'disabled' : ''}>${ICONS.check} Crear producto</button>
+          <button class="btn-primary" id="pt-btn-crear" onclick="crearProductoPT()" ${(!todoLleno || yaExiste) ? 'disabled' : ''}>${ICONS.check} Crear producto</button>
         </div>
       </div>
     </div>
@@ -1353,21 +1522,58 @@ function attachAppEvents() {
     };
   });
   
-  // ===== Modal crear producto PT: live update de código generado =====
+  // ===== Modal crear producto PT: live update sin re-renderizar inputs =====
+  // Estrategia: actualizar solo el preview del código sin destruir los inputs
+  function actualizarPreviewPT() {
+    if (!state.modalForm) return;
+    const codigoGen = window.generarCodigoPT({
+      material: state.modalForm.material, tipo: state.modalForm.tipo,
+      ancho: state.modalForm.ancho, fuelle: state.modalForm.fuelle, largo: state.modalForm.largo, calibre: state.modalForm.calibre,
+      color: state.modalForm.color, aditivo: state.modalForm.aditivo, secuencia: state.modalForm.secuencia
+    });
+    const descGen = window.generarDescripcionPT({
+      material: state.modalForm.material, tipo: state.modalForm.tipo,
+      ancho: state.modalForm.ancho, fuelle: state.modalForm.fuelle, largo: state.modalForm.largo, calibre: state.modalForm.calibre,
+      color: state.modalForm.color, aditivo: state.modalForm.aditivo
+    });
+    const todoLleno = state.modalForm.ancho && state.modalForm.largo && state.modalForm.calibre;
+    const yaExiste = codigoGen && state.productos_pt.some(p => p.codigo === codigoGen);
+    
+    const previewBox = $('#pt-preview-box');
+    const previewCod = $('#pt-preview-codigo');
+    const previewDesc = $('#pt-preview-desc');
+    const previewWarn = $('#pt-preview-warn');
+    const btnCrear = $('#pt-btn-crear');
+    
+    if (previewCod) previewCod.textContent = codigoGen || '— captura los datos abajo —';
+    if (previewDesc) previewDesc.textContent = (descGen && todoLleno) ? descGen : '';
+    if (previewBox) {
+      const bg = (codigoGen && todoLleno) ? (yaExiste ? '#fee2e2' : '#dcfce7') : '#f1f5f9';
+      const border = (codigoGen && todoLleno) ? (yaExiste ? '#dc2626' : '#16a34a') : '#e2e8f0';
+      previewBox.style.background = bg;
+      previewBox.style.borderColor = border;
+    }
+    if (previewCod) previewCod.style.color = yaExiste ? '#dc2626' : '#0f172a';
+    if (previewWarn) previewWarn.style.display = yaExiste ? 'block' : 'none';
+    if (btnCrear) btnCrear.disabled = !todoLleno || yaExiste;
+  }
+  window.actualizarPreviewPT = actualizarPreviewPT;
+  
   $$('.form-pt').forEach(el => {
-    const handler = (e) => {
+    const handler = () => {
       if (!state.modalForm) return;
       state.modalForm[el.dataset.field] = el.value;
-      render();
-      // Restaurar foco al mismo input para no romper UX
-      const next = document.querySelector(`.form-pt[data-field="${el.dataset.field}"]`);
-      if (next && next.tagName === 'INPUT') {
-        next.focus();
-        if (typeof next.selectionStart === 'number') {
-          const len = next.value.length;
-          next.setSelectionRange(len, len);
-        }
-      }
+      actualizarPreviewPT();
+    };
+    if (el.tagName === 'SELECT') el.onchange = handler;
+    else el.oninput = handler;
+  });
+  
+  // Inputs del modal de editar producto (no afectan código generado)
+  $$('.form-pt-edit').forEach(el => {
+    const handler = () => {
+      if (!state.modalForm) return;
+      state.modalForm[el.dataset.field] = el.value;
     };
     if (el.tagName === 'SELECT') el.onchange = handler;
     else el.oninput = handler;
@@ -1462,38 +1668,80 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (m === 'crear-producto-pt') state.modalForm = null; // se inicializa en modalCrearProductoPT
+  if (m === 'crear-producto-pt' || m === 'editar-producto-pt') state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
 
+// Recolectar campos del formulario de cliente
+function recolectarDatosCliente() {
+  return {
+    nombre: ($('#cli-nom').value || '').trim(),
+    rfc: ($('#cli-rfc').value || '').trim().toUpperCase(),
+    contacto: ($('#cli-cont').value || '').trim(),
+    correo: ($('#cli-correo').value || '').trim(),
+    telefono: ($('#cli-tel').value || '').trim(),
+    celular: ($('#cli-cel').value || '').trim(),
+    comprador: ($('#cli-comprador').value || '').trim(),
+    calle: ($('#cli-calle').value || '').trim(),
+    colonia: ($('#cli-colonia').value || '').trim(),
+    cp: ($('#cli-cp').value || '').trim(),
+    municipio: ($('#cli-municipio').value || '').trim(),
+    estado: ($('#cli-estado').value || '').trim(),
+    pais: ($('#cli-pais').value || 'México').trim(),
+    referencias: ($('#cli-referencias').value || '').trim(),
+    cedis_asignado: $('#cli-cedis').value,
+    dias_credito: Number($('#cli-credito').value) || 0,
+    notas: ($('#cli-notas').value || '').trim(),
+  };
+}
+
 window.crearCliente = async () => {
   const cod = $('#cli-cod').value.trim().toUpperCase();
-  const nom = $('#cli-nom').value.trim();
-  if (!cod || !nom) { toast('Código y nombre son obligatorios', 'error'); return; }
+  const datos = recolectarDatosCliente();
+  if (!cod || !datos.nombre) { toast('Código y nombre son obligatorios', 'error'); return; }
   
   state.loadingAccion = true; render();
   try {
-    // Verificar duplicado
     const existing = await getDoc(doc(db, 'clientes', cod));
     if (existing.exists()) { toast('Ya existe ese código', 'error'); state.loadingAccion = false; render(); return; }
     
     await setDoc(doc(db, 'clientes', cod), {
-      codigo: cod, nombre: nom,
-      contacto: $('#cli-cont').value,
-      correo: $('#cli-correo').value,
-      telefono: $('#cli-tel').value,
-      cedis_asignado: $('#cli-cedis').value,
+      codigo: cod,
+      ...datos,
       activo: true,
       created_at: serverTimestamp()
     });
     
-    // Refrescar
     const snap = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
     state.clientes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     
     cerrarModal();
     toast('✅ Cliente creado');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.editarCliente = async (codigo) => {
+  const datos = recolectarDatosCliente();
+  if (!datos.nombre) { toast('El nombre es obligatorio', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'clientes', codigo), {
+      ...datos,
+      updated_at: serverTimestamp()
+    });
+    
+    // Refrescar localmente
+    const idx = state.clientes.findIndex(c => c.codigo === codigo);
+    if (idx >= 0) state.clientes[idx] = { ...state.clientes[idx], ...datos };
+    
+    cerrarModal();
+    toast('✅ Cliente actualizado');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
@@ -1627,6 +1875,101 @@ window.crearProductoPT = async () => {
     
     cerrarModalPT();
     toast(`✅ Producto ${codigo} creado` + (asignaciones.length > 0 ? ` y asignado a ${asignaciones.length} cliente(s)` : ''));
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.guardarProductoPT = async (codigo) => {
+  const f = state.modalForm;
+  if (!f) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    // Actualizar producto
+    const updates = {
+      descripcion: f.descripcion,
+      um: f.um,
+      tipo_empaque: f.tipo_empaque,
+      cant_empaque: Number(f.cant_empaque) || 0,
+      um_empaque: f.um_empaque,
+      updated_at: serverTimestamp()
+    };
+    await updateDoc(doc(db, 'productos_pt', codigo), updates);
+    
+    // Actualizar localmente
+    const idx = state.productos_pt.findIndex(p => p.codigo === codigo);
+    if (idx >= 0) state.productos_pt[idx] = { ...state.productos_pt[idx], ...updates };
+    
+    // Sincronizar relaciones cliente-producto
+    const originales = f.relacionesOriginales || {};
+    const actuales = f.clientesAsignados || {};
+    const batch = writeBatch(db);
+    let cambios = 0;
+    
+    // 1. Desactivar las relaciones que ya no están
+    for (const clienteCod of Object.keys(originales)) {
+      if (!actuales[clienteCod]) {
+        batch.update(doc(db, 'cliente_productos', originales[clienteCod].cp_id), { activo: false });
+        cambios++;
+      }
+    }
+    
+    // 2. Actualizar precio/código de las que siguen Y crear las nuevas
+    for (const [clienteCod, datos] of Object.entries(actuales)) {
+      const orig = originales[clienteCod];
+      if (orig) {
+        // Existía → actualizar si cambió precio o código
+        const precioCambia = String(orig.precio) !== String(datos.precio);
+        const codCambia = String(orig.codigo_cliente_interno) !== String(datos.codigo_cliente_interno);
+        if (precioCambia || codCambia) {
+          batch.update(doc(db, 'cliente_productos', datos.cp_id || orig.cp_id), {
+            precio: Number(datos.precio) || 0,
+            codigo_cliente_interno: datos.codigo_cliente_interno || '',
+            updated_at: serverTimestamp()
+          });
+          cambios++;
+        }
+      } else {
+        // Nuevo → crear
+        const ref = doc(collection(db, 'cliente_productos'));
+        batch.set(ref, {
+          cliente_codigo: clienteCod,
+          producto_codigo: codigo,
+          precio: Number(datos.precio) || 0,
+          codigo_cliente_interno: datos.codigo_cliente_interno || '',
+          activo: true,
+          created_at: serverTimestamp()
+        });
+        cambios++;
+      }
+    }
+    
+    if (cambios > 0) {
+      await batch.commit();
+      // Refrescar relaciones
+      const snap = await getDocs(query(collection(db, 'cliente_productos'), where('activo', '==', true)));
+      state.cliente_productos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+    
+    cerrarModalPT();
+    toast('✅ Producto actualizado' + (cambios > 0 ? ` (${cambios} relación(es) modificadas)` : ''));
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.desactivarProductoPT = async (codigo) => {
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'productos_pt', codigo), { activo: false });
+    state.productos_pt = state.productos_pt.filter(p => p.codigo !== codigo);
+    cerrarModalPT();
+    toast('✅ Producto desactivado');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
