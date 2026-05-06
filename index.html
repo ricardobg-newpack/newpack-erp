@@ -498,7 +498,7 @@ function renderClientes() {
   
   return `
     <div class="toolbar">
-      <input class="input" id="filtro-clientes" style="max-width:380px;" placeholder="Buscar cliente..." value="${filtro}" />
+      <input class="input" id="filtro-clientes" style="max-width:380px;" placeholder="Buscar cliente..." value="${filtro}" autocomplete="off" />
       <button class="btn-primary" onclick="abrirModal('crear-cliente')">${ICONS.plus} Nuevo cliente</button>
     </div>
     <div class="table-wrap">
@@ -527,57 +527,84 @@ function renderClientes() {
 function renderProductosPT() {
   const filtro = (state.filtros.productos_pt || '').toLowerCase();
   const filtroUM = state.filtros.productos_pt_um || '';
-  let arr = state.productos_pt;
-  if (filtro) arr = arr.filter(p => (p.codigo + ' ' + p.descripcion).toLowerCase().includes(filtro));
-  if (filtroUM) arr = arr.filter(p => (p.um || 'kg').toLowerCase() === filtroUM);
+  const filtroMat = state.filtros.productos_pt_material || '';
+  const filtroTipo = state.filtros.productos_pt_tipo || '';
   
-  // Estadísticas por UM
+  let arr = state.productos_pt;
+  if (filtro) arr = arr.filter(p => 
+    (p.codigo + ' ' + (p.descripcion||'') + ' ' + (p.material||'') + ' ' + (p.tipo||'') + ' ' + (p.color||'') + ' ' + (p.aditivo||'')).toLowerCase().includes(filtro)
+  );
+  if (filtroUM) arr = arr.filter(p => (p.um || 'kg').toLowerCase() === filtroUM);
+  if (filtroMat) arr = arr.filter(p => (p.material || '') === filtroMat);
+  if (filtroTipo) arr = arr.filter(p => (p.tipo || '') === filtroTipo);
+  
+  // Estadísticas
   const statsUM = {};
+  const materiales = new Set();
+  const tipos = new Set();
   state.productos_pt.forEach(p => {
     const um = (p.um || 'kg').toLowerCase();
     statsUM[um] = (statsUM[um] || 0) + 1;
+    if (p.material) materiales.add(p.material);
+    if (p.tipo) tipos.add(p.tipo);
   });
+  const matsOrdenados = [...materiales].sort();
+  const tiposOrdenados = [...tipos].sort();
   
   const puedeEditar = ['CS','CEO','COMP','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
   
   return `
-    <div class="toolbar">
-      <input class="input" id="filtro-productos-pt" style="max-width:380px;" placeholder="Buscar producto..." value="${filtro}" />
+    <div class="toolbar" style="flex-wrap:wrap;gap:10px;">
+      <input class="input" id="filtro-productos-pt" style="max-width:340px;flex:1;min-width:240px;" placeholder="Buscar por código, descripción, color, aditivo..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-productos-pt-material" style="max-width:200px;">
+        <option value="">Todos los materiales</option>
+        ${matsOrdenados.map(m => `<option value="${m}" ${filtroMat === m ? 'selected' : ''}>${m}</option>`).join('')}
+      </select>
+      <select class="input" id="filtro-productos-pt-tipo" style="max-width:220px;">
+        <option value="">Todos los tipos</option>
+        ${tiposOrdenados.map(t => `<option value="${t}" ${filtroTipo === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
       <select class="input" id="filtro-productos-pt-um" style="max-width:160px;">
         <option value="">Todas las UM</option>
         ${UM_OPCIONES.map(um => `<option value="${um}" ${filtroUM === um ? 'selected' : ''}>${UM_LABELS[um]} (${statsUM[um] || 0})</option>`).join('')}
       </select>
-      <span style="font-size:12px;color:#64748b;">${arr.length} productos</span>
-      ${puedeEditar ? `<span style="font-size:11px;color:#94a3b8;margin-left:auto;">💡 Click en la UM para cambiarla</span>` : ''}
+      ${(filtro || filtroUM || filtroMat || filtroTipo) ? `<button class="btn-secondary" onclick="limpiarFiltrosProductos()" style="padding:8px 12px;font-size:12px;">${ICONS.x} Limpiar</button>` : ''}
+      ${puedeEditar ? `<button class="btn-primary" onclick="abrirModal('crear-producto-pt')">${ICONS.plus} Nuevo PT</button>` : ''}
+      <span style="font-size:12px;color:#64748b;width:100%;">${arr.length} de ${state.productos_pt.length} productos</span>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Calibre</th><th>Color</th><th style="text-align:center;">UM</th><th style="text-align:right;">Clientes</th></tr></thead>
+        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:right;">Cli.</th></tr></thead>
         <tbody>
-          ${arr.length === 0 ? `<tr><td colspan="9" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos</td></tr>` :
+          ${arr.length === 0 ? `<tr><td colspan="10" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
             arr.slice(0, 100).map(p => {
               const medida = p.fuelle > 0 ? `${p.ancho}+${p.fuelle}x${p.largo}` : `${p.ancho}x${p.largo}`;
               const clis = state.cliente_productos.filter(cp => cp.producto_codigo === p.codigo).length;
               const umActual = (p.um || 'kg').toLowerCase();
               const umBadgeColor = { kg: '#16a34a', pza: '#3b82f6', millar: '#8b5cf6', rollo: '#f59e0b', m: '#ec4899' }[umActual] || '#64748b';
+              const aditivo = p.aditivo || 'NINGUNO';
+              const aditivoColor = aditivo === 'NINGUNO' ? '#94a3b8' : aditivo === 'VCI' ? '#7c3aed' : aditivo === 'ANTIESTATICO' ? '#ec4899' : aditivo === 'ANTIDERRAPANTE' ? '#f97316' : '#0891b2';
               return `<tr>
                 <td class="text-mono" style="font-size:11px;font-weight:700;">${p.codigo}</td>
-                <td style="font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion}</td>
-                <td style="font-size:12px;">${p.material || '—'}</td>
-                <td style="font-size:12px;">${p.tipo || '—'}</td>
-                <td style="font-size:12px;">${medida}</td>
-                <td style="font-size:12px;">${p.calibre || '—'}</td>
-                <td style="font-size:12px;">${p.color || '—'}</td>
+                <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion}</td>
+                <td style="font-size:11px;">${p.material || '—'}</td>
+                <td style="font-size:11px;">${p.tipo || '—'}</td>
+                <td style="font-size:11px;">${medida}</td>
+                <td style="font-size:11px;">${p.calibre || '—'}</td>
+                <td style="font-size:11px;">${p.color || '—'}</td>
+                <td style="font-size:10px;">
+                  ${aditivo === 'NINGUNO' ? `<span style="color:#94a3b8;">—</span>` : `<span style="font-weight:700;padding:2px 6px;border-radius:5px;background:${aditivoColor}22;color:${aditivoColor};">${aditivo}</span>`}
+                </td>
                 <td style="text-align:center;">
                   ${puedeEditar ? `
-                    <select class="input prod-um-select" data-codigo="${p.codigo}" style="padding:4px 6px;font-size:11px;font-weight:700;color:${umBadgeColor};border-color:${umBadgeColor}33;background:${umBadgeColor}11;width:auto;min-width:80px;">
+                    <select class="input prod-um-select" data-codigo="${p.codigo}" style="padding:3px 5px;font-size:10px;font-weight:700;color:${umBadgeColor};border-color:${umBadgeColor}33;background:${umBadgeColor}11;width:auto;min-width:70px;">
                       ${UM_OPCIONES.map(um => `<option value="${um}" ${umActual === um ? 'selected' : ''}>${UM_LABELS[um]}</option>`).join('')}
                     </select>
                   ` : `
-                    <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:${umBadgeColor}22;color:${umBadgeColor};">${UM_LABELS[umActual]}</span>
+                    <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;background:${umBadgeColor}22;color:${umBadgeColor};">${UM_LABELS[umActual]}</span>
                   `}
                 </td>
-                <td style="text-align:right;">${clis}</td>
+                <td style="text-align:right;font-size:11px;">${clis}</td>
               </tr>`;
             }).join('')
           }
@@ -656,7 +683,7 @@ function renderFormPedido() {
           ` : `
             <div class="field" style="margin-top:14px;">
               <label class="field-label">Buscar producto del cliente</label>
-              <input class="input" id="ped-busq" placeholder="Código o descripción..." value="${state.busqProd || ''}" />
+              <input class="input" id="ped-busq" placeholder="Código o descripción..." value="${state.busqProd || ''}" autocomplete="off" />
             </div>
             <div style="max-height:340px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;">
               ${prodsFiltrados.length === 0 ? `
@@ -900,6 +927,7 @@ function renderModal() {
   if (m === 'crear-cliente') return modalCrearCliente();
   if (m === 'detalle-cliente') return modalDetalleCliente();
   if (m === 'programar-odp') return modalProgramarODP();
+  if (m === 'crear-producto-pt') return modalCrearProductoPT();
   return '';
 }
 
@@ -1004,6 +1032,92 @@ function modalProgramarODP() {
 }
 
 // ============================================================
+// MODAL: CREAR PRODUCTO PT
+// ============================================================
+const ADITIVOS = ['NINGUNO', 'VCI', 'ANTIESTATICO', 'ANTIDERRAPANTE', 'DESLIZANTE', 'ANTIBLOQUEO'];
+const COLORES = ['Transparente', 'NEGRO', 'NEGRO PARA BASURA', 'AZUL CELESTE', 'AMARILLO', 'NARANJA', 'ROJO', 'ROSA', 'VERDE OSCURO', 'VERDE IMSS', 'Gris y Blanco'];
+const MATERIALES = ['Alta Densidad', 'Baja Densidad', 'Termoencogible', 'Polipropileno'];
+const TIPOS_PRODUCTO = ['BOLSA SUELTA', 'BOLSA EN ROLLO', 'HOJA O CORTE', 'MANGA CORTE SUELTO', 'PELICULA PLANA', 'PELICULA PLANA REFILADA', 'PELICULA PLANA PUNTEADA', 'ROLLO DIRECTO TUBULAR', 'ROLLO DIRECTO AX1L', 'ROLLO AX1L PUNTEADO'];
+
+function modalCrearProductoPT() {
+  const d = state.modalData || {};
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:680px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">Nuevo Producto PT</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="field-label">Código *</label>
+            <input class="input text-mono" id="prod-codigo" placeholder="Ej: LDBS0500001100500NANN1" style="text-transform:uppercase;" value="${d.codigo || ''}" />
+            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">El código sigue el formato del generador de códigos</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Descripción *</label>
+            <input class="input" id="prod-desc" placeholder="Se genera automáticamente al llenar los campos" />
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Material *</label>
+              <select class="input" id="prod-material">
+                ${MATERIALES.map(m => `<option value="${m}">${m}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Tipo *</label>
+              <select class="input" id="prod-tipo">
+                ${TIPOS_PRODUCTO.map(t => `<option value="${t}">${t}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
+            <div class="field"><label class="field-label">Ancho</label><input class="input" id="prod-ancho" type="number" min="0" step="0.1" value="0" /></div>
+            <div class="field"><label class="field-label">Fuelle</label><input class="input" id="prod-fuelle" type="number" min="0" step="0.1" value="0" /></div>
+            <div class="field"><label class="field-label">Largo</label><input class="input" id="prod-largo" type="number" min="0" step="0.1" value="0" /></div>
+            <div class="field"><label class="field-label">Calibre</label><input class="input" id="prod-calibre" type="number" min="0" step="1" value="0" /></div>
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Color</label>
+              <select class="input" id="prod-color">
+                ${COLORES.map(c => `<option value="${c}">${c}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Aditivo</label>
+              <select class="input" id="prod-aditivo">
+                ${ADITIVOS.map(a => `<option value="${a}">${a}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+            <div class="field">
+              <label class="field-label">UM principal</label>
+              <select class="input" id="prod-um">
+                ${UM_OPCIONES.map(u => `<option value="${u}">${UM_LABELS[u]}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label class="field-label">Empaque</label><input class="input" id="prod-empaque" placeholder="Bultos" /></div>
+            <div class="field"><label class="field-label">Cant. empaque</label><input class="input" id="prod-cant-emp" type="number" placeholder="25" /></div>
+          </div>
+          <div class="field"><label class="field-label">UM empaque</label><input class="input" id="prod-um-emp" placeholder="KG. / PZA. / etc" /></div>
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="crearProductoPT()">${ICONS.check} Crear producto</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
 // EVENT HANDLERS
 // ============================================================
 function attachAppEvents() {
@@ -1016,10 +1130,28 @@ function attachAppEvents() {
   });
   
   if ($('#filtro-clientes')) {
-    $('#filtro-clientes').oninput = (e) => { state.filtros.clientes = e.target.value; render(); $('#filtro-clientes').focus(); };
+    $('#filtro-clientes').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.clientes = e.target.value;
+      render();
+      const inp = $('#filtro-clientes');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
   }
   if ($('#filtro-productos-pt')) {
-    $('#filtro-productos-pt').oninput = (e) => { state.filtros.productos_pt = e.target.value; render(); $('#filtro-productos-pt').focus(); };
+    $('#filtro-productos-pt').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.productos_pt = e.target.value;
+      render();
+      const inp = $('#filtro-productos-pt');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-productos-pt-material')) {
+    $('#filtro-productos-pt-material').onchange = (e) => { state.filtros.productos_pt_material = e.target.value; render(); };
+  }
+  if ($('#filtro-productos-pt-tipo')) {
+    $('#filtro-productos-pt-tipo').onchange = (e) => { state.filtros.productos_pt_tipo = e.target.value; render(); };
   }
   if ($('#filtro-productos-pt-um')) {
     $('#filtro-productos-pt-um').onchange = (e) => { state.filtros.productos_pt_um = e.target.value; render(); };
@@ -1034,7 +1166,13 @@ function attachAppEvents() {
   
   if ($('#ped-cliente')) $('#ped-cliente').onchange = () => { capturarPedido(); render(); };
   if ($('#ped-cedis')) $('#ped-cedis').onchange = () => { capturarPedido(); };
-  if ($('#ped-busq')) $('#ped-busq').oninput = (e) => { state.busqProd = e.target.value; render(); $('#ped-busq').focus(); };
+  if ($('#ped-busq')) $('#ped-busq').oninput = (e) => {
+    const pos = e.target.selectionStart;
+    state.busqProd = e.target.value;
+    render();
+    const inp = $('#ped-busq');
+    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+  };
   ['ped-odc','ped-fecha','ped-obs'].forEach(id => { const el = $('#' + id); if (el) el.onblur = () => capturarPedido(); });
   $$('.ped-cant, .ped-stock, .ped-prod').forEach(inp => { inp.onblur = () => { capturarPedido(); render(); }; });
   $$('.ped-origen').forEach(sel => { sel.onchange = () => { capturarPedido(); render(); }; });
@@ -1133,6 +1271,72 @@ window.actualizarUMProducto = async (codigo, nuevaUM) => {
     const idx = state.productos_pt.findIndex(p => p.codigo === codigo);
     if (idx >= 0) state.productos_pt[idx].um = nuevaUM;
     toast(`✅ UM actualizada: ${codigo} → ${UM_LABELS[nuevaUM]}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.limpiarFiltrosProductos = () => {
+  state.filtros.productos_pt = '';
+  state.filtros.productos_pt_um = '';
+  state.filtros.productos_pt_material = '';
+  state.filtros.productos_pt_tipo = '';
+  render();
+};
+
+window.crearProductoPT = async () => {
+  const codigo = $('#prod-codigo').value.trim().toUpperCase();
+  const desc = $('#prod-desc').value.trim();
+  const material = $('#prod-material').value;
+  const tipo = $('#prod-tipo').value;
+  const ancho = Number($('#prod-ancho').value) || 0;
+  const fuelle = Number($('#prod-fuelle').value) || 0;
+  const largo = Number($('#prod-largo').value) || 0;
+  const calibre = Number($('#prod-calibre').value) || 0;
+  const color = $('#prod-color').value;
+  const aditivo = $('#prod-aditivo').value;
+  const um = $('#prod-um').value;
+  const tipo_empaque = $('#prod-empaque').value || '';
+  const cant_empaque = Number($('#prod-cant-emp').value) || 0;
+  const um_empaque = $('#prod-um-emp').value || '';
+  
+  if (!codigo) { toast('El código es obligatorio', 'error'); return; }
+  if (!desc) { toast('La descripción es obligatoria', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    // Verificar duplicado
+    const existing = await getDoc(doc(db, 'productos_pt', codigo));
+    if (existing.exists()) { 
+      toast('Ya existe un producto con ese código', 'error'); 
+      state.loadingAccion = false; render(); 
+      return; 
+    }
+    
+    const presentacion = (tipo_empaque && cant_empaque) ? `${tipo_empaque.toUpperCase()} DE ${cant_empaque} ${um_empaque}` : 'DE';
+    
+    const producto = {
+      codigo, descripcion: desc,
+      material, tipo,
+      ancho, fuelle, largo, calibre,
+      color, aditivo,
+      um,
+      tipo_empaque, cant_empaque, um_empaque,
+      presentacion,
+      activo: true,
+      created_at: serverTimestamp()
+    };
+    
+    await setDoc(doc(db, 'productos_pt', codigo), producto);
+    
+    // Refrescar localmente
+    state.productos_pt.push(producto);
+    state.productos_pt.sort((a, b) => a.codigo.localeCompare(b.codigo));
+    
+    cerrarModal();
+    toast('✅ Producto ' + codigo + ' creado');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
