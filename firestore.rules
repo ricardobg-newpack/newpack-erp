@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helpers
+    function isAuth() { return request.auth != null; }
+    function userProfile() { return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data; }
+    function isAdmin() { return isAuth() && userProfile().rol == 'admin'; }
+    function userDept() { return isAuth() ? userProfile().depto : ''; }
+    function isCEO() { return userDept() == 'CEO'; }
+    
+    // Usuarios: cada quién lee su propio perfil; admin lee/escribe todos
+    match /usuarios/{uid} {
+      allow read: if isAuth() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+    }
+    
+    // Catálogos: cualquier usuario autenticado lee; solo admin/CS escribe
+    match /clientes/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN'];
+    }
+    
+    match /productos_pt/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN'];
+    }
+    
+    match /cliente_productos/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN'];
+    }
+    
+    match /almacenes/{id} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+    
+    // Pedidos: lectura abierta a todos los autenticados; creación CS/CEO/COMP/ADMIN
+    match /pedidos/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN','PLN']);
+      allow delete: if isAdmin();
+    }
+    
+    match /pedido_lineas/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN']);
+      allow delete: if isAdmin();
+    }
+    
+    // Órdenes de venta: lectura abierta; admin ALP/CEDMTY/CEDMEX gestionan
+    match /ordenes_venta/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CEO','ADMIN']);
+      allow delete: if isAdmin();
+    }
+    
+    // Órdenes de producción: PLN/PRO/CEO/ADMIN gestionan
+    match /ordenes_produccion/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['PLN','PRO','CEO','ADMIN']);
+      allow delete: if isAdmin();
+    }
+    
+    // Notificaciones: lectura para todos; cualquier usuario autenticado puede crear
+    match /notificaciones/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAdmin();
+    }
+    
+    // Contadores: cualquier autenticado los actualiza (vía transacción) para folios
+    match /contadores/{id} {
+      allow read, write: if isAuth();
+    }
+  }
+}
