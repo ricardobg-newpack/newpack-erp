@@ -1998,15 +1998,13 @@ function modalLiberarCalidad() {
   
   // Inicializar form
   if (!state.modalForm) {
-    const productoCal = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
     state.modalForm = {
       cantidad_aceptada: cantidadProducida,
       num_tarimas: 1,
-      peso_tarima_unit: 25, // peso de una tarima vacía en kg (default estándar)
-      // Empaque por tarima (formato NewPack: "X paquetes de Y kg" o "X paquetes de Y pza")
-      paquetes_por_tarima: '',
+      peso_tarima_unit: 25,
+      // GLOBAL: contenido por paquete (numérico, en la UM del producto)
       contenido_por_paquete: '',
-      // Lista de tarimas individuales editables (se inicializa al cambiar num_tarimas)
+      // Lista de tarimas (cada una: paquetes completos + sueltos + pesos)
       tarimas_data: [],
       decision: 'pendiente',
       notas: ''
@@ -2017,18 +2015,11 @@ function modalLiberarCalidad() {
   // Si cambió num_tarimas, reinicializar lista
   const numT = Number(f.num_tarimas) || 1;
   if (!f.tarimas_data || f.tarimas_data.length !== numT) {
-    const cantPorT = (Number(f.cantidad_aceptada) || cantidadProducida) / numT;
-    const productoCal = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
-    const pesoTeoricoUnit = window.convertirAKg(cantPorT, um, productoCal) || 0;
     const pesoUnit = Number(f.peso_tarima_unit) || 25;
-    const paqDefault = Number(f.paquetes_por_tarima) || 0;
-    const contDefault = f.contenido_por_paquete || '';
-    f.tarimas_data = Array.from({length: numT}, (_, i) => ({
-      cantidad: cantPorT,
-      paquetes: paqDefault,                // # de paquetes en esta tarima
-      contenido_paquete: contDefault,      // contenido por paquete (ej: "25 kg" o "500 pza")
-      peso_neto_teorico: pesoTeoricoUnit,
-      peso_bruto: pesoTeoricoUnit + pesoUnit,
+    f.tarimas_data = Array.from({length: numT}, () => ({
+      paquetes: 0,         // # paquetes completos
+      sueltos: 0,          // cantidad suelta (no completa paquete)
+      peso_bruto: 0,
       peso_tarima_vacia: pesoUnit
     }));
   }
@@ -2064,8 +2055,11 @@ function modalLiberarCalidad() {
     mensajeDecision = 'Toda la producción se rechaza. <strong>Se genera nuevo PI completo</strong>.';
   }
   
-  // Totales calculados de la tabla de tarimas
-  const totalCantTarimas = f.tarimas_data.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  // Cálculos automáticos del nuevo modelo
+  const contPaq = Number(f.contenido_por_paquete) || 0;
+  const totalPaquetes = f.tarimas_data.reduce((s, t) => s + (Number(t.paquetes) || 0), 0);
+  const totalSueltos = f.tarimas_data.reduce((s, t) => s + (Number(t.sueltos) || 0), 0);
+  const totalCantTarimas = (totalPaquetes * contPaq) + totalSueltos;
   const totalPesoBruto = f.tarimas_data.reduce((s, t) => s + (Number(t.peso_bruto) || 0), 0);
   const totalPesoVacio = f.tarimas_data.reduce((s, t) => s + (Number(t.peso_tarima_vacia) || 0), 0);
   const totalPesoNeto = totalPesoBruto - totalPesoVacio;
@@ -2074,6 +2068,13 @@ function modalLiberarCalidad() {
   const diffPeso = totalPesoNeto - pesoTeoricoTotal;
   const pctDiff = pesoTeoricoTotal > 0 ? Math.abs(diffPeso / pesoTeoricoTotal * 100) : 0;
   const colorPeso = pctDiff <= 5 ? '#16a34a' : (pctDiff <= 10 ? '#f59e0b' : '#dc2626');
+  
+  // Cálculos del autodistribuidor (sólo para preview)
+  let paqTotalNec = 0, sueltosTotal = 0;
+  if (contPaq > 0 && cantAceptada > 0) {
+    paqTotalNec = Math.floor(cantAceptada / contPaq);
+    sueltosTotal = cantAceptada - (paqTotalNec * contPaq);
+  }
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
@@ -2131,35 +2132,59 @@ function modalLiberarCalidad() {
           <!-- Tarimas individuales -->
           <div id="cal-tarimas-container" style="display:${(decision === 'liberado' || decision === 'parcial') ? 'block' : 'none'};">
             
+            <!-- Configuración global de empaque -->
             <div style="padding:14px;background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;margin-bottom:14px;">
-              <div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:6px;">📦 Defaults de empaque (sólo para inicializar)</div>
-              <div style="font-size:10px;color:#3b82f6;margin-bottom:10px;">💡 Cambiar estos valores reinicializa la tabla. Para personalizar tarima por tarima, edita la tabla de abajo.</div>
+              <div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:10px;">📦 Configuración de empaque</div>
               
-              <div style="display:grid;grid-template-columns:1fr 1.5fr 1.5fr 1fr;gap:8px;">
+              <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:8px;align-items:end;">
+                <div>
+                  <label class="field-label" style="font-size:10px;">Contenido por paquete (en ${UM_LABELS[um]})</label>
+                  <input class="input form-cal" data-field="contenido_por_paquete" type="number" min="0" step="${stepCant}" value="${f.contenido_por_paquete}" placeholder="Ej: 2500" autocomplete="off" />
+                </div>
                 <div>
                   <label class="field-label" style="font-size:10px;">Núm. tarimas *</label>
                   <input class="input form-cal" data-field="num_tarimas" type="number" min="1" max="50" step="1" value="${f.num_tarimas}" autocomplete="off" />
                 </div>
                 <div>
-                  <label class="field-label" style="font-size:10px;">Paquetes / tarima (def)</label>
-                  <input class="input form-cal" data-field="paquetes_por_tarima" type="number" min="0" step="1" value="${f.paquetes_por_tarima}" placeholder="Ej: 40" autocomplete="off" />
-                </div>
-                <div>
-                  <label class="field-label" style="font-size:10px;">Contenido / paquete (def)</label>
-                  <input class="input form-cal" data-field="contenido_por_paquete" value="${f.contenido_por_paquete}" placeholder="Ej: 25 kg ó 500 pza" autocomplete="off" />
-                </div>
-                <div>
-                  <label class="field-label" style="font-size:10px;">Peso tarima vacía (def)</label>
+                  <label class="field-label" style="font-size:10px;">Peso tarima vacía</label>
                   <input class="input form-cal" data-field="peso_tarima_unit" type="number" min="0" step="0.01" value="${f.peso_tarima_unit}" autocomplete="off" />
                 </div>
               </div>
+              
+              ${contPaq > 0 ? `
+                <div id="cal-empaque-info" style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;font-size:11px;">
+                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;">
+                    <div>
+                      <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Total a empacar</div>
+                      <div style="font-size:14px;font-weight:800;color:#1e40af;">${fmtCantidadUM(cantAceptada, um)}</div>
+                    </div>
+                    <div>
+                      <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Paquetes completos</div>
+                      <div style="font-size:14px;font-weight:800;color:#1e40af;">${paqTotalNec}</div>
+                    </div>
+                    <div>
+                      <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Sueltos</div>
+                      <div style="font-size:14px;font-weight:800;color:${sueltosTotal > 0 ? '#f59e0b' : '#16a34a'};">${fmtNum(sueltosTotal)} ${UM_LABELS[um]}</div>
+                    </div>
+                  </div>
+                  <button onclick="autoDistribuir()" type="button" style="width:100%;margin-top:10px;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
+                    🪄 Auto-distribuir entre ${f.num_tarimas} tarima${f.num_tarimas > 1 ? 's' : ''}
+                  </button>
+                </div>
+              ` : `
+                <div style="margin-top:10px;font-size:11px;color:#94a3b8;font-style:italic;">
+                  💡 Captura el contenido por paquete para usar la auto-distribución.
+                </div>
+              `}
             </div>
             
-            <!-- Tabla por tarima individual con TODOS los campos editables -->
+            <!-- Tabla por tarima -->
             <div style="margin-bottom:14px;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                <strong style="font-size:12px;">📋 Detalle por tarima individual <span style="font-weight:400;color:#64748b;font-size:10px;">(cada tarima puede tener paquetes, contenido y pesos diferentes)</span></strong>
-                <button onclick="distribuirEquitativo()" type="button" style="font-size:10px;padding:4px 8px;background:#e0e7ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:6px;cursor:pointer;">⚖️ Reset equitativo</button>
+                <strong style="font-size:12px;">📋 Detalle por tarima 
+                  <span style="font-weight:400;color:#64748b;font-size:10px;">(captura paquetes y sueltos; cantidad se calcula auto)</span>
+                </strong>
+                <button onclick="resetTarimas()" type="button" style="font-size:10px;padding:4px 8px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;">↺ Resetear</button>
               </div>
               <div style="border:1px solid #e2e8f0;border-radius:8px;overflow-x:auto;background:#fff;">
                 <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:780px;">
@@ -2167,8 +2192,8 @@ function modalLiberarCalidad() {
                     <tr style="background:#f1f5f9;">
                       <th style="padding:8px;text-align:left;">Tar</th>
                       <th style="padding:8px;text-align:right;">Paquetes</th>
-                      <th style="padding:8px;text-align:left;">Contenido/paq</th>
-                      <th style="padding:8px;text-align:right;">Cantidad (${UM_LABELS[um]})</th>
+                      <th style="padding:8px;text-align:right;">Sueltos (${UM_LABELS[um]})</th>
+                      <th style="padding:8px;text-align:right;">Cantidad total ${UM_LABELS[um]} (auto)</th>
                       <th style="padding:8px;text-align:right;">P. bruto (kg)</th>
                       <th style="padding:8px;text-align:right;">P. vacío (kg)</th>
                       <th style="padding:8px;text-align:right;">P. neto (kg)</th>
@@ -2176,15 +2201,18 @@ function modalLiberarCalidad() {
                   </thead>
                   <tbody>
                     ${f.tarimas_data.map((t, i) => {
+                      const paq = Number(t.paquetes) || 0;
+                      const suel = Number(t.sueltos) || 0;
+                      const cantTar = (paq * contPaq) + suel;
                       const neto = (Number(t.peso_bruto) || 0) - (Number(t.peso_tarima_vacia) || 0);
                       return `
                         <tr style="border-top:1px solid #f1f5f9;">
                           <td style="padding:6px 8px;font-weight:700;color:#475569;">T${String(i+1).padStart(2,'0')}</td>
                           <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="paquetes" type="number" min="0" step="1" value="${t.paquetes || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:75px;" autocomplete="off" /></td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="contenido_paquete" value="${t.contenido_paquete || ''}" placeholder="Ej: 25 kg" style="padding:4px 6px;font-size:11px;width:100px;" autocomplete="off" /></td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="cantidad" type="number" min="0" step="${stepCant}" value="${t.cantidad}" style="padding:4px 6px;font-size:11px;text-align:right;width:90px;" autocomplete="off" /></td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_bruto" type="number" min="0" step="0.01" value="${t.peso_bruto}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_tarima_vacia" type="number" min="0" step="0.01" value="${t.peso_tarima_vacia}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
+                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="sueltos" type="number" min="0" step="${stepCant}" value="${t.sueltos || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:90px;" autocomplete="off" /></td>
+                          <td id="tar-cant-${i}" style="padding:6px 8px;text-align:right;font-weight:700;color:#1e40af;">${fmtNum(cantTar)}</td>
+                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_bruto" type="number" min="0" step="0.01" value="${t.peso_bruto || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
+                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_tarima_vacia" type="number" min="0" step="0.01" value="${t.peso_tarima_vacia || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
                           <td id="tar-neto-${i}" style="padding:6px 8px;text-align:right;font-weight:700;color:#16a34a;">${neto.toFixed(2)}</td>
                         </tr>
                       `;
@@ -2193,15 +2221,23 @@ function modalLiberarCalidad() {
                   <tfoot>
                     <tr style="background:#f8fafc;border-top:2px solid #e2e8f0;font-weight:700;">
                       <td style="padding:8px;">TOTAL</td>
-                      <td id="tab-total-paq" style="padding:8px;text-align:right;">${f.tarimas_data.reduce((s,t) => s + (Number(t.paquetes)||0), 0)}</td>
-                      <td></td>
-                      <td id="tab-total-cant" style="padding:8px;text-align:right;">${fmtNum(totalCantTarimas)} ${UM_LABELS[um]}</td>
+                      <td id="tab-total-paq" style="padding:8px;text-align:right;">${fmtNum(totalPaquetes)}</td>
+                      <td id="tab-total-suel" style="padding:8px;text-align:right;">${fmtNum(totalSueltos)}</td>
+                      <td id="tab-total-cant" style="padding:8px;text-align:right;color:#1e40af;">${fmtNum(totalCantTarimas)} ${UM_LABELS[um]}</td>
                       <td id="tab-total-bruto" style="padding:8px;text-align:right;">${totalPesoBruto.toFixed(2)} kg</td>
                       <td id="tab-total-vacio" style="padding:8px;text-align:right;">${totalPesoVacio.toFixed(2)} kg</td>
                       <td id="tab-total-neto" style="padding:8px;text-align:right;color:#16a34a;">${totalPesoNeto.toFixed(2)} kg</td>
                     </tr>
                   </tfoot>
                 </table>
+              </div>
+              
+              <!-- Cuadre vs cantidad aceptada -->
+              <div id="cal-cuadre-box" style="margin-top:8px;padding:8px 12px;background:${Math.abs(totalCantTarimas - cantAceptada) < 0.01 ? '#f0fdf4' : '#fef3c7'};border-radius:6px;font-size:11px;border:1px solid ${Math.abs(totalCantTarimas - cantAceptada) < 0.01 ? '#bbf7d0' : '#fde68a'};">
+                <strong>Cuadre:</strong> Solicitado <strong>${fmtNum(cantAceptada)}</strong> ${UM_LABELS[um]} vs Total empacado <strong id="cal-cuadre-empacado">${fmtNum(totalCantTarimas)}</strong> ${UM_LABELS[um]}
+                <span id="cal-cuadre-status" style="float:right;color:${Math.abs(totalCantTarimas - cantAceptada) < 0.01 ? '#16a34a' : '#92400e'};font-weight:700;">
+                  ${Math.abs(totalCantTarimas - cantAceptada) < 0.01 ? '✓ Cuadra' : '⚠ Diferencia: ' + fmtNum(totalCantTarimas - cantAceptada)}
+                </span>
               </div>
             </div>
             
@@ -2960,24 +2996,44 @@ function attachAppEvents() {
       tarimasContainer.style.display = (decision === 'liberado' || decision === 'parcial') ? 'block' : 'none';
     }
     
-    // Recalcular totales de la tabla de tarimas (si hay)
+    // Recalcular totales con nuevo modelo: cantidad = paquetes×contenido + sueltos
     if (state.modalForm.tarimas_data && state.modalForm.tarimas_data.length > 0) {
+      const contPaq = Number(state.modalForm.contenido_por_paquete) || 0;
       const tot_paq = state.modalForm.tarimas_data.reduce((s, t) => s + (Number(t.paquetes) || 0), 0);
-      const tot_cant = state.modalForm.tarimas_data.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+      const tot_suel = state.modalForm.tarimas_data.reduce((s, t) => s + (Number(t.sueltos) || 0), 0);
+      const tot_cant = (tot_paq * contPaq) + tot_suel;
       const tot_bruto = state.modalForm.tarimas_data.reduce((s, t) => s + (Number(t.peso_bruto) || 0), 0);
       const tot_vacio = state.modalForm.tarimas_data.reduce((s, t) => s + (Number(t.peso_tarima_vacia) || 0), 0);
       const tot_neto = tot_bruto - tot_vacio;
       
       const e_paq = $('#tab-total-paq');
+      const e_suel = $('#tab-total-suel');
       const e_cant = $('#tab-total-cant');
       const e_bruto = $('#tab-total-bruto');
       const e_vacio = $('#tab-total-vacio');
       const e_neto = $('#tab-total-neto');
       if (e_paq) e_paq.textContent = `${fmtNum(tot_paq)}`;
+      if (e_suel) e_suel.textContent = `${fmtNum(tot_suel)}`;
       if (e_cant) e_cant.textContent = `${fmtNum(tot_cant)} ${UM_LABELS[um]}`;
       if (e_bruto) e_bruto.textContent = `${tot_bruto.toFixed(2)} kg`;
       if (e_vacio) e_vacio.textContent = `${tot_vacio.toFixed(2)} kg`;
       if (e_neto) e_neto.textContent = `${tot_neto.toFixed(2)} kg`;
+      
+      // Cuadre vs cantidad aceptada
+      const cuadreBox = $('#cal-cuadre-box');
+      const cuadreEmp = $('#cal-cuadre-empacado');
+      const cuadreStat = $('#cal-cuadre-status');
+      const diffCant = tot_cant - cantAceptada;
+      const cuadra = Math.abs(diffCant) < 0.01;
+      if (cuadreBox) {
+        cuadreBox.style.background = cuadra ? '#f0fdf4' : '#fef3c7';
+        cuadreBox.style.borderColor = cuadra ? '#bbf7d0' : '#fde68a';
+      }
+      if (cuadreEmp) cuadreEmp.textContent = fmtNum(tot_cant);
+      if (cuadreStat) {
+        cuadreStat.style.color = cuadra ? '#16a34a' : '#92400e';
+        cuadreStat.textContent = cuadra ? '✓ Cuadra' : `⚠ Diferencia: ${fmtNum(diffCant)}`;
+      }
       
       // Verificación báscula vs teórico
       const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
@@ -2995,8 +3051,14 @@ function attachAppEvents() {
         e_dif_v.style.color = colorP;
       }
       
-      // Actualizar peso neto por fila individual
+      // Actualizar cantidad y peso neto por fila individual
       state.modalForm.tarimas_data.forEach((t, i) => {
+        const paq = Number(t.paquetes) || 0;
+        const suel = Number(t.sueltos) || 0;
+        const cantTar = (paq * contPaq) + suel;
+        const cellCant = $(`#tar-cant-${i}`);
+        if (cellCant) cellCant.textContent = fmtNum(cantTar);
+        
         const neto = (Number(t.peso_bruto) || 0) - (Number(t.peso_tarima_vacia) || 0);
         const cell = $(`#tar-neto-${i}`);
         if (cell) cell.textContent = neto.toFixed(2);
@@ -3025,16 +3087,53 @@ function attachAppEvents() {
         render();
         return;
       }
-      // Si cambió peso_tarima_unit, propagar a todas las tarimas
+      // Si cambió peso_tarima_unit, propagar a todas las tarimas (sólo a las que tengan 0)
       if (el.dataset.field === 'peso_tarima_unit' && state.modalForm.tarimas_data) {
         const nuevoP = Number(el.value) || 0;
-        state.modalForm.tarimas_data.forEach(t => { t.peso_tarima_vacia = nuevoP; });
-        render();
+        state.modalForm.tarimas_data.forEach(t => { 
+          if (!Number(t.peso_tarima_vacia)) t.peso_tarima_vacia = nuevoP;
+        });
+        // No re-render, solo actualizar preview
+        actualizarPreviewCalidad();
         return;
       }
-      // Si cambió cantidad_aceptada, redistribuir tarimas equitativo
+      // Si cambió contenido_por_paquete, re-render para mostrar la info de auto-distribución
+      // (la sección cal-empaque-info aparece/desaparece y necesita re-render)
+      if (el.dataset.field === 'contenido_por_paquete') {
+        const tieneInfo = !!$('#cal-empaque-info');
+        const ahoraTiene = Number(el.value) > 0;
+        if (tieneInfo !== ahoraTiene) {
+          // estado cambió → necesita re-render para mostrar/ocultar info
+          render();
+          // Después del re-render, restaurar foco en el input
+          setTimeout(() => {
+            const inp = document.querySelector('input[data-field="contenido_por_paquete"]');
+            if (inp) inp.focus();
+          }, 0);
+          return;
+        }
+        // El bloque info ya existe, solo actualizar valores sin re-render
+        const e_total = $('#cal-empaque-info');
+        if (e_total) {
+          const cAcep = Number(state.modalForm.cantidad_aceptada) || 0;
+          const cPaq = Number(el.value) || 0;
+          if (cPaq > 0) {
+            const paqT = Math.floor(cAcep / cPaq);
+            const suel = cAcep - (paqT * cPaq);
+            // Buscar y actualizar los divs específicos (los segundos en cada bloque)
+            const divs = e_total.querySelectorAll('div > div:nth-child(2)');
+            if (divs[1]) divs[1].textContent = paqT;
+            if (divs[2]) {
+              divs[2].textContent = `${fmtNum(suel)} ${UM_LABELS[(odp.um || 'kg').toLowerCase()]}`;
+              divs[2].style.color = suel > 0 ? '#f59e0b' : '#16a34a';
+            }
+          }
+        }
+        actualizarPreviewCalidad();
+        return;
+      }
+      // Si cambió cantidad_aceptada
       if (el.dataset.field === 'cantidad_aceptada' && state.modalForm.tarimas_data && state.modalForm.tarimas_data.length > 0) {
-        // Solo actualizar el preview de decisión sin tocar la tabla
         actualizarPreviewCalidad();
         return;
       }
@@ -3043,7 +3142,7 @@ function attachAppEvents() {
     el.oninput = handler;
   });
   
-  // Handlers para inputs de cada tarima (cantidad, peso bruto, peso vacío)
+  // Handlers para inputs de cada tarima (paquetes, sueltos, peso bruto, peso vacío)
   $$('.tarima-row').forEach(inp => {
     inp.oninput = () => {
       if (!state.modalForm || !state.modalForm.tarimas_data) return;
@@ -4037,8 +4136,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
       cantidad_rechazada: cantidadProducida - cantAceptada,
       pct_calidad: Number(pctCalidad.toFixed(2)),
       num_tarimas: numTarimas,
-      paquetes_por_tarima: Number(f.paquetes_por_tarima) || 0,
-      contenido_por_paquete: f.contenido_por_paquete || '',
+      contenido_por_paquete: Number(f.contenido_por_paquete) || 0,
+      total_paquetes: f.tarimas_data.reduce((s,t) => s + (Number(t.paquetes)||0), 0),
+      total_sueltos: f.tarimas_data.reduce((s,t) => s + (Number(t.sueltos)||0), 0),
       // Doble verificación báscula (totales)
       peso_bruto_total: Number(totalPesoBruto.toFixed(2)),
       peso_tarima_vacia_total: Number(totalPesoVacio.toFixed(2)),
@@ -4062,10 +4162,13 @@ window.confirmarLiberarCalidad = async (odpId) => {
       // POR CADA TARIMA: generar 1 lote único + 1 etiqueta de tarima
       const lotesGenerados = []; // {codigo_lote, tarima_codigo, lote_id, tarima_id, ...}
       const batchOps = writeBatch(db);
+      const contPaqGlobal = Number(f.contenido_por_paquete) || 0;
       
       for (let i = 0; i < numTarimas; i++) {
         const t = f.tarimas_data[i];
-        const cantTarima = Number(t.cantidad) || 0;
+        const paqT = Number(t.paquetes) || 0;
+        const sueltosT = Number(t.sueltos) || 0;
+        const cantTarima = (paqT * contPaqGlobal) + sueltosT;
         const pesoBrutoT = Number(t.peso_bruto) || 0;
         const pesoVacioT = Number(t.peso_tarima_vacia) || 0;
         const pesoNetoT = pesoBrutoT - pesoVacioT;
@@ -4093,8 +4196,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
           peso_bruto: pesoBrutoT,
           peso_tarima_vacia: pesoVacioT,
           peso_neto: pesoNetoT,
-          paquetes: Number(t.paquetes) || 0,
-          contenido_paquete: t.contenido_paquete || '',
+          paquetes: paqT,
+          sueltos: sueltosT,
+          contenido_paquete: contPaqGlobal,
           almacen: 'PENDIENTE-EMPAQUE',
           ruta_procesos_ejecutados: odp.ruta_procesos || [],
           liberacion_calidad: liberacionData,
@@ -4138,8 +4242,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
           peso_bruto: pesoBrutoT,
           peso_tarima_vacia: pesoVacioT,
           peso_neto: pesoNetoT,
-          paquetes: Number(t.paquetes) || 0,
-          contenido_por_paquete: t.contenido_paquete || '',
+          paquetes: paqT,
+          sueltos: sueltosT,
+          contenido_por_paquete: contPaqGlobal,
           qr_data: qrData,
           estatus: 'pendiente_empaque',
           almacen_actual: 'PENDIENTE-EMPAQUE',
@@ -4164,8 +4269,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
         peso_bruto_total: Number(totalPesoBruto.toFixed(2)),
         peso_tarima_total: Number(totalPesoVacio.toFixed(2)),
         peso_neto_total: Number(totalPesoNeto.toFixed(2)),
-        paquetes_por_tarima: Number(f.paquetes_por_tarima) || 0,
-        contenido_por_paquete: f.contenido_por_paquete || '',
+        contenido_por_paquete: Number(f.contenido_por_paquete) || 0,
+        total_paquetes: f.tarimas_data.reduce((s,t) => s + (Number(t.paquetes)||0), 0),
+        total_sueltos: f.tarimas_data.reduce((s,t) => s + (Number(t.sueltos)||0), 0),
         decision_calidad: decision,
         pct_calidad: Number(pctCalidad.toFixed(2)),
         liberado_por: state.user.id,
@@ -4274,7 +4380,10 @@ window.convertirKgMermasAUM = (um, productoCod) => {
   }
 };
 
-window.distribuirEquitativo = () => {
+// ============================================================
+// AUTO-DISTRIBUCIÓN inteligente de paquetes + sueltos entre tarimas
+// ============================================================
+window.autoDistribuir = () => {
   if (!state.modalForm || !state.modalForm.tarimas_data) return;
   const numT = state.modalForm.tarimas_data.length;
   if (numT === 0) return;
@@ -4283,21 +4392,69 @@ window.distribuirEquitativo = () => {
   if (!odp) return;
   
   const cantTotal = Number(state.modalForm.cantidad_aceptada) || 0;
-  const cantPorT = cantTotal / numT;
+  const contPaq = Number(state.modalForm.contenido_por_paquete) || 0;
+  if (!contPaq || contPaq <= 0) {
+    toast('Captura el contenido por paquete primero', 'error');
+    return;
+  }
+  if (!cantTotal || cantTotal <= 0) {
+    toast('Captura la cantidad aceptada', 'error');
+    return;
+  }
+  
+  // Calcular paquetes totales y sueltos sobrantes
+  const paqTotales = Math.floor(cantTotal / contPaq);
+  const sueltosTotal = cantTotal - (paqTotales * contPaq);
+  
+  // Distribuir paquetes equitativo entre tarimas
+  // Si paqTotales = 100 y numT = 4 → 25 c/u
+  // Si paqTotales = 99 y numT = 4 → 25,25,25,24
+  const paqPorT = Math.floor(paqTotales / numT);
+  const sobrante = paqTotales - (paqPorT * numT);
+  
   const um = (odp.um || 'kg').toLowerCase();
   const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
-  const pesoTeoricoUnit = window.convertirAKg(cantPorT, um, producto) || 0;
   const pesoVacio = Number(state.modalForm.peso_tarima_unit) || 25;
   
+  state.modalForm.tarimas_data = state.modalForm.tarimas_data.map((_, i) => {
+    // Las primeras 'sobrante' tarimas reciben 1 paquete extra
+    const paq = paqPorT + (i < sobrante ? 1 : 0);
+    // Los sueltos van todos en la última tarima
+    const suel = (i === numT - 1) ? sueltosTotal : 0;
+    const cantTar = (paq * contPaq) + suel;
+    const pesoTeoricoUnit = window.convertirAKg(cantTar, um, producto) || 0;
+    return {
+      paquetes: paq,
+      sueltos: suel,
+      peso_bruto: Number((pesoTeoricoUnit + pesoVacio).toFixed(2)),
+      peso_tarima_vacia: pesoVacio
+    };
+  });
+  render();
+  
+  if (sueltosTotal > 0) {
+    toast(`✅ Distribuido: ${paqTotales} paquetes + ${sueltosTotal} sueltos en T${numT}`);
+  } else {
+    toast(`✅ Distribuido: ${paqTotales} paquetes (sin sobrantes)`);
+  }
+};
+
+// Resetear tarimas (poner todo en 0)
+window.resetTarimas = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  const pesoVacio = Number(state.modalForm.peso_tarima_unit) || 25;
   state.modalForm.tarimas_data = state.modalForm.tarimas_data.map(() => ({
-    cantidad: cantPorT,
-    peso_bruto: pesoTeoricoUnit + pesoVacio,
-    peso_tarima_vacia: pesoVacio,
-    peso_neto_teorico: pesoTeoricoUnit
+    paquetes: 0,
+    sueltos: 0,
+    peso_bruto: 0,
+    peso_tarima_vacia: pesoVacio
   }));
   render();
-  toast('✅ Distribución equitativa aplicada');
+  toast('Tarimas reseteadas');
 };
+
+// Mantener distribuirEquitativo como alias por compatibilidad
+window.distribuirEquitativo = () => window.autoDistribuir();
 
 // ============================================================
 // PACKING LIST: generar HTML imprimible y abrir en ventana nueva
@@ -4389,7 +4546,7 @@ window.imprimirPackingList = async (codigoPKL) => {
   <strong style="color:#92400e;">PRODUCTO:</strong>
   <span style="font-family:monospace;font-weight:700;">${pkl.producto_codigo}</span> — ${pkl.descripcion}<br>
   <strong style="color:#92400e;">EMPAQUE:</strong>
-  ${pkl.num_tarimas} tarima${pkl.num_tarimas > 1 ? 's' : ''} × ${pkl.paquetes_por_tarima || 0} paquete${(pkl.paquetes_por_tarima||0) > 1 ? 's' : ''} de ${pkl.contenido_por_paquete || '—'}
+  ${pkl.num_tarimas} tarima${pkl.num_tarimas > 1 ? 's' : ''} · Contenido por paquete: <strong>${pkl.contenido_por_paquete || '—'} ${UM_LABELS[um] || um}</strong>
 </div>
 
 <table>
@@ -4398,7 +4555,7 @@ window.imprimirPackingList = async (codigoPKL) => {
       <th>Tar</th>
       <th>Lote</th>
       <th class="num">Paquetes</th>
-      <th>Contenido/paq</th>
+      <th class="num">Sueltos</th>
       <th class="num">Cantidad</th>
       <th>UM</th>
       <th class="num">P. bruto (kg)</th>
@@ -4413,7 +4570,7 @@ window.imprimirPackingList = async (codigoPKL) => {
         <td><strong>T${String(l.numero_tarima || i+1).padStart(2,'0')}</strong></td>
         <td style="font-family:monospace;font-weight:700;">${l.codigo}</td>
         <td class="num">${l.paquetes || 0}</td>
-        <td>${l.contenido_paquete || '—'}</td>
+        <td class="num">${l.sueltos ? fmtNum(l.sueltos) : '—'}</td>
         <td class="num">${fmtNum(l.cantidad)}</td>
         <td>${UM_LABELS[l.um] || l.um}</td>
         <td class="num">${(Number(l.peso_bruto)||0).toFixed(2)}</td>
@@ -4430,7 +4587,7 @@ window.imprimirPackingList = async (codigoPKL) => {
     <tr>
       <td colspan="2">TOTAL (${pkl.num_tarimas} tarima${pkl.num_tarimas > 1 ? 's' : ''})</td>
       <td class="num">${lotesPKL.reduce((s,l) => s + (Number(l.paquetes)||0), 0)}</td>
-      <td></td>
+      <td class="num">${lotesPKL.reduce((s,l) => s + (Number(l.sueltos)||0), 0) || '—'}</td>
       <td class="num">${fmtNum(pkl.cantidad_total)}</td>
       <td>${UM_LABELS[um] || um}</td>
       <td class="num">${(Number(pkl.peso_bruto_total)||0).toFixed(2)}</td>
