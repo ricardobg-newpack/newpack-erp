@@ -58,6 +58,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .tab.active { color: #16a34a; border-bottom-color: #16a34a; }
 .tab:hover { color: #16a34a; }
 
+.tab-btn { padding: 8px 14px; border: 1px solid #e2e8f0; background: #fff; cursor: pointer; font-size: 12px; color: #475569; font-weight: 600; border-radius: 8px; transition: all 0.15s; }
+.tab-btn.active { background: #16a34a; color: #fff; border-color: #16a34a; }
+.tab-btn:hover:not(.active) { background: #f1f5f9; }
+
 .table-wrap { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: auto; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; padding: 12px 14px; background: #f8fafc; font-size: 11px; font-weight: 700; color: #475569; letter-spacing: 0.05em; text-transform: uppercase; border-bottom: 1px solid #e2e8f0; }
@@ -137,6 +141,9 @@ const state = {
   pedido_lineas: [],
   ordenes_venta: [],
   ordenes_produccion: [],
+  capturas_produccion: [],
+  lotes: [],
+  comentarios_pedidos: [],
   notificaciones: [],
   modal: null,
   modalData: null,
@@ -149,6 +156,51 @@ const state = {
   unsubscribers: [] // listeners de real-time para limpiar al cerrar sesión
 };
 window.state = state;
+
+// ============================================================
+// PRODUCCIÓN: turnos y configuración
+// ============================================================
+const TURNOS = [
+  { codigo: 'T1', nombre: 'Turno 1 (06:00-14:00)', hora_inicio: '06:00', color: '#f59e0b' },
+  { codigo: 'T2', nombre: 'Turno 2 (14:00-22:00)', hora_inicio: '14:00', color: '#3b82f6' },
+  { codigo: 'T3', nombre: 'Turno 3 (22:00-06:00)', hora_inicio: '22:00', color: '#7c3aed' },
+];
+window.TURNOS = TURNOS;
+
+// ============================================================
+// PRODUCCIÓN: catálogo de procesos productivos
+// ============================================================
+const PROCESOS = [
+  { codigo: 'P1-EXT', nombre: 'Extrusión',         icono: '🔥', color: '#dc2626' },
+  { codigo: 'P2-IMP', nombre: 'Impresión',          icono: '🎨', color: '#7c3aed' },
+  { codigo: 'P3-BS',  nombre: 'Bolsa Suelta',       icono: '🛍️', color: '#3b82f6' },
+  { codigo: 'P4-BR',  nombre: 'Bolsa en Rollo',     icono: '🌀', color: '#0891b2' },
+  { codigo: 'P6-REF', nombre: 'Refilación/Embobinado', icono: '✂️', color: '#f59e0b' },
+];
+window.PROCESOS = PROCESOS;
+const getProc = (cod) => PROCESOS.find(p => p.codigo === cod);
+window.getProc = getProc;
+
+// Sugerir ruta de procesos según tipo de producto (basado en código del tipo)
+function sugerirRutaProcesos(producto) {
+  if (!producto) return ['P1-EXT'];
+  const tipo = producto.tipo || '';
+  // Extrusión es base de TODO producto plástico
+  const ruta = ['P1-EXT'];
+  // Películas planas refiladas → P6-REF
+  if (tipo.includes('REFILADA') || tipo === 'PELICULA PLANA REFILADA') {
+    ruta.push('P6-REF');
+  }
+  // Bolsas en rollo → P4-BR
+  if (tipo.includes('ROLLO') || tipo.includes('BR')) {
+    ruta.push('P4-BR');
+  } else if (tipo.includes('BOLSA') || tipo.includes('HOJA') || tipo.includes('CORTE') || tipo.includes('MANGA')) {
+    // Bolsas sueltas y cortes → P3-BS
+    ruta.push('P3-BS');
+  }
+  return ruta;
+}
+window.sugerirRutaProcesos = sugerirRutaProcesos;
 
 // ============================================================
 // UNIDADES DE MEDIDA
@@ -270,6 +322,18 @@ async function cargarTodo() {
       }),
       onSnapshot(query(collection(db, 'ordenes_produccion'), orderBy('created_at', 'desc'), limit(200)), (snap) => {
         state.ordenes_produccion = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(query(collection(db, 'capturas_produccion'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.capturas_produccion = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(query(collection(db, 'lotes'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.lotes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(query(collection(db, 'comentarios_pedidos'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.comentarios_pedidos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       }),
       onSnapshot(query(collection(db, 'notificaciones'), orderBy('created_at', 'desc'), limit(50)), (snap) => {
@@ -396,6 +460,12 @@ function attachLoginEvents() {
 // ============================================================
 function renderApp() {
   const u = state.user;
+  const esAdmin = u.rol === 'admin';
+  const esCEO = u.depto === 'CEO' || esAdmin;
+  const esPLN = u.depto === 'PLN' || esCEO;
+  const esPRO = u.depto === 'PRO' || esCEO;
+  const esCS = u.depto === 'CS' || u.depto === 'KAM' || esCEO;
+  
   return `
     <div class="app">
       <aside class="sidebar">
@@ -405,10 +475,21 @@ function renderApp() {
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
         
         <div class="sidebar-section">Comercial</div>
-        ${(['CS','CEO','ADMIN','COMP'].includes(u.depto) || u.rol === 'admin') ? `
+        ${(['CS','KAM','CEO','ADMIN','COMP'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'clientes' ? 'active' : ''}" data-vista="clientes">${ICONS.users} Clientes</button>
         ` : ''}
         <button class="nav-item ${state.vista === 'pedidos' ? 'active' : ''}" data-vista="pedidos">${ICONS.cart} Pedidos (PI/OV/ODP)</button>
+        ${esCS ? `
+          <button class="nav-item ${state.vista === 'seguimiento' ? 'active' : ''}" data-vista="seguimiento">📊 Seguimiento Pedidos</button>
+        ` : ''}
+        
+        ${esPLN || esPRO ? `<div class="sidebar-section">Producción</div>` : ''}
+        ${esPLN ? `
+          <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
+        ` : ''}
+        ${esPRO ? `
+          <button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>
+        ` : ''}
         
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
@@ -441,7 +522,10 @@ function tituloVista() {
     dashboard: 'Panel de control',
     clientes: 'Clientes y Productos',
     pedidos: 'Pedidos Internos (PI/OV/ODP)',
-    productos_pt: 'Catálogo Productos PT'
+    productos_pt: 'Catálogo Productos PT',
+    programacion: 'Programación de Producción',
+    captura_produccion: 'Captura de Producción',
+    seguimiento: 'Seguimiento de Pedidos'
   })[state.vista] || '';
 }
 
@@ -451,6 +535,9 @@ function renderVista() {
   if (v === 'clientes') return renderClientes();
   if (v === 'pedidos') return renderPedidos();
   if (v === 'productos_pt') return renderProductosPT();
+  if (v === 'programacion') return renderProgramacion();
+  if (v === 'captura_produccion') return renderCapturaProduccion();
+  if (v === 'seguimiento') return renderSeguimiento();
   return '';
 }
 
@@ -925,12 +1012,416 @@ function renderListaODPs(odps) {
 // ============================================================
 // MODALES
 // ============================================================
+// ============================================================
+// VISTA: PROGRAMACIÓN DE PRODUCCIÓN (PLN/CEO/ADMIN)
+// ============================================================
+function renderProgramacion() {
+  const subTab = state.tabs.programacion || 'pendientes';
+  const odpsPend = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_planeacion');
+  const odpsProg = state.ordenes_produccion.filter(o => o.estatus === 'programada');
+  const odpsEnProd = state.ordenes_produccion.filter(o => o.estatus === 'en_produccion');
+  const odpsCompletadas = state.ordenes_produccion.filter(o => o.estatus === 'completada').slice(0, 30);
+  
+  const filtro = (state.filtros.programacion || '').toLowerCase();
+  const filtroMaq = state.filtros.programacion_maquina || '';
+  
+  // Lista actual según tab
+  let arr = [];
+  if (subTab === 'pendientes') arr = odpsPend;
+  else if (subTab === 'programadas') arr = odpsProg;
+  else if (subTab === 'en_produccion') arr = odpsEnProd;
+  else if (subTab === 'completadas') arr = odpsCompletadas;
+  
+  if (filtro) arr = arr.filter(o => 
+    (o.folio + ' ' + (o.cliente_nombre||'') + ' ' + (o.producto_codigo||'')).toLowerCase().includes(filtro)
+  );
+  if (filtroMaq) arr = arr.filter(o => o.proceso_actual === filtroMaq);
+  
+  return `
+    <div style="margin-bottom:18px;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">
+        <button class="tab-btn ${subTab === 'pendientes' ? 'active' : ''}" onclick="cambiarTab('programacion','pendientes')">⏳ Por programar (${odpsPend.length})</button>
+        <button class="tab-btn ${subTab === 'programadas' ? 'active' : ''}" onclick="cambiarTab('programacion','programadas')">📅 Programadas (${odpsProg.length})</button>
+        <button class="tab-btn ${subTab === 'en_produccion' ? 'active' : ''}" onclick="cambiarTab('programacion','en_produccion')">🔄 En producción (${odpsEnProd.length})</button>
+        <button class="tab-btn ${subTab === 'completadas' ? 'active' : ''}" onclick="cambiarTab('programacion','completadas')">✅ Completadas (${state.ordenes_produccion.filter(o => o.estatus === 'completada').length})</button>
+      </div>
+    </div>
+    
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-programacion" style="max-width:340px;flex:1;min-width:220px;" placeholder="Buscar por folio, cliente, producto..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-programacion-maquina" style="max-width:220px;">
+        <option value="">Todos los procesos</option>
+        ${PROCESOS.map(p => `<option value="${p.codigo}" ${filtroMaq === p.codigo ? 'selected' : ''}>${p.icono} ${p.codigo} — ${p.nombre}</option>`).join('')}
+      </select>
+      <span style="font-size:12px;color:#64748b;">${arr.length} ODPs</span>
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        ${subTab === 'pendientes' ? '✨ No hay ODPs pendientes de programar' : 
+          subTab === 'programadas' ? '📅 No hay ODPs programadas' :
+          subTab === 'en_produccion' ? '🔄 No hay ODPs en producción' : 
+          '✅ Sin ODPs completadas recientes'}
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${arr.map(o => renderTarjetaODP(o, subTab)).join('')}
+      </div>
+    `}
+  `;
+}
+
+function renderTarjetaODP(o, contexto) {
+  const colores = {
+    pendiente_planeacion: '#f59e0b',
+    programada: '#3b82f6',
+    en_produccion: '#8b5cf6',
+    completada: '#16a34a',
+    cancelada: '#dc2626'
+  };
+  const labels = {
+    pendiente_planeacion: '⏳ Por programar',
+    programada: '📅 Programada',
+    en_produccion: '🔄 En producción',
+    completada: '✅ Completada',
+    cancelada: '❌ Cancelada'
+  };
+  const color = colores[o.estatus] || '#64748b';
+  
+  // Capturas y avance global
+  const capturas = state.capturas_produccion.filter(c => c.odp_id === o.id);
+  const lotesODP = state.lotes.filter(l => l.odp_id === o.id);
+  const ruta = o.ruta_procesos || [];
+  const procesosCompletados = o.procesos_completados || []; // [{codigo, fecha_inicio, fecha_fin, cantidad_producida, mermas}]
+  const procActual = o.proceso_actual;
+  
+  // Calcular cantidad final producida (la del último proceso completado o capturas en proceso actual)
+  let totalProducidoFinal = 0;
+  let totalMermasFinal = 0;
+  if (procesosCompletados.length > 0) {
+    const ultimo = procesosCompletados[procesosCompletados.length - 1];
+    totalProducidoFinal = Number(ultimo.cantidad_producida) || 0;
+    totalMermasFinal = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
+  }
+  const pct = o.cantidad > 0 ? Math.min(100, Math.round((totalProducidoFinal / o.cantidad) * 100)) : 0;
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${color};">
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div style="flex:1;min-width:280px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+            <span class="text-mono" style="font-weight:800;font-size:15px;">${o.folio}</span>
+            <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${color}22;color:${color};">${labels[o.estatus]}</span>
+            ${o.prioridad === 'alta' ? `<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:#fee2e2;color:#dc2626;font-weight:700;">🔴 URGENTE</span>` : ''}
+            ${o.pedido_folio ? `<span style="font-size:10px;color:#64748b;">desde ${o.pedido_folio}</span>` : ''}
+          </div>
+          <div style="font-size:13px;font-weight:600;">${o.cliente_nombre || '—'}</div>
+          <div class="text-mono" style="font-size:11px;color:#64748b;margin-top:2px;">${o.producto_codigo}</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px;">${o.descripcion || ''}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:18px;font-weight:800;">${fmtCantidadUM(o.cantidad, o.um)}</div>
+          ${totalProducidoFinal > 0 ? `
+            <div style="font-size:11px;color:#475569;margin-top:2px;">Producido: <strong>${fmtCantidadUM(totalProducidoFinal, o.um)}</strong> (${pct}%)</div>
+            ${totalMermasFinal > 0 ? `<div style="font-size:10px;color:#dc2626;">Mermas: ${fmtCantidadUM(totalMermasFinal, o.um)}</div>` : ''}
+          ` : ''}
+        </div>
+      </div>
+      
+      ${ruta.length > 0 ? `
+        <div style="padding:12px 18px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px;">Ruta de procesos</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+            ${ruta.map((codProc, i) => {
+              const proc = getProc(codProc);
+              if (!proc) return '';
+              const completado = procesosCompletados.find(p => p.codigo === codProc);
+              const enCurso = procActual === codProc && o.estatus === 'en_produccion';
+              const pendiente = !completado && !enCurso;
+              const bg = completado ? proc.color : (enCurso ? proc.color + '22' : '#f1f5f9');
+              const txt = completado ? '#fff' : (enCurso ? proc.color : '#94a3b8');
+              const border = enCurso ? `2px dashed ${proc.color}` : '1px solid transparent';
+              return `
+                <div style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:99px;background:${bg};color:${txt};font-size:11px;font-weight:700;border:${border};">
+                  <span>${completado ? '✓' : enCurso ? '🔄' : '○'}</span>
+                  <span>${proc.icono}</span>
+                  <span>${proc.codigo}</span>
+                </div>
+                ${i < ruta.length - 1 ? `<span style="color:#cbd5e1;font-size:10px;">→</span>` : ''}
+              `;
+            }).join('')}
+          </div>
+          ${o.fecha_inicio_programada ? `<div style="font-size:11px;color:#475569;margin-top:8px;">📅 Inicio plan: ${o.fecha_inicio_programada}${o.fecha_entrega_programada ? ` • 🎯 Entrega: ${o.fecha_entrega_programada}` : ''}</div>` : ''}
+        </div>
+      ` : ''}
+      
+      ${pct > 0 ? `
+        <div style="padding:0 18px 12px;">
+          <div style="background:#e2e8f0;height:8px;border-radius:99px;overflow:hidden;">
+            <div style="background:${color};height:100%;width:${pct}%;transition:width 0.3s;"></div>
+          </div>
+        </div>
+      ` : ''}
+      
+      ${lotesODP.length > 0 ? `
+        <div style="padding:8px 18px 12px;font-size:11px;color:#475569;">
+          🏷️ Lotes: ${lotesODP.map(l => `<span class="text-mono" style="font-weight:600;background:#f1f5f9;padding:2px 6px;border-radius:4px;margin-right:4px;">${l.codigo}</span>`).join('')}
+        </div>
+      ` : ''}
+      
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
+        ${o.estatus === 'pendiente_planeacion' ? `
+          <button class="btn-primary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Programar</button>
+        ` : ''}
+        ${o.estatus === 'programada' ? `
+          <button class="btn-primary" onclick="iniciarProceso('${o.id}')" style="padding:8px 14px;background:#8b5cf6;">▶ Iniciar ${getProc(procActual)?.nombre || 'producción'}</button>
+          <button class="btn-secondary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Reprogramar</button>
+        ` : ''}
+        ${o.estatus === 'en_produccion' ? `
+          <button class="btn-primary" onclick="abrirModal('completar-proceso','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Terminar ${getProc(procActual)?.nombre || procActual}</button>
+        ` : ''}
+        <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// VISTA: CAPTURA DE PRODUCCIÓN (PRO/CEO/ADMIN)
+// ============================================================
+function renderCapturaProduccion() {
+  const odpsActivas = state.ordenes_produccion.filter(o => 
+    ['programada', 'en_produccion'].includes(o.estatus)
+  );
+  
+  const filtro = (state.filtros.captura || '').toLowerCase();
+  let arr = odpsActivas;
+  if (filtro) arr = arr.filter(o => 
+    (o.folio + ' ' + (o.cliente_nombre||'') + ' ' + (o.producto_codigo||'')).toLowerCase().includes(filtro)
+  );
+  
+  // Agrupar por proceso actual
+  const porProceso = {};
+  arr.forEach(o => {
+    const procCod = o.proceso_actual || 'sin-proceso';
+    if (!porProceso[procCod]) porProceso[procCod] = [];
+    porProceso[procCod].push(o);
+  });
+  
+  return `
+    <div class="toolbar">
+      <input class="input" id="filtro-captura" style="max-width:380px;" placeholder="Buscar ODP, cliente, producto..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;">${arr.length} ODPs activas</span>
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        🔄 No hay producción activa. PLN debe programar ODPs primero.
+      </div>
+    ` : Object.keys(porProceso).sort().map(procCod => {
+      const proc = getProc(procCod);
+      const titulo = proc ? `${proc.icono} ${proc.codigo} — ${proc.nombre}` : '⚪ Sin proceso definido';
+      const color = proc?.color || '#64748b';
+      return `
+        <div style="margin-bottom:24px;">
+          <div style="font-size:14px;font-weight:800;color:${color};margin-bottom:10px;display:flex;align-items:center;gap:8px;padding:8px 12px;background:${color}11;border-radius:8px;border-left:4px solid ${color};">
+            ${titulo} <span style="font-size:11px;color:#94a3b8;font-weight:500;margin-left:auto;">${porProceso[procCod].length} ODP${porProceso[procCod].length === 1 ? '' : 's'}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            ${porProceso[procCod].map(o => renderTarjetaODP(o, 'captura')).join('')}
+          </div>
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+// ============================================================
+// VISTA: SEGUIMIENTO DE PEDIDOS (CS/KAM/CEO/ADMIN)
+// ============================================================
+function renderSeguimiento() {
+  const filtro = (state.filtros.seguimiento || '').toLowerCase();
+  const filtroEst = state.filtros.seguimiento_estatus || '';
+  const filtroCli = state.filtros.seguimiento_cliente || '';
+  
+  let arr = state.pedidos;
+  if (filtro) arr = arr.filter(p => 
+    (p.folio + ' ' + (p.cliente_nombre||'') + ' ' + (p.cliente_codigo||'') + ' ' + (p.odc_cliente||'')).toLowerCase().includes(filtro)
+  );
+  if (filtroEst) arr = arr.filter(p => p.estatus === filtroEst);
+  if (filtroCli) arr = arr.filter(p => p.cliente_codigo === filtroCli);
+  
+  // Lista única de clientes con pedidos
+  const clientesConPedidos = [...new Set(state.pedidos.map(p => p.cliente_codigo))]
+    .map(cod => state.clientes.find(c => c.codigo === cod))
+    .filter(Boolean)
+    .sort((a,b) => a.nombre.localeCompare(b.nombre));
+  
+  return `
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-seguimiento" style="max-width:280px;flex:1;min-width:200px;" placeholder="Buscar PI, cliente, ODC..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-seguimiento-cliente" style="max-width:240px;">
+        <option value="">Todos los clientes</option>
+        ${clientesConPedidos.map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} - ${c.nombre}</option>`).join('')}
+      </select>
+      <select class="input" id="filtro-seguimiento-estatus" style="max-width:200px;">
+        <option value="">Todos los estatus</option>
+        <option value="pendiente_aprobacion" ${filtroEst === 'pendiente_aprobacion' ? 'selected' : ''}>Por aprobar</option>
+        <option value="aprobado" ${filtroEst === 'aprobado' ? 'selected' : ''}>Aprobados</option>
+        <option value="en_proceso" ${filtroEst === 'en_proceso' ? 'selected' : ''}>En proceso</option>
+        <option value="completado" ${filtroEst === 'completado' ? 'selected' : ''}>Completados</option>
+        <option value="cancelado" ${filtroEst === 'cancelado' ? 'selected' : ''}>Cancelados</option>
+      </select>
+      <span style="font-size:12px;color:#64748b;">${arr.length} pedidos</span>
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        📋 No hay pedidos que coincidan con los filtros
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        ${arr.slice(0, 50).map(renderTarjetaSeguimiento).join('')}
+      </div>
+      ${arr.length > 50 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 50 de ${arr.length} pedidos</div>` : ''}
+    `}
+  `;
+}
+
+function renderTarjetaSeguimiento(p) {
+  const lineas = window.pedidoLineas(p.id);
+  const odps = window.odpsDePedido(p.id);
+  const ovs = window.ovsDePedido(p.id);
+  const comentarios = state.comentarios_pedidos.filter(c => c.pedido_id === p.id);
+  
+  // Timeline de eventos
+  const eventos = [];
+  eventos.push({ icon: '📝', label: 'Capturado', fecha: p.created_at, by: p.creado_por_nombre, completado: true });
+  eventos.push({ 
+    icon: p.estatus === 'cancelado' ? '❌' : '✅', 
+    label: p.estatus === 'cancelado' ? 'Cancelado' : 'Aprobado', 
+    fecha: p.aprobado_at || p.updated_at, 
+    by: p.aprobado_por_nombre, 
+    completado: ['aprobado','en_proceso','completado','cancelado'].includes(p.estatus) 
+  });
+  
+  // Estatus de cada ODP
+  const odpsEnProgreso = odps.filter(o => o.estatus === 'en_produccion').length;
+  const odpsCompletadas = odps.filter(o => o.estatus === 'completada').length;
+  const odpsTotal = odps.length;
+  
+  if (odpsTotal > 0) {
+    eventos.push({
+      icon: odpsCompletadas === odpsTotal ? '✅' : odpsEnProgreso > 0 ? '🔄' : '📅',
+      label: `Producción ${odpsCompletadas}/${odpsTotal}`,
+      completado: odpsCompletadas === odpsTotal,
+      en_curso: odpsEnProgreso > 0
+    });
+  }
+  
+  const ovsCompletadas = ovs.filter(o => o.estatus === 'completada').length;
+  if (ovs.length > 0) {
+    eventos.push({
+      icon: ovsCompletadas === ovs.length ? '✅' : '📦',
+      label: `Embarques ${ovsCompletadas}/${ovs.length}`,
+      completado: ovsCompletadas === ovs.length
+    });
+  }
+  
+  const colorEst = { pendiente_aprobacion: '#f59e0b', aprobado: '#16a34a', en_proceso: '#3b82f6', completado: '#94a3b8', cancelado: '#dc2626' }[p.estatus];
+  const lblEst = { pendiente_aprobacion: 'Por aprobar', aprobado: 'Aprobado', en_proceso: 'En proceso', completado: 'Completado', cancelado: 'Cancelado' }[p.estatus];
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${colorEst};">
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span class="text-mono" style="font-weight:800;font-size:16px;">${p.folio}</span>
+            <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${colorEst}22;color:${colorEst};">${lblEst}</span>
+          </div>
+          <div style="font-size:13px;font-weight:600;margin-top:4px;">${p.cliente_nombre} <span style="color:#64748b;font-size:11px;">(${p.cliente_codigo})</span></div>
+          <div style="font-size:11px;color:#64748b;margin-top:2px;">
+            ${fmtFechaHora(p.created_at)}
+            ${p.odc_cliente ? ` • ODC: <span class="text-mono">${p.odc_cliente}</span>` : ''}
+            ${p.fecha_requerida ? ` • Entrega: ${p.fecha_requerida}` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:14px;font-weight:700;">${lineas.length} líneas</div>
+          ${odps.length > 0 ? `<div style="font-size:11px;color:#64748b;">${odps.length} ODP(s) · ${ovs.length} OV(s)</div>` : ''}
+        </div>
+      </div>
+      
+      <!-- Timeline -->
+      <div style="padding:12px 18px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;">
+        ${eventos.map((e, i) => `
+          <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;background:${e.completado ? '#dcfce7' : e.en_curso ? '#dbeafe' : '#f1f5f9'};color:${e.completado ? '#166534' : e.en_curso ? '#1e40af' : '#64748b'};font-weight:600;">
+            ${e.icon} ${e.label}
+            ${e.by ? `<span style="opacity:0.7;font-weight:400;">· ${e.by}</span>` : ''}
+          </span>
+          ${i < eventos.length - 1 ? `<span style="color:#cbd5e1;">→</span>` : ''}
+        `).join('')}
+      </div>
+      
+      <!-- ODPs (si existen) con detalle de avance -->
+      ${odps.length > 0 ? `
+        <div style="padding:12px 18px;border-top:1px solid #e2e8f0;">
+          <div style="font-size:11px;color:#64748b;font-weight:700;margin-bottom:8px;text-transform:uppercase;">Producción</div>
+          ${odps.map(o => {
+            const cap = state.capturas_produccion.filter(c => c.odp_id === o.id);
+            const prod = cap.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
+            const pct = o.cantidad > 0 ? Math.min(100, Math.round((prod / o.cantidad) * 100)) : 0;
+            const colorODP = { pendiente_planeacion: '#f59e0b', programada: '#3b82f6', en_produccion: '#8b5cf6', completada: '#16a34a' }[o.estatus] || '#64748b';
+            return `
+              <div style="font-size:12px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <div>
+                    <span class="text-mono" style="font-weight:700;">${o.folio}</span>
+                    <span class="text-mono" style="color:#64748b;margin-left:6px;">${o.producto_codigo}</span>
+                    ${o.maquina_asignada ? `<span style="margin-left:6px;color:#475569;">· 🏭 ${o.maquina_asignada}</span>` : ''}
+                  </div>
+                  <span style="font-weight:600;color:${colorODP};">${fmtCantidadUM(prod, o.um)} / ${fmtCantidadUM(o.cantidad, o.um)} (${pct}%)</span>
+                </div>
+                <div style="background:#e2e8f0;height:6px;border-radius:99px;overflow:hidden;">
+                  <div style="background:${colorODP};height:100%;width:${pct}%;transition:width 0.3s;"></div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : ''}
+      
+      <!-- Comentarios -->
+      ${comentarios.length > 0 ? `
+        <div style="padding:10px 18px;border-top:1px solid #e2e8f0;background:#fffbeb;">
+          <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:6px;">💬 Comentarios (${comentarios.length})</div>
+          ${comentarios.slice(0, 3).map(c => `
+            <div style="font-size:12px;margin-bottom:4px;">
+              <strong>${c.autor_nombre}:</strong> ${c.mensaje}
+              <span style="color:#94a3b8;font-size:10px;margin-left:6px;">${fmtFechaHora(c.created_at)}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-secondary" onclick="abrirModal('comentar-pedido','${p.id}')" style="padding:6px 12px;font-size:12px;">💬 Comentar</button>
+        <button class="btn-secondary" onclick="abrirModal('detalle-pedido','${p.id}')" style="padding:6px 12px;font-size:12px;margin-left:auto;">${ICONS.list} Ver detalle</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderModal() {
   const m = state.modal;
   if (m === 'crear-cliente') return modalCrearCliente();
   if (m === 'editar-cliente') return modalEditarCliente();
   if (m === 'detalle-cliente') return modalDetalleCliente();
   if (m === 'programar-odp') return modalProgramarODP();
+  if (m === 'completar-proceso') return modalCompletarProceso();
+  if (m === 'detalle-odp') return modalDetalleODP();
+  if (m === 'detalle-pedido') return modalDetallePedido();
+  if (m === 'comentar-pedido') return modalComentarPedido();
   if (m === 'crear-producto-pt') return modalCrearProductoPT();
   if (m === 'editar-producto-pt') return modalEditarProductoPT();
   return '';
@@ -1050,9 +1541,22 @@ function modalDetalleCliente() {
 function modalProgramarODP() {
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return '';
+  const hoy = new Date().toISOString().split('T')[0];
+  
+  // Inicializar form con ruta sugerida si no existe
+  if (!state.modalForm) {
+    const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+    state.modalForm = {
+      ruta_procesos: odp.ruta_procesos && odp.ruta_procesos.length > 0 
+        ? [...odp.ruta_procesos]
+        : window.sugerirRutaProcesos(producto)
+    };
+  }
+  const f = state.modalForm;
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal">
+      <div class="modal" style="max-width:620px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">Programar ${odp.folio}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
@@ -1061,18 +1565,385 @@ function modalProgramarODP() {
           <div style="padding:14px;background:#fffbeb;border-radius:10px;margin-bottom:14px;font-size:12px;">
             <strong>Cliente:</strong> ${odp.cliente_nombre}<br>
             <strong>Producto:</strong> <span class="text-mono">${odp.producto_codigo}</span><br>
-            <strong>Cantidad:</strong> ${fmtCantidadUM(odp.cantidad, odp.um)}
+            <strong>${odp.descripcion || ''}</strong><br>
+            <strong>Cantidad a producir:</strong> ${fmtCantidadUM(odp.cantidad, odp.um)}
           </div>
+          
+          <!-- Ruta de procesos -->
+          <div class="field">
+            <label class="field-label">Ruta de procesos * <span style="font-weight:400;color:#64748b;">(en orden de ejecución)</span></label>
+            <div style="padding:12px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
+              <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px;min-height:36px;">
+                ${f.ruta_procesos.length === 0 ? `<span style="font-size:11px;color:#94a3b8;">Selecciona los procesos abajo →</span>` : 
+                  f.ruta_procesos.map((p, i) => {
+                    const proc = getProc(p);
+                    if (!proc) return '';
+                    return `
+                      <div style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:99px;background:${proc.color}22;color:${proc.color};font-size:12px;font-weight:700;">
+                        <span>${i+1}.</span>
+                        <span>${proc.icono}</span>
+                        <span>${proc.nombre}</span>
+                        <button onclick="quitarProcesoRuta(${i})" style="background:none;border:none;color:${proc.color};font-size:14px;cursor:pointer;padding:0 2px;font-weight:700;">×</button>
+                      </div>
+                      ${i < f.ruta_procesos.length - 1 ? `<span style="color:#94a3b8;">→</span>` : ''}
+                    `;
+                  }).join('')
+                }
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid #e2e8f0;padding-top:10px;">
+                ${PROCESOS.map(p => {
+                  const yaEsta = f.ruta_procesos.includes(p.codigo);
+                  return `
+                    <button onclick="agregarProcesoRuta('${p.codigo}')" ${yaEsta ? 'disabled' : ''}
+                      style="padding:6px 10px;border-radius:8px;border:1px solid ${p.color}44;background:${yaEsta ? '#f1f5f9' : '#fff'};color:${yaEsta ? '#94a3b8' : p.color};font-size:11px;font-weight:600;cursor:${yaEsta ? 'not-allowed' : 'pointer'};">
+                      ${yaEsta ? '✓' : '+'} ${p.icono} ${p.codigo}
+                    </button>
+                  `;
+                }).join('')}
+              </div>
+              <div style="font-size:10px;color:#94a3b8;margin-top:8px;">
+                💡 La ruta se sugiere según el tipo de producto. Puedes ajustarla quitando o agregando procesos.
+              </div>
+            </div>
+          </div>
+          
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-            <div class="field"><label class="field-label">Fecha inicio</label><input class="input" id="podp-fini" type="date" value="${odp.fecha_inicio_programada || ''}" /></div>
-            <div class="field"><label class="field-label">Fecha entrega</label><input class="input" id="podp-fent" type="date" value="${odp.fecha_entrega_programada || ''}" /></div>
+            <div class="field">
+              <label class="field-label">Fecha inicio</label>
+              <input class="input" id="podp-fini" type="date" value="${odp.fecha_inicio_programada || hoy}" />
+            </div>
+            <div class="field">
+              <label class="field-label">Fecha de entrega comprometida</label>
+              <input class="input" id="podp-fent" type="date" value="${odp.fecha_entrega_programada || ''}" />
+            </div>
           </div>
-          <div class="field"><label class="field-label">Máquina</label><input class="input" id="podp-maq" value="${odp.maquina_asignada || ''}" placeholder="COEX3" style="text-transform:uppercase;" /></div>
-          <div class="field"><label class="field-label">Notas</label><textarea class="input" id="podp-notas" style="min-height:80px;">${odp.planeacion_notas || ''}</textarea></div>
+          
+          <div class="field">
+            <label class="field-label">Prioridad</label>
+            <select class="input" id="podp-prioridad">
+              <option value="normal" ${(odp.prioridad || 'normal') === 'normal' ? 'selected' : ''}>Normal</option>
+              <option value="alta" ${odp.prioridad === 'alta' ? 'selected' : ''}>🔴 Alta (urgente)</option>
+              <option value="baja" ${odp.prioridad === 'baja' ? 'selected' : ''}>🟢 Baja (cuando se pueda)</option>
+            </select>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Notas para producción</label>
+            <textarea class="input" id="podp-notas" style="min-height:70px;" placeholder="Indicaciones especiales, requisitos del cliente, etc.">${odp.planeacion_notas || ''}</textarea>
+          </div>
         </div>
         <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="confirmarProgramarODP('${odp.id}')">${ICONS.check} Programar</button>
+          <button class="btn-primary" onclick="confirmarProgramarODP('${odp.id}')" ${f.ruta_procesos.length === 0 ? 'disabled' : ''}>${ICONS.check} Programar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: TERMINAR PROCESO ACTUAL
+// ============================================================
+function modalCompletarProceso() {
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return '';
+  
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procActual = getProc(ruta[idx]);
+  if (!procActual) return '';
+  
+  const esUltimo = idx === ruta.length - 1;
+  const procesosCompletados = odp.procesos_completados || [];
+  const procesoAnterior = procesosCompletados[procesosCompletados.length - 1];
+  
+  const um = (odp.um || 'kg').toLowerCase();
+  const stepCant = UM_ENTEROS.includes(um) ? '1' : '0.01';
+  
+  // Cantidad inicial: para el primer proceso usa la cantidad solicitada,
+  // para los siguientes usa lo que produjo el proceso anterior
+  const cantidadEntrada = procesoAnterior ? procesoAnterior.cantidad_producida : odp.cantidad;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esUltimo ? '🏁 Terminar' : '✅ Cerrar'} ${procActual.icono} ${procActual.nombre}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="padding:14px;background:${procActual.color}11;border-radius:10px;margin-bottom:14px;font-size:12px;border-left:4px solid ${procActual.color};">
+            <strong>${odp.folio}</strong> • ${odp.cliente_nombre}<br>
+            <span class="text-mono" style="font-size:11px;">${odp.producto_codigo}</span><br>
+            <strong>Cantidad de entrada al proceso:</strong> ${fmtCantidadUM(cantidadEntrada, odp.um)}
+          </div>
+          
+          ${esUltimo ? `
+            <div style="padding:14px;background:#dcfce7;border-radius:10px;margin-bottom:14px;font-size:12px;border:2px solid #16a34a;">
+              <strong>🏁 Este es el ÚLTIMO proceso de la ruta.</strong><br>
+              <ul style="margin:8px 0 0 18px;padding:0;">
+                <li>Se generará un lote único <strong>L-2026-XXXXX</strong></li>
+                <li>El stock entra automático a <strong>PLANTA-MTY</strong></li>
+                <li>CS / KAM verán que está listo</li>
+              </ul>
+            </div>
+          ` : `
+            <div style="padding:12px;background:#fef3c7;border-radius:10px;margin-bottom:14px;font-size:12px;">
+              💡 Al cerrar este proceso, la ODP avanzará al siguiente paso de la ruta.
+            </div>
+          `}
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Cantidad producida (${UM_LABELS[um]}) *</label>
+              <input class="input" id="comp-cantidad" type="number" min="0" step="${stepCant}" value="${cantidadEntrada}" autocomplete="off" />
+              <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Lo que sale aceptado de ${procActual.nombre}</div>
+            </div>
+            <div class="field">
+              <label class="field-label">Mermas (${UM_LABELS[um]})</label>
+              <input class="input" id="comp-mermas" type="number" min="0" step="${stepCant}" value="0" autocomplete="off" />
+            </div>
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Operador / Persona que captura</label>
+              <input class="input" id="comp-operador" placeholder="Nombre" value="${state.user.nombre || ''}" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label class="field-label">Turno</label>
+              <select class="input" id="comp-turno">
+                <option value="">— Sin especificar —</option>
+                ${TURNOS.map(t => `<option value="${t.codigo}">${t.nombre}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Notas / observaciones</label>
+            <textarea class="input" id="comp-notas" style="min-height:60px;" placeholder="Detalles del proceso, incidencias, calidad, etc."></textarea>
+          </div>
+          
+          ${procesosCompletados.length > 0 ? `
+            <div style="margin-top:14px;padding:12px;background:#f8fafc;border-radius:8px;">
+              <div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px;">📋 Procesos ya completados</div>
+              ${procesosCompletados.map(pc => {
+                const p = getProc(pc.codigo);
+                return `
+                  <div style="font-size:11px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                    <span>${p?.icono || '✓'} ${p?.codigo} — ${pc.operador || '—'}</span>
+                    <span><strong>${fmtCantidadUM(pc.cantidad_producida, odp.um)}</strong>${pc.mermas ? ` · -${fmtCantidadUM(pc.mermas, odp.um)} merma` : ''}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          ` : ''}
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" style="background:${esUltimo ? '#16a34a' : procActual.color};">${ICONS.check} ${esUltimo ? 'Terminar y generar lote' : 'Avanzar al siguiente proceso'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: DETALLE DE ODP (lectura)
+// ============================================================
+function modalDetalleODP() {
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return '';
+  
+  const capturas = state.capturas_produccion.filter(c => c.odp_id === odp.id);
+  const lotes = state.lotes.filter(l => l.odp_id === odp.id);
+  const totalProducido = capturas.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
+  const totalMermas = capturas.reduce((s, c) => s + (Number(c.mermas) || 0), 0);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:680px;max-height:92vh;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">Detalle ${odp.folio}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div style="padding:14px;background:#f8fafc;border-radius:10px;margin-bottom:14px;font-size:12px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div><strong>Cliente:</strong> ${odp.cliente_nombre}</div>
+              <div><strong>PI origen:</strong> ${odp.pedido_folio || '—'}</div>
+              <div><strong>Producto:</strong> <span class="text-mono">${odp.producto_codigo}</span></div>
+              <div><strong>Cantidad:</strong> ${fmtCantidadUM(odp.cantidad, odp.um)}</div>
+              <div><strong>Máquina:</strong> ${odp.maquina_asignada || '—'}</div>
+              <div><strong>Turno:</strong> ${odp.turno_asignado || '—'}</div>
+              <div><strong>Inicio:</strong> ${odp.fecha_inicio_programada || '—'}</div>
+              <div><strong>Entrega:</strong> ${odp.fecha_entrega_programada || '—'}</div>
+            </div>
+            ${odp.descripcion ? `<div style="margin-top:8px;"><strong>Descripción:</strong> ${odp.descripcion}</div>` : ''}
+            ${odp.planeacion_notas ? `<div style="margin-top:8px;padding:8px;background:#fffbeb;border-radius:6px;"><strong>Notas:</strong> ${odp.planeacion_notas}</div>` : ''}
+          </div>
+          
+          <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">📊 Avances capturados (${capturas.length})</h3>
+          ${capturas.length === 0 ? `
+            <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;background:#f8fafc;border-radius:8px;">Sin capturas aún</div>
+          ` : `
+            <div style="background:#f8fafc;border-radius:8px;padding:10px;">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px;text-transform:uppercase;">
+                <div>Total producido</div><div>Mermas</div><div>% Avance</div>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:14px;font-weight:800;margin-bottom:14px;">
+                <div style="color:#16a34a;">${fmtCantidadUM(totalProducido, odp.um)}</div>
+                <div style="color:#dc2626;">${fmtCantidadUM(totalMermas, odp.um)}</div>
+                <div style="color:#3b82f6;">${odp.cantidad > 0 ? Math.round((totalProducido/odp.cantidad)*100) : 0}%</div>
+              </div>
+              ${capturas.map(c => `
+                <div style="font-size:12px;padding:8px;border-top:1px solid #e2e8f0;">
+                  <div style="display:flex;justify-content:space-between;">
+                    <span>${fmtFechaHora(c.created_at)} · ${c.operador || '—'} · Turno ${c.turno || '—'}</span>
+                    <span><strong>${fmtCantidadUM(c.cantidad_producida, odp.um)}</strong></span>
+                  </div>
+                  ${c.notas ? `<div style="color:#64748b;margin-top:2px;">${c.notas}</div>` : ''}
+                </div>
+              `).join('')}
+            </div>
+          `}
+          
+          ${lotes.length > 0 ? `
+            <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">🏷️ Lotes generados</h3>
+            ${lotes.map(l => `
+              <div style="padding:10px;background:#f0fdf4;border-radius:8px;margin-bottom:6px;font-size:12px;">
+                <div class="text-mono" style="font-weight:800;">${l.codigo}</div>
+                <div style="color:#475569;margin-top:2px;">
+                  ${fmtCantidadUM(l.cantidad, odp.um)} · ${l.almacen} · ${fmtFechaHora(l.created_at)}
+                </div>
+              </div>
+            `).join('')}
+          ` : ''}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: DETALLE DE PEDIDO (timeline completo + comentarios)
+// ============================================================
+function modalDetallePedido() {
+  const p = state.pedidos.find(x => x.id === state.modalData);
+  if (!p) return '';
+  
+  const lineas = window.pedidoLineas(p.id);
+  const ovs = window.ovsDePedido(p.id);
+  const odps = window.odpsDePedido(p.id);
+  const comentarios = state.comentarios_pedidos.filter(c => c.pedido_id === p.id);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:760px;max-height:92vh;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${p.folio}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div style="padding:14px;background:#f8fafc;border-radius:10px;margin-bottom:14px;font-size:12px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div><strong>Cliente:</strong> ${p.cliente_nombre}</div>
+              <div><strong>Código:</strong> ${p.cliente_codigo}</div>
+              <div><strong>ODC cliente:</strong> ${p.odc_cliente || '—'}</div>
+              <div><strong>Entrega req:</strong> ${p.fecha_requerida || '—'}</div>
+              <div><strong>CEDIS:</strong> ${p.cedis_asignado || '—'}</div>
+              <div><strong>Tipo:</strong> ${p.tipo}</div>
+              <div><strong>Capturado:</strong> ${fmtFechaHora(p.created_at)} · ${p.creado_por_nombre || '—'}</div>
+              ${p.aprobado_por_nombre ? `<div><strong>Aprobado:</strong> ${p.aprobado_por_nombre}</div>` : ''}
+            </div>
+            ${p.observaciones ? `<div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;"><strong>Observaciones:</strong> ${p.observaciones}</div>` : ''}
+          </div>
+          
+          <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">📋 Líneas (${lineas.length})</h3>
+          <div style="background:#f8fafc;border-radius:8px;overflow:hidden;">
+            <table style="width:100%;font-size:12px;">
+              <thead style="background:#e2e8f0;"><tr><th style="padding:8px;text-align:left;">Producto</th><th style="padding:8px;text-align:right;">Cantidad</th><th style="padding:8px;">Origen</th></tr></thead>
+              <tbody>
+                ${lineas.map(l => `
+                  <tr style="border-top:1px solid #e2e8f0;">
+                    <td style="padding:8px;"><span class="text-mono" style="font-weight:600;">${l.producto_codigo}</span><br><span style="color:#64748b;font-size:11px;">${l.descripcion || ''}</span></td>
+                    <td style="padding:8px;text-align:right;font-weight:600;">${fmtCantidadUM(l.cantidad_solicitada, l.um)}</td>
+                    <td style="padding:8px;text-align:center;font-size:11px;">${l.tipo_origen}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+          
+          ${odps.length > 0 ? `
+            <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">🏭 Producción (${odps.length} ODP)</h3>
+            ${odps.map(o => {
+              const cap = state.capturas_produccion.filter(c => c.odp_id === o.id);
+              const prod = cap.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
+              const pct = o.cantidad > 0 ? Math.min(100, Math.round((prod / o.cantidad) * 100)) : 0;
+              return `
+                <div style="padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:6px;">
+                  <div style="display:flex;justify-content:space-between;font-size:12px;">
+                    <span><span class="text-mono" style="font-weight:700;">${o.folio}</span> · ${o.estatus}</span>
+                    <span>${fmtCantidadUM(prod, o.um)} / ${fmtCantidadUM(o.cantidad, o.um)} (${pct}%)</span>
+                  </div>
+                  ${o.maquina_asignada ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${o.maquina_asignada} · ${o.turno_asignado || ''} · ${o.fecha_inicio_programada || ''}</div>` : ''}
+                </div>
+              `;
+            }).join('')}
+          ` : ''}
+          
+          <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">💬 Comentarios (${comentarios.length})</h3>
+          ${comentarios.length === 0 ? `
+            <div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;background:#f8fafc;border-radius:8px;">Sin comentarios</div>
+          ` : `
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${comentarios.map(c => `
+                <div style="padding:10px;background:#fffbeb;border-radius:8px;border-left:3px solid #f59e0b;">
+                  <div style="font-size:11px;color:#92400e;font-weight:700;">${c.autor_nombre} · ${c.autor_depto || ''} · ${fmtFechaHora(c.created_at)}</div>
+                  <div style="font-size:13px;margin-top:4px;">${c.mensaje}</div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;">
+          <button class="btn-secondary" onclick="abrirModal('comentar-pedido','${p.id}')">💬 Agregar comentario</button>
+          <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: COMENTAR PEDIDO
+// ============================================================
+function modalComentarPedido() {
+  const p = state.pedidos.find(x => x.id === state.modalData);
+  if (!p) return '';
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header">
+          <h2 style="font-size:16px;font-weight:800;">Comentar ${p.folio}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:12px;color:#64748b;margin-bottom:10px;">${p.cliente_nombre}</div>
+          <div class="field">
+            <label class="field-label">Tu comentario</label>
+            <textarea class="input" id="com-mensaje" style="min-height:120px;" placeholder="Ej: Cliente confirmó la fecha de entrega. Validar con planeación si se puede adelantar." autocomplete="off"></textarea>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="guardarComentarioPedido('${p.id}')">${ICONS.check} Publicar</button>
         </div>
       </div>
     </div>
@@ -1514,6 +2385,48 @@ function attachAppEvents() {
   if ($('#filtro-productos-pt-um')) {
     $('#filtro-productos-pt-um').onchange = (e) => { state.filtros.productos_pt_um = e.target.value; render(); };
   }
+  
+  // Filtros de Programación de Producción
+  if ($('#filtro-programacion')) {
+    $('#filtro-programacion').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.programacion = e.target.value;
+      render();
+      const inp = $('#filtro-programacion');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-programacion-maquina')) {
+    $('#filtro-programacion-maquina').onchange = (e) => { state.filtros.programacion_maquina = e.target.value; render(); };
+  }
+  
+  // Filtros de Captura de Producción
+  if ($('#filtro-captura')) {
+    $('#filtro-captura').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.captura = e.target.value;
+      render();
+      const inp = $('#filtro-captura');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  
+  // Filtros de Seguimiento
+  if ($('#filtro-seguimiento')) {
+    $('#filtro-seguimiento').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.seguimiento = e.target.value;
+      render();
+      const inp = $('#filtro-seguimiento');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-seguimiento-cliente')) {
+    $('#filtro-seguimiento-cliente').onchange = (e) => { state.filtros.seguimiento_cliente = e.target.value; render(); };
+  }
+  if ($('#filtro-seguimiento-estatus')) {
+    $('#filtro-seguimiento-estatus').onchange = (e) => { state.filtros.seguimiento_estatus = e.target.value; render(); };
+  }
   $$('.prod-um-select').forEach(sel => {
     sel.onchange = async (e) => {
       const codigo = sel.dataset.codigo;
@@ -1668,10 +2581,25 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (m === 'crear-producto-pt' || m === 'editar-producto-pt') state.modalForm = null;
+  if (m === 'crear-producto-pt' || m === 'editar-producto-pt' || m === 'programar-odp') state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
+window.cambiarTab = (vista, tab) => { state.tabs[vista] = tab; render(); };
+
+// Helpers para gestionar la ruta de procesos en el modal de programación
+window.agregarProcesoRuta = (codigo) => {
+  if (!state.modalForm) state.modalForm = { ruta_procesos: [] };
+  if (!state.modalForm.ruta_procesos.includes(codigo)) {
+    state.modalForm.ruta_procesos.push(codigo);
+    render();
+  }
+};
+window.quitarProcesoRuta = (idx) => {
+  if (!state.modalForm) return;
+  state.modalForm.ruta_procesos.splice(idx, 1);
+  render();
+};
 
 // Recolectar campos del formulario de cliente
 function recolectarDatosCliente() {
@@ -2198,28 +3126,254 @@ window.prepararOVAccion = async (ovId, folio) => {
 };
 
 window.confirmarProgramarODP = async (odpId) => {
+  const fini = $('#podp-fini').value;
+  const ruta = (state.modalForm && state.modalForm.ruta_procesos) || [];
+  
+  if (ruta.length === 0) { toast('Define al menos un proceso en la ruta', 'error'); return; }
+  if (!fini) { toast('Captura la fecha de inicio', 'error'); return; }
+  
   state.loadingAccion = true; render();
   try {
     await updateDoc(doc(db, 'ordenes_produccion', odpId), {
       estatus: 'programada',
-      fecha_inicio_programada: $('#podp-fini').value || null,
+      fecha_inicio_programada: fini,
       fecha_entrega_programada: $('#podp-fent').value || null,
-      maquina_asignada: $('#podp-maq').value.toUpperCase(),
-      planeacion_notas: $('#podp-notas').value
+      ruta_procesos: ruta,
+      proceso_actual_idx: 0, // empieza en el primer proceso
+      proceso_actual: ruta[0],
+      prioridad: $('#podp-prioridad').value || 'normal',
+      planeacion_notas: $('#podp-notas').value || '',
+      programada_por: state.user.id,
+      programada_por_nombre: state.user.nombre,
+      programada_at: serverTimestamp(),
+      updated_at: serverTimestamp()
     });
     
-    // Notificación a producción
     const odp = state.ordenes_produccion.find(o => o.id === odpId);
+    const proc = getProc(ruta[0]);
     await addDoc(collection(db, 'notificaciones'), {
       titulo: 'ODP programada ' + odp.folio,
-      mensaje: odp.cliente_nombre + ' • Inicio: ' + ($('#podp-fini').value || 'TBD'),
+      mensaje: `${odp.cliente_nombre} • Inicia en ${proc?.nombre || ruta[0]} • ${fini}`,
       depto_destino: 'PRO',
       tipo: 'info', folio_ref: odp.folio,
       created_at: serverTimestamp()
     });
     
     cerrarModal();
-    toast('✅ ODP programada');
+    toast('✅ ODP programada con ' + ruta.length + ' proceso(s)');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Iniciar producción físicamente (de programada → en_produccion)
+// Iniciar proceso actual (cambia ODP a en_produccion y registra inicio del proceso)
+window.iniciarProceso = async (odpId) => {
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) return;
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const proc = getProc(ruta[idx]);
+  if (!proc) { toast('No hay proceso definido en la ruta', 'error'); return; }
+  
+  if (!confirm(`¿Iniciar ${proc.icono} ${proc.nombre} de ${odp.folio}?`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const updates = {
+      estatus: 'en_produccion',
+      proceso_actual: ruta[idx],
+      proceso_actual_inicio: serverTimestamp(),
+      updated_at: serverTimestamp()
+    };
+    if (!odp.iniciada_at) {
+      updates.iniciada_at = serverTimestamp();
+      updates.iniciada_por = state.user.id;
+      updates.iniciada_por_nombre = state.user.nombre;
+    }
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
+    
+    // Notificar CS, PLN, CEO
+    const batch = writeBatch(db);
+    ['CS', 'PLN', 'CEO'].forEach(depto => {
+      const ref = doc(collection(db, 'notificaciones'));
+      batch.set(ref, {
+        titulo: `🔄 ${proc.icono} ${proc.nombre} iniciado en ${odp.folio}`,
+        mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo}`,
+        depto_destino: depto, tipo: 'info', folio_ref: odp.folio,
+        created_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    
+    toast(`✅ ${proc.icono} ${proc.nombre} iniciado`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Confirmar completar proceso actual (avanza al siguiente o termina la ODP)
+window.confirmarCompletarProceso = async (odpId) => {
+  const cantidad = Number($('#comp-cantidad').value);
+  if (!cantidad || cantidad <= 0) { toast('Captura una cantidad válida', 'error'); return; }
+  
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) return;
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const proc = getProc(ruta[idx]);
+  if (!proc) { toast('Error en la ruta del proceso', 'error'); return; }
+  
+  const um = (odp.um || 'kg').toLowerCase();
+  if (UM_ENTEROS.includes(um) && !Number.isInteger(cantidad)) {
+    toast(`${UM_LABELS[um]} requiere cantidad entera`, 'error'); return;
+  }
+  
+  const mermas = Number($('#comp-mermas').value) || 0;
+  const operador = ($('#comp-operador').value || '').trim();
+  const turno = $('#comp-turno').value || '';
+  const notas = ($('#comp-notas').value || '').trim();
+  const esUltimo = idx === ruta.length - 1;
+  
+  state.loadingAccion = true; render();
+  try {
+    // 1. Crear captura del proceso
+    await addDoc(collection(db, 'capturas_produccion'), {
+      odp_id: odpId, odp_folio: odp.folio,
+      cliente_codigo: odp.cliente_codigo, cliente_nombre: odp.cliente_nombre,
+      producto_codigo: odp.producto_codigo,
+      proceso: ruta[idx],
+      proceso_nombre: proc.nombre,
+      cantidad_producida: cantidad,
+      mermas, um, operador, turno, notas,
+      capturado_por: state.user.id,
+      capturado_por_nombre: state.user.nombre,
+      created_at: serverTimestamp()
+    });
+    
+    // 2. Actualizar array procesos_completados
+    const procesosCompletados = [...(odp.procesos_completados || []), {
+      codigo: ruta[idx],
+      nombre: proc.nombre,
+      cantidad_producida: cantidad,
+      mermas, operador, turno, notas,
+      completado_at: new Date().toISOString(),
+      completado_por: state.user.nombre
+    }];
+    
+    if (esUltimo) {
+      // 3a. Es el último → generar lote y completar ODP
+      const loteNum = await siguienteFolio('lote');
+      const year = new Date().getFullYear();
+      const codigoLote = `L-${year}-${String(loteNum).padStart(5, '0')}`;
+      
+      const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
+      
+      await addDoc(collection(db, 'lotes'), {
+        codigo: codigoLote,
+        odp_id: odpId, odp_folio: odp.folio,
+        pedido_id: odp.pedido_id, pedido_folio: odp.pedido_folio,
+        cliente_codigo: odp.cliente_codigo, cliente_nombre: odp.cliente_nombre,
+        producto_codigo: odp.producto_codigo, descripcion: odp.descripcion,
+        cantidad,
+        cantidad_disponible: cantidad,
+        um, mermas: totalMermas,
+        almacen: 'PLANTA-MTY',
+        ruta_procesos_ejecutados: ruta,
+        procesos_detalle: procesosCompletados,
+        fecha_produccion: new Date().toISOString().split('T')[0],
+        notas, activo: true,
+        creado_por: state.user.id,
+        creado_por_nombre: state.user.nombre,
+        created_at: serverTimestamp()
+      });
+      
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        estatus: 'completada',
+        proceso_actual: null,
+        procesos_completados: procesosCompletados,
+        cantidad_producida_final: cantidad,
+        mermas_finales: totalMermas,
+        lote_codigo: codigoLote,
+        completada_at: serverTimestamp(),
+        completada_por: state.user.id,
+        completada_por_nombre: state.user.nombre,
+        notas_finales: notas,
+        updated_at: serverTimestamp()
+      });
+      
+      // Notificar
+      const batch = writeBatch(db);
+      ['CS', 'CEO', 'PLN', 'KAM'].forEach(depto => {
+        const ref = doc(collection(db, 'notificaciones'));
+        batch.set(ref, {
+          titulo: '✅ Producción completada ' + odp.folio,
+          mensaje: `${odp.cliente_nombre} · ${codigoLote} · ${fmtCantidadUM(cantidad, um)} listo en PLANTA-MTY`,
+          depto_destino: depto, tipo: 'success', folio_ref: odp.folio,
+          created_at: serverTimestamp()
+        });
+      });
+      await batch.commit();
+      
+      cerrarModal();
+      toast(`🏁 ODP completada · Lote ${codigoLote} generado`);
+    } else {
+      // 3b. Avanzar al siguiente proceso
+      const siguienteIdx = idx + 1;
+      const siguienteProc = getProc(ruta[siguienteIdx]);
+      
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        estatus: 'programada', // queda lista para iniciar el siguiente
+        procesos_completados: procesosCompletados,
+        proceso_actual_idx: siguienteIdx,
+        proceso_actual: ruta[siguienteIdx],
+        proceso_actual_inicio: null,
+        updated_at: serverTimestamp()
+      });
+      
+      // Notificar avance
+      await addDoc(collection(db, 'notificaciones'), {
+        titulo: `${proc.icono} ${proc.nombre} terminado en ${odp.folio}`,
+        mensaje: `Lista para iniciar ${siguienteProc?.icono || ''} ${siguienteProc?.nombre || ruta[siguienteIdx]}`,
+        depto_destino: 'PRO', tipo: 'info', folio_ref: odp.folio,
+        created_at: serverTimestamp()
+      });
+      
+      cerrarModal();
+      toast(`✅ ${proc.nombre} terminado · Siguiente: ${siguienteProc?.nombre || ''}`);
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Guardar comentario en pedido
+window.guardarComentarioPedido = async (pedidoId) => {
+  const mensaje = ($('#com-mensaje').value || '').trim();
+  if (!mensaje) { toast('Escribe un comentario', 'error'); return; }
+  
+  const pedido = state.pedidos.find(p => p.id === pedidoId);
+  
+  state.loadingAccion = true; render();
+  try {
+    await addDoc(collection(db, 'comentarios_pedidos'), {
+      pedido_id: pedidoId,
+      pedido_folio: pedido?.folio || '',
+      mensaje,
+      autor_id: state.user.id,
+      autor_nombre: state.user.nombre,
+      autor_depto: state.user.depto,
+      created_at: serverTimestamp()
+    });
+    
+    cerrarModal();
+    toast('✅ Comentario publicado');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
