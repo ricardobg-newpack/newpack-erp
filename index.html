@@ -214,6 +214,52 @@ window.UM_LABELS = UM_LABELS;
 window.UM_ENTEROS = UM_ENTEROS;
 
 // ============================================================
+// CONVERSIÓN UM ↔ KG (fórmula NewPack)
+// peso_millar (kg) = (ancho + fuelle) × largo × 0.470 × calibre/10000
+// (calibre 30 → 0.0030, calibre 100 → 0.0100, calibre 200 → 0.0200)
+// peso_pieza (kg) = peso_millar / 1000
+// ============================================================
+const FACTOR_PESO = 0.470; // densidad efectiva del polietileno
+
+function calcularPesoMillar(producto) {
+  if (!producto) return 0;
+  const ancho = Number(producto.ancho) || 0;
+  const fuelle = Number(producto.fuelle) || 0;
+  const largo = Number(producto.largo) || 0;
+  const calibre = Number(producto.calibre) || 0;
+  if (!ancho || !largo || !calibre) return 0;
+  const calibreDecimal = calibre / 10000; // 30 → 0.0030, 100 → 0.0100
+  return (ancho + fuelle) * largo * FACTOR_PESO * calibreDecimal;
+}
+window.calcularPesoMillar = calcularPesoMillar;
+
+function calcularPesoPieza(producto) {
+  return calcularPesoMillar(producto) / 1000;
+}
+window.calcularPesoPieza = calcularPesoPieza;
+
+// Convierte una cantidad cualquiera a kg dado un producto
+// Devuelve null si no se puede convertir (ej: rollo/metro)
+function convertirAKg(cantidad, um, producto) {
+  if (!cantidad || !producto) return null;
+  const umLow = (um || 'kg').toLowerCase();
+  const cant = Number(cantidad) || 0;
+  if (umLow === 'kg') return cant;
+  if (umLow === 'millar') return cant * calcularPesoMillar(producto);
+  if (umLow === 'pza') return cant * calcularPesoPieza(producto);
+  return null; // rollo/m no se convierten
+}
+// Formatea una conversión UM→Kg para mostrar al lado: "5,000 Pieza ≈ 350 kg"
+function fmtConversionKg(cantidad, um, producto) {
+  const kg = convertirAKg(cantidad, um, producto);
+  if (kg === null) return '';
+  const umLow = (um || 'kg').toLowerCase();
+  if (umLow === 'kg') return ''; // no se muestra conversión si ya está en kg
+  return `≈ ${kg.toLocaleString('es-MX', { maximumFractionDigits: 2 })} kg`;
+}
+window.fmtConversionKg = fmtConversionKg;
+
+// ============================================================
 // HELPERS
 // ============================================================
 const $ = (s, r = document) => r.querySelector(s);
@@ -838,6 +884,11 @@ function renderFormPedido() {
                   <div class="field" style="margin-bottom:8px;">
                     <label class="field-label">Cantidad en ${UM_LABELS[umLinea]} *</label>
                     <input class="input ped-cant" data-idx="${i}" type="number" min="0" step="${stepCant}" value="${l.cantidad_solicitada || ''}" placeholder="${esEntera ? 'Solo enteros' : '0.00'}" />
+                    ${(umLinea === 'pza' || umLinea === 'millar') && l.cantidad_solicitada ? (() => {
+                      const prod = window.getProductoPT(l.producto_codigo);
+                      const conv = window.fmtConversionKg(l.cantidad_solicitada, umLinea, prod);
+                      return conv ? `<div style="font-size:10px;color:#059669;margin-top:4px;font-weight:600;">🏭 Producción: ${conv}</div>` : '';
+                    })() : ''}
                   </div>
                   <div class="field" style="margin-bottom:0;">
                     <label class="field-label">Origen *</label>
@@ -1132,6 +1183,9 @@ function renderTarjetaODP(o, contexto) {
         </div>
         <div style="text-align:right;">
           <div style="font-size:18px;font-weight:800;">${fmtCantidadUM(o.cantidad, o.um)}</div>
+          ${o.cantidad_kg_produccion && (o.um === 'pza' || o.um === 'millar') ? `
+            <div style="font-size:11px;color:#059669;font-weight:700;margin-top:2px;">🏭 ${fmtNum(o.cantidad_kg_produccion)} kg producción</div>
+          ` : ''}
           ${totalProducidoFinal > 0 ? `
             <div style="font-size:11px;color:#475569;margin-top:2px;">Producido: <strong>${fmtCantidadUM(totalProducidoFinal, o.um)}</strong> (${pct}%)</div>
             ${totalMermasFinal > 0 ? `<div style="font-size:10px;color:#dc2626;">Mermas: ${fmtCantidadUM(totalMermasFinal, o.um)}</div>` : ''}
@@ -1921,7 +1975,9 @@ function modalLiberarCalidad() {
     state.modalForm = {
       cantidad_aceptada: cantidadProducida,
       tarimas: '',
-      decision: 'pendiente', // se calcula al cambiar cantidad
+      peso_bruto_total: '',  // peso total con tarimas (kg)
+      peso_tarima_unit: '',  // peso de una tarima vacía (kg)
+      decision: 'pendiente',
       notas: ''
     };
   }
@@ -2024,6 +2080,22 @@ function modalLiberarCalidad() {
               <div style="font-size:10px;color:#94a3b8;margin-top:4px;">
                 Cada tarima tendrá su propio código y QR escaneable.
               </div>
+            </div>
+            
+            <!-- Doble verificación de peso (con/sin tarima) -->
+            <div style="padding:12px;background:#f0fdf4;border-radius:10px;border:1px solid #bbf7d0;margin-bottom:14px;">
+              <div style="font-size:11px;font-weight:700;color:#16a34a;margin-bottom:8px;">⚖️ Doble verificación de peso (báscula)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div>
+                  <label class="field-label" style="font-size:10px;">Peso BRUTO total (con tarimas) kg</label>
+                  <input class="input form-cal" data-field="peso_bruto_total" type="number" min="0" step="0.01" value="${f.peso_bruto_total}" placeholder="0.00" autocomplete="off" />
+                </div>
+                <div>
+                  <label class="field-label" style="font-size:10px;">Peso de UNA tarima vacía kg</label>
+                  <input class="input form-cal" data-field="peso_tarima_unit" type="number" min="0" step="0.01" value="${f.peso_tarima_unit}" placeholder="Ej: 25" autocomplete="off" />
+                </div>
+              </div>
+              <div id="cal-peso-resumen" style="margin-top:8px;font-size:11px;display:none;"></div>
             </div>
           </div>
           
@@ -2778,6 +2850,49 @@ function attachAppEvents() {
     if (tarimasContainer) {
       tarimasContainer.style.display = (decision === 'liberado' || decision === 'parcial') ? 'block' : 'none';
     }
+    
+    // Doble verificación de peso (báscula vs teórico)
+    const pesoResumen = $('#cal-peso-resumen');
+    if (pesoResumen && (decision === 'liberado' || decision === 'parcial')) {
+      const pesoBruto = Number(state.modalForm.peso_bruto_total) || 0;
+      const pesoTarima = Number(state.modalForm.peso_tarima_unit) || 0;
+      const numTarimas = Number(state.modalForm.tarimas) || 0;
+      
+      if (pesoBruto > 0 && numTarimas > 0) {
+        const pesoTotalTarimas = pesoTarima * numTarimas;
+        const pesoNeto = pesoBruto - pesoTotalTarimas;
+        
+        // Calcular peso teórico esperado
+        const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+        const pesoTeoricoEsperado = window.convertirAKg(cantAceptada, um, producto);
+        
+        let html = `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fff;border-radius:6px;">
+            <span>Peso bruto - tarimas (${numTarimas} × ${pesoTarima} kg):</span>
+            <strong style="color:#16a34a;">${pesoNeto.toFixed(2)} kg neto</strong>
+          </div>
+        `;
+        if (pesoTeoricoEsperado !== null && pesoTeoricoEsperado > 0) {
+          const diff = pesoNeto - pesoTeoricoEsperado;
+          const pctDiff = pesoTeoricoEsperado > 0 ? Math.abs(diff / pesoTeoricoEsperado * 100) : 0;
+          const colorDiff = pctDiff <= 5 ? '#16a34a' : (pctDiff <= 10 ? '#f59e0b' : '#dc2626');
+          html += `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-top:4px;background:#fff;border-radius:6px;">
+              <span>Peso teórico esperado:</span>
+              <span>${pesoTeoricoEsperado.toFixed(2)} kg</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-top:4px;background:${colorDiff}11;border-radius:6px;border:1px solid ${colorDiff}44;">
+              <span>Diferencia:</span>
+              <strong style="color:${colorDiff};">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} kg (${pctDiff.toFixed(1)}%)</strong>
+            </div>
+          `;
+        }
+        pesoResumen.style.display = 'block';
+        pesoResumen.innerHTML = html;
+      } else {
+        pesoResumen.style.display = 'none';
+      }
+    }
     if (btn) {
       btn.style.background = decisionColor;
       btn.textContent = '✓ Confirmar ' + decisionTexto;
@@ -3437,11 +3552,19 @@ window.aprobarPedido = async (pedidoId, folio) => {
       if (cantProd > 0) {
         const num = await siguienteFolio('odp');
         const folioODP = 'ODP-' + String(num).padStart(5, '0');
+        const productoODP = window.getProductoPT(l.producto_codigo);
+        const cantidadKg = window.convertirAKg(cantProd, l.um, productoODP);
+        const pesoMillar = window.calcularPesoMillar(productoODP);
+        const pesoPieza = window.calcularPesoPieza(productoODP);
         await addDoc(collection(db, 'ordenes_produccion'), {
           folio: folioODP, pedido_id: pedidoId, pedido_folio: pedido.folio,
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
           cantidad: cantProd, um: l.um, estatus: 'pendiente_planeacion',
+          // Conversión a kg para producción (cuando el cliente pide en pza/millar)
+          cantidad_kg_produccion: cantidadKg,
+          peso_teorico_millar: pesoMillar, // kg/millar
+          peso_teorico_pieza: pesoPieza,    // kg/pieza
           fecha_entrega_programada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
           created_at: serverTimestamp()
@@ -3750,12 +3873,25 @@ window.confirmarLiberarCalidad = async (odpId) => {
   
   state.loadingAccion = true; render();
   try {
+    // Pesos de doble verificación (báscula)
+    const pesoBruto = Number(f.peso_bruto_total) || 0;
+    const pesoTarimaUnit = Number(f.peso_tarima_unit) || 0;
+    const pesoNetoCalculado = pesoBruto > 0 ? Math.max(0, pesoBruto - (pesoTarimaUnit * tarimas)) : 0;
+    const productoForLib = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+    const pesoTeoricoEsperado = window.convertirAKg(cantAceptada, um, productoForLib);
+    
     const liberacionData = {
       decision,
       cantidad_aceptada: cantAceptada,
       cantidad_rechazada: cantidadProducida - cantAceptada,
       pct_calidad: Number(pctCalidad.toFixed(2)),
       tarimas: tarimas,
+      // Doble verificación báscula
+      peso_bruto_total: pesoBruto,
+      peso_tarima_unitario: pesoTarimaUnit,
+      peso_neto_calculado: Number(pesoNetoCalculado.toFixed(2)),
+      peso_teorico_esperado: pesoTeoricoEsperado !== null ? Number(pesoTeoricoEsperado.toFixed(2)) : null,
+      diferencia_peso: pesoTeoricoEsperado !== null ? Number((pesoNetoCalculado - pesoTeoricoEsperado).toFixed(2)) : null,
       notas,
       liberado_por: state.user.id,
       liberado_por_nombre: state.user.nombre,
