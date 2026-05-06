@@ -143,6 +143,7 @@ const state = {
   ordenes_produccion: [],
   capturas_produccion: [],
   lotes: [],
+  tarimas: [],
   comentarios_pedidos: [],
   notificaciones: [],
   modal: null,
@@ -332,6 +333,10 @@ async function cargarTodo() {
         state.lotes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       }),
+      onSnapshot(query(collection(db, 'tarimas'), orderBy('created_at', 'desc'), limit(1000)), (snap) => {
+        state.tarimas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
       onSnapshot(query(collection(db, 'comentarios_pedidos'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.comentarios_pedidos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
@@ -464,6 +469,7 @@ function renderApp() {
   const esCEO = u.depto === 'CEO' || esAdmin;
   const esPLN = u.depto === 'PLN' || esCEO;
   const esPRO = u.depto === 'PRO' || esCEO;
+  const esCAL = u.depto === 'CAL' || esCEO;
   const esCS = u.depto === 'CS' || u.depto === 'KAM' || esCEO;
   
   return `
@@ -483,12 +489,15 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'seguimiento' ? 'active' : ''}" data-vista="seguimiento">📊 Seguimiento Pedidos</button>
         ` : ''}
         
-        ${esPLN || esPRO ? `<div class="sidebar-section">Producción</div>` : ''}
+        ${esPLN || esPRO || esCAL ? `<div class="sidebar-section">Producción</div>` : ''}
         ${esPLN ? `
           <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
         ` : ''}
         ${esPRO ? `
           <button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>
+        ` : ''}
+        ${esCAL ? `
+          <button class="nav-item ${state.vista === 'calidad' ? 'active' : ''}" data-vista="calidad">✅ Liberación Calidad</button>
         ` : ''}
         
         <div class="sidebar-section">Catálogos</div>
@@ -525,6 +534,7 @@ function tituloVista() {
     productos_pt: 'Catálogo Productos PT',
     programacion: 'Programación de Producción',
     captura_produccion: 'Captura de Producción',
+    calidad: 'Liberación de Calidad',
     seguimiento: 'Seguimiento de Pedidos'
   })[state.vista] || '';
 }
@@ -537,6 +547,7 @@ function renderVista() {
   if (v === 'productos_pt') return renderProductosPT();
   if (v === 'programacion') return renderProgramacion();
   if (v === 'captura_produccion') return renderCapturaProduccion();
+  if (v === 'calidad') return renderCalidad();
   if (v === 'seguimiento') return renderSeguimiento();
   return '';
 }
@@ -1239,6 +1250,144 @@ function renderCapturaProduccion() {
 // ============================================================
 // VISTA: SEGUIMIENTO DE PEDIDOS (CS/KAM/CEO/ADMIN)
 // ============================================================
+// ============================================================
+// VISTA: LIBERACIÓN DE CALIDAD (CAL/CEO/ADMIN)
+// ============================================================
+function renderCalidad() {
+  const subTab = state.tabs.calidad || 'pendientes';
+  const odpsPendientes = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_calidad');
+  const odpsLiberadas = state.ordenes_produccion.filter(o => 
+    ['liberada_empaque','pendiente_almacen','en_almacen_planta','en_transito_cedis','en_cedis_mty','en_cedis_mex','embarcada','entregada'].includes(o.estatus)
+  );
+  const odpsRechazadas = state.ordenes_produccion.filter(o => o.estatus === 'rechazada');
+  
+  let arr = [];
+  if (subTab === 'pendientes') arr = odpsPendientes;
+  else if (subTab === 'liberadas') arr = odpsLiberadas.slice(0, 50);
+  else if (subTab === 'rechazadas') arr = odpsRechazadas.slice(0, 30);
+  
+  const filtro = (state.filtros.calidad || '').toLowerCase();
+  if (filtro) arr = arr.filter(o => 
+    (o.folio + ' ' + (o.cliente_nombre||'') + ' ' + (o.producto_codigo||'')).toLowerCase().includes(filtro)
+  );
+  
+  return `
+    <div style="margin-bottom:18px;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">
+        <button class="tab-btn ${subTab === 'pendientes' ? 'active' : ''}" onclick="cambiarTab('calidad','pendientes')">🟡 Por liberar (${odpsPendientes.length})</button>
+        <button class="tab-btn ${subTab === 'liberadas' ? 'active' : ''}" onclick="cambiarTab('calidad','liberadas')">✅ Liberadas (${odpsLiberadas.length})</button>
+        <button class="tab-btn ${subTab === 'rechazadas' ? 'active' : ''}" onclick="cambiarTab('calidad','rechazadas')">❌ Rechazadas (${odpsRechazadas.length})</button>
+      </div>
+    </div>
+    
+    <div class="toolbar">
+      <input class="input" id="filtro-calidad" style="max-width:380px;" placeholder="Buscar por folio, cliente, producto..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;">${arr.length} ODPs</span>
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        ${subTab === 'pendientes' ? '🎉 No hay producción pendiente de liberación' : 
+          subTab === 'liberadas' ? '✅ Sin liberaciones recientes' :
+          '✓ Sin rechazos'}
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${arr.map(o => renderTarjetaCalidad(o, subTab)).join('')}
+      </div>
+    `}
+  `;
+}
+
+function renderTarjetaCalidad(o, contexto) {
+  const um = (o.um || 'kg').toLowerCase();
+  const ruta = o.ruta_procesos || [];
+  const procesosCompletados = o.procesos_completados || [];
+  const cantidadProducida = o.cantidad_producida_final || 0;
+  const cantidadOriginal = o.cantidad || 0;
+  const pctCalidad = cantidadOriginal > 0 ? (cantidadProducida / cantidadOriginal * 100).toFixed(1) : 0;
+  const pctClass = pctCalidad >= 90 ? '#16a34a' : '#dc2626';
+  const lote = state.lotes.find(l => l.odp_id === o.id);
+  
+  const colores = {
+    pendiente_calidad: '#f59e0b',
+    liberada_empaque: '#16a34a',
+    rechazada: '#dc2626'
+  };
+  const labels = {
+    pendiente_calidad: '🟡 Pendiente liberación',
+    liberada_empaque: '🟢 Liberada → empaque',
+    pendiente_almacen: '📦 Pendiente almacén',
+    en_almacen_planta: '🏭 En almacén planta',
+    rechazada: '❌ Rechazada'
+  };
+  const color = colores[o.estatus] || '#64748b';
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${color};">
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div style="flex:1;min-width:280px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+            <span class="text-mono" style="font-weight:800;font-size:15px;">${o.folio}</span>
+            <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${color}22;color:${color};">${labels[o.estatus] || o.estatus}</span>
+            ${lote ? `<span class="text-mono" style="font-size:11px;font-weight:700;background:#f1f5f9;padding:3px 8px;border-radius:6px;">🏷️ ${lote.codigo}</span>` : ''}
+          </div>
+          <div style="font-size:13px;font-weight:600;">${o.cliente_nombre || '—'}</div>
+          <div class="text-mono" style="font-size:11px;color:#64748b;margin-top:2px;">${o.producto_codigo}</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px;">${o.descripcion || ''}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:#64748b;">Solicitado:</div>
+          <div style="font-size:14px;font-weight:600;">${fmtCantidadUM(cantidadOriginal, o.um)}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:6px;">Producido:</div>
+          <div style="font-size:18px;font-weight:800;color:${pctClass};">${fmtCantidadUM(cantidadProducida, o.um)}</div>
+          <div style="font-size:11px;color:${pctClass};font-weight:700;">${pctCalidad}% calidad</div>
+        </div>
+      </div>
+      
+      ${ruta.length > 0 ? `
+        <div style="padding:10px 18px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:6px;">Procesos ejecutados</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+            ${ruta.map((codProc, i) => {
+              const proc = getProc(codProc);
+              if (!proc) return '';
+              const pc = procesosCompletados.find(p => p.codigo === codProc);
+              return `
+                <div style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:99px;background:${proc.color};color:#fff;font-size:10px;font-weight:700;">
+                  <span>${proc.icono}</span>
+                  <span>${proc.codigo}</span>
+                  ${pc ? `<span style="opacity:0.85;">${fmtNum(pc.cantidad_producida)}</span>` : ''}
+                </div>
+                ${i < ruta.length - 1 ? `<span style="color:#cbd5e1;font-size:9px;">→</span>` : ''}
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      ${o.liberacion_calidad ? `
+        <div style="padding:10px 18px;background:${o.liberacion_calidad.decision === 'liberado' ? '#f0fdf4' : o.liberacion_calidad.decision === 'parcial' ? '#fffbeb' : '#fee2e2'};border-top:1px solid #e2e8f0;font-size:11px;">
+          <strong>Decisión:</strong> ${o.liberacion_calidad.decision.toUpperCase()} · 
+          <strong>Por:</strong> ${o.liberacion_calidad.liberado_por_nombre} · 
+          ${o.liberacion_calidad.notas ? `<em>"${o.liberacion_calidad.notas}"</em>` : ''}
+          ${o.liberacion_calidad.tarimas ? ` · 📦 ${o.liberacion_calidad.tarimas} tarimas` : ''}
+        </div>
+      ` : ''}
+      
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
+        ${o.estatus === 'pendiente_calidad' ? `
+          <button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>
+        ` : ''}
+        <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// VISTA: SEGUIMIENTO DE PEDIDOS (CS/KAM/CEO/ADMIN)
+// ============================================================
 function renderSeguimiento() {
   const filtro = (state.filtros.seguimiento || '').toLowerCase();
   const filtroEst = state.filtros.seguimiento_estatus || '';
@@ -1419,6 +1568,7 @@ function renderModal() {
   if (m === 'detalle-cliente') return modalDetalleCliente();
   if (m === 'programar-odp') return modalProgramarODP();
   if (m === 'completar-proceso') return modalCompletarProceso();
+  if (m === 'liberar-calidad') return modalLiberarCalidad();
   if (m === 'detalle-odp') return modalDetalleODP();
   if (m === 'detalle-pedido') return modalDetallePedido();
   if (m === 'comentar-pedido') return modalComentarPedido();
@@ -1680,12 +1830,12 @@ function modalCompletarProceso() {
           </div>
           
           ${esUltimo ? `
-            <div style="padding:14px;background:#dcfce7;border-radius:10px;margin-bottom:14px;font-size:12px;border:2px solid #16a34a;">
+            <div style="padding:14px;background:#fef3c7;border-radius:10px;margin-bottom:14px;font-size:12px;border:2px solid #f59e0b;">
               <strong>🏁 Este es el ÚLTIMO proceso de la ruta.</strong><br>
               <ul style="margin:8px 0 0 18px;padding:0;">
-                <li>Se generará un lote único <strong>L-2026-XXXXX</strong></li>
-                <li>El stock entra automático a <strong>PLANTA-MTY</strong></li>
-                <li>CS / KAM verán que está listo</li>
+                <li>La ODP pasará a <strong>🟡 Pendiente Liberación de Calidad</strong></li>
+                <li>Calidad revisará y liberará (regla 90%)</li>
+                <li>Después: empaque → almacén → CEDIS</li>
               </ul>
             </div>
           ` : `
@@ -1742,7 +1892,7 @@ function modalCompletarProceso() {
         </div>
         <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" style="background:${esUltimo ? '#16a34a' : procActual.color};">${ICONS.check} ${esUltimo ? 'Terminar y generar lote' : 'Avanzar al siguiente proceso'}</button>
+          <button class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" style="background:${esUltimo ? '#f59e0b' : procActual.color};">${ICONS.check} ${esUltimo ? 'Terminar y enviar a Calidad' : 'Avanzar al siguiente proceso'}</button>
         </div>
       </div>
     </div>
@@ -1752,6 +1902,147 @@ function modalCompletarProceso() {
 // ============================================================
 // MODAL: DETALLE DE ODP (lectura)
 // ============================================================
+// ============================================================
+// MODAL: LIBERACIÓN DE CALIDAD (con regla del 90%)
+// ============================================================
+function modalLiberarCalidad() {
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return '';
+  
+  const um = (odp.um || 'kg').toLowerCase();
+  const stepCant = UM_ENTEROS.includes(um) ? '1' : '0.01';
+  const cantidadProducida = Number(odp.cantidad_producida_final) || 0;
+  const cantidadOriginal = Number(odp.cantidad) || 0;
+  const procesosCompletados = odp.procesos_completados || [];
+  const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
+  
+  // Inicializar form
+  if (!state.modalForm) {
+    state.modalForm = {
+      cantidad_aceptada: cantidadProducida,
+      tarimas: '',
+      decision: 'pendiente', // se calcula al cambiar cantidad
+      notas: ''
+    };
+  }
+  const f = state.modalForm;
+  
+  const cantAceptada = Number(f.cantidad_aceptada) || 0;
+  const cantRechazada = Math.max(0, cantidadProducida - cantAceptada);
+  const pctCalidadVsOriginal = cantidadOriginal > 0 ? (cantAceptada / cantidadOriginal * 100) : 0;
+  const pctCalidadVsProducido = cantidadProducida > 0 ? (cantAceptada / cantidadProducida * 100) : 0;
+  
+  // Determinar decisión según regla 90%
+  let decision = 'pendiente';
+  let decisionTexto = '';
+  let decisionColor = '#94a3b8';
+  let mensajeDecision = '';
+  
+  if (cantAceptada > 0) {
+    if (pctCalidadVsOriginal >= 90) {
+      decision = cantAceptada >= cantidadProducida ? 'liberado' : 'parcial';
+      decisionTexto = decision === 'liberado' ? '✅ LIBERADO TOTAL' : '⚠️ LIBERADO PARCIAL';
+      decisionColor = '#16a34a';
+      mensajeDecision = decision === 'liberado' 
+        ? 'Toda la producción se libera al lote.' 
+        : `Se libera ${fmtCantidadUM(cantAceptada, um)} (${pctCalidadVsOriginal.toFixed(1)}% del solicitado).<br><strong>El sistema generará un PI nuevo</strong> por la cantidad faltante (${fmtCantidadUM(cantidadOriginal - cantAceptada, um)}).`;
+    } else if (cantAceptada > 0) {
+      decision = 'rechazado';
+      decisionTexto = '❌ RECHAZADO (< 90%)';
+      decisionColor = '#dc2626';
+      mensajeDecision = `Solo ${pctCalidadVsOriginal.toFixed(1)}% es aceptable. Se rechaza toda la ODP y <strong>el sistema generará un PI nuevo</strong> por la cantidad completa.`;
+    }
+  } else {
+    decision = 'rechazado';
+    decisionTexto = '❌ RECHAZADO TOTAL';
+    decisionColor = '#dc2626';
+    mensajeDecision = 'Toda la producción se rechaza. <strong>Se genera nuevo PI completo</strong>.';
+  }
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:620px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">✅ Liberación de Calidad</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="padding:14px;background:#fffbeb;border-radius:10px;margin-bottom:14px;font-size:12px;border-left:4px solid #f59e0b;">
+            <strong>${odp.folio}</strong> · ${odp.cliente_nombre}<br>
+            <span class="text-mono" style="font-size:11px;">${odp.producto_codigo}</span><br>
+            ${odp.descripcion || ''}
+          </div>
+          
+          <!-- Resumen de producción -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
+            <div style="padding:10px;background:#f8fafc;border-radius:8px;text-align:center;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">Solicitado</div>
+              <div style="font-size:16px;font-weight:800;margin-top:2px;">${fmtCantidadUM(cantidadOriginal, um)}</div>
+            </div>
+            <div style="padding:10px;background:#f0fdf4;border-radius:8px;text-align:center;">
+              <div style="font-size:10px;color:#16a34a;font-weight:700;text-transform:uppercase;">Producido</div>
+              <div style="font-size:16px;font-weight:800;margin-top:2px;color:#16a34a;">${fmtCantidadUM(cantidadProducida, um)}</div>
+            </div>
+            <div style="padding:10px;background:#fee2e2;border-radius:8px;text-align:center;">
+              <div style="font-size:10px;color:#dc2626;font-weight:700;text-transform:uppercase;">Mermas</div>
+              <div style="font-size:16px;font-weight:800;margin-top:2px;color:#dc2626;">${fmtCantidadUM(totalMermas, um)}</div>
+            </div>
+          </div>
+          
+          <!-- Captura: cantidad aceptada -->
+          <div class="field">
+            <label class="field-label">Cantidad ACEPTADA por calidad (en ${UM_LABELS[um]}) *</label>
+            <input class="input form-cal" data-field="cantidad_aceptada" type="number" min="0" max="${cantidadProducida}" step="${stepCant}" value="${f.cantidad_aceptada}" autocomplete="off" />
+            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">
+              💡 Lo que pasa todas las pruebas. Lo no aceptado se considera rechazo.
+            </div>
+          </div>
+          
+          ${cantRechazada > 0 ? `
+            <div style="padding:10px;background:#fee2e2;border-radius:8px;margin-bottom:14px;font-size:12px;color:#dc2626;">
+              ⚠️ Se rechazarán <strong>${fmtCantidadUM(cantRechazada, um)}</strong> del producido
+            </div>
+          ` : ''}
+          
+          <!-- Indicador de decisión -->
+          <div style="padding:14px;background:${decisionColor}11;border:2px solid ${decisionColor};border-radius:10px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <strong style="color:${decisionColor};font-size:14px;">${decisionTexto}</strong>
+              <strong style="color:${decisionColor};font-size:18px;">${pctCalidadVsOriginal.toFixed(1)}%</strong>
+            </div>
+            <div style="font-size:11px;color:#475569;">${mensajeDecision}</div>
+            <div style="margin-top:8px;background:#e2e8f0;height:6px;border-radius:99px;overflow:hidden;">
+              <div style="background:${decisionColor};height:100%;width:${Math.min(100, pctCalidadVsOriginal)}%;transition:width 0.3s;"></div>
+            </div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Regla: ≥90% del solicitado = LIBERA · &lt;90% = RECHAZA toda la ODP</div>
+          </div>
+          
+          <!-- Tarimas (solo si libera) -->
+          ${decision === 'liberado' || decision === 'parcial' ? `
+            <div class="field">
+              <label class="field-label">Número de tarimas a generar *</label>
+              <input class="input form-cal" data-field="tarimas" type="number" min="1" step="1" value="${f.tarimas}" placeholder="Ej: 5" autocomplete="off" />
+              <div style="font-size:10px;color:#94a3b8;margin-top:4px;">
+                Se generarán ${f.tarimas || '0'} etiquetas con QR (para escaneable). Cada tarima tendrá su propio código.
+              </div>
+            </div>
+          ` : ''}
+          
+          <div class="field">
+            <label class="field-label">Notas de calidad</label>
+            <textarea class="input form-cal" data-field="notas" style="min-height:60px;" placeholder="Pruebas realizadas, observaciones, motivo de rechazo, etc.">${f.notas}</textarea>
+          </div>
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarLiberarCalidad('${odp.id}')" style="background:${decisionColor};" ${(decision === 'liberado' || decision === 'parcial') && !f.tarimas ? 'disabled' : ''}>${ICONS.check} Confirmar ${decisionTexto}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function modalDetalleODP() {
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return '';
@@ -2411,6 +2702,40 @@ function attachAppEvents() {
     };
   }
   
+  // Filtro Calidad
+  if ($('#filtro-calidad')) {
+    $('#filtro-calidad').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.calidad = e.target.value;
+      render();
+      const inp = $('#filtro-calidad');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  
+  // Modal Liberar Calidad: live update para regla 90%
+  $$('.form-cal').forEach(el => {
+    const handler = (e) => {
+      if (!state.modalForm) return;
+      const pos = el.selectionStart;
+      state.modalForm[el.dataset.field] = el.value;
+      render();
+      const next = document.querySelector(`.form-cal[data-field="${el.dataset.field}"]`);
+      if (next && next.tagName !== 'TEXTAREA' && typeof pos === 'number') {
+        next.focus();
+        try { next.setSelectionRange(pos, pos); } catch(e) {}
+      } else if (next) {
+        next.focus();
+      }
+    };
+    if (el.tagName === 'TEXTAREA') el.oninput = (e) => { 
+      if (!state.modalForm) return;
+      state.modalForm[el.dataset.field] = el.value; 
+      // textarea no necesita re-render para mostrar texto
+    };
+    else el.oninput = handler;
+  });
+  
   // Filtros de Seguimiento
   if ($('#filtro-seguimiento')) {
     $('#filtro-seguimiento').oninput = (e) => {
@@ -2581,7 +2906,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (m === 'crear-producto-pt' || m === 'editar-producto-pt' || m === 'programar-odp') state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
@@ -3266,61 +3591,37 @@ window.confirmarCompletarProceso = async (odpId) => {
     }];
     
     if (esUltimo) {
-      // 3a. Es el último → generar lote y completar ODP
-      const loteNum = await siguienteFolio('lote');
-      const year = new Date().getFullYear();
-      const codigoLote = `L-${year}-${String(loteNum).padStart(5, '0')}`;
-      
+      // 3a. Es el último proceso → enviar a Calidad para liberación
       const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
       
-      await addDoc(collection(db, 'lotes'), {
-        codigo: codigoLote,
-        odp_id: odpId, odp_folio: odp.folio,
-        pedido_id: odp.pedido_id, pedido_folio: odp.pedido_folio,
-        cliente_codigo: odp.cliente_codigo, cliente_nombre: odp.cliente_nombre,
-        producto_codigo: odp.producto_codigo, descripcion: odp.descripcion,
-        cantidad,
-        cantidad_disponible: cantidad,
-        um, mermas: totalMermas,
-        almacen: 'PLANTA-MTY',
-        ruta_procesos_ejecutados: ruta,
-        procesos_detalle: procesosCompletados,
-        fecha_produccion: new Date().toISOString().split('T')[0],
-        notas, activo: true,
-        creado_por: state.user.id,
-        creado_por_nombre: state.user.nombre,
-        created_at: serverTimestamp()
-      });
-      
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-        estatus: 'completada',
+        estatus: 'pendiente_calidad',
         proceso_actual: null,
         procesos_completados: procesosCompletados,
-        cantidad_producida_final: cantidad,
+        cantidad_producida_final: cantidad, // lo que sale del último proceso
         mermas_finales: totalMermas,
-        lote_codigo: codigoLote,
-        completada_at: serverTimestamp(),
-        completada_por: state.user.id,
-        completada_por_nombre: state.user.nombre,
-        notas_finales: notas,
+        produccion_terminada_at: serverTimestamp(),
+        produccion_terminada_por: state.user.id,
+        produccion_terminada_por_nombre: state.user.nombre,
+        notas_produccion_finales: notas,
         updated_at: serverTimestamp()
       });
       
-      // Notificar
+      // Notificar a CALIDAD
       const batch = writeBatch(db);
-      ['CS', 'CEO', 'PLN', 'KAM'].forEach(depto => {
+      ['CAL', 'CEO'].forEach(depto => {
         const ref = doc(collection(db, 'notificaciones'));
         batch.set(ref, {
-          titulo: '✅ Producción completada ' + odp.folio,
-          mensaje: `${odp.cliente_nombre} · ${codigoLote} · ${fmtCantidadUM(cantidad, um)} listo en PLANTA-MTY`,
-          depto_destino: depto, tipo: 'success', folio_ref: odp.folio,
+          titulo: '🟡 Pendiente liberación calidad ' + odp.folio,
+          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtCantidadUM(cantidad, um)} producidos`,
+          depto_destino: depto, tipo: 'warning', folio_ref: odp.folio,
           created_at: serverTimestamp()
         });
       });
       await batch.commit();
       
       cerrarModal();
-      toast(`🏁 ODP completada · Lote ${codigoLote} generado`);
+      toast(`🟡 ODP enviada a Liberación de Calidad`);
     } else {
       // 3b. Avanzar al siguiente proceso
       const siguienteIdx = idx + 1;
@@ -3352,6 +3653,249 @@ window.confirmarCompletarProceso = async (odpId) => {
     state.loadingAccion = false; render();
   }
 };
+
+// ============================================================
+// LIBERACIÓN DE CALIDAD: aplica regla del 90%
+// ============================================================
+window.confirmarLiberarCalidad = async (odpId) => {
+  const f = state.modalForm;
+  if (!f) return;
+  
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) return;
+  
+  const cantAceptada = Number(f.cantidad_aceptada) || 0;
+  const cantidadProducida = Number(odp.cantidad_producida_final) || 0;
+  const cantidadOriginal = Number(odp.cantidad) || 0;
+  const um = (odp.um || 'kg').toLowerCase();
+  const tarimas = Number(f.tarimas) || 0;
+  const notas = (f.notas || '').trim();
+  
+  if (cantAceptada < 0 || cantAceptada > cantidadProducida) {
+    toast('La cantidad aceptada debe estar entre 0 y ' + fmtCantidadUM(cantidadProducida, um), 'error'); return;
+  }
+  
+  // Calcular decisión
+  const pctCalidad = cantidadOriginal > 0 ? (cantAceptada / cantidadOriginal * 100) : 0;
+  let decision;
+  if (cantAceptada === 0) decision = 'rechazado';
+  else if (pctCalidad >= 90) decision = cantAceptada >= cantidadProducida ? 'liberado' : 'parcial';
+  else decision = 'rechazado';
+  
+  // Validar tarimas si libera
+  if ((decision === 'liberado' || decision === 'parcial') && !tarimas) {
+    toast('Captura el número de tarimas', 'error'); return;
+  }
+  
+  state.loadingAccion = true; render();
+  try {
+    const liberacionData = {
+      decision,
+      cantidad_aceptada: cantAceptada,
+      cantidad_rechazada: cantidadProducida - cantAceptada,
+      pct_calidad: Number(pctCalidad.toFixed(2)),
+      tarimas: tarimas,
+      notas,
+      liberado_por: state.user.id,
+      liberado_por_nombre: state.user.nombre,
+      liberado_at: new Date().toISOString()
+    };
+    
+    if (decision === 'liberado' || decision === 'parcial') {
+      // GENERAR LOTE Y ETIQUETAS
+      const loteNum = await siguienteFolio('lote');
+      const year = new Date().getFullYear();
+      const codigoLote = `L-${year}-${String(loteNum).padStart(5, '0')}`;
+      const totalMermas = (odp.procesos_completados || []).reduce((s, p) => s + (Number(p.mermas) || 0), 0);
+      
+      // Crear lote
+      const loteRef = await addDoc(collection(db, 'lotes'), {
+        codigo: codigoLote,
+        odp_id: odpId, odp_folio: odp.folio,
+        pedido_id: odp.pedido_id, pedido_folio: odp.pedido_folio,
+        cliente_codigo: odp.cliente_codigo, cliente_nombre: odp.cliente_nombre,
+        producto_codigo: odp.producto_codigo, descripcion: odp.descripcion,
+        cantidad: cantAceptada,
+        cantidad_disponible: cantAceptada,
+        um, mermas: totalMermas + (cantidadProducida - cantAceptada),
+        almacen: 'PENDIENTE-EMPAQUE', // aún no llega al almacén
+        ruta_procesos_ejecutados: odp.ruta_procesos || [],
+        procesos_detalle: odp.procesos_completados || [],
+        liberacion_calidad: liberacionData,
+        num_tarimas: tarimas,
+        cantidad_por_tarima: Number((cantAceptada / tarimas).toFixed(2)),
+        estatus_lote: 'liberado_pendiente_empaque',
+        fecha_produccion: new Date().toISOString().split('T')[0],
+        fecha_liberacion: new Date().toISOString().split('T')[0],
+        notas, activo: true,
+        creado_por: state.user.id,
+        creado_por_nombre: state.user.nombre,
+        created_at: serverTimestamp()
+      });
+      
+      // Crear etiquetas/tarimas individuales
+      const cantPorTarima = cantAceptada / tarimas;
+      const batchTarimas = writeBatch(db);
+      for (let i = 1; i <= tarimas; i++) {
+        const tarimaRef = doc(collection(db, 'tarimas'));
+        const codigoTarima = `${codigoLote}-T${String(i).padStart(2, '0')}`;
+        // QR data: contiene info para escaneo
+        const qrData = JSON.stringify({
+          tarima: codigoTarima,
+          lote: codigoLote,
+          odp: odp.folio,
+          producto: odp.producto_codigo,
+          cliente: odp.cliente_codigo,
+          cantidad: cantPorTarima,
+          um
+        });
+        batchTarimas.set(tarimaRef, {
+          codigo: codigoTarima,
+          lote_id: loteRef.id,
+          lote_codigo: codigoLote,
+          odp_id: odpId,
+          odp_folio: odp.folio,
+          numero_tarima: i,
+          total_tarimas: tarimas,
+          producto_codigo: odp.producto_codigo,
+          descripcion: odp.descripcion,
+          cliente_codigo: odp.cliente_codigo,
+          cliente_nombre: odp.cliente_nombre,
+          cantidad: cantPorTarima,
+          um,
+          qr_data: qrData,
+          estatus: 'pendiente_empaque', // pendiente_empaque → en_almacen → en_transito → entregada
+          almacen_actual: 'PENDIENTE-EMPAQUE',
+          activo: true,
+          created_at: serverTimestamp()
+        });
+      }
+      await batchTarimas.commit();
+      
+      // Actualizar ODP
+      const odpUpdates = {
+        estatus: decision === 'liberado' ? 'liberada_empaque' : 'liberada_empaque', // ambas pasan a empaque
+        liberacion_calidad: liberacionData,
+        lote_codigo: codigoLote,
+        cantidad_liberada: cantAceptada,
+        num_tarimas_generadas: tarimas,
+        updated_at: serverTimestamp()
+      };
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), odpUpdates);
+      
+      // Si parcial, generar nuevo PI por la cantidad faltante
+      let mensajePI = '';
+      if (decision === 'parcial') {
+        const faltante = cantidadOriginal - cantAceptada;
+        await generarPIDesdeRechazo(odp, faltante, `Reposición por ODP ${odp.folio}: liberado ${cantAceptada}/${cantidadOriginal} ${UM_LABELS[um]}, faltan ${fmtCantidadUM(faltante, um)} (decisión calidad: PARCIAL)`);
+        mensajePI = ` · PI nuevo generado por ${fmtCantidadUM(faltante, um)} faltante`;
+      }
+      
+      // Notificaciones
+      const batchNotif = writeBatch(db);
+      ['CS', 'CEO', 'KAM', 'ALP', 'PRO'].forEach(depto => {
+        const ref = doc(collection(db, 'notificaciones'));
+        batchNotif.set(ref, {
+          titulo: `${decision === 'liberado' ? '✅' : '⚠️'} Calidad liberó ${odp.folio}`,
+          mensaje: `${odp.cliente_nombre} · Lote ${codigoLote} · ${tarimas} tarima(s) · ${fmtCantidadUM(cantAceptada, um)}${mensajePI}`,
+          depto_destino: depto, tipo: 'success', folio_ref: odp.folio,
+          created_at: serverTimestamp()
+        });
+      });
+      await batchNotif.commit();
+      
+      cerrarModal();
+      toast(`✅ Lote ${codigoLote} liberado · ${tarimas} tarimas con QR generadas${mensajePI ? ' (+ PI reposición)' : ''}`);
+    } else {
+      // RECHAZADO: ODP rechazada, generar nuevo PI completo
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        estatus: 'rechazada',
+        liberacion_calidad: liberacionData,
+        rechazada_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      
+      // Generar PI nuevo por cantidad completa
+      await generarPIDesdeRechazo(odp, cantidadOriginal, `RECHAZADA por calidad - ODP ${odp.folio}: ${pctCalidad.toFixed(1)}% calidad (regla 90%). Reposición completa requerida.`);
+      
+      // Notificar
+      const batchNotif = writeBatch(db);
+      ['CS', 'CEO', 'KAM', 'PRO', 'PLN'].forEach(depto => {
+        const ref = doc(collection(db, 'notificaciones'));
+        batchNotif.set(ref, {
+          titulo: `❌ Calidad RECHAZÓ ${odp.folio}`,
+          mensaje: `${odp.cliente_nombre} · ${pctCalidad.toFixed(1)}% calidad · Nuevo PI generado por ${fmtCantidadUM(cantidadOriginal, um)}`,
+          depto_destino: depto, tipo: 'error', folio_ref: odp.folio,
+          created_at: serverTimestamp()
+        });
+      });
+      await batchNotif.commit();
+      
+      cerrarModal();
+      toast(`❌ ODP rechazada · PI nuevo generado por reposición completa`);
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Helper: generar PI nuevo desde un rechazo de calidad
+async function generarPIDesdeRechazo(odpOriginal, cantidad, motivo) {
+  const folioNum = await siguienteFolio('pedido');
+  const folio = 'PI-' + String(folioNum).padStart(5, '0');
+  
+  // Obtener cliente y CEDIS
+  const cliente = state.clientes.find(c => c.codigo === odpOriginal.cliente_codigo);
+  const cedis = cliente?.cedis_asignado || 'CEDIS-MTY';
+  const um = (odpOriginal.um || 'kg').toLowerCase();
+  
+  // Crear nuevo pedido
+  const pedidoRef = await addDoc(collection(db, 'pedidos'), {
+    folio,
+    cliente_codigo: odpOriginal.cliente_codigo,
+    cliente_nombre: odpOriginal.cliente_nombre,
+    odc_cliente: '',
+    fecha_requerida: null,
+    cedis_asignado: cedis,
+    estatus: 'pendiente_aprobacion',
+    tipo: 'producir',
+    observaciones: motivo,
+    es_reposicion: true,
+    odp_origen_rechazo: odpOriginal.folio,
+    creado_por: state.user.id,
+    creado_por_nombre: state.user.nombre + ' (auto-rechazo CAL)',
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp()
+  });
+  
+  // Crear línea
+  await addDoc(collection(db, 'pedido_lineas'), {
+    pedido_id: pedidoRef.id,
+    pedido_folio: folio,
+    producto_codigo: odpOriginal.producto_codigo,
+    descripcion: odpOriginal.descripcion,
+    cantidad_solicitada: cantidad,
+    um,
+    tipo_origen: 'producir',
+    precio_unitario: 0,
+    cantidad_stock: 0,
+    cantidad_producir: cantidad,
+    observaciones: motivo,
+    created_at: serverTimestamp()
+  });
+  
+  // Notificar
+  await addDoc(collection(db, 'notificaciones'), {
+    titulo: '🔄 PI auto-generado por reposición ' + folio,
+    mensaje: `Reposición de ${odpOriginal.folio} · ${cliente?.nombre} · ${fmtCantidadUM(cantidad, um)}`,
+    depto_destino: 'CS', tipo: 'warning', folio_ref: folio,
+    created_at: serverTimestamp()
+  });
+  
+  return folio;
+}
 
 // Guardar comentario en pedido
 window.guardarComentarioPedido = async (pedidoId) => {
