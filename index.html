@@ -1440,6 +1440,9 @@ function renderTarjetaCalidad(o, contexto) {
         ${o.estatus === 'pendiente_calidad' ? `
           <button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>
         ` : ''}
+        ${o.packing_list ? `
+          <button class="btn-primary" onclick="imprimirPackingList('${o.packing_list}')" style="padding:8px 14px;background:#f59e0b;">📄 Packing List ${o.packing_list}</button>
+        ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
     </div>
@@ -1869,110 +1872,176 @@ function modalCompletarProceso() {
   const procesoAnterior = procesosCompletados[procesosCompletados.length - 1];
   
   const um = (odp.um || 'kg').toLowerCase();
-  const stepCant = UM_ENTEROS.includes(um) ? '1' : '0.01';
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  const esEnUM = (um === 'pza' || um === 'millar'); // necesita conversión
   
-  // Cantidad inicial: para el primer proceso usa la cantidad solicitada,
-  // para los siguientes usa lo que produjo el proceso anterior
-  const cantidadEntrada = procesoAnterior ? procesoAnterior.cantidad_producida : odp.cantidad;
+  // Inicializar form
+  if (!state.modalForm) {
+    // Cantidad de entrada al proceso (en kg)
+    let entradaKg;
+    if (procesoAnterior) {
+      // Lo que produjo el proceso anterior (ya en kg)
+      entradaKg = Number(procesoAnterior.cantidad_producida_kg) || 
+                  window.convertirAKg(procesoAnterior.cantidad_producida, um, producto) || 
+                  Number(procesoAnterior.cantidad_producida) || 0;
+    } else {
+      // Primer proceso: usa la cantidad solicitada convertida a kg
+      entradaKg = Number(odp.cantidad_kg_produccion) || 
+                  window.convertirAKg(odp.cantidad, um, producto) || 
+                  Number(odp.cantidad) || 0;
+    }
+    
+    // Mermas acumuladas en kg (de procesos anteriores)
+    const mermasAcumKg = procesosCompletados.reduce((s, pc) => 
+      s + (Number(pc.mermas_kg) || 0), 0);
+    
+    state.modalForm = {
+      entrada_kg: Number(entradaKg.toFixed(2)),
+      mermas_acum_anteriores_kg: Number(mermasAcumKg.toFixed(2)),
+      producido_kg: '',
+      mermas_kg: '',
+      operador: state.user.nombre || '',
+      turno: '',
+      notas: ''
+    };
+  }
+  const f = state.modalForm;
+  
+  // Cálculos en vivo
+  const prodKg = Number(f.producido_kg) || 0;
+  const mermKg = Number(f.mermas_kg) || 0;
+  const totalKg = prodKg + mermKg;
+  const diffKg = f.entrada_kg - totalKg;
+  const cuadra = Math.abs(diffKg) < 0.5; // tolerancia 500g
+  const colorCuadre = cuadra ? '#16a34a' : (Math.abs(diffKg) / f.entrada_kg < 0.05 ? '#f59e0b' : '#dc2626');
+  
+  // Conversión a UM si aplica
+  const prodUM = esEnUM ? (window.convertirAKg(prodKg, 'kg', null) ? prodKg : 0) : prodKg;
+  const pesoMillar = window.calcularPesoMillar(producto);
+  const pesoPieza = window.calcularPesoPieza(producto);
+  let prodEnUM = 0;
+  if (um === 'millar' && pesoMillar > 0) prodEnUM = prodKg / pesoMillar;
+  else if (um === 'pza' && pesoPieza > 0) prodEnUM = prodKg / pesoPieza;
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:560px;">
+      <div class="modal" style="max-width:620px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">${esUltimo ? '🏁 Terminar' : '✅ Cerrar'} ${procActual.icono} ${procActual.nombre}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
           
-          <div style="padding:14px;background:${procActual.color}11;border-radius:10px;margin-bottom:14px;font-size:12px;border-left:4px solid ${procActual.color};">
-            <strong>${odp.folio}</strong> • ${odp.cliente_nombre}<br>
-            <span class="text-mono" style="font-size:11px;">${odp.producto_codigo}</span><br>
-            <strong>Cantidad de entrada al proceso:</strong> ${fmtCantidadUM(cantidadEntrada, odp.um)}
+          <div style="padding:12px;background:${procActual.color}11;border-radius:10px;margin-bottom:12px;font-size:12px;border-left:4px solid ${procActual.color};">
+            <strong>${odp.folio}</strong> • ${odp.cliente_nombre} • <span class="text-mono" style="font-size:11px;">${odp.producto_codigo}</span>
+          </div>
+          
+          <!-- Estado actual: Entrada + Mermas acumuladas -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+            <div style="padding:10px;background:#eff6ff;border-radius:8px;border:1px solid #bfdbfe;">
+              <div style="font-size:9px;color:#1e40af;font-weight:700;text-transform:uppercase;">Entrada al proceso</div>
+              <div style="font-size:18px;font-weight:800;color:#1e40af;">${fmtNum(f.entrada_kg)} kg</div>
+              ${esEnUM ? `<div style="font-size:10px;color:#3b82f6;">≈ ${fmtNum(window.convertirAKg(f.entrada_kg, 'kg', null) || (um === 'millar' ? f.entrada_kg / pesoMillar : f.entrada_kg / pesoPieza))} ${UM_LABELS[um]}</div>` : ''}
+              ${procesoAnterior ? `<div style="font-size:9px;color:#64748b;margin-top:2px;">desde ${getProc(procesoAnterior.codigo)?.codigo || ''}</div>` : '<div style="font-size:9px;color:#64748b;margin-top:2px;">cantidad solicitada</div>'}
+            </div>
+            <div style="padding:10px;background:#fef3c7;border-radius:8px;border:1px solid #fde68a;">
+              <div style="font-size:9px;color:#92400e;font-weight:700;text-transform:uppercase;">Mermas acumuladas</div>
+              <div style="font-size:18px;font-weight:800;color:#92400e;">${fmtNum(f.mermas_acum_anteriores_kg)} kg</div>
+              <div style="font-size:9px;color:#92400e;margin-top:2px;">de procesos anteriores</div>
+            </div>
+          </div>
+          
+          <!-- CAPTURA EN KG -->
+          <div style="padding:14px;background:#f0fdf4;border-radius:10px;border:2px solid #16a34a;margin-bottom:12px;">
+            <div style="font-size:12px;font-weight:700;color:#16a34a;margin-bottom:8px;">⚖️ Captura en kg (báscula)</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div>
+                <label class="field-label" style="font-size:10px;">Producido en kg *</label>
+                <input class="input form-comp" data-field="producido_kg" type="number" min="0" step="0.01" value="${f.producido_kg}" placeholder="0.00" autocomplete="off" />
+                ${esEnUM ? `<div id="comp-prod-um" style="font-size:10px;color:#16a34a;margin-top:4px;font-weight:600;">${prodKg > 0 ? `≈ ${fmtNum(prodEnUM)} ${UM_LABELS[um]}` : ''}</div>` : ''}
+              </div>
+              <div>
+                <label class="field-label" style="font-size:10px;">Mermas en kg *</label>
+                <input class="input form-comp" data-field="mermas_kg" type="number" min="0" step="0.01" value="${f.mermas_kg}" placeholder="0.00" autocomplete="off" />
+              </div>
+            </div>
+          </div>
+          
+          <!-- CUADRE -->
+          <div id="comp-cuadre-box" style="padding:12px;background:${colorCuadre}11;border:2px solid ${colorCuadre};border-radius:10px;margin-bottom:12px;font-size:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong style="color:${colorCuadre};">Cuadre del proceso</strong>
+              <strong id="comp-cuadre-status" style="color:${colorCuadre};font-size:13px;">${cuadra ? '✓ Cuadra' : (totalKg > f.entrada_kg ? '❌ Excede entrada' : '⚠ Faltante')}</strong>
+            </div>
+            <div style="margin-top:6px;font-size:11px;color:#475569;">
+              Entrada: <strong>${fmtNum(f.entrada_kg)} kg</strong> = 
+              Producido: <strong id="comp-cuadre-prod">${fmtNum(prodKg)} kg</strong> + 
+              Mermas: <strong id="comp-cuadre-merm">${fmtNum(mermKg)} kg</strong>
+              <span id="comp-cuadre-diff" style="float:right;color:${colorCuadre};font-weight:700;">
+                ${cuadra ? '' : `Diferencia: ${diffKg >= 0 ? '+' : ''}${fmtNum(diffKg)} kg`}
+              </span>
+            </div>
+            ${!cuadra ? `<div id="comp-cuadre-warning" style="margin-top:6px;padding:6px;background:#fff;border-radius:4px;font-size:10px;color:${colorCuadre};">
+              ${totalKg > f.entrada_kg ? '⚠️ El producido + mermas EXCEDE la entrada (imposible)' : '⚠️ Hay material sin contabilizar. Puedes continuar pero queda registrado.'}
+            </div>` : ''}
+          </div>
+          
+          <!-- Después del proceso -->
+          <div style="padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:12px;font-size:11px;">
+            <strong style="color:#475569;">Después de este proceso:</strong>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
+              <div>Pasa al siguiente: <strong style="color:#16a34a;" id="comp-pasa">${fmtNum(prodKg)} kg</strong></div>
+              <div>Mermas totales: <strong style="color:#dc2626;" id="comp-mermas-tot">${fmtNum(f.mermas_acum_anteriores_kg + mermKg)} kg</strong></div>
+            </div>
           </div>
           
           ${esUltimo ? `
-            <div style="padding:14px;background:#fef3c7;border-radius:10px;margin-bottom:14px;font-size:12px;border:2px solid #f59e0b;">
-              <strong>🏁 Este es el ÚLTIMO proceso de la ruta.</strong><br>
-              <ul style="margin:8px 0 0 18px;padding:0;">
-                <li>La ODP pasará a <strong>🟡 Pendiente Liberación de Calidad</strong></li>
-                <li>Calidad revisará y liberará (regla 90%)</li>
-                <li>Después: empaque → almacén → CEDIS</li>
-              </ul>
+            <div style="padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;border:1px solid #fde68a;margin-bottom:12px;">
+              🏁 <strong>Último proceso:</strong> al confirmar, la ODP pasa a 🟡 Pendiente Liberación de Calidad. Calidad recibirá: <strong>${fmtNum(prodKg)} kg producidos</strong> con <strong>${fmtNum(f.mermas_acum_anteriores_kg + mermKg)} kg de mermas acumuladas</strong>.
             </div>
           ` : `
-            <div style="padding:12px;background:#fef3c7;border-radius:10px;margin-bottom:14px;font-size:12px;">
-              💡 Al cerrar este proceso, la ODP avanzará al siguiente paso de la ruta.
+            <div style="padding:10px;background:#dbeafe;border-radius:8px;font-size:11px;margin-bottom:12px;">
+              💡 Al avanzar, el siguiente proceso recibirá <strong>${fmtNum(prodKg)} kg</strong> como entrada.
             </div>
           `}
           
-          ${(um === 'pza' || um === 'millar') ? `
-            <div style="padding:12px;background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;margin-bottom:12px;font-size:11px;">
-              <div style="font-weight:700;color:#1e40af;margin-bottom:6px;">⚖️ Captura en kg (báscula) → conversión automática</div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                <div>
-                  <label class="field-label" style="font-size:10px;">Producido en kg (báscula)</label>
-                  <input class="input" id="comp-kg" type="number" min="0" step="0.01" placeholder="0.00" autocomplete="off" oninput="convertirKgAUM('${um}','${odp.producto_codigo}')" />
-                </div>
-                <div>
-                  <label class="field-label" style="font-size:10px;">Mermas en kg</label>
-                  <input class="input" id="comp-mermas-kg" type="number" min="0" step="0.01" placeholder="0.00" autocomplete="off" oninput="convertirKgMermasAUM('${um}','${odp.producto_codigo}')" />
-                </div>
-              </div>
-              <div style="font-size:9px;color:#3b82f6;margin-top:4px;">
-                💡 Al capturar en kg, se convierte automáticamente a ${UM_LABELS[um]}
-              </div>
-            </div>
-          ` : ''}
-          
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
             <div class="field">
-              <label class="field-label">Cantidad producida (${UM_LABELS[um]}) *</label>
-              <input class="input" id="comp-cantidad" type="number" min="0" step="${stepCant}" value="${cantidadEntrada}" autocomplete="off" />
-              <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Lo que sale aceptado de ${procActual.nombre}</div>
-            </div>
-            <div class="field">
-              <label class="field-label">Mermas (${UM_LABELS[um]})</label>
-              <input class="input" id="comp-mermas" type="number" min="0" step="${stepCant}" value="0" autocomplete="off" />
-            </div>
-          </div>
-          
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-            <div class="field">
-              <label class="field-label">Operador / Persona que captura</label>
-              <input class="input" id="comp-operador" placeholder="Nombre" value="${state.user.nombre || ''}" autocomplete="off" />
+              <label class="field-label">Operador</label>
+              <input class="input form-comp" data-field="operador" placeholder="Nombre" value="${f.operador}" autocomplete="off" />
             </div>
             <div class="field">
               <label class="field-label">Turno</label>
-              <select class="input" id="comp-turno">
+              <select class="input form-comp" data-field="turno">
                 <option value="">— Sin especificar —</option>
-                ${TURNOS.map(t => `<option value="${t.codigo}">${t.nombre}</option>`).join('')}
+                ${TURNOS.map(t => `<option value="${t.codigo}" ${f.turno === t.codigo ? 'selected' : ''}>${t.nombre}</option>`).join('')}
               </select>
             </div>
           </div>
           
           <div class="field">
             <label class="field-label">Notas / observaciones</label>
-            <textarea class="input" id="comp-notas" style="min-height:60px;" placeholder="Detalles del proceso, incidencias, calidad, etc."></textarea>
+            <textarea class="input form-comp" data-field="notas" style="min-height:50px;" placeholder="Incidencias, motivo de diferencias, etc.">${f.notas}</textarea>
           </div>
           
           ${procesosCompletados.length > 0 ? `
-            <div style="margin-top:14px;padding:12px;background:#f8fafc;border-radius:8px;">
+            <div style="margin-top:12px;padding:10px;background:#f8fafc;border-radius:8px;">
               <div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px;">📋 Procesos ya completados</div>
               ${procesosCompletados.map(pc => {
                 const p = getProc(pc.codigo);
                 return `
-                  <div style="font-size:11px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                  <div style="font-size:11px;margin-bottom:3px;display:flex;justify-content:space-between;gap:6px;">
                     <span>${p?.icono || '✓'} ${p?.codigo} — ${pc.operador || '—'}</span>
-                    <span><strong>${fmtCantidadUM(pc.cantidad_producida, odp.um)}</strong>${pc.mermas ? ` · -${fmtCantidadUM(pc.mermas, odp.um)} merma` : ''}</span>
+                    <span><strong>${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida)} kg</strong>${pc.mermas_kg ? ` · -${fmtNum(pc.mermas_kg)} kg merma` : ''}</span>
                   </div>
                 `;
               }).join('')}
             </div>
           ` : ''}
         </div>
-        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" style="background:${esUltimo ? '#f59e0b' : procActual.color};">${ICONS.check} ${esUltimo ? 'Terminar y enviar a Calidad' : 'Avanzar al siguiente proceso'}</button>
+          <button id="comp-btn-confirmar" class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" style="background:${esUltimo ? '#f59e0b' : procActual.color};">${ICONS.check} ${esUltimo ? 'Terminar y enviar a Calidad' : 'Avanzar al siguiente proceso'}</button>
         </div>
       </div>
     </div>
@@ -2172,8 +2241,13 @@ function modalLiberarCalidad() {
                   </button>
                 </div>
               ` : `
-                <div style="margin-top:10px;font-size:11px;color:#94a3b8;font-style:italic;">
-                  💡 Captura el contenido por paquete para usar la auto-distribución.
+                <div style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;font-size:11px;">
+                  <div style="color:#475569;margin-bottom:6px;">
+                    💡 Si no usas paquetes, captura directamente la <strong>cantidad por tarima</strong> en la tabla. Para distribuir equitativo:
+                  </div>
+                  <button onclick="autoDistribuirSinPaquetes()" type="button" style="width:100%;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
+                    🪄 Auto-distribuir ${fmtCantidadUM(cantAceptada, um)} entre ${f.num_tarimas} tarima${f.num_tarimas > 1 ? 's' : ''}
+                  </button>
                 </div>
               `}
             </div>
@@ -2182,7 +2256,7 @@ function modalLiberarCalidad() {
             <div style="margin-bottom:14px;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                 <strong style="font-size:12px;">📋 Detalle por tarima 
-                  <span style="font-weight:400;color:#64748b;font-size:10px;">(captura paquetes y sueltos; cantidad se calcula auto)</span>
+                  <span style="font-weight:400;color:#64748b;font-size:10px;">${contPaq > 0 ? '(captura paquetes y sueltos; cantidad se calcula auto)' : '(captura cantidad por tarima)'}</span>
                 </strong>
                 <button onclick="resetTarimas()" type="button" style="font-size:10px;padding:4px 8px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;">↺ Resetear</button>
               </div>
@@ -2191,9 +2265,9 @@ function modalLiberarCalidad() {
                   <thead>
                     <tr style="background:#f1f5f9;">
                       <th style="padding:8px;text-align:left;">Tar</th>
-                      <th style="padding:8px;text-align:right;">Paquetes</th>
-                      <th style="padding:8px;text-align:right;">Sueltos (${UM_LABELS[um]})</th>
-                      <th style="padding:8px;text-align:right;">Cantidad total ${UM_LABELS[um]} (auto)</th>
+                      <th style="padding:8px;text-align:right;">Paquetes ${contPaq > 0 ? `<span style="font-weight:400;color:#94a3b8;font-size:9px;">×${fmtNum(contPaq)}</span>` : ''}</th>
+                      <th style="padding:8px;text-align:right;">${contPaq > 0 ? `Sueltos (${UM_LABELS[um]})` : `Cantidad (${UM_LABELS[um]}) *`}</th>
+                      <th style="padding:8px;text-align:right;">Total ${UM_LABELS[um]} ${contPaq > 0 ? '(auto)' : ''}</th>
                       <th style="padding:8px;text-align:right;">P. bruto (kg)</th>
                       <th style="padding:8px;text-align:right;">P. vacío (kg)</th>
                       <th style="padding:8px;text-align:right;">P. neto (kg)</th>
@@ -3155,6 +3229,72 @@ function attachAppEvents() {
     };
   });
   
+  // Handler form-comp (modal completar proceso) con cuadre en vivo
+  function actualizarPreviewCompletarProceso() {
+    if (!state.modalForm) return;
+    const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+    if (!odp) return;
+    
+    const um = (odp.um || 'kg').toLowerCase();
+    const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+    const f = state.modalForm;
+    const prodKg = Number(f.producido_kg) || 0;
+    const mermKg = Number(f.mermas_kg) || 0;
+    const totalKg = prodKg + mermKg;
+    const diffKg = f.entrada_kg - totalKg;
+    const cuadra = Math.abs(diffKg) < 0.5;
+    const colorCuadre = cuadra ? '#16a34a' : (Math.abs(diffKg) / Math.max(f.entrada_kg, 1) < 0.05 ? '#f59e0b' : '#dc2626');
+    
+    // Conversión a UM si aplica
+    let prodEnUM = 0;
+    if (um === 'millar' && producto) {
+      const pesoMillar = window.calcularPesoMillar(producto);
+      if (pesoMillar > 0) prodEnUM = prodKg / pesoMillar;
+    } else if (um === 'pza' && producto) {
+      const pesoPieza = window.calcularPesoPieza(producto);
+      if (pesoPieza > 0) prodEnUM = prodKg / pesoPieza;
+    }
+    
+    // Actualizar UI sin re-render
+    const box = $('#comp-cuadre-box');
+    const status = $('#comp-cuadre-status');
+    const prodE = $('#comp-cuadre-prod');
+    const mermE = $('#comp-cuadre-merm');
+    const diffE = $('#comp-cuadre-diff');
+    const pasaE = $('#comp-pasa');
+    const mermTotE = $('#comp-mermas-tot');
+    const prodUM_E = $('#comp-prod-um');
+    
+    if (box) {
+      box.style.background = colorCuadre + '11';
+      box.style.borderColor = colorCuadre;
+    }
+    if (status) {
+      status.style.color = colorCuadre;
+      status.textContent = cuadra ? '✓ Cuadra' : (totalKg > f.entrada_kg ? '❌ Excede entrada' : '⚠ Faltante');
+    }
+    if (prodE) prodE.textContent = `${fmtNum(prodKg)} kg`;
+    if (mermE) mermE.textContent = `${fmtNum(mermKg)} kg`;
+    if (diffE) {
+      diffE.style.color = colorCuadre;
+      diffE.textContent = cuadra ? '' : `Diferencia: ${diffKg >= 0 ? '+' : ''}${fmtNum(diffKg)} kg`;
+    }
+    if (pasaE) pasaE.textContent = `${fmtNum(prodKg)} kg`;
+    if (mermTotE) mermTotE.textContent = `${fmtNum(f.mermas_acum_anteriores_kg + mermKg)} kg`;
+    if (prodUM_E && (um === 'pza' || um === 'millar')) {
+      prodUM_E.textContent = prodKg > 0 ? `≈ ${fmtNum(prodEnUM)} ${UM_LABELS[um]}` : '';
+    }
+  }
+  window.actualizarPreviewCompletarProceso = actualizarPreviewCompletarProceso;
+  
+  $$('.form-comp').forEach(el => {
+    el.oninput = () => {
+      if (!state.modalForm) return;
+      state.modalForm[el.dataset.field] = el.value;
+      actualizarPreviewCompletarProceso();
+    };
+  });
+  
   // Filtros de Seguimiento
   if ($('#filtro-seguimiento')) {
     $('#filtro-seguimiento').oninput = (e) => {
@@ -3325,7 +3465,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
@@ -3970,8 +4110,8 @@ window.iniciarProceso = async (odpId) => {
 
 // Confirmar completar proceso actual (avanza al siguiente o termina la ODP)
 window.confirmarCompletarProceso = async (odpId) => {
-  const cantidad = Number($('#comp-cantidad').value);
-  if (!cantidad || cantidad <= 0) { toast('Captura una cantidad válida', 'error'); return; }
+  const f = state.modalForm;
+  if (!f) return;
   
   const odp = state.ordenes_produccion.find(o => o.id === odpId);
   if (!odp) return;
@@ -3981,14 +4121,53 @@ window.confirmarCompletarProceso = async (odpId) => {
   if (!proc) { toast('Error en la ruta del proceso', 'error'); return; }
   
   const um = (odp.um || 'kg').toLowerCase();
-  if (UM_ENTEROS.includes(um) && !Number.isInteger(cantidad)) {
-    toast(`${UM_LABELS[um]} requiere cantidad entera`, 'error'); return;
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  
+  const prodKg = Number(f.producido_kg) || 0;
+  const mermKg = Number(f.mermas_kg) || 0;
+  
+  if (prodKg <= 0) { toast('Captura el producido en kg', 'error'); return; }
+  
+  // Validar cuadre con confirmación si no cuadra
+  const totalKg = prodKg + mermKg;
+  const diffKg = f.entrada_kg - totalKg;
+  const cuadra = Math.abs(diffKg) < 0.5;
+  
+  if (totalKg > f.entrada_kg + 0.5) {
+    toast(`❌ Producido + Mermas (${fmtNum(totalKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg)`, 'error');
+    return;
   }
   
-  const mermas = Number($('#comp-mermas').value) || 0;
-  const operador = ($('#comp-operador').value || '').trim();
-  const turno = $('#comp-turno').value || '';
-  const notas = ($('#comp-notas').value || '').trim();
+  if (!cuadra) {
+    const msg = diffKg > 0 
+      ? `⚠ Hay ${fmtNum(diffKg)} kg sin contabilizar.\n\nEntrada: ${fmtNum(f.entrada_kg)} kg\nProducido: ${fmtNum(prodKg)} kg\nMermas: ${fmtNum(mermKg)} kg\nTotal capturado: ${fmtNum(totalKg)} kg\n\n¿Continuar de todos modos?`
+      : `⚠ El total capturado excede la entrada.\n\n¿Continuar de todos modos?`;
+    if (!confirm(msg)) return;
+  }
+  
+  // Convertir a UM original para capturas y procesos
+  let prodEnUM = prodKg;
+  let mermEnUM = mermKg;
+  if (um === 'millar' && producto) {
+    const pesoMillar = window.calcularPesoMillar(producto);
+    if (pesoMillar > 0) {
+      prodEnUM = prodKg / pesoMillar;
+      mermEnUM = mermKg / pesoMillar;
+    }
+  } else if (um === 'pza' && producto) {
+    const pesoPieza = window.calcularPesoPieza(producto);
+    if (pesoPieza > 0) {
+      prodEnUM = prodKg / pesoPieza;
+      mermEnUM = mermKg / pesoPieza;
+      // Para piezas, redondear
+      prodEnUM = Math.round(prodEnUM);
+      mermEnUM = Math.round(mermEnUM);
+    }
+  }
+  
+  const operador = (f.operador || '').trim();
+  const turno = f.turno || '';
+  const notas = (f.notas || '').trim();
   const esUltimo = idx === ruta.length - 1;
   
   state.loadingAccion = true; render();
@@ -4000,8 +4179,16 @@ window.confirmarCompletarProceso = async (odpId) => {
       producto_codigo: odp.producto_codigo,
       proceso: ruta[idx],
       proceso_nombre: proc.nombre,
-      cantidad_producida: cantidad,
-      mermas, um, operador, turno, notas,
+      // Datos en kg (siempre)
+      entrada_kg: f.entrada_kg,
+      producido_kg: prodKg,
+      mermas_kg: mermKg,
+      diferencia_no_contabilizada_kg: Number(diffKg.toFixed(2)),
+      cuadra: cuadra,
+      // Datos en UM original (para reporting)
+      cantidad_producida: prodEnUM,
+      mermas: mermEnUM,
+      um, operador, turno, notas,
       capturado_por: state.user.id,
       capturado_por_nombre: state.user.nombre,
       created_at: serverTimestamp()
@@ -4011,22 +4198,35 @@ window.confirmarCompletarProceso = async (odpId) => {
     const procesosCompletados = [...(odp.procesos_completados || []), {
       codigo: ruta[idx],
       nombre: proc.nombre,
-      cantidad_producida: cantidad,
-      mermas, operador, turno, notas,
+      // En kg (lo que pasa al siguiente proceso y mermas acumulan en kg)
+      entrada_kg: f.entrada_kg,
+      cantidad_producida_kg: prodKg,
+      mermas_kg: mermKg,
+      diferencia_no_contabilizada_kg: Number(diffKg.toFixed(2)),
+      cuadra: cuadra,
+      // En UM original
+      cantidad_producida: prodEnUM,
+      mermas: mermEnUM,
+      operador, turno, notas,
       completado_at: new Date().toISOString(),
       completado_por: state.user.nombre
     }];
     
     if (esUltimo) {
-      // 3a. Es el último proceso → enviar a Calidad para liberación
-      const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
+      // Último proceso → Calidad
+      const totalMermasKg = procesosCompletados.reduce((s, p) => s + (Number(p.mermas_kg) || 0), 0);
+      const totalDiffKg = procesosCompletados.reduce((s, p) => s + (Number(p.diferencia_no_contabilizada_kg) || 0), 0);
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
         estatus: 'pendiente_calidad',
         proceso_actual: null,
         procesos_completados: procesosCompletados,
-        cantidad_producida_final: cantidad, // lo que sale del último proceso
-        mermas_finales: totalMermas,
+        // Cantidad final en UM original (para que calidad libere)
+        cantidad_producida_final: prodEnUM,
+        cantidad_producida_final_kg: prodKg,
+        mermas_finales: procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0),
+        mermas_finales_kg: totalMermasKg,
+        total_diferencia_no_contabilizada_kg: Number(totalDiffKg.toFixed(2)),
         produccion_terminada_at: serverTimestamp(),
         produccion_terminada_por: state.user.id,
         produccion_terminada_por_nombre: state.user.nombre,
@@ -4034,13 +4234,12 @@ window.confirmarCompletarProceso = async (odpId) => {
         updated_at: serverTimestamp()
       });
       
-      // Notificar a CALIDAD
       const batch = writeBatch(db);
       ['CAL', 'CEO'].forEach(depto => {
         const ref = doc(collection(db, 'notificaciones'));
         batch.set(ref, {
           titulo: '🟡 Pendiente liberación calidad ' + odp.folio,
-          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtCantidadUM(cantidad, um)} producidos`,
+          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtNum(prodKg)} kg producidos · ${fmtNum(totalMermasKg)} kg mermas`,
           depto_destino: depto, tipo: 'warning', folio_ref: odp.folio,
           created_at: serverTimestamp()
         });
@@ -4048,14 +4247,14 @@ window.confirmarCompletarProceso = async (odpId) => {
       await batch.commit();
       
       cerrarModal();
-      toast(`🟡 ODP enviada a Liberación de Calidad`);
+      toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg (mermas acum: ${fmtNum(totalMermasKg)} kg)`);
     } else {
-      // 3b. Avanzar al siguiente proceso
+      // Avanzar al siguiente proceso
       const siguienteIdx = idx + 1;
       const siguienteProc = getProc(ruta[siguienteIdx]);
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-        estatus: 'programada', // queda lista para iniciar el siguiente
+        estatus: 'programada',
         procesos_completados: procesosCompletados,
         proceso_actual_idx: siguienteIdx,
         proceso_actual: ruta[siguienteIdx],
@@ -4063,16 +4262,15 @@ window.confirmarCompletarProceso = async (odpId) => {
         updated_at: serverTimestamp()
       });
       
-      // Notificar avance
       await addDoc(collection(db, 'notificaciones'), {
         titulo: `${proc.icono} ${proc.nombre} terminado en ${odp.folio}`,
-        mensaje: `Lista para iniciar ${siguienteProc?.icono || ''} ${siguienteProc?.nombre || ruta[siguienteIdx]}`,
+        mensaje: `Pasa ${fmtNum(prodKg)} kg al siguiente: ${siguienteProc?.icono || ''} ${siguienteProc?.nombre || ruta[siguienteIdx]}`,
         depto_destino: 'PRO', tipo: 'info', folio_ref: odp.folio,
         created_at: serverTimestamp()
       });
       
       cerrarModal();
-      toast(`✅ ${proc.nombre} terminado · Siguiente: ${siguienteProc?.nombre || ''}`);
+      toast(`✅ ${proc.nombre} terminado · Pasa ${fmtNum(prodKg)} kg a ${siguienteProc?.nombre || ''}`);
     }
   } catch (e) {
     toast('Error: ' + e.message, 'error');
@@ -4315,10 +4513,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
       await batchNotif.commit();
       
       cerrarModal();
-      toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lotes individuales generados${mensajePI ? ' (+ PI reposición)' : ''}`);
-      
-      // Abrir Packing List automáticamente para imprimir
-      setTimeout(() => window.imprimirPackingList(codigoPKL), 800);
+      toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Usa el botón "📄 Packing List" para imprimirlo`);
     } else {
       // RECHAZADO
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
@@ -4440,6 +4635,44 @@ window.autoDistribuir = () => {
 };
 
 // Resetear tarimas (poner todo en 0)
+// Distribuir cantidad equitativa SIN paquetes (cuando UM ya está en kg directo)
+window.autoDistribuirSinPaquetes = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  const numT = state.modalForm.tarimas_data.length;
+  if (numT === 0) return;
+  
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return;
+  
+  const cantTotal = Number(state.modalForm.cantidad_aceptada) || 0;
+  if (!cantTotal || cantTotal <= 0) {
+    toast('Captura la cantidad aceptada', 'error');
+    return;
+  }
+  
+  // Distribuir cantidad equitativa
+  const cantPorT = cantTotal / numT;
+  const um = (odp.um || 'kg').toLowerCase();
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  const pesoTeoricoUnit = window.convertirAKg(cantPorT, um, producto) || cantPorT;
+  const pesoVacio = Number(state.modalForm.peso_tarima_unit) || 25;
+  
+  state.modalForm.tarimas_data = state.modalForm.tarimas_data.map((_, i) => {
+    // Sin paquetes → toda la cantidad va en "sueltos" (que ahora se llama "Cantidad")
+    let cant = cantPorT;
+    if (UM_ENTEROS.includes(um) && i < numT - 1) cant = Math.floor(cantPorT);
+    if (i === numT - 1) cant = cantTotal - (Math.floor(cantPorT) * (numT - 1)); // resto en última
+    return {
+      paquetes: 0,
+      sueltos: cant,
+      peso_bruto: Number((pesoTeoricoUnit + pesoVacio).toFixed(2)),
+      peso_tarima_vacia: pesoVacio
+    };
+  });
+  render();
+  toast(`✅ ${fmtCantidadUM(cantTotal, um)} distribuidos entre ${numT} tarima${numT > 1 ? 's' : ''}`);
+};
+
 window.resetTarimas = () => {
   if (!state.modalForm || !state.modalForm.tarimas_data) return;
   const pesoVacio = Number(state.modalForm.peso_tarima_unit) || 25;
