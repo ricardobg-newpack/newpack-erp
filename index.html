@@ -1999,35 +1999,33 @@ function modalLiberarCalidad() {
             </div>
           </div>
           
-          ${cantRechazada > 0 ? `
-            <div style="padding:10px;background:#fee2e2;border-radius:8px;margin-bottom:14px;font-size:12px;color:#dc2626;">
-              ⚠️ Se rechazarán <strong>${fmtCantidadUM(cantRechazada, um)}</strong> del producido
-            </div>
-          ` : ''}
+          <div id="cal-rechazo-info" style="padding:10px;background:#fee2e2;border-radius:8px;margin-bottom:14px;font-size:12px;color:#dc2626;display:${cantRechazada > 0 ? 'block' : 'none'};">
+            ${cantRechazada > 0 ? `⚠️ Se rechazarán <strong>${fmtCantidadUM(cantRechazada, um)}</strong> del producido` : ''}
+          </div>
           
           <!-- Indicador de decisión -->
-          <div style="padding:14px;background:${decisionColor}11;border:2px solid ${decisionColor};border-radius:10px;margin-bottom:14px;">
+          <div id="cal-preview-box" style="padding:14px;background:${decisionColor}11;border:2px solid ${decisionColor};border-radius:10px;margin-bottom:14px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-              <strong style="color:${decisionColor};font-size:14px;">${decisionTexto}</strong>
-              <strong style="color:${decisionColor};font-size:18px;">${pctCalidadVsOriginal.toFixed(1)}%</strong>
+              <strong id="cal-preview-texto" style="color:${decisionColor};font-size:14px;">${decisionTexto}</strong>
+              <strong id="cal-preview-pct" style="color:${decisionColor};font-size:18px;">${pctCalidadVsOriginal.toFixed(1)}%</strong>
             </div>
-            <div style="font-size:11px;color:#475569;">${mensajeDecision}</div>
+            <div id="cal-preview-msg" style="font-size:11px;color:#475569;">${mensajeDecision}</div>
             <div style="margin-top:8px;background:#e2e8f0;height:6px;border-radius:99px;overflow:hidden;">
-              <div style="background:${decisionColor};height:100%;width:${Math.min(100, pctCalidadVsOriginal)}%;transition:width 0.3s;"></div>
+              <div id="cal-preview-bar" style="background:${decisionColor};height:100%;width:${Math.min(100, pctCalidadVsOriginal)}%;transition:width 0.3s;"></div>
             </div>
             <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Regla: ≥90% del solicitado = LIBERA · &lt;90% = RECHAZA toda la ODP</div>
           </div>
           
-          <!-- Tarimas (solo si libera) -->
-          ${decision === 'liberado' || decision === 'parcial' ? `
+          <!-- Tarimas (siempre en DOM, ocultas con display si no aplica) -->
+          <div id="cal-tarimas-container" style="display:${(decision === 'liberado' || decision === 'parcial') ? 'block' : 'none'};">
             <div class="field">
               <label class="field-label">Número de tarimas a generar *</label>
               <input class="input form-cal" data-field="tarimas" type="number" min="1" step="1" value="${f.tarimas}" placeholder="Ej: 5" autocomplete="off" />
               <div style="font-size:10px;color:#94a3b8;margin-top:4px;">
-                Se generarán ${f.tarimas || '0'} etiquetas con QR (para escaneable). Cada tarima tendrá su propio código.
+                Cada tarima tendrá su propio código y QR escaneable.
               </div>
             </div>
-          ` : ''}
+          </div>
           
           <div class="field">
             <label class="field-label">Notas de calidad</label>
@@ -2036,7 +2034,7 @@ function modalLiberarCalidad() {
         </div>
         <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="confirmarLiberarCalidad('${odp.id}')" style="background:${decisionColor};" ${(decision === 'liberado' || decision === 'parcial') && !f.tarimas ? 'disabled' : ''}>${ICONS.check} Confirmar ${decisionTexto}</button>
+          <button id="cal-btn-confirmar" class="btn-primary" onclick="confirmarLiberarCalidad('${odp.id}')" style="background:${decisionColor};" ${(decision === 'liberado' || decision === 'parcial') && !f.tarimas ? 'disabled' : ''}>${ICONS.check} Confirmar ${decisionTexto}</button>
         </div>
       </div>
     </div>
@@ -2713,27 +2711,90 @@ function attachAppEvents() {
     };
   }
   
-  // Modal Liberar Calidad: live update para regla 90%
-  $$('.form-cal').forEach(el => {
-    const handler = (e) => {
-      if (!state.modalForm) return;
-      const pos = el.selectionStart;
-      state.modalForm[el.dataset.field] = el.value;
-      render();
-      const next = document.querySelector(`.form-cal[data-field="${el.dataset.field}"]`);
-      if (next && next.tagName !== 'TEXTAREA' && typeof pos === 'number') {
-        next.focus();
-        try { next.setSelectionRange(pos, pos); } catch(e) {}
-      } else if (next) {
-        next.focus();
+  // Modal Liberar Calidad: live update SIN re-render (preserva cursor)
+  function actualizarPreviewCalidad() {
+    if (!state.modalForm) return;
+    const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+    if (!odp) return;
+    
+    const um = (odp.um || 'kg').toLowerCase();
+    const cantidadProducida = Number(odp.cantidad_producida_final) || 0;
+    const cantidadOriginal = Number(odp.cantidad) || 0;
+    const cantAceptada = Number(state.modalForm.cantidad_aceptada) || 0;
+    const cantRechazada = Math.max(0, cantidadProducida - cantAceptada);
+    const pctCalidadVsOriginal = cantidadOriginal > 0 ? (cantAceptada / cantidadOriginal * 100) : 0;
+    
+    let decision = 'pendiente', decisionTexto = '', decisionColor = '#94a3b8', mensajeDecision = '';
+    if (cantAceptada > 0) {
+      if (pctCalidadVsOriginal >= 90) {
+        decision = cantAceptada >= cantidadProducida ? 'liberado' : 'parcial';
+        decisionTexto = decision === 'liberado' ? '✅ LIBERADO TOTAL' : '⚠️ LIBERADO PARCIAL';
+        decisionColor = '#16a34a';
+        mensajeDecision = decision === 'liberado'
+          ? 'Toda la producción se libera al lote.'
+          : `Se libera ${fmtCantidadUM(cantAceptada, um)} (${pctCalidadVsOriginal.toFixed(1)}% del solicitado).<br><strong>El sistema generará un PI nuevo</strong> por la cantidad faltante (${fmtCantidadUM(cantidadOriginal - cantAceptada, um)}).`;
+      } else {
+        decision = 'rechazado';
+        decisionTexto = '❌ RECHAZADO (< 90%)';
+        decisionColor = '#dc2626';
+        mensajeDecision = `Solo ${pctCalidadVsOriginal.toFixed(1)}% es aceptable. Se rechaza toda la ODP y <strong>el sistema generará un PI nuevo</strong> por la cantidad completa.`;
       }
-    };
-    if (el.tagName === 'TEXTAREA') el.oninput = (e) => { 
+    } else {
+      decision = 'rechazado';
+      decisionTexto = '❌ RECHAZADO TOTAL';
+      decisionColor = '#dc2626';
+      mensajeDecision = 'Toda la producción se rechaza. <strong>Se genera nuevo PI completo</strong>.';
+    }
+    
+    // Actualizar elementos del preview sin tocar inputs
+    const box = $('#cal-preview-box');
+    const txt = $('#cal-preview-texto');
+    const pct = $('#cal-preview-pct');
+    const msg = $('#cal-preview-msg');
+    const bar = $('#cal-preview-bar');
+    const rechazo = $('#cal-rechazo-info');
+    const tarimasContainer = $('#cal-tarimas-container');
+    const btn = $('#cal-btn-confirmar');
+    
+    if (box) {
+      box.style.background = decisionColor + '11';
+      box.style.borderColor = decisionColor;
+    }
+    if (txt) { txt.style.color = decisionColor; txt.textContent = decisionTexto; }
+    if (pct) { pct.style.color = decisionColor; pct.textContent = pctCalidadVsOriginal.toFixed(1) + '%'; }
+    if (msg) msg.innerHTML = mensajeDecision;
+    if (bar) {
+      bar.style.background = decisionColor;
+      bar.style.width = Math.min(100, pctCalidadVsOriginal) + '%';
+    }
+    if (rechazo) {
+      if (cantRechazada > 0) {
+        rechazo.style.display = 'block';
+        rechazo.innerHTML = `⚠️ Se rechazarán <strong>${fmtCantidadUM(cantRechazada, um)}</strong> del producido`;
+      } else {
+        rechazo.style.display = 'none';
+      }
+    }
+    if (tarimasContainer) {
+      tarimasContainer.style.display = (decision === 'liberado' || decision === 'parcial') ? 'block' : 'none';
+    }
+    if (btn) {
+      btn.style.background = decisionColor;
+      btn.textContent = '✓ Confirmar ' + decisionTexto;
+      const necesitaTarimas = (decision === 'liberado' || decision === 'parcial');
+      const tarimasOk = !necesitaTarimas || (Number(state.modalForm.tarimas) > 0);
+      btn.disabled = !tarimasOk;
+    }
+  }
+  window.actualizarPreviewCalidad = actualizarPreviewCalidad;
+  
+  $$('.form-cal').forEach(el => {
+    const handler = () => {
       if (!state.modalForm) return;
-      state.modalForm[el.dataset.field] = el.value; 
-      // textarea no necesita re-render para mostrar texto
+      state.modalForm[el.dataset.field] = el.value;
+      actualizarPreviewCalidad();
     };
-    else el.oninput = handler;
+    el.oninput = handler;
   });
   
   // Filtros de Seguimiento
