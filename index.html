@@ -180,6 +180,18 @@ const PROCESOS = [
   { codigo: 'P6-REF', nombre: 'Refilación/Embobinado', icono: '✂️', color: '#f59e0b' },
 ];
 window.PROCESOS = PROCESOS;
+
+// ============================================================
+// TOLERANCIAS DE PRODUCCIÓN (configurables)
+// ============================================================
+// P1-EXT (extrusión): puede producir entre -2% y +5% de lo solicitado
+// Otros procesos (P2, P3, P4, P6): mermas máximas del 3% sobre la entrada
+const TOLERANCIAS = {
+  EXTRUSION_MIN_PCT: 0.02,    // -2% (mínimo aceptable en extrusión)
+  EXTRUSION_MAX_PCT: 0.05,    // +5% (máximo aceptable en extrusión)
+  MERMA_MAX_PCT: 0.03         // 3% (merma máxima en procesos posteriores)
+};
+window.TOLERANCIAS = TOLERANCIAS;
 const getProc = (cod) => PROCESOS.find(p => p.codigo === cod);
 window.getProc = getProc;
 
@@ -1907,16 +1919,86 @@ function modalCompletarProceso() {
   }
   const f = state.modalForm;
   
+  // Identificar si es proceso de extrusión (primer proceso, regla -2%/+5%)
+  // o proceso posterior (regla cuadre estricto + 3% merma máxima)
+  const esExtrusion = ruta[idx] === 'P1-EXT';
+  
   // Cálculos en vivo
   const prodKg = Number(f.producido_kg) || 0;
   const mermKg = Number(f.mermas_kg) || 0;
   const totalKg = prodKg + mermKg;
-  const diffKg = f.entrada_kg - totalKg;
-  const cuadra = Math.abs(diffKg) < 0.5; // tolerancia 500g
-  const colorCuadre = cuadra ? '#16a34a' : (Math.abs(diffKg) / f.entrada_kg < 0.05 ? '#f59e0b' : '#dc2626');
+  
+  let cuadra, colorCuadre, statusTxt, warningTxt;
+  let bloquear = false;
+  let limiteSuperior, limiteInferior, mermaMaxKg, pctProd, pctMerma;
+  
+  if (esExtrusion) {
+    // P1-EXT: producido debe estar entre -2% y +5% de la cantidad solicitada
+    limiteInferior = f.entrada_kg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
+    limiteSuperior = f.entrada_kg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
+    pctProd = f.entrada_kg > 0 ? ((prodKg - f.entrada_kg) / f.entrada_kg * 100) : 0;
+    
+    if (prodKg === 0) {
+      cuadra = false;
+      colorCuadre = '#94a3b8';
+      statusTxt = 'Pendiente captura';
+      warningTxt = '';
+    } else if (prodKg > limiteSuperior) {
+      cuadra = false;
+      colorCuadre = '#dc2626';
+      statusTxt = `❌ EXCEDE +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}%`;
+      warningTxt = `❌ Producido excede el máximo permitido (+${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}% = ${fmtNum(limiteSuperior)} kg). NO se puede continuar.`;
+      bloquear = true;
+    } else if (prodKg < limiteInferior) {
+      cuadra = false;
+      colorCuadre = '#f59e0b';
+      statusTxt = `⚠ Bajo el -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}%`;
+      warningTxt = `⚠ Producido está bajo el mínimo (${fmtNum(limiteInferior)} kg). Pedirá confirmación.`;
+    } else {
+      cuadra = true;
+      colorCuadre = '#16a34a';
+      statusTxt = `✓ Dentro del rango (${pctProd >= 0 ? '+' : ''}${pctProd.toFixed(2)}%)`;
+      warningTxt = '';
+    }
+  } else {
+    // Procesos posteriores: producido NO puede exceder entrada + mermas ≤ 3% de la entrada
+    mermaMaxKg = f.entrada_kg * TOLERANCIAS.MERMA_MAX_PCT;
+    pctMerma = f.entrada_kg > 0 ? (mermKg / f.entrada_kg * 100) : 0;
+    
+    if (prodKg === 0 && mermKg === 0) {
+      cuadra = false;
+      colorCuadre = '#94a3b8';
+      statusTxt = 'Pendiente captura';
+      warningTxt = '';
+    } else if (prodKg > f.entrada_kg + 0.5) {
+      cuadra = false;
+      colorCuadre = '#dc2626';
+      statusTxt = '❌ Excede entrada';
+      warningTxt = `❌ Producido (${fmtNum(prodKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg). NO se puede continuar.`;
+      bloquear = true;
+    } else if (mermKg > mermaMaxKg + 0.01) {
+      cuadra = false;
+      colorCuadre = '#dc2626';
+      statusTxt = `❌ Mermas > ${(TOLERANCIAS.MERMA_MAX_PCT*100)}%`;
+      warningTxt = `❌ Mermas (${fmtNum(mermKg)} kg = ${pctMerma.toFixed(2)}%) exceden el máximo permitido (${(TOLERANCIAS.MERMA_MAX_PCT*100)}% = ${fmtNum(mermaMaxKg)} kg). NO se puede continuar.`;
+      bloquear = true;
+    } else {
+      const diff = f.entrada_kg - totalKg;
+      if (Math.abs(diff) < 0.5) {
+        cuadra = true;
+        colorCuadre = '#16a34a';
+        statusTxt = '✓ Cuadra';
+        warningTxt = '';
+      } else {
+        cuadra = false;
+        colorCuadre = '#f59e0b';
+        statusTxt = `⚠ Diferencia: ${diff >= 0 ? '+' : ''}${fmtNum(diff)} kg`;
+        warningTxt = '⚠ Hay material sin contabilizar. Pedirá confirmación.';
+      }
+    }
+  }
   
   // Conversión a UM si aplica
-  const prodUM = esEnUM ? (window.convertirAKg(prodKg, 'kg', null) ? prodKg : 0) : prodKg;
   const pesoMillar = window.calcularPesoMillar(producto);
   const pesoPieza = window.calcularPesoPieza(producto);
   let prodEnUM = 0;
@@ -1939,10 +2021,10 @@ function modalCompletarProceso() {
           <!-- Estado actual: Entrada + Mermas acumuladas -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
             <div style="padding:10px;background:#eff6ff;border-radius:8px;border:1px solid #bfdbfe;">
-              <div style="font-size:9px;color:#1e40af;font-weight:700;text-transform:uppercase;">Entrada al proceso</div>
+              <div style="font-size:9px;color:#1e40af;font-weight:700;text-transform:uppercase;">${esExtrusion ? 'Cantidad solicitada' : 'Entrada al proceso'}</div>
               <div style="font-size:18px;font-weight:800;color:#1e40af;">${fmtNum(f.entrada_kg)} kg</div>
-              ${esEnUM ? `<div style="font-size:10px;color:#3b82f6;">≈ ${fmtNum(window.convertirAKg(f.entrada_kg, 'kg', null) || (um === 'millar' ? f.entrada_kg / pesoMillar : f.entrada_kg / pesoPieza))} ${UM_LABELS[um]}</div>` : ''}
-              ${procesoAnterior ? `<div style="font-size:9px;color:#64748b;margin-top:2px;">desde ${getProc(procesoAnterior.codigo)?.codigo || ''}</div>` : '<div style="font-size:9px;color:#64748b;margin-top:2px;">cantidad solicitada</div>'}
+              ${esEnUM ? `<div style="font-size:10px;color:#3b82f6;">≈ ${fmtNum(um === 'millar' ? f.entrada_kg / pesoMillar : f.entrada_kg / pesoPieza)} ${UM_LABELS[um]}</div>` : ''}
+              ${procesoAnterior ? `<div style="font-size:9px;color:#64748b;margin-top:2px;">desde ${getProc(procesoAnterior.codigo)?.codigo || ''}</div>` : '<div style="font-size:9px;color:#64748b;margin-top:2px;">cantidad de la ODP</div>'}
             </div>
             <div style="padding:10px;background:#fef3c7;border-radius:8px;border:1px solid #fde68a;">
               <div style="font-size:9px;color:#92400e;font-weight:700;text-transform:uppercase;">Mermas acumuladas</div>
@@ -1950,6 +2032,25 @@ function modalCompletarProceso() {
               <div style="font-size:9px;color:#92400e;margin-top:2px;">de procesos anteriores</div>
             </div>
           </div>
+          
+          <!-- REGLAS DEL PROCESO -->
+          ${esExtrusion ? `
+            <div style="padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;margin-bottom:12px;border-left:4px solid #f59e0b;">
+              <strong>📐 Reglas Extrusión:</strong> Producido permitido entre 
+              <strong style="color:#dc2626;">${fmtNum(limiteInferior)} kg</strong> 
+              (-${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}%) y 
+              <strong style="color:#16a34a;">${fmtNum(limiteSuperior)} kg</strong> 
+              (+${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}%). 
+              Es OK producir más de lo solicitado para que pase suficiente al siguiente proceso.
+            </div>
+          ` : `
+            <div style="padding:10px;background:#dbeafe;border-radius:8px;font-size:11px;margin-bottom:12px;border-left:4px solid #3b82f6;">
+              <strong>📐 Reglas ${procActual.nombre}:</strong> Producido + mermas debe igualar la entrada. 
+              Mermas máximas: <strong>${(TOLERANCIAS.MERMA_MAX_PCT*100)}%</strong> = 
+              <strong style="color:#dc2626;">${fmtNum(mermaMaxKg)} kg</strong>. 
+              No se puede producir más de la entrada.
+            </div>
+          `}
           
           <!-- CAPTURA EN KG -->
           <div style="padding:14px;background:#f0fdf4;border-radius:10px;border:2px solid #16a34a;margin-bottom:12px;">
@@ -1963,27 +2064,34 @@ function modalCompletarProceso() {
               <div>
                 <label class="field-label" style="font-size:10px;">Mermas en kg *</label>
                 <input class="input form-comp" data-field="mermas_kg" type="number" min="0" step="0.01" value="${f.mermas_kg}" placeholder="0.00" autocomplete="off" />
+                ${!esExtrusion ? `<div id="comp-merma-pct" style="font-size:10px;color:${pctMerma > TOLERANCIAS.MERMA_MAX_PCT*100 ? '#dc2626' : '#16a34a'};margin-top:4px;font-weight:600;">${mermKg > 0 ? `${pctMerma.toFixed(2)}% de la entrada` : ''}</div>` : ''}
               </div>
             </div>
           </div>
           
-          <!-- CUADRE -->
+          <!-- VALIDACIÓN/CUADRE -->
           <div id="comp-cuadre-box" style="padding:12px;background:${colorCuadre}11;border:2px solid ${colorCuadre};border-radius:10px;margin-bottom:12px;font-size:12px;">
             <div style="display:flex;justify-content:space-between;align-items:center;">
-              <strong style="color:${colorCuadre};">Cuadre del proceso</strong>
-              <strong id="comp-cuadre-status" style="color:${colorCuadre};font-size:13px;">${cuadra ? '✓ Cuadra' : (totalKg > f.entrada_kg ? '❌ Excede entrada' : '⚠ Faltante')}</strong>
+              <strong style="color:${colorCuadre};">${esExtrusion ? 'Validación Extrusión' : 'Cuadre del proceso'}</strong>
+              <strong id="comp-cuadre-status" style="color:${colorCuadre};font-size:13px;">${statusTxt}</strong>
             </div>
-            <div style="margin-top:6px;font-size:11px;color:#475569;">
-              Entrada: <strong>${fmtNum(f.entrada_kg)} kg</strong> = 
-              Producido: <strong id="comp-cuadre-prod">${fmtNum(prodKg)} kg</strong> + 
-              Mermas: <strong id="comp-cuadre-merm">${fmtNum(mermKg)} kg</strong>
-              <span id="comp-cuadre-diff" style="float:right;color:${colorCuadre};font-weight:700;">
-                ${cuadra ? '' : `Diferencia: ${diffKg >= 0 ? '+' : ''}${fmtNum(diffKg)} kg`}
-              </span>
+            <div id="comp-cuadre-detalle" style="margin-top:6px;font-size:11px;color:#475569;">
+              ${esExtrusion ? `
+                Solicitado: <strong>${fmtNum(f.entrada_kg)} kg</strong> · 
+                Producido: <strong id="comp-cuadre-prod">${fmtNum(prodKg)} kg</strong> 
+                <span id="comp-cuadre-pctprod" style="color:${colorCuadre};font-weight:700;">${prodKg > 0 ? `(${pctProd >= 0 ? '+' : ''}${pctProd.toFixed(2)}%)` : ''}</span>
+              ` : `
+                Entrada: <strong>${fmtNum(f.entrada_kg)} kg</strong> = 
+                Producido: <strong id="comp-cuadre-prod">${fmtNum(prodKg)} kg</strong> + 
+                Mermas: <strong id="comp-cuadre-merm">${fmtNum(mermKg)} kg</strong>
+                <span id="comp-cuadre-diff" style="float:right;color:${colorCuadre};font-weight:700;">
+                  ${cuadra ? '' : `Diferencia: ${(f.entrada_kg - totalKg) >= 0 ? '+' : ''}${fmtNum(f.entrada_kg - totalKg)} kg`}
+                </span>
+              `}
             </div>
-            ${!cuadra ? `<div id="comp-cuadre-warning" style="margin-top:6px;padding:6px;background:#fff;border-radius:4px;font-size:10px;color:${colorCuadre};">
-              ${totalKg > f.entrada_kg ? '⚠️ El producido + mermas EXCEDE la entrada (imposible)' : '⚠️ Hay material sin contabilizar. Puedes continuar pero queda registrado.'}
-            </div>` : ''}
+            <div id="comp-cuadre-warning" style="margin-top:6px;padding:6px;background:#fff;border-radius:4px;font-size:10px;color:${colorCuadre};display:${warningTxt ? 'block' : 'none'};">
+              ${warningTxt}
+            </div>
           </div>
           
           <!-- Después del proceso -->
@@ -3235,15 +3343,68 @@ function attachAppEvents() {
     const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
     if (!odp) return;
     
+    const ruta = odp.ruta_procesos || [];
+    const idx = odp.proceso_actual_idx ?? 0;
+    const esExtrusion = ruta[idx] === 'P1-EXT';
     const um = (odp.um || 'kg').toLowerCase();
     const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
     const f = state.modalForm;
     const prodKg = Number(f.producido_kg) || 0;
     const mermKg = Number(f.mermas_kg) || 0;
     const totalKg = prodKg + mermKg;
-    const diffKg = f.entrada_kg - totalKg;
-    const cuadra = Math.abs(diffKg) < 0.5;
-    const colorCuadre = cuadra ? '#16a34a' : (Math.abs(diffKg) / Math.max(f.entrada_kg, 1) < 0.05 ? '#f59e0b' : '#dc2626');
+    
+    // Calcular validación según tipo de proceso
+    let cuadra, colorCuadre, statusTxt, warningTxt, bloquear = false;
+    let pctProd = 0, pctMerma = 0;
+    
+    if (esExtrusion) {
+      const limInf = f.entrada_kg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
+      const limSup = f.entrada_kg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
+      pctProd = f.entrada_kg > 0 ? ((prodKg - f.entrada_kg) / f.entrada_kg * 100) : 0;
+      
+      if (prodKg === 0) {
+        cuadra = false; colorCuadre = '#94a3b8';
+        statusTxt = 'Pendiente captura'; warningTxt = '';
+      } else if (prodKg > limSup) {
+        cuadra = false; colorCuadre = '#dc2626'; bloquear = true;
+        statusTxt = `❌ EXCEDE +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}%`;
+        warningTxt = `❌ Producido excede el máximo permitido (+${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}% = ${fmtNum(limSup)} kg). NO se puede continuar.`;
+      } else if (prodKg < limInf) {
+        cuadra = false; colorCuadre = '#f59e0b';
+        statusTxt = `⚠ Bajo el -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}%`;
+        warningTxt = `⚠ Producido está bajo el mínimo (${fmtNum(limInf)} kg). Pedirá confirmación.`;
+      } else {
+        cuadra = true; colorCuadre = '#16a34a';
+        statusTxt = `✓ Dentro del rango (${pctProd >= 0 ? '+' : ''}${pctProd.toFixed(2)}%)`;
+        warningTxt = '';
+      }
+    } else {
+      const mermaMaxKg = f.entrada_kg * TOLERANCIAS.MERMA_MAX_PCT;
+      pctMerma = f.entrada_kg > 0 ? (mermKg / f.entrada_kg * 100) : 0;
+      
+      if (prodKg === 0 && mermKg === 0) {
+        cuadra = false; colorCuadre = '#94a3b8';
+        statusTxt = 'Pendiente captura'; warningTxt = '';
+      } else if (prodKg > f.entrada_kg + 0.5) {
+        cuadra = false; colorCuadre = '#dc2626'; bloquear = true;
+        statusTxt = '❌ Excede entrada';
+        warningTxt = `❌ Producido (${fmtNum(prodKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg). NO se puede continuar.`;
+      } else if (mermKg > mermaMaxKg + 0.01) {
+        cuadra = false; colorCuadre = '#dc2626'; bloquear = true;
+        statusTxt = `❌ Mermas > ${(TOLERANCIAS.MERMA_MAX_PCT*100)}%`;
+        warningTxt = `❌ Mermas (${fmtNum(mermKg)} kg = ${pctMerma.toFixed(2)}%) exceden el máximo (${(TOLERANCIAS.MERMA_MAX_PCT*100)}% = ${fmtNum(mermaMaxKg)} kg). NO se puede continuar.`;
+      } else {
+        const diff = f.entrada_kg - totalKg;
+        if (Math.abs(diff) < 0.5) {
+          cuadra = true; colorCuadre = '#16a34a';
+          statusTxt = '✓ Cuadra'; warningTxt = '';
+        } else {
+          cuadra = false; colorCuadre = '#f59e0b';
+          statusTxt = `⚠ Diferencia: ${diff >= 0 ? '+' : ''}${fmtNum(diff)} kg`;
+          warningTxt = '⚠ Hay material sin contabilizar. Pedirá confirmación.';
+        }
+      }
+    }
     
     // Conversión a UM si aplica
     let prodEnUM = 0;
@@ -3255,34 +3416,53 @@ function attachAppEvents() {
       if (pesoPieza > 0) prodEnUM = prodKg / pesoPieza;
     }
     
-    // Actualizar UI sin re-render
+    // Actualizar UI
     const box = $('#comp-cuadre-box');
     const status = $('#comp-cuadre-status');
     const prodE = $('#comp-cuadre-prod');
     const mermE = $('#comp-cuadre-merm');
     const diffE = $('#comp-cuadre-diff');
+    const warningE = $('#comp-cuadre-warning');
     const pasaE = $('#comp-pasa');
     const mermTotE = $('#comp-mermas-tot');
     const prodUM_E = $('#comp-prod-um');
+    const mermaPctE = $('#comp-merma-pct');
+    const pctprodE = $('#comp-cuadre-pctprod');
+    const btn = $('#comp-btn-confirmar');
     
-    if (box) {
-      box.style.background = colorCuadre + '11';
-      box.style.borderColor = colorCuadre;
-    }
-    if (status) {
-      status.style.color = colorCuadre;
-      status.textContent = cuadra ? '✓ Cuadra' : (totalKg > f.entrada_kg ? '❌ Excede entrada' : '⚠ Faltante');
-    }
+    if (box) { box.style.background = colorCuadre + '11'; box.style.borderColor = colorCuadre; }
+    if (status) { status.style.color = colorCuadre; status.textContent = statusTxt; }
     if (prodE) prodE.textContent = `${fmtNum(prodKg)} kg`;
     if (mermE) mermE.textContent = `${fmtNum(mermKg)} kg`;
-    if (diffE) {
+    if (diffE && !esExtrusion) {
       diffE.style.color = colorCuadre;
-      diffE.textContent = cuadra ? '' : `Diferencia: ${diffKg >= 0 ? '+' : ''}${fmtNum(diffKg)} kg`;
+      diffE.textContent = cuadra ? '' : `Diferencia: ${(f.entrada_kg - totalKg) >= 0 ? '+' : ''}${fmtNum(f.entrada_kg - totalKg)} kg`;
+    }
+    if (pctprodE && esExtrusion) {
+      pctprodE.style.color = colorCuadre;
+      pctprodE.textContent = prodKg > 0 ? `(${pctProd >= 0 ? '+' : ''}${pctProd.toFixed(2)}%)` : '';
+    }
+    if (warningE) {
+      warningE.style.display = warningTxt ? 'block' : 'none';
+      warningE.style.color = colorCuadre;
+      warningE.innerHTML = warningTxt;
     }
     if (pasaE) pasaE.textContent = `${fmtNum(prodKg)} kg`;
     if (mermTotE) mermTotE.textContent = `${fmtNum(f.mermas_acum_anteriores_kg + mermKg)} kg`;
     if (prodUM_E && (um === 'pza' || um === 'millar')) {
       prodUM_E.textContent = prodKg > 0 ? `≈ ${fmtNum(prodEnUM)} ${UM_LABELS[um]}` : '';
+    }
+    if (mermaPctE && !esExtrusion) {
+      const pctMaxColor = pctMerma > TOLERANCIAS.MERMA_MAX_PCT*100 ? '#dc2626' : '#16a34a';
+      mermaPctE.style.color = pctMaxColor;
+      mermaPctE.textContent = mermKg > 0 ? `${pctMerma.toFixed(2)}% de la entrada` : '';
+    }
+    
+    // Bloquear botón si excede límites
+    if (btn) {
+      btn.disabled = bloquear;
+      btn.style.opacity = bloquear ? '0.5' : '1';
+      btn.style.cursor = bloquear ? 'not-allowed' : 'pointer';
     }
   }
   window.actualizarPreviewCompletarProceso = actualizarPreviewCompletarProceso;
@@ -4128,21 +4308,42 @@ window.confirmarCompletarProceso = async (odpId) => {
   
   if (prodKg <= 0) { toast('Captura el producido en kg', 'error'); return; }
   
-  // Validar cuadre con confirmación si no cuadra
+  const esExtrusion = ruta[idx] === 'P1-EXT';
   const totalKg = prodKg + mermKg;
   const diffKg = f.entrada_kg - totalKg;
   const cuadra = Math.abs(diffKg) < 0.5;
   
-  if (totalKg > f.entrada_kg + 0.5) {
-    toast(`❌ Producido + Mermas (${fmtNum(totalKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg)`, 'error');
-    return;
-  }
-  
-  if (!cuadra) {
-    const msg = diffKg > 0 
-      ? `⚠ Hay ${fmtNum(diffKg)} kg sin contabilizar.\n\nEntrada: ${fmtNum(f.entrada_kg)} kg\nProducido: ${fmtNum(prodKg)} kg\nMermas: ${fmtNum(mermKg)} kg\nTotal capturado: ${fmtNum(totalKg)} kg\n\n¿Continuar de todos modos?`
-      : `⚠ El total capturado excede la entrada.\n\n¿Continuar de todos modos?`;
-    if (!confirm(msg)) return;
+  if (esExtrusion) {
+    // Validaciones específicas de extrusión
+    const limInf = f.entrada_kg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
+    const limSup = f.entrada_kg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
+    
+    if (prodKg > limSup) {
+      toast(`❌ Producción excede el +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}% permitido (máx ${fmtNum(limSup)} kg). Revisa la captura.`, 'error');
+      return;
+    }
+    if (prodKg < limInf) {
+      const msg = `⚠ Producido (${fmtNum(prodKg)} kg) está bajo el mínimo del -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}% (${fmtNum(limInf)} kg).\n\n¿Continuar de todos modos?`;
+      if (!confirm(msg)) return;
+    }
+  } else {
+    // Validaciones procesos posteriores
+    if (prodKg > f.entrada_kg + 0.5) {
+      toast(`❌ Producido (${fmtNum(prodKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg)`, 'error');
+      return;
+    }
+    const mermaMaxKg = f.entrada_kg * TOLERANCIAS.MERMA_MAX_PCT;
+    if (mermKg > mermaMaxKg + 0.01) {
+      const pctActual = (mermKg / f.entrada_kg * 100).toFixed(2);
+      toast(`❌ Mermas (${fmtNum(mermKg)} kg = ${pctActual}%) exceden el máximo permitido (${(TOLERANCIAS.MERMA_MAX_PCT*100)}% = ${fmtNum(mermaMaxKg)} kg). Revisa la captura.`, 'error');
+      return;
+    }
+    if (!cuadra) {
+      const msg = diffKg > 0 
+        ? `⚠ Hay ${fmtNum(diffKg)} kg sin contabilizar.\n\nEntrada: ${fmtNum(f.entrada_kg)} kg\nProducido: ${fmtNum(prodKg)} kg\nMermas: ${fmtNum(mermKg)} kg\nTotal: ${fmtNum(totalKg)} kg\n\n¿Continuar de todos modos?`
+        : `⚠ El total capturado excede la entrada.\n\n¿Continuar de todos modos?`;
+      if (!confirm(msg)) return;
+    }
   }
   
   // Convertir a UM original para capturas y procesos
