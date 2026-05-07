@@ -2316,7 +2316,8 @@ function modalLiberarCalidad() {
               <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:8px;align-items:end;">
                 <div>
                   <label class="field-label" style="font-size:10px;">Contenido por paquete (en ${UM_LABELS[um]})</label>
-                  <input class="input form-cal" data-field="contenido_por_paquete" type="number" min="0" step="${stepCant}" value="${f.contenido_por_paquete}" placeholder="Ej: 2500" autocomplete="off" />
+                  <input class="input form-cal" data-field="contenido_por_paquete" type="number" min="0" step="${stepCant}" value="${f.contenido_por_paquete}" placeholder="${um === 'pza' ? 'Ej: 250 ó 2500' : um === 'millar' ? 'Ej: 1 (= 1 millar/paq)' : um === 'kg' ? 'Ej: 25 (= 25 kg/paq)' : ''}" autocomplete="off" />
+                  <div style="font-size:9px;color:#94a3b8;margin-top:2px;">${um === 'pza' ? 'Cuántas piezas trae cada paquete' : um === 'millar' ? 'Cuántos millares trae cada paquete' : um === 'kg' ? 'Cuántos kg trae cada paquete' : ''}</div>
                 </div>
                 <div>
                   <label class="field-label" style="font-size:10px;">Núm. tarimas *</label>
@@ -2328,36 +2329,37 @@ function modalLiberarCalidad() {
                 </div>
               </div>
               
-              ${contPaq > 0 ? `
-                <div id="cal-empaque-info" style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;font-size:11px;">
+              <div id="cal-empaque-info" style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;font-size:11px;">
+                <!-- Modo CON paquetes -->
+                <div id="cal-empaque-conpaq" style="display:${contPaq > 0 ? 'block' : 'none'};">
                   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;">
                     <div>
                       <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Total a empacar</div>
-                      <div style="font-size:14px;font-weight:800;color:#1e40af;">${fmtCantidadUM(cantAceptada, um)}</div>
+                      <div id="cal-info-total" style="font-size:14px;font-weight:800;color:#1e40af;">${fmtCantidadUM(cantAceptada, um)}</div>
                     </div>
                     <div>
                       <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Paquetes completos</div>
-                      <div style="font-size:14px;font-weight:800;color:#1e40af;">${paqTotalNec}</div>
+                      <div id="cal-info-paq" style="font-size:14px;font-weight:800;color:#1e40af;">${paqTotalNec}</div>
                     </div>
                     <div>
                       <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Sueltos</div>
-                      <div style="font-size:14px;font-weight:800;color:${sueltosTotal > 0 ? '#f59e0b' : '#16a34a'};">${fmtNum(sueltosTotal)} ${UM_LABELS[um]}</div>
+                      <div id="cal-info-suel" style="font-size:14px;font-weight:800;color:${sueltosTotal > 0 ? '#f59e0b' : '#16a34a'};">${fmtNum(sueltosTotal)} ${UM_LABELS[um]}</div>
                     </div>
                   </div>
                   <button onclick="autoDistribuir()" type="button" style="width:100%;margin-top:10px;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
-                    🪄 Auto-distribuir entre ${f.num_tarimas} tarima${f.num_tarimas > 1 ? 's' : ''}
+                    🪄 Auto-distribuir entre <span id="cal-btn-numt-1">${f.num_tarimas}</span> tarima<span id="cal-btn-plur-1">${f.num_tarimas > 1 ? 's' : ''}</span>
                   </button>
                 </div>
-              ` : `
-                <div style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;font-size:11px;">
+                <!-- Modo SIN paquetes -->
+                <div id="cal-empaque-sinpaq" style="display:${contPaq > 0 ? 'none' : 'block'};">
                   <div style="color:#475569;margin-bottom:6px;">
                     💡 Si no usas paquetes, captura directamente la <strong>cantidad por tarima</strong> en la tabla. Para distribuir equitativo:
                   </div>
                   <button onclick="autoDistribuirSinPaquetes()" type="button" style="width:100%;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
-                    🪄 Auto-distribuir ${fmtCantidadUM(cantAceptada, um)} entre ${f.num_tarimas} tarima${f.num_tarimas > 1 ? 's' : ''}
+                    🪄 Auto-distribuir <span id="cal-btn-cant">${fmtCantidadUM(cantAceptada, um)}</span> entre <span id="cal-btn-numt-2">${f.num_tarimas}</span> tarima<span id="cal-btn-plur-2">${f.num_tarimas > 1 ? 's' : ''}</span>
                   </button>
                 </div>
-              `}
+              </div>
             </div>
             
             <!-- Tabla por tarima -->
@@ -3279,36 +3281,26 @@ function attachAppEvents() {
         actualizarPreviewCalidad();
         return;
       }
-      // Si cambió contenido_por_paquete, re-render para mostrar la info de auto-distribución
-      // (la sección cal-empaque-info aparece/desaparece y necesita re-render)
+      // Si cambió contenido_por_paquete: solo cambiar display y actualizar valores (NO re-render)
       if (el.dataset.field === 'contenido_por_paquete') {
-        const tieneInfo = !!$('#cal-empaque-info');
-        const ahoraTiene = Number(el.value) > 0;
-        if (tieneInfo !== ahoraTiene) {
-          // estado cambió → necesita re-render para mostrar/ocultar info
-          render();
-          // Después del re-render, restaurar foco en el input
-          setTimeout(() => {
-            const inp = document.querySelector('input[data-field="contenido_por_paquete"]');
-            if (inp) inp.focus();
-          }, 0);
-          return;
-        }
-        // El bloque info ya existe, solo actualizar valores sin re-render
-        const e_total = $('#cal-empaque-info');
-        if (e_total) {
-          const cAcep = Number(state.modalForm.cantidad_aceptada) || 0;
-          const cPaq = Number(el.value) || 0;
-          if (cPaq > 0) {
-            const paqT = Math.floor(cAcep / cPaq);
-            const suel = cAcep - (paqT * cPaq);
-            // Buscar y actualizar los divs específicos (los segundos en cada bloque)
-            const divs = e_total.querySelectorAll('div > div:nth-child(2)');
-            if (divs[1]) divs[1].textContent = paqT;
-            if (divs[2]) {
-              divs[2].textContent = `${fmtNum(suel)} ${UM_LABELS[(odp.um || 'kg').toLowerCase()]}`;
-              divs[2].style.color = suel > 0 ? '#f59e0b' : '#16a34a';
-            }
+        const cAcep = Number(state.modalForm.cantidad_aceptada) || 0;
+        const cPaq = Number(el.value) || 0;
+        const um = (odp.um || 'kg').toLowerCase();
+        const conpaq = $('#cal-empaque-conpaq');
+        const sinpaq = $('#cal-empaque-sinpaq');
+        if (conpaq) conpaq.style.display = cPaq > 0 ? 'block' : 'none';
+        if (sinpaq) sinpaq.style.display = cPaq > 0 ? 'none' : 'block';
+        if (cPaq > 0) {
+          const paqT = Math.floor(cAcep / cPaq);
+          const suel = cAcep - (paqT * cPaq);
+          const eTotal = $('#cal-info-total');
+          const ePaq = $('#cal-info-paq');
+          const eSuel = $('#cal-info-suel');
+          if (eTotal) eTotal.textContent = fmtCantidadUM(cAcep, um);
+          if (ePaq) ePaq.textContent = paqT;
+          if (eSuel) {
+            eSuel.textContent = `${fmtNum(suel)} ${UM_LABELS[um]}`;
+            eSuel.style.color = suel > 0 ? '#f59e0b' : '#16a34a';
           }
         }
         actualizarPreviewCalidad();
