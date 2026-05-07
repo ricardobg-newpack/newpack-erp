@@ -1600,10 +1600,18 @@ function renderTarjetaSeguimiento(p) {
         <div style="padding:12px 18px;border-top:1px solid #e2e8f0;">
           <div style="font-size:11px;color:#64748b;font-weight:700;margin-bottom:8px;text-transform:uppercase;">Producción</div>
           ${odps.map(o => {
-            const cap = state.capturas_produccion.filter(c => c.odp_id === o.id);
-            const prod = cap.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
+            // Usar cantidad final del último proceso (no sumar todas las capturas)
+            let prod = 0;
+            if (o.cantidad_producida_final !== undefined && o.cantidad_producida_final !== null) {
+              // ODP terminada (último proceso completado)
+              prod = Number(o.cantidad_producida_final) || 0;
+            } else if (o.procesos_completados && o.procesos_completados.length > 0) {
+              // ODP en proceso intermedio: usar lo que produjo el último completado
+              const ultimo = o.procesos_completados[o.procesos_completados.length - 1];
+              prod = Number(ultimo.cantidad_producida) || 0;
+            }
             const pct = o.cantidad > 0 ? Math.min(100, Math.round((prod / o.cantidad) * 100)) : 0;
-            const colorODP = { pendiente_planeacion: '#f59e0b', programada: '#3b82f6', en_produccion: '#8b5cf6', completada: '#16a34a' }[o.estatus] || '#64748b';
+            const colorODP = { pendiente_planeacion: '#f59e0b', programada: '#3b82f6', en_produccion: '#8b5cf6', pendiente_calidad: '#f59e0b', liberada_empaque: '#16a34a', rechazada: '#dc2626', completada: '#16a34a' }[o.estatus] || '#64748b';
             return `
               <div style="font-size:12px;margin-bottom:8px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -2610,8 +2618,14 @@ function modalDetallePedido() {
           ${odps.length > 0 ? `
             <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">🏭 Producción (${odps.length} ODP)</h3>
             ${odps.map(o => {
-              const cap = state.capturas_produccion.filter(c => c.odp_id === o.id);
-              const prod = cap.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
+              // Usar cantidad final del último proceso (no sumar todas las capturas)
+              let prod = 0;
+              if (o.cantidad_producida_final !== undefined && o.cantidad_producida_final !== null) {
+                prod = Number(o.cantidad_producida_final) || 0;
+              } else if (o.procesos_completados && o.procesos_completados.length > 0) {
+                const ultimo = o.procesos_completados[o.procesos_completados.length - 1];
+                prod = Number(ultimo.cantidad_producida) || 0;
+              }
               const pct = o.cantidad > 0 ? Math.min(100, Math.round((prod / o.cantidad) * 100)) : 0;
               return `
                 <div style="padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:6px;">
