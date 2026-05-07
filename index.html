@@ -303,9 +303,13 @@ function fmtCantidadUM(n, um) {
   const umLow = (um || 'kg').toLowerCase();
   const label = UM_LABELS[umLow] || um || 'Kg';
   // Para UM enteras, no mostrar decimales
-  const numStr = UM_ENTEROS.includes(umLow) 
-    ? Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })
-    : Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
+  // Para millar, hasta 3 decimales (= precisión de 1 pza)
+  // Para kg, hasta 2 decimales
+  let maxDec;
+  if (UM_ENTEROS.includes(umLow)) maxDec = 0;
+  else if (umLow === 'millar') maxDec = 3;
+  else maxDec = 2;
+  const numStr = Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: maxDec });
   return numStr + ' ' + label;
 }
 window.fmtCantidadUM = fmtCantidadUM;
@@ -2003,8 +2007,8 @@ function modalCompletarProceso() {
   const pesoMillar = window.calcularPesoMillar(producto);
   const pesoPieza = window.calcularPesoPieza(producto);
   let prodEnUM = 0;
-  if (um === 'millar' && pesoMillar > 0) prodEnUM = prodKg / pesoMillar;
-  else if (um === 'pza' && pesoPieza > 0) prodEnUM = prodKg / pesoPieza;
+  if (um === 'millar' && pesoMillar > 0) prodEnUM = Math.round((prodKg / pesoMillar) * 1000) / 1000;
+  else if (um === 'pza' && pesoPieza > 0) prodEnUM = Math.round(prodKg / pesoPieza);
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
@@ -3447,10 +3451,10 @@ function attachAppEvents() {
     let prodEnUM = 0;
     if (um === 'millar' && producto) {
       const pesoMillar = window.calcularPesoMillar(producto);
-      if (pesoMillar > 0) prodEnUM = prodKg / pesoMillar;
+      if (pesoMillar > 0) prodEnUM = Math.round((prodKg / pesoMillar) * 1000) / 1000;
     } else if (um === 'pza' && producto) {
       const pesoPieza = window.calcularPesoPieza(producto);
-      if (pesoPieza > 0) prodEnUM = prodKg / pesoPieza;
+      if (pesoPieza > 0) prodEnUM = Math.round(prodKg / pesoPieza);
     }
     
     // Actualizar UI
@@ -4407,15 +4411,17 @@ window.confirmarCompletarProceso = async (odpId) => {
   if (um === 'millar' && producto) {
     const pesoMillar = window.calcularPesoMillar(producto);
     if (pesoMillar > 0) {
-      prodEnUM = prodKg / pesoMillar;
-      mermEnUM = mermKg / pesoMillar;
+      // Redondear a 3 decimales = precisión de 1 pieza (1 millar = 1000 pza)
+      // Ej: 402.9690374 → 402.969 (= 402 millares + 969 pza exactas)
+      prodEnUM = Math.round((prodKg / pesoMillar) * 1000) / 1000;
+      mermEnUM = Math.round((mermKg / pesoMillar) * 1000) / 1000;
     }
   } else if (um === 'pza' && producto) {
     const pesoPieza = window.calcularPesoPieza(producto);
     if (pesoPieza > 0) {
       prodEnUM = prodKg / pesoPieza;
       mermEnUM = mermKg / pesoPieza;
-      // Para piezas, redondear
+      // Para piezas, redondear a entero
       prodEnUM = Math.round(prodEnUM);
       mermEnUM = Math.round(mermEnUM);
     }
