@@ -189,7 +189,10 @@ window.PROCESOS = PROCESOS;
 const TOLERANCIAS = {
   EXTRUSION_MIN_PCT: 0.02,    // -2% (mínimo aceptable en extrusión)
   EXTRUSION_MAX_PCT: 0.05,    // +5% (máximo aceptable en extrusión)
-  MERMA_MAX_PCT: 0.03         // 3% (merma máxima en procesos posteriores)
+  MERMA_MAX_PCT: 0.03,        // 3% (merma máxima en procesos posteriores)
+  // Calidad final (sobre cantidad solicitada original)
+  CAL_FALTANTE_PCT: 0.03,     // 3% (faltante tolerable: aún libera TOTAL)
+  CAL_EXTRA_PCT: 0.05         // 5% (extra tolerable: aún libera TOTAL)
 };
 window.TOLERANCIAS = TOLERANCIAS;
 const getProc = (cod) => PROCESOS.find(p => p.codigo === cod);
@@ -2209,19 +2212,37 @@ function modalLiberarCalidad() {
   let decisionColor = '#94a3b8';
   let mensajeDecision = '';
   
+  // Rango aceptable de calidad final
+  const calMinKg = cantidadOriginal * (1 - TOLERANCIAS.CAL_FALTANTE_PCT);
+  const calMaxKg = cantidadOriginal * (1 + TOLERANCIAS.CAL_EXTRA_PCT);
+  
   if (cantAceptada > 0) {
-    if (pctCalidadVsOriginal >= 90) {
-      decision = cantAceptada >= cantidadProducida ? 'liberado' : 'parcial';
-      decisionTexto = decision === 'liberado' ? '✅ LIBERADO TOTAL' : '⚠️ LIBERADO PARCIAL';
+    if (cantAceptada >= calMinKg && cantAceptada <= calMaxKg) {
+      // DENTRO DEL RANGO -3% a +5% → LIBERA TOTAL (sin reposición)
+      decision = 'liberado';
+      decisionTexto = '✅ LIBERADO TOTAL';
       decisionColor = '#16a34a';
-      mensajeDecision = decision === 'liberado'
-        ? 'Toda la producción se libera. Cada tarima genera su propio LOTE.'
-        : `Se libera ${fmtCantidadUM(cantAceptada, um)} (${pctCalidadVsOriginal.toFixed(1)}% del solicitado).<br><strong>El sistema generará un PI nuevo</strong> por la cantidad faltante (${fmtCantidadUM(cantidadOriginal - cantAceptada, um)}).`;
+      const dif = cantAceptada - cantidadOriginal;
+      const pctDif = (dif / cantidadOriginal * 100);
+      mensajeDecision = Math.abs(dif) < 0.5
+        ? 'Toda la producción se libera (cantidad exacta). Cada tarima genera su propio LOTE.'
+        : `Se libera dentro del rango aceptable (${pctDif >= 0 ? '+' : ''}${pctDif.toFixed(2)}%). <strong>NO se genera PI de reposición.</strong>`;
+    } else if (cantAceptada < calMinKg) {
+      // FALTANTE > 3% → PARCIAL con confirmación + PI reposición
+      decision = 'parcial';
+      decisionTexto = '⚠️ PARCIAL (faltante > 3%)';
+      decisionColor = '#f59e0b';
+      const faltante = cantidadOriginal - cantAceptada;
+      const pctFalt = (faltante / cantidadOriginal * 100);
+      mensajeDecision = `Faltante de ${fmtCantidadUM(faltante, um)} (${pctFalt.toFixed(2)}%) excede la tolerancia del ${(TOLERANCIAS.CAL_FALTANTE_PCT*100)}%.<br><strong>Se generará PI nuevo</strong> por la cantidad faltante. Pedirá confirmación + motivo.`;
     } else {
-      decision = 'rechazado';
-      decisionTexto = '❌ RECHAZADO (< 90%)';
-      decisionColor = '#dc2626';
-      mensajeDecision = `Solo ${pctCalidadVsOriginal.toFixed(1)}% es aceptable. Se rechaza toda la ODP y <strong>el sistema generará un PI nuevo</strong> por la cantidad completa.`;
+      // EXTRA > 5% → TOTAL con confirmación pero el extra registrado
+      decision = 'liberado_extra';
+      decisionTexto = '⚠️ LIBERADO con extra (>+5%)';
+      decisionColor = '#f59e0b';
+      const extra = cantAceptada - cantidadOriginal;
+      const pctExtra = (extra / cantidadOriginal * 100);
+      mensajeDecision = `Cantidad excede el +${(TOLERANCIAS.CAL_EXTRA_PCT*100)}% permitido en ${fmtCantidadUM(extra, um)} (+${pctExtra.toFixed(2)}%).<br>Se libera TODO. Pedirá confirmación + motivo del excedente.`;
     }
   } else {
     decision = 'rechazado';
@@ -2305,7 +2326,7 @@ function modalLiberarCalidad() {
           </div>
           
           <!-- Tarimas individuales -->
-          <div id="cal-tarimas-container" style="display:${(decision === 'liberado' || decision === 'parcial') ? 'block' : 'none'};">
+          <div id="cal-tarimas-container" style="display:${(decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') ? 'block' : 'none'};">
             
             <!-- Configuración global de empaque -->
             <div style="padding:14px;background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;margin-bottom:14px;">
@@ -2442,7 +2463,7 @@ function modalLiberarCalidad() {
           </div>
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;">
-          ${(decision === 'liberado' || decision === 'parcial') ? `<span style="font-size:11px;color:#64748b;margin-right:auto;">Se generarán ${numT} lote(s) individuales + Packing List</span>` : ''}
+          ${(decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') ? `<span style="font-size:11px;color:#64748b;margin-right:auto;">Se generarán ${numT} lote(s) individuales + Packing List</span>` : ''}
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
           <button id="cal-btn-confirmar" class="btn-primary" onclick="confirmarLiberarCalidad('${odp.id}')" style="background:${decisionColor};">${ICONS.check} Confirmar ${decisionTexto}</button>
         </div>
@@ -3135,19 +3156,35 @@ function attachAppEvents() {
     const pctCalidadVsOriginal = cantidadOriginal > 0 ? (cantAceptada / cantidadOriginal * 100) : 0;
     
     let decision = 'pendiente', decisionTexto = '', decisionColor = '#94a3b8', mensajeDecision = '';
+    
+    // Rango aceptable de calidad final
+    const calMinKg = cantidadOriginal * (1 - TOLERANCIAS.CAL_FALTANTE_PCT);
+    const calMaxKg = cantidadOriginal * (1 + TOLERANCIAS.CAL_EXTRA_PCT);
+    
     if (cantAceptada > 0) {
-      if (pctCalidadVsOriginal >= 90) {
-        decision = cantAceptada >= cantidadProducida ? 'liberado' : 'parcial';
-        decisionTexto = decision === 'liberado' ? '✅ LIBERADO TOTAL' : '⚠️ LIBERADO PARCIAL';
+      if (cantAceptada >= calMinKg && cantAceptada <= calMaxKg) {
+        decision = 'liberado';
+        decisionTexto = '✅ LIBERADO TOTAL';
         decisionColor = '#16a34a';
-        mensajeDecision = decision === 'liberado'
-          ? 'Toda la producción se libera. Cada tarima genera su propio LOTE.'
-          : `Se libera ${fmtCantidadUM(cantAceptada, um)} (${pctCalidadVsOriginal.toFixed(1)}% del solicitado).<br><strong>El sistema generará un PI nuevo</strong> por la cantidad faltante (${fmtCantidadUM(cantidadOriginal - cantAceptada, um)}).`;
+        const dif = cantAceptada - cantidadOriginal;
+        const pctDif = (dif / cantidadOriginal * 100);
+        mensajeDecision = Math.abs(dif) < 0.5
+          ? 'Toda la producción se libera (cantidad exacta).'
+          : `Se libera dentro del rango aceptable (${pctDif >= 0 ? '+' : ''}${pctDif.toFixed(2)}%). <strong>NO se genera PI de reposición.</strong>`;
+      } else if (cantAceptada < calMinKg) {
+        decision = 'parcial';
+        decisionTexto = '⚠️ PARCIAL (faltante > 3%)';
+        decisionColor = '#f59e0b';
+        const faltante = cantidadOriginal - cantAceptada;
+        const pctFalt = (faltante / cantidadOriginal * 100);
+        mensajeDecision = `Faltante de ${fmtCantidadUM(faltante, um)} (${pctFalt.toFixed(2)}%) excede la tolerancia del ${(TOLERANCIAS.CAL_FALTANTE_PCT*100)}%.<br><strong>Se generará PI nuevo</strong> por la cantidad faltante. Pedirá confirmación + motivo.`;
       } else {
-        decision = 'rechazado';
-        decisionTexto = '❌ RECHAZADO (< 90%)';
-        decisionColor = '#dc2626';
-        mensajeDecision = `Solo ${pctCalidadVsOriginal.toFixed(1)}% es aceptable. Se rechaza toda la ODP y <strong>el sistema generará un PI nuevo</strong> por la cantidad completa.`;
+        decision = 'liberado_extra';
+        decisionTexto = '⚠️ LIBERADO con extra (>+5%)';
+        decisionColor = '#f59e0b';
+        const extra = cantAceptada - cantidadOriginal;
+        const pctExtra = (extra / cantidadOriginal * 100);
+        mensajeDecision = `Cantidad excede el +${(TOLERANCIAS.CAL_EXTRA_PCT*100)}% en ${fmtCantidadUM(extra, um)} (+${pctExtra.toFixed(2)}%).<br>Se libera TODO. Pedirá confirmación + motivo del excedente.`;
       }
     } else {
       decision = 'rechazado';
@@ -3175,7 +3212,7 @@ function attachAppEvents() {
       if (cantRechazada > 0) rechazo.innerHTML = `⚠️ Se rechazarán <strong>${fmtCantidadUM(cantRechazada, um)}</strong> del producido`;
     }
     if (tarimasContainer) {
-      tarimasContainer.style.display = (decision === 'liberado' || decision === 'parcial') ? 'block' : 'none';
+      tarimasContainer.style.display = (decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') ? 'block' : 'none';
     }
     
     // Recalcular totales con nuevo modelo: cantidad = paquetes×contenido + sueltos
@@ -3250,7 +3287,7 @@ function attachAppEvents() {
     if (btn) {
       btn.style.background = decisionColor;
       btn.textContent = '✓ Confirmar ' + decisionTexto;
-      const necesitaTarimas = (decision === 'liberado' || decision === 'parcial');
+      const necesitaTarimas = (decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra');
       const tarimasOk = !necesitaTarimas || ((Number(state.modalForm.num_tarimas) > 0) && state.modalForm.tarimas_data && state.modalForm.tarimas_data.length === Number(state.modalForm.num_tarimas));
       btn.disabled = !tarimasOk;
     }
@@ -4295,6 +4332,7 @@ window.confirmarCompletarProceso = async (odpId) => {
   
   const prodKg = Number(f.producido_kg) || 0;
   const mermKg = Number(f.mermas_kg) || 0;
+  let notas = (f.notas || '').trim(); // declarar al inicio para validaciones
   
   if (prodKg <= 0) { toast('Captura el producido en kg', 'error'); return; }
   
@@ -4317,6 +4355,7 @@ window.confirmarCompletarProceso = async (odpId) => {
         const motivo = prompt('Anota el motivo del excedente (será registrado):');
         if (!motivo || !motivo.trim()) { toast('Debes anotar el motivo del excedente', 'error'); return; }
         f.notas = motivo.trim();
+        notas = f.notas;
       }
     }
     if (prodKg < limInf) {
@@ -4341,6 +4380,7 @@ window.confirmarCompletarProceso = async (odpId) => {
         const motivo = prompt('Anota el motivo de la merma excedente (será registrado):');
         if (!motivo || !motivo.trim()) { toast('Debes anotar el motivo de la merma excedente', 'error'); return; }
         f.notas = motivo.trim();
+        notas = f.notas;
       }
     }
     if (!cuadra) {
@@ -4373,7 +4413,7 @@ window.confirmarCompletarProceso = async (odpId) => {
   
   const operador = (f.operador || '').trim();
   const turno = f.turno || '';
-  const notas = (f.notas || '').trim();
+  notas = (f.notas || '').trim(); // refrescar por si se actualizó en validaciones
   const esUltimo = idx === ruta.length - 1;
   
   state.loadingAccion = true; render();
@@ -4506,15 +4546,47 @@ window.confirmarLiberarCalidad = async (odpId) => {
     toast('La cantidad aceptada debe estar entre 0 y ' + fmtCantidadUM(cantidadProducida, um), 'error'); return;
   }
   
-  // Calcular decisión
+  // Calcular decisión usando bandas de tolerancia
   const pctCalidad = cantidadOriginal > 0 ? (cantAceptada / cantidadOriginal * 100) : 0;
-  let decision;
-  if (cantAceptada === 0) decision = 'rechazado';
-  else if (pctCalidad >= 90) decision = cantAceptada >= cantidadProducida ? 'liberado' : 'parcial';
-  else decision = 'rechazado';
+  const calMinKg = cantidadOriginal * (1 - TOLERANCIAS.CAL_FALTANTE_PCT);
+  const calMaxKg = cantidadOriginal * (1 + TOLERANCIAS.CAL_EXTRA_PCT);
+  let decision, motivoExcedente = '';
   
-  // Validar tarimas si libera
-  if ((decision === 'liberado' || decision === 'parcial')) {
+  if (cantAceptada === 0) {
+    decision = 'rechazado';
+  } else if (cantAceptada >= calMinKg && cantAceptada <= calMaxKg) {
+    // Dentro del rango -3% a +5% → LIBERA TOTAL
+    decision = 'liberado';
+  } else if (cantAceptada < calMinKg) {
+    // Faltante > 3% → PARCIAL con confirmación
+    decision = 'parcial';
+    const faltante = cantidadOriginal - cantAceptada;
+    const pctFalt = (faltante / cantidadOriginal * 100).toFixed(2);
+    const msg = `⚠ FALTANTE EXCEDE el ${(TOLERANCIAS.CAL_FALTANTE_PCT*100)}% permitido.\n\nSolicitado: ${fmtNum(cantidadOriginal)} ${UM_LABELS[um]}\nAceptado: ${fmtNum(cantAceptada)} ${UM_LABELS[um]} (${pctCalidad.toFixed(2)}%)\nFaltante: ${fmtNum(faltante)} ${UM_LABELS[um]} (${pctFalt}%)\n\n¿Continuar como LIBERACIÓN PARCIAL?\n(Se generará PI nuevo de reposición por la diferencia)`;
+    if (!confirm(msg)) return;
+    if (!notas) {
+      const motivo = prompt('Anota el motivo del faltante (será registrado):');
+      if (!motivo || !motivo.trim()) { toast('Debes anotar el motivo del faltante', 'error'); return; }
+      f.notas = motivo.trim();
+      motivoExcedente = motivo.trim();
+    }
+  } else {
+    // Extra > +5% → liberado_extra con confirmación
+    decision = 'liberado_extra';
+    const extra = cantAceptada - cantidadOriginal;
+    const pctExtra = (extra / cantidadOriginal * 100).toFixed(2);
+    const msg = `⚠ CANTIDAD EXCEDE el +${(TOLERANCIAS.CAL_EXTRA_PCT*100)}% permitido.\n\nSolicitado: ${fmtNum(cantidadOriginal)} ${UM_LABELS[um]}\nAceptado: ${fmtNum(cantAceptada)} ${UM_LABELS[um]} (+${pctExtra}%)\nExtra: ${fmtNum(extra)} ${UM_LABELS[um]}\n\n¿Continuar y LIBERAR TODO incluyendo el extra?`;
+    if (!confirm(msg)) return;
+    if (!notas) {
+      const motivo = prompt('Anota el motivo del excedente (será registrado):');
+      if (!motivo || !motivo.trim()) { toast('Debes anotar el motivo del excedente', 'error'); return; }
+      f.notas = motivo.trim();
+      motivoExcedente = motivo.trim();
+    }
+  }
+  
+  // Validar tarimas si libera (incluye liberado_extra)
+  if (decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') {
     if (!numTarimas) { toast('Captura el número de tarimas', 'error'); return; }
     if (!f.tarimas_data || f.tarimas_data.length !== numTarimas) {
       toast('Falta detalle de tarimas individuales', 'error'); return;
@@ -4527,13 +4599,11 @@ window.confirmarLiberarCalidad = async (odpId) => {
       return s + (paq * contPaq) + suel;
     }, 0);
     
-    // Si todas las tarimas están vacías, recordar al operador llenarlas
     if (sumCant === 0) {
       toast('⚠️ Llena la tabla de tarimas primero (paquetes/sueltos o usa Auto-distribuir)', 'error');
       return;
     }
     
-    // Validar que sumas cuadren más o menos
     if (Math.abs(sumCant - cantAceptada) > 0.01) {
       if (!confirm(`La suma de las tarimas (${fmtNum(sumCant)} ${UM_LABELS[um]}) no coincide con la cantidad aceptada (${fmtNum(cantAceptada)} ${UM_LABELS[um]}).\n\nDiferencia: ${fmtNum(sumCant - cantAceptada)} ${UM_LABELS[um]}\n\n¿Continuar igualmente?`)) return;
     }
@@ -4568,7 +4638,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
       liberado_at: new Date().toISOString()
     };
     
-    if (decision === 'liberado' || decision === 'parcial') {
+    if (decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') {
       const year = new Date().getFullYear();
       const totalMermas = (odp.procesos_completados || []).reduce((s, p) => s + (Number(p.mermas) || 0), 0);
       
