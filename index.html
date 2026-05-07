@@ -2305,7 +2305,7 @@ function modalLiberarCalidad() {
           <!-- Cantidad aceptada -->
           <div class="field">
             <label class="field-label">Cantidad ACEPTADA por calidad (en ${UM_LABELS[um]}) *</label>
-            <input class="input form-cal" data-field="cantidad_aceptada" type="number" min="0" max="${cantidadProducida}" step="${stepCant}" value="${f.cantidad_aceptada}" autocomplete="off" />
+            <input class="input form-cal" data-field="cantidad_aceptada" type="number" min="0" step="${stepCant}" value="${f.cantidad_aceptada}" autocomplete="off" />
           </div>
           
           <div id="cal-rechazo-info" style="padding:10px;background:#fee2e2;border-radius:8px;margin-bottom:14px;font-size:12px;color:#dc2626;display:${cantRechazada > 0 ? 'block' : 'none'};">
@@ -2322,7 +2322,7 @@ function modalLiberarCalidad() {
             <div style="margin-top:6px;background:#e2e8f0;height:5px;border-radius:99px;overflow:hidden;">
               <div id="cal-preview-bar" style="background:${decisionColor};height:100%;width:${Math.min(100, pctCalidadVsOriginal)}%;transition:width 0.3s;"></div>
             </div>
-            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Regla: ≥90% del solicitado = LIBERA · &lt;90% = RECHAZA</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Rango aceptable: <strong style="color:#16a34a;">${(TOLERANCIAS.CAL_FALTANTE_PCT*100)}% faltante</strong> a <strong style="color:#16a34a;">+${(TOLERANCIAS.CAL_EXTRA_PCT*100)}% extra</strong> = LIBERA TOTAL · Fuera del rango = pide motivo</div>
           </div>
           
           <!-- Tarimas individuales -->
@@ -4552,8 +4552,10 @@ window.confirmarLiberarCalidad = async (odpId) => {
   const numTarimas = Number(f.num_tarimas) || 0;
   const notas = (f.notas || '').trim();
   
-  if (cantAceptada < 0 || cantAceptada > cantidadProducida) {
-    toast('La cantidad aceptada debe estar entre 0 y ' + fmtCantidadUM(cantidadProducida, um), 'error'); return;
+  // Permitir hasta lo producido + 5% (para casos liberado_extra donde calidad acepta más del producido)
+  const limiteSuperior = Math.max(cantidadProducida, cantidadOriginal) * (1 + TOLERANCIAS.CAL_EXTRA_PCT);
+  if (cantAceptada < 0 || cantAceptada > limiteSuperior) {
+    toast(`La cantidad aceptada debe estar entre 0 y ${fmtCantidadUM(limiteSuperior, um)} (${fmtCantidadUM(cantidadProducida, um)} producidos + ${(TOLERANCIAS.CAL_EXTRA_PCT*100)}% tolerancia)`, 'error'); return;
   }
   
   // Calcular decisión usando bandas de tolerancia
