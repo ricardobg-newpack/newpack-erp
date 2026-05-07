@@ -224,7 +224,7 @@ window.sugerirRutaProcesos = sugerirRutaProcesos;
 // ============================================================
 const UM_OPCIONES = ['kg', 'pza', 'millar', 'rollo', 'm'];
 const UM_LABELS = { kg: 'Kg', pza: 'Pieza', millar: 'Millar', rollo: 'Rollo', m: 'Metro lineal' };
-const UM_ENTEROS = ['pza', 'millar', 'rollo']; // estas UM no aceptan decimales
+const UM_ENTEROS = ['pza', 'rollo']; // estas UM no aceptan decimales (millar SÍ acepta porque se puede tener 5.79 millares = 5,790 pza)
 window.UM_OPCIONES = UM_OPCIONES;
 window.UM_LABELS = UM_LABELS;
 window.UM_ENTEROS = UM_ENTEROS;
@@ -2362,7 +2362,7 @@ function modalLiberarCalidad() {
                     </div>
                     <div>
                       <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Sueltos</div>
-                      <div id="cal-info-suel" style="font-size:14px;font-weight:800;color:${sueltosTotal > 0 ? '#f59e0b' : '#16a34a'};">${fmtNum(sueltosTotal)} ${UM_LABELS[um]}</div>
+                      <div id="cal-info-suel" style="font-size:14px;font-weight:800;color:${sueltosTotal > 0 ? '#f59e0b' : '#16a34a'};">${um === 'millar' ? Math.round(sueltosTotal * 1000) + ' pza' : fmtNum(sueltosTotal) + ' ' + UM_LABELS[um]}</div>
                     </div>
                   </div>
                   <button onclick="autoDistribuir()" type="button" style="width:100%;margin-top:10px;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
@@ -2395,7 +2395,7 @@ function modalLiberarCalidad() {
                     <tr style="background:#f1f5f9;">
                       <th style="padding:8px;text-align:left;">Tar</th>
                       <th style="padding:8px;text-align:right;">Paquetes ${contPaq > 0 ? `<span style="font-weight:400;color:#94a3b8;font-size:9px;">×${fmtNum(contPaq)}</span>` : ''}</th>
-                      <th style="padding:8px;text-align:right;">${contPaq > 0 ? `Sueltos (${UM_LABELS[um]})` : `Cantidad (${UM_LABELS[um]}) *`}</th>
+                      <th style="padding:8px;text-align:right;">${contPaq > 0 ? (um === 'millar' ? 'Sueltos (pza)' : `Sueltos (${UM_LABELS[um]})`) : `Cantidad (${UM_LABELS[um]}) *`}</th>
                       <th style="padding:8px;text-align:right;">Total ${UM_LABELS[um]} ${contPaq > 0 ? '(auto)' : ''}</th>
                       <th style="padding:8px;text-align:right;">P. bruto (kg)</th>
                       <th style="padding:8px;text-align:right;">P. vacío (kg)</th>
@@ -2408,11 +2408,15 @@ function modalLiberarCalidad() {
                       const suel = Number(t.sueltos) || 0;
                       const cantTar = (paq * contPaq) + suel;
                       const neto = (Number(t.peso_bruto) || 0) - (Number(t.peso_tarima_vacia) || 0);
+                      // Si UM es millar, mostrar sueltos en piezas (multiplicar por 1000)
+                      const sueltosVisible = um === 'millar' ? Math.round(suel * 1000) : suel;
+                      const stepSueltos = um === 'millar' ? '1' : (um === 'pza' ? '1' : '0.01');
+                      const minSueltos = '0';
                       return `
                         <tr style="border-top:1px solid #f1f5f9;">
                           <td style="padding:6px 8px;font-weight:700;color:#475569;">T${String(i+1).padStart(2,'0')}</td>
                           <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="paquetes" type="number" min="0" step="1" value="${t.paquetes || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:75px;" autocomplete="off" /></td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="sueltos" type="number" min="0" step="${stepCant}" value="${t.sueltos || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:90px;" autocomplete="off" /></td>
+                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="sueltos" data-um="${um}" type="number" min="${minSueltos}" step="${stepSueltos}" value="${sueltosVisible}" style="padding:4px 6px;font-size:11px;text-align:right;width:90px;" autocomplete="off" /></td>
                           <td id="tar-cant-${i}" style="padding:6px 8px;text-align:right;font-weight:700;color:#1e40af;">${fmtNum(cantTar)}</td>
                           <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_bruto" type="number" min="0" step="0.01" value="${t.peso_bruto || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
                           <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_tarima_vacia" type="number" min="0" step="0.01" value="${t.peso_tarima_vacia || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
@@ -2425,7 +2429,7 @@ function modalLiberarCalidad() {
                     <tr style="background:#f8fafc;border-top:2px solid #e2e8f0;font-weight:700;">
                       <td style="padding:8px;">TOTAL</td>
                       <td id="tab-total-paq" style="padding:8px;text-align:right;">${fmtNum(totalPaquetes)}</td>
-                      <td id="tab-total-suel" style="padding:8px;text-align:right;">${fmtNum(totalSueltos)}</td>
+                      <td id="tab-total-suel" style="padding:8px;text-align:right;">${um === 'millar' ? Math.round(totalSueltos * 1000) + ' pza' : fmtNum(totalSueltos)}</td>
                       <td id="tab-total-cant" style="padding:8px;text-align:right;color:#1e40af;">${fmtNum(totalCantTarimas)} ${UM_LABELS[um]}</td>
                       <td id="tab-total-bruto" style="padding:8px;text-align:right;">${totalPesoBruto.toFixed(2)} kg</td>
                       <td id="tab-total-vacio" style="padding:8px;text-align:right;">${totalPesoVacio.toFixed(2)} kg</td>
@@ -3232,7 +3236,7 @@ function attachAppEvents() {
       const e_vacio = $('#tab-total-vacio');
       const e_neto = $('#tab-total-neto');
       if (e_paq) e_paq.textContent = `${fmtNum(tot_paq)}`;
-      if (e_suel) e_suel.textContent = `${fmtNum(tot_suel)}`;
+      if (e_suel) e_suel.textContent = um === 'millar' ? `${Math.round(tot_suel * 1000)} pza` : `${fmtNum(tot_suel)}`;
       if (e_cant) e_cant.textContent = `${fmtNum(tot_cant)} ${UM_LABELS[um]}`;
       if (e_bruto) e_bruto.textContent = `${tot_bruto.toFixed(2)} kg`;
       if (e_vacio) e_vacio.textContent = `${tot_vacio.toFixed(2)} kg`;
@@ -3334,7 +3338,7 @@ function attachAppEvents() {
           if (eTotal) eTotal.textContent = fmtCantidadUM(cAcep, um);
           if (ePaq) ePaq.textContent = paqT;
           if (eSuel) {
-            eSuel.textContent = `${fmtNum(suel)} ${UM_LABELS[um]}`;
+            eSuel.textContent = um === 'millar' ? `${Math.round(suel * 1000)} pza` : `${fmtNum(suel)} ${UM_LABELS[um]}`;
             eSuel.style.color = suel > 0 ? '#f59e0b' : '#16a34a';
           }
         }
@@ -3358,7 +3362,13 @@ function attachAppEvents() {
       const idx = Number(inp.dataset.idx);
       const field = inp.dataset.field;
       if (state.modalForm.tarimas_data[idx]) {
-        state.modalForm.tarimas_data[idx][field] = inp.value;
+        let value = inp.value;
+        // Si es campo "sueltos" y UM es millar, el input está en piezas → convertir a millares
+        if (field === 'sueltos' && inp.dataset.um === 'millar') {
+          const pzaSueltas = Number(value) || 0;
+          value = pzaSueltas / 1000; // 790 pza → 0.79 millares
+        }
+        state.modalForm.tarimas_data[idx][field] = value;
         actualizarPreviewCalidad();
       }
     };
@@ -4917,7 +4927,10 @@ window.autoDistribuir = () => {
   render();
   
   if (sueltosTotal > 0) {
-    toast(`✅ Distribuido: ${paqTotales} paquetes + ${sueltosTotal} sueltos en T${numT}`);
+    const sueltosMostrar = um === 'millar' 
+      ? `${Math.round(sueltosTotal * 1000)} pza` 
+      : `${fmtNum(sueltosTotal)} ${UM_LABELS[um]}`;
+    toast(`✅ Distribuido: ${paqTotales} paquetes + ${sueltosMostrar} en T${numT}`);
   } else {
     toast(`✅ Distribuido: ${paqTotales} paquetes (sin sobrantes)`);
   }
