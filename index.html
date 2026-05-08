@@ -84,6 +84,7 @@ tr:hover td { background: #f8fafc; }
 
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #e2e8f0; border-top-color: #16a34a; border-radius: 50%; animation: spin 0.6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.6; transform:scale(1.08); } }
 .loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.85); display: flex; align-items: center; justify-content: center; z-index: 9999; }
 .loading-content { text-align: center; }
 .loading-content .spinner { width: 40px; height: 40px; border-width: 3px; margin-bottom: 12px; }
@@ -1562,26 +1563,37 @@ function renderSeguimiento() {
     .sort((a,b) => a.nombre.localeCompare(b.nombre));
   
   return `
-    <div class="toolbar" style="flex-wrap:wrap;">
-      <input class="input" id="filtro-seguimiento" style="max-width:280px;flex:1;min-width:200px;" placeholder="Buscar PI, cliente, ODC..." value="${filtro}" autocomplete="off" />
-      <select class="input" id="filtro-seguimiento-cliente" style="max-width:240px;">
-        <option value="">Todos los clientes</option>
-        ${clientesConPedidos.map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} - ${c.nombre}</option>`).join('')}
-      </select>
-      <select class="input" id="filtro-seguimiento-estatus" style="max-width:200px;">
-        <option value="">Todos los estatus</option>
-        <option value="pendiente_aprobacion" ${filtroEst === 'pendiente_aprobacion' ? 'selected' : ''}>Por aprobar</option>
-        <option value="aprobado" ${filtroEst === 'aprobado' ? 'selected' : ''}>Aprobados</option>
-        <option value="en_proceso" ${filtroEst === 'en_proceso' ? 'selected' : ''}>En proceso</option>
-        <option value="completado" ${filtroEst === 'completado' ? 'selected' : ''}>Completados</option>
-        <option value="cancelado" ${filtroEst === 'cancelado' ? 'selected' : ''}>Cancelados</option>
-      </select>
-      <span style="font-size:12px;color:#64748b;">${arr.length} pedidos</span>
+    <!-- BÚSQUEDA GIGANTE -->
+    <div style="padding:18px;background:#fff;border:2px solid #3b82f6;border-radius:14px;margin-bottom:16px;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+        <div style="font-size:24px;">🔍</div>
+        <div style="flex:1;">
+          <input class="input" id="filtro-seguimiento" style="width:100%;padding:14px;font-size:16px;font-weight:600;border:2px solid #cbd5e1;border-radius:10px;" placeholder="Escribe PI-XXXXX, nombre del cliente, código de producto..." value="${filtro}" autocomplete="off" />
+        </div>
+        ${filtro ? `<button onclick="limpiarFiltroSeguimiento()" style="padding:10px 14px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:700;">✗ Limpiar</button>` : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select class="input" id="filtro-seguimiento-cliente" style="max-width:280px;font-size:13px;">
+          <option value="">📋 Todos los clientes (${state.pedidos.length})</option>
+          ${clientesConPedidos.map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} - ${c.nombre}</option>`).join('')}
+        </select>
+        <select class="input" id="filtro-seguimiento-estatus" style="max-width:200px;font-size:13px;">
+          <option value="">🎯 Todos los estatus</option>
+          <option value="pendiente_aprobacion" ${filtroEst === 'pendiente_aprobacion' ? 'selected' : ''}>🟡 Por aprobar</option>
+          <option value="aprobado" ${filtroEst === 'aprobado' ? 'selected' : ''}>✅ Aprobados</option>
+          <option value="en_proceso" ${filtroEst === 'en_proceso' ? 'selected' : ''}>🔄 En proceso</option>
+          <option value="completado" ${filtroEst === 'completado' ? 'selected' : ''}>🏁 Completados</option>
+          <option value="cancelado" ${filtroEst === 'cancelado' ? 'selected' : ''}>❌ Cancelados</option>
+        </select>
+        <span style="font-size:13px;color:#64748b;font-weight:600;margin-left:auto;">📊 ${arr.length} pedido(s)</span>
+      </div>
     </div>
     
     ${arr.length === 0 ? `
-      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
-        📋 No hay pedidos que coincidan con los filtros
+      <div style="padding:80px 20px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📋</div>
+        <div style="font-weight:700;color:#475569;font-size:16px;">No hay pedidos que coincidan</div>
+        <div style="font-size:13px;margin-top:6px;">Prueba con otra búsqueda o limpia los filtros</div>
       </div>
     ` : `
       <div style="display:flex;flex-direction:column;gap:14px;">
@@ -1592,133 +1604,186 @@ function renderSeguimiento() {
   `;
 }
 
-function renderTarjetaSeguimiento(p) {
+window.limpiarFiltroSeguimiento = () => {
+  state.filtros.seguimiento = '';
+  state.filtros.seguimiento_cliente = '';
+  state.filtros.seguimiento_estatus = '';
+  render();
+};
+
+// ============================================================
+// HELPER: Calcular fase actual del PI (para semáforo visual)
+// Devuelve: { fase: 0-5, label, porcentaje, color }
+// ============================================================
+function calcularFasePI(p) {
+  // 5 fases: Captura → Producción → Calidad → Almacén → Embarque
   const lineas = window.pedidoLineas(p.id);
   const odps = window.odpsDePedido(p.id);
   const ovs = window.ovsDePedido(p.id);
+  
+  // Fases
+  const fases = [
+    { id: 'captura',     icon: '📝', label: 'Captura',    completada: true },
+    { id: 'aprobacion',  icon: '✅', label: 'Aprobación', completada: false },
+    { id: 'produccion',  icon: '🏭', label: 'Producción', completada: false, en_curso: false },
+    { id: 'calidad',     icon: '✅', label: 'Calidad',    completada: false, en_curso: false },
+    { id: 'almacen',     icon: '📦', label: 'Almacén',    completada: false, en_curso: false },
+    { id: 'embarque',    icon: '🚚', label: 'Embarque',   completada: false, en_curso: false },
+  ];
+  
+  // Aprobación
+  if (['aprobado','en_proceso','completado'].includes(p.estatus)) fases[1].completada = true;
+  if (p.estatus === 'cancelado') {
+    return { fases, fase_actual: 1, porcentaje: 0, color: '#dc2626', label: '❌ CANCELADO', cancelado: true };
+  }
+  if (p.estatus === 'pendiente_aprobacion') {
+    return { fases, fase_actual: 1, porcentaje: 5, color: '#f59e0b', label: '🟡 Por aprobar' };
+  }
+  
+  // Producción
+  const odpsCompletas = odps.filter(o => 
+    ['pendiente_calidad','liberada_empaque','rechazada','en_almacen_planta','en_transito_cedis_mty','en_cedis_mty'].includes(o.estatus)
+  ).length;
+  const odpsEnCurso = odps.filter(o => o.estatus === 'en_produccion').length;
+  if (odps.length > 0 && odpsCompletas === odps.length) {
+    fases[2].completada = true;
+  } else if (odpsEnCurso > 0 || odps.some(o => o.estatus === 'programada')) {
+    fases[2].en_curso = true;
+  }
+  
+  // Calidad (al menos 1 ODP liberada por calidad)
+  const odpsLiberadas = odps.filter(o => o.estatus === 'liberada_empaque' || o.liberacion_calidad).length;
+  if (odps.length > 0 && odpsLiberadas === odps.length) {
+    fases[3].completada = true;
+  } else if (odpsLiberadas > 0) {
+    fases[3].en_curso = true;
+  }
+  
+  // Almacén / OTI
+  const tarimasPI = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
+  const tarimasEnAlmacen = tarimasPI.filter(t => 
+    ['en_almacen_planta','en_transito_cedis_mty','en_cedis_mty','en_cedis_mex'].includes(t.estatus)
+  ).length;
+  if (tarimasPI.length > 0 && tarimasEnAlmacen === tarimasPI.length) {
+    fases[4].completada = true;
+  } else if (tarimasEnAlmacen > 0) {
+    fases[4].en_curso = true;
+  }
+  
+  // Embarque (OVs)
+  const ovsCompletas = ovs.filter(o => o.estatus === 'completada').length;
+  if (ovs.length > 0 && ovsCompletas === ovs.length) {
+    fases[5].completada = true;
+  } else if (ovs.length > 0) {
+    fases[5].en_curso = true;
+  }
+  
+  // Calcular porcentaje y fase actual
+  let faseActual = 0;
+  let completadas = 0;
+  fases.forEach((f, i) => { if (f.completada) completadas = i + 1; if (f.completada || f.en_curso) faseActual = i; });
+  const porcentaje = Math.round((completadas / fases.length) * 100);
+  
+  let color = '#94a3b8';
+  let label = 'En proceso';
+  if (porcentaje === 100) { color = '#16a34a'; label = '🏁 COMPLETADO'; }
+  else if (porcentaje >= 80) { color = '#3b82f6'; label = `${porcentaje}% — ${fases[faseActual].label}`; }
+  else if (porcentaje >= 50) { color = '#f59e0b'; label = `${porcentaje}% — ${fases[faseActual].label}`; }
+  else if (porcentaje >= 20) { color = '#8b5cf6'; label = `${porcentaje}% — ${fases[faseActual].label}`; }
+  else { color = '#f59e0b'; label = `${porcentaje}% — ${fases[faseActual].label}`; }
+  
+  return { fases, fase_actual: faseActual, porcentaje, color, label };
+}
+
+function renderTarjetaSeguimiento(p) {
+  const lineas = window.pedidoLineas(p.id);
+  const odps = window.odpsDePedido(p.id);
+  const tarimasPI = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
+  const fasesData = calcularFasePI(p);
+  
+  // Resumen ubicación tarimas
+  const ubicaciones = {
+    pendiente: tarimasPI.filter(t => ['pendiente_empaque','pendiente_almacen'].includes(t.estatus)).length,
+    planta: tarimasPI.filter(t => t.estatus === 'en_almacen_planta').length,
+    transito: tarimasPI.filter(t => t.estatus === 'en_transito_cedis_mty').length,
+    cedis_mty: tarimasPI.filter(t => t.estatus === 'en_cedis_mty').length,
+    cedis_mex: tarimasPI.filter(t => t.estatus === 'en_cedis_mex').length,
+    embarcada: tarimasPI.filter(t => ['embarcada','entregada'].includes(t.estatus)).length,
+  };
+  
+  // Comentarios sin leer
   const comentarios = state.comentarios_pedidos.filter(c => c.pedido_id === p.id);
   
-  // Timeline de eventos
-  const eventos = [];
-  eventos.push({ icon: '📝', label: 'Capturado', fecha: p.created_at, by: p.creado_por_nombre, completado: true });
-  eventos.push({ 
-    icon: p.estatus === 'cancelado' ? '❌' : '✅', 
-    label: p.estatus === 'cancelado' ? 'Cancelado' : 'Aprobado', 
-    fecha: p.aprobado_at || p.updated_at, 
-    by: p.aprobado_por_nombre, 
-    completado: ['aprobado','en_proceso','completado','cancelado'].includes(p.estatus) 
-  });
-  
-  // Estatus de cada ODP
-  const odpsEnProgreso = odps.filter(o => o.estatus === 'en_produccion').length;
-  const odpsCompletadas = odps.filter(o => o.estatus === 'completada').length;
-  const odpsTotal = odps.length;
-  
-  if (odpsTotal > 0) {
-    eventos.push({
-      icon: odpsCompletadas === odpsTotal ? '✅' : odpsEnProgreso > 0 ? '🔄' : '📅',
-      label: `Producción ${odpsCompletadas}/${odpsTotal}`,
-      completado: odpsCompletadas === odpsTotal,
-      en_curso: odpsEnProgreso > 0
-    });
-  }
-  
-  const ovsCompletadas = ovs.filter(o => o.estatus === 'completada').length;
-  if (ovs.length > 0) {
-    eventos.push({
-      icon: ovsCompletadas === ovs.length ? '✅' : '📦',
-      label: `Embarques ${ovsCompletadas}/${ovs.length}`,
-      completado: ovsCompletadas === ovs.length
-    });
-  }
-  
-  const colorEst = { pendiente_aprobacion: '#f59e0b', aprobado: '#16a34a', en_proceso: '#3b82f6', completado: '#94a3b8', cancelado: '#dc2626' }[p.estatus];
-  const lblEst = { pendiente_aprobacion: 'Por aprobar', aprobado: 'Aprobado', en_proceso: 'En proceso', completado: 'Completado', cancelado: 'Cancelado' }[p.estatus];
+  // Fecha entrega
+  const fechaEntrega = p.fecha_entrega || '';
+  const hoy = new Date().toISOString().split('T')[0];
+  const urgente = fechaEntrega && fechaEntrega <= hoy && fasesData.porcentaje < 100;
   
   return `
-    <div class="panel" style="border-left:4px solid ${colorEst};">
-      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
-        <div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <span class="text-mono" style="font-weight:800;font-size:16px;">${p.folio}</span>
-            <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${colorEst}22;color:${colorEst};">${lblEst}</span>
+    <div class="panel" style="border-left:6px solid ${fasesData.color};cursor:pointer;transition:transform 0.15s, box-shadow 0.15s;" onclick="abrirModal('trazabilidad-pi','${p.id}')" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 8px 12px -2px rgba(0,0,0,0.15)'" onmouseout="this.style.transform='';this.style.boxShadow=''">
+      
+      <!-- HEADER: Folio + Estatus -->
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;background:${fasesData.color}11;">
+        <div style="flex:1;min-width:280px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+            <span class="text-mono" style="font-size:18px;font-weight:800;color:#1e293b;">${p.folio}</span>
+            <span style="background:${fasesData.color};color:#fff;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;">${fasesData.label}</span>
+            ${urgente ? `<span style="background:#dc2626;color:#fff;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;">🚨 URGENTE</span>` : ''}
+            ${comentarios.length > 0 ? `<span style="background:#f59e0b;color:#fff;padding:3px 8px;border-radius:99px;font-size:11px;font-weight:700;">💬 ${comentarios.length}</span>` : ''}
           </div>
-          <div style="font-size:13px;font-weight:600;margin-top:4px;">${p.cliente_nombre} <span style="color:#64748b;font-size:11px;">(${p.cliente_codigo})</span></div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px;">
-            ${fmtFechaHora(p.created_at)}
-            ${p.odc_cliente ? ` • ODC: <span class="text-mono">${p.odc_cliente}</span>` : ''}
-            ${p.fecha_requerida ? ` • Entrega: ${p.fecha_requerida}` : ''}
+          <div style="font-weight:700;font-size:14px;color:#475569;">${p.cliente_nombre} <span style="color:#64748b;font-weight:400;font-size:12px;">(${p.cliente_codigo})</span></div>
+          <div style="font-size:12px;color:#64748b;margin-top:3px;display:flex;gap:12px;flex-wrap:wrap;">
+            ${p.odc_cliente ? `<span>🛒 ODC: <strong>${p.odc_cliente}</strong></span>` : ''}
+            ${fechaEntrega ? `<span style="${urgente?'color:#dc2626;font-weight:700;':''}">📅 Entrega: <strong>${fechaEntrega}</strong></span>` : ''}
+            <span>📦 ${lineas.length} línea(s)</span>
+            ${odps.length > 0 ? `<span>🏭 ${odps.length} ODP(s)</span>` : ''}
           </div>
         </div>
         <div style="text-align:right;">
-          <div style="font-size:14px;font-weight:700;">${lineas.length} líneas</div>
-          ${odps.length > 0 ? `<div style="font-size:11px;color:#64748b;">${odps.length} ODP(s) · ${ovs.length} OV(s)</div>` : ''}
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Avance</div>
+          <div style="font-size:28px;font-weight:800;color:${fasesData.color};line-height:1;">${fasesData.porcentaje}%</div>
         </div>
       </div>
       
-      <!-- Timeline -->
-      <div style="padding:12px 18px;background:#f8fafc;border-top:1px solid #e2e8f0;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;">
-        ${eventos.map((e, i) => `
-          <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;background:${e.completado ? '#dcfce7' : e.en_curso ? '#dbeafe' : '#f1f5f9'};color:${e.completado ? '#166534' : e.en_curso ? '#1e40af' : '#64748b'};font-weight:600;">
-            ${e.icon} ${e.label}
-            ${e.by ? `<span style="opacity:0.7;font-weight:400;">· ${e.by}</span>` : ''}
-          </span>
-          ${i < eventos.length - 1 ? `<span style="color:#cbd5e1;">→</span>` : ''}
-        `).join('')}
-      </div>
-      
-      <!-- ODPs (si existen) con detalle de avance -->
-      ${odps.length > 0 ? `
-        <div style="padding:12px 18px;border-top:1px solid #e2e8f0;">
-          <div style="font-size:11px;color:#64748b;font-weight:700;margin-bottom:8px;text-transform:uppercase;">Producción</div>
-          ${odps.map(o => {
-            // Usar cantidad final del último proceso (no sumar todas las capturas)
-            let prod = 0;
-            if (o.cantidad_producida_final !== undefined && o.cantidad_producida_final !== null) {
-              // ODP terminada (último proceso completado)
-              prod = Number(o.cantidad_producida_final) || 0;
-            } else if (o.procesos_completados && o.procesos_completados.length > 0) {
-              // ODP en proceso intermedio: usar lo que produjo el último completado
-              const ultimo = o.procesos_completados[o.procesos_completados.length - 1];
-              prod = Number(ultimo.cantidad_producida) || 0;
-            }
-            const pct = o.cantidad > 0 ? Math.min(100, Math.round((prod / o.cantidad) * 100)) : 0;
-            const colorODP = { pendiente_planeacion: '#f59e0b', programada: '#3b82f6', en_produccion: '#8b5cf6', pendiente_calidad: '#f59e0b', liberada_empaque: '#16a34a', rechazada: '#dc2626', completada: '#16a34a' }[o.estatus] || '#64748b';
+      <!-- SEMÁFORO DE FASES (visual principal) -->
+      <div style="padding:14px 18px;border-top:1px solid #e2e8f0;background:#fff;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+          ${fasesData.fases.map((f, i) => {
+            const colorF = f.completada ? '#16a34a' : (f.en_curso ? '#3b82f6' : '#cbd5e1');
+            const bgF = f.completada ? '#dcfce7' : (f.en_curso ? '#dbeafe' : '#f1f5f9');
             return `
-              <div style="font-size:12px;margin-bottom:8px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                  <div>
-                    <span class="text-mono" style="font-weight:700;">${o.folio}</span>
-                    <span class="text-mono" style="color:#64748b;margin-left:6px;">${o.producto_codigo}</span>
-                    ${o.maquina_asignada ? `<span style="margin-left:6px;color:#475569;">· 🏭 ${o.maquina_asignada}</span>` : ''}
-                  </div>
-                  <span style="font-weight:600;color:${colorODP};">${fmtCantidadUM(prod, o.um)} / ${fmtCantidadUM(o.cantidad, o.um)} (${pct}%)</span>
+              <div style="flex:1;text-align:center;">
+                <div style="width:42px;height:42px;border-radius:50%;background:${bgF};border:2px solid ${colorF};display:flex;align-items:center;justify-content:center;margin:0 auto;font-size:18px;${f.en_curso?'animation:pulse 1.5s ease-in-out infinite;':''}">
+                  ${f.completada ? '✓' : (f.en_curso ? f.icon : '○')}
                 </div>
-                <div style="background:#e2e8f0;height:6px;border-radius:99px;overflow:hidden;">
-                  <div style="background:${colorODP};height:100%;width:${pct}%;transition:width 0.3s;"></div>
-                </div>
+                <div style="font-size:10px;font-weight:700;color:${colorF};margin-top:4px;">${f.label}</div>
               </div>
+              ${i < fasesData.fases.length - 1 ? `<div style="flex:0.5;height:3px;background:${f.completada ? '#16a34a' : '#cbd5e1'};margin-bottom:18px;"></div>` : ''}
             `;
           }).join('')}
         </div>
-      ` : ''}
+      </div>
       
-      <!-- Comentarios -->
-      ${comentarios.length > 0 ? `
-        <div style="padding:10px 18px;border-top:1px solid #e2e8f0;background:#fffbeb;">
-          <div style="font-size:11px;color:#92400e;font-weight:700;margin-bottom:6px;">💬 Comentarios (${comentarios.length})</div>
-          ${comentarios.slice(0, 3).map(c => `
-            <div style="font-size:12px;margin-bottom:4px;">
-              <strong>${c.autor_nombre}:</strong> ${c.mensaje}
-              <span style="color:#94a3b8;font-size:10px;margin-left:6px;">${fmtFechaHora(c.created_at)}</span>
-            </div>
-          `).join('')}
+      ${tarimasPI.length > 0 ? `
+        <!-- UBICACIÓN ACTUAL DE TARIMAS -->
+        <div style="padding:10px 18px;border-top:1px solid #e2e8f0;background:#f8fafc;">
+          <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:6px;">📍 Dónde están las ${tarimasPI.length} tarima(s)</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${ubicaciones.pendiente > 0 ? `<span style="padding:4px 10px;background:#fef3c7;color:#92400e;border-radius:6px;font-size:11px;font-weight:700;">⏳ Pendiente recibir: ${ubicaciones.pendiente}</span>` : ''}
+            ${ubicaciones.planta > 0 ? `<span style="padding:4px 10px;background:#e0e7ff;color:#4338ca;border-radius:6px;font-size:11px;font-weight:700;">🏭 Planta: ${ubicaciones.planta}</span>` : ''}
+            ${ubicaciones.transito > 0 ? `<span style="padding:4px 10px;background:#fde68a;color:#92400e;border-radius:6px;font-size:11px;font-weight:700;">🚚 En tránsito: ${ubicaciones.transito}</span>` : ''}
+            ${ubicaciones.cedis_mty > 0 ? `<span style="padding:4px 10px;background:#dbeafe;color:#1e40af;border-radius:6px;font-size:11px;font-weight:700;">📦 CEDIS-MTY: ${ubicaciones.cedis_mty}</span>` : ''}
+            ${ubicaciones.cedis_mex > 0 ? `<span style="padding:4px 10px;background:#bbf7d0;color:#166534;border-radius:6px;font-size:11px;font-weight:700;">📦 CEDIS-MEX: ${ubicaciones.cedis_mex}</span>` : ''}
+            ${ubicaciones.embarcada > 0 ? `<span style="padding:4px 10px;background:#dcfce7;color:#15803d;border-radius:6px;font-size:11px;font-weight:700;">✅ Entregadas: ${ubicaciones.embarcada}</span>` : ''}
+          </div>
         </div>
       ` : ''}
       
-      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn-secondary" onclick="abrirModal('comentar-pedido','${p.id}')" style="padding:6px 12px;font-size:12px;">💬 Comentar</button>
-        <button class="btn-secondary" onclick="abrirModal('detalle-pedido','${p.id}')" style="padding:6px 12px;font-size:12px;margin-left:auto;">${ICONS.list} Ver detalle</button>
+      <!-- ACCIONES -->
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;background:#fafafa;">
+        <button class="btn-primary" onclick="event.stopPropagation();abrirModal('trazabilidad-pi','${p.id}')" style="padding:8px 14px;background:#3b82f6;font-size:13px;">🔍 Ver trazabilidad completa</button>
+        <button class="btn-secondary" onclick="event.stopPropagation();abrirModal('comentar-pedido','${p.id}')" style="padding:6px 12px;font-size:12px;">💬 Comentar (${comentarios.length})</button>
+        <button class="btn-secondary" onclick="event.stopPropagation();abrirModal('detalle-pedido','${p.id}')" style="padding:6px 12px;font-size:12px;margin-left:auto;">${ICONS.list} Detalle PI</button>
       </div>
     </div>
   `;
@@ -1735,6 +1800,7 @@ function renderModal() {
   if (m === 'crear-oti') return modalCrearOTI();
   if (m === 'detalle-odp') return modalDetalleODP();
   if (m === 'detalle-pedido') return modalDetallePedido();
+  if (m === 'trazabilidad-pi') return modalTrazabilidadPI();
   if (m === 'comentar-pedido') return modalComentarPedido();
   if (m === 'crear-producto-pt') return modalCrearProductoPT();
   if (m === 'editar-producto-pt') return modalEditarProductoPT();
@@ -3415,6 +3481,396 @@ function modalDetalleODP() {
 
 // ============================================================
 // MODAL: DETALLE DE PEDIDO (timeline completo + comentarios)
+// ============================================================
+// ============================================================
+// MODAL: TRAZABILIDAD PI (Timeline + Flujo + Tarimas)
+// ============================================================
+function modalTrazabilidadPI() {
+  const p = state.pedidos.find(x => x.id === state.modalData);
+  if (!p) return '';
+  
+  const tab = state.tabTrazabilidad || 'timeline';
+  const lineas = window.pedidoLineas(p.id);
+  const odps = window.odpsDePedido(p.id);
+  const ovs = window.ovsDePedido(p.id);
+  const tarimasPI = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
+  const otisPI = state.oti.filter(o => 
+    (o.pedidos_folios || []).includes(p.folio) ||
+    (o.tarimas_ids || []).some(tid => tarimasPI.some(t => t.id === tid))
+  );
+  const comentarios = state.comentarios_pedidos.filter(c => c.pedido_id === p.id);
+  const fasesData = calcularFasePI(p);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:980px;max-height:92vh;">
+        <div class="modal-header" style="background:${fasesData.color}11;">
+          <div>
+            <h2 style="font-size:20px;font-weight:800;display:flex;align-items:center;gap:10px;">
+              🔍 Trazabilidad <span class="text-mono" style="color:${fasesData.color};">${p.folio}</span>
+            </h2>
+            <div style="font-size:12px;color:#64748b;margin-top:4px;">${p.cliente_nombre} (${p.cliente_codigo}) · ${fasesData.label}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        
+        <!-- HEADER VISUAL: Avance global -->
+        <div style="padding:18px 22px;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div>
+              <div style="font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;">Avance global</div>
+              <div style="font-size:28px;font-weight:800;color:${fasesData.color};">${fasesData.porcentaje}%</div>
+            </div>
+            <div style="text-align:right;font-size:11px;color:#64748b;">
+              ${p.fecha_entrega ? `<div>📅 Entrega: <strong>${p.fecha_entrega}</strong></div>` : ''}
+              ${p.odc_cliente ? `<div>🛒 ODC: <strong>${p.odc_cliente}</strong></div>` : ''}
+              <div>📦 ${tarimasPI.length} tarimas · 🏭 ${odps.length} ODPs · 🚚 ${otisPI.length} OTI(s)</div>
+            </div>
+          </div>
+          <!-- Barra de fases -->
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+            ${fasesData.fases.map((f, i) => {
+              const colorF = f.completada ? '#16a34a' : (f.en_curso ? '#3b82f6' : '#cbd5e1');
+              const bgF = f.completada ? '#dcfce7' : (f.en_curso ? '#dbeafe' : '#f1f5f9');
+              return `
+                <div style="flex:1;text-align:center;">
+                  <div style="width:48px;height:48px;border-radius:50%;background:${bgF};border:3px solid ${colorF};display:flex;align-items:center;justify-content:center;margin:0 auto;font-size:20px;${f.en_curso?'animation:pulse 1.5s ease-in-out infinite;':''}">
+                    ${f.completada ? '✓' : (f.en_curso ? f.icon : '○')}
+                  </div>
+                  <div style="font-size:11px;font-weight:700;color:${colorF};margin-top:6px;">${f.label}</div>
+                </div>
+                ${i < fasesData.fases.length - 1 ? `<div style="flex:0.5;height:4px;background:${f.completada ? '#16a34a' : '#cbd5e1'};margin-bottom:24px;border-radius:2px;"></div>` : ''}
+              `;
+            }).join('')}
+          </div>
+        </div>
+        
+        <!-- TABS -->
+        <div style="display:flex;gap:0;background:#fff;border-bottom:2px solid #e2e8f0;padding:0 22px;">
+          <button onclick="setTabTrazabilidad('timeline')" style="padding:12px 18px;background:none;border:none;border-bottom:3px solid ${tab==='timeline'?'#3b82f6':'transparent'};color:${tab==='timeline'?'#3b82f6':'#64748b'};font-weight:700;font-size:13px;cursor:pointer;">📊 Timeline</button>
+          <button onclick="setTabTrazabilidad('produccion')" style="padding:12px 18px;background:none;border:none;border-bottom:3px solid ${tab==='produccion'?'#3b82f6':'transparent'};color:${tab==='produccion'?'#3b82f6':'#64748b'};font-weight:700;font-size:13px;cursor:pointer;">🏭 ODPs (${odps.length})</button>
+          <button onclick="setTabTrazabilidad('tarimas')" style="padding:12px 18px;background:none;border:none;border-bottom:3px solid ${tab==='tarimas'?'#3b82f6':'transparent'};color:${tab==='tarimas'?'#3b82f6':'#64748b'};font-weight:700;font-size:13px;cursor:pointer;">📦 Tarimas (${tarimasPI.length})</button>
+        </div>
+        
+        <!-- CONTENIDO TAB -->
+        <div class="modal-body" style="padding:18px 22px;max-height:50vh;overflow-y:auto;">
+          ${tab === 'timeline' ? renderTrazTimeline(p, lineas, odps, tarimasPI, otisPI, ovs) : ''}
+          ${tab === 'produccion' ? renderTrazProduccion(p, lineas, odps) : ''}
+          ${tab === 'tarimas' ? renderTrazTarimas(p, tarimasPI, otisPI) : ''}
+        </div>
+        
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+          <button class="btn-secondary" onclick="abrirModal('comentar-pedido','${p.id}')" style="padding:8px 14px;">💬 Comentar (${comentarios.length})</button>
+          <button class="btn-secondary" onclick="abrirModal('detalle-pedido','${p.id}')" style="padding:8px 14px;">${ICONS.list} Detalle PI completo</button>
+          <button class="btn-primary" onclick="cerrarModal()" style="padding:8px 14px;">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.setTabTrazabilidad = (tab) => { state.tabTrazabilidad = tab; render(); };
+
+// ----------------------------------------
+// TAB 1: Timeline cronológico
+// ----------------------------------------
+function renderTrazTimeline(p, lineas, odps, tarimasPI, otisPI, ovs) {
+  const eventos = [];
+  
+  // PI capturado
+  eventos.push({
+    fecha: p.created_at,
+    icono: '📝',
+    titulo: 'PI capturado',
+    detalle: `Por ${p.creado_por_nombre || '—'} · ${lineas.length} línea(s)`,
+    estado: 'completado'
+  });
+  
+  // Aprobación
+  if (p.aprobado_at || ['aprobado','en_proceso','completado'].includes(p.estatus)) {
+    eventos.push({
+      fecha: p.aprobado_at || p.updated_at,
+      icono: '✅',
+      titulo: 'PI aprobado',
+      detalle: `Por ${p.aprobado_por_nombre || '—'}`,
+      estado: 'completado'
+    });
+  } else if (p.estatus === 'pendiente_aprobacion') {
+    eventos.push({
+      icono: '🟡',
+      titulo: 'Pendiente aprobación',
+      detalle: 'Esperando autorización',
+      estado: 'pendiente'
+    });
+  } else if (p.estatus === 'cancelado') {
+    eventos.push({
+      fecha: p.updated_at,
+      icono: '❌',
+      titulo: 'PI CANCELADO',
+      detalle: '',
+      estado: 'cancelado'
+    });
+  }
+  
+  // ODPs cada una
+  odps.forEach(odp => {
+    eventos.push({
+      fecha: odp.created_at,
+      icono: '🏭',
+      titulo: `${odp.folio} generada`,
+      detalle: `${odp.producto_codigo} · ${fmtCantidadUM(odp.cantidad, odp.um)}`,
+      estado: 'completado'
+    });
+    
+    if (odp.fecha_inicio_real || odp.estatus === 'en_produccion' || ['pendiente_calidad','liberada_empaque','rechazada'].includes(odp.estatus)) {
+      eventos.push({
+        fecha: odp.fecha_inicio_real || odp.fecha_inicio_programada,
+        icono: '🔄',
+        titulo: `Producción iniciada en ${odp.folio}`,
+        detalle: odp.maquina_asignada ? `Máquina: ${odp.maquina_asignada}` : '',
+        estado: 'completado'
+      });
+    }
+    
+    // Procesos completados
+    (odp.procesos_completados || []).forEach(pc => {
+      eventos.push({
+        fecha: pc.completado_at,
+        icono: '✓',
+        titulo: `${pc.codigo || ''} ${pc.nombre || ''} completado`,
+        detalle: `${odp.folio} · Producido: ${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida || 0)} kg${pc.mermas_kg ? ` · Merma: ${fmtNum(pc.mermas_kg)} kg` : ''}`,
+        estado: 'completado'
+      });
+    });
+    
+    if (odp.liberacion_calidad) {
+      eventos.push({
+        fecha: odp.produccion_terminada_at || odp.updated_at,
+        icono: odp.liberacion_calidad.decision === 'liberado' ? '✅' : (odp.liberacion_calidad.decision === 'parcial' ? '⚠️' : (odp.liberacion_calidad.decision === 'liberado_extra' ? '⚠️' : '❌')),
+        titulo: `Calidad: ${odp.liberacion_calidad.decision === 'liberado' ? 'LIBERADO TOTAL' : (odp.liberacion_calidad.decision === 'parcial' ? 'PARCIAL' : (odp.liberacion_calidad.decision === 'liberado_extra' ? 'LIBERADO con extra' : 'RECHAZADO'))}`,
+        detalle: `${odp.folio} · ${odp.packing_list || ''}`,
+        estado: 'completado'
+      });
+    }
+  });
+  
+  // Tarimas: agrupar por momento de recepción/movimiento
+  const fechasRecALP = new Map();
+  tarimasPI.forEach(t => {
+    if (t.recibido_alp_at) {
+      const k = t.recibido_alp_at.seconds;
+      if (!fechasRecALP.has(k)) fechasRecALP.set(k, { fecha: t.recibido_alp_at, count: 0 });
+      fechasRecALP.get(k).count++;
+    }
+  });
+  fechasRecALP.forEach(v => {
+    eventos.push({
+      fecha: v.fecha,
+      icono: '🏭',
+      titulo: `${v.count} tarima(s) recibidas en almacén planta`,
+      detalle: 'PLANTA-MTY',
+      estado: 'completado'
+    });
+  });
+  
+  // OTIs
+  otisPI.forEach(oti => {
+    eventos.push({
+      fecha: oti.created_at,
+      icono: '🚚',
+      titulo: `${oti.folio} en tránsito`,
+      detalle: `${oti.origen} → ${oti.destino} · ${oti.num_tarimas} tarima(s) · ${oti.transportista || ''}`,
+      estado: oti.estatus === 'en_transito' ? 'en_curso' : 'completado'
+    });
+    if (oti.recibido_at) {
+      eventos.push({
+        fecha: oti.recibido_at,
+        icono: '📦',
+        titulo: `${oti.folio} recibido`,
+        detalle: `${oti.destino} · ${oti.num_tarimas} tarima(s)`,
+        estado: 'completado'
+      });
+    }
+  });
+  
+  // Ordenar por fecha
+  eventos.sort((a, b) => {
+    const fa = a.fecha?.seconds ? a.fecha.seconds : 0;
+    const fb = b.fecha?.seconds ? b.fecha.seconds : 0;
+    return fa - fb;
+  });
+  
+  if (eventos.length === 0) {
+    return `<div style="text-align:center;padding:40px;color:#94a3b8;">Sin eventos registrados</div>`;
+  }
+  
+  return `
+    <div style="position:relative;padding-left:30px;">
+      <!-- Línea vertical -->
+      <div style="position:absolute;left:14px;top:0;bottom:0;width:2px;background:#e2e8f0;"></div>
+      ${eventos.map((e, i) => {
+        const colorE = e.estado === 'completado' ? '#16a34a' : (e.estado === 'en_curso' ? '#3b82f6' : (e.estado === 'cancelado' ? '#dc2626' : '#94a3b8'));
+        const bgE = e.estado === 'completado' ? '#dcfce7' : (e.estado === 'en_curso' ? '#dbeafe' : (e.estado === 'cancelado' ? '#fee2e2' : '#f1f5f9'));
+        return `
+          <div style="position:relative;padding-bottom:14px;">
+            <div style="position:absolute;left:-30px;top:0;width:30px;height:30px;border-radius:50%;background:${bgE};border:3px solid ${colorE};display:flex;align-items:center;justify-content:center;font-size:14px;">
+              ${e.icono}
+            </div>
+            <div style="margin-left:8px;padding:10px 14px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid ${colorE};border-radius:8px;">
+              <div style="font-weight:700;font-size:13px;color:#1e293b;">${e.titulo}</div>
+              ${e.detalle ? `<div style="font-size:11px;color:#475569;margin-top:2px;">${e.detalle}</div>` : ''}
+              <div style="font-size:10px;color:#94a3b8;margin-top:4px;">${e.fecha ? fmtFechaHora(e.fecha) : 'Pendiente'}</div>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ----------------------------------------
+// TAB 2: Producción (ODPs en flujo)
+// ----------------------------------------
+function renderTrazProduccion(p, lineas, odps) {
+  if (odps.length === 0) {
+    return `<div style="text-align:center;padding:40px;color:#94a3b8;">📅 Aún no se han generado ODPs para este PI</div>`;
+  }
+  
+  return odps.map(odp => {
+    let prod = 0;
+    if (odp.cantidad_producida_final !== undefined && odp.cantidad_producida_final !== null) {
+      prod = Number(odp.cantidad_producida_final) || 0;
+    } else if (odp.procesos_completados && odp.procesos_completados.length > 0) {
+      const ultimo = odp.procesos_completados[odp.procesos_completados.length - 1];
+      prod = Number(ultimo.cantidad_producida) || 0;
+    }
+    const pct = odp.cantidad > 0 ? Math.min(100, Math.round((prod / odp.cantidad) * 100)) : 0;
+    const colorODP = { pendiente_planeacion: '#f59e0b', programada: '#3b82f6', en_produccion: '#8b5cf6', pendiente_calidad: '#f59e0b', liberada_empaque: '#16a34a', rechazada: '#dc2626' }[odp.estatus] || '#64748b';
+    const ruta = odp.ruta_procesos || [];
+    const procCompletos = (odp.procesos_completados || []).map(pc => pc.codigo);
+    const procActualIdx = odp.proceso_actual_idx ?? -1;
+    
+    return `
+      <div class="panel" style="margin-bottom:14px;border-left:4px solid ${colorODP};">
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span class="text-mono" style="font-weight:800;font-size:15px;">${odp.folio}</span>
+              <span style="background:${colorODP}22;color:${colorODP};padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700;text-transform:uppercase;">${odp.estatus.replace('_',' ')}</span>
+              ${odp.maquina_asignada ? `<span style="font-size:11px;color:#64748b;">🏭 ${odp.maquina_asignada}</span>` : ''}
+            </div>
+            <div class="text-mono" style="font-size:11px;color:#64748b;margin-top:4px;">${odp.producto_codigo}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:18px;font-weight:800;color:${colorODP};">${pct}%</div>
+            <div style="font-size:11px;color:#64748b;">${fmtCantidadUM(prod, odp.um)} / ${fmtCantidadUM(odp.cantidad, odp.um)}</div>
+          </div>
+        </div>
+        
+        <!-- Flujo de procesos -->
+        ${ruta.length > 0 ? `
+          <div style="padding:14px 18px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+            <div style="font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:8px;">🔄 Ruta de producción</div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              ${ruta.map((proc, i) => {
+                const procInfo = getProc(proc);
+                const completo = procCompletos.includes(proc);
+                const enCurso = i === procActualIdx && odp.estatus === 'en_produccion';
+                const colorP = completo ? '#16a34a' : (enCurso ? '#3b82f6' : '#cbd5e1');
+                const bgP = completo ? '#dcfce7' : (enCurso ? '#dbeafe' : '#f1f5f9');
+                return `
+                  <div style="text-align:center;">
+                    <div style="padding:8px 14px;background:${bgP};border:2px solid ${colorP};border-radius:10px;font-weight:700;font-size:12px;color:${colorP};${enCurso?'animation:pulse 1.5s ease-in-out infinite;':''}">
+                      ${procInfo?.icono || ''} ${proc}
+                    </div>
+                    <div style="font-size:9px;color:#64748b;margin-top:2px;">${procInfo?.nombre || ''}</div>
+                  </div>
+                  ${i < ruta.length - 1 ? `<div style="font-size:18px;color:${completo ? '#16a34a' : '#cbd5e1'};">→</div>` : ''}
+                `;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        <!-- Procesos completados detalle -->
+        ${(odp.procesos_completados || []).length > 0 ? `
+          <div style="padding:10px 18px;border-top:1px solid #e2e8f0;font-size:11px;">
+            <div style="color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:6px;">📋 Capturas</div>
+            ${odp.procesos_completados.map(pc => `
+              <div style="display:flex;justify-content:space-between;padding:4px 0;">
+                <span>${pc.codigo} · ${pc.operador || '—'} · ${pc.completado_at ? new Date(pc.completado_at).toLocaleString('es-MX') : ''}</span>
+                <span style="font-weight:600;color:#16a34a;">${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida || 0)} kg ${pc.mermas_kg ? `· -${fmtNum(pc.mermas_kg)} merma` : ''}</span>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+// ----------------------------------------
+// TAB 3: Tarimas individuales
+// ----------------------------------------
+function renderTrazTarimas(p, tarimasPI, otisPI) {
+  if (tarimasPI.length === 0) {
+    return `<div style="text-align:center;padding:40px;color:#94a3b8;">📦 Aún no hay tarimas generadas para este PI</div>`;
+  }
+  
+  // Agrupar por ubicación
+  const ubicaciones = {
+    'pendiente_empaque': { label: '⏳ Pendiente recibir', tarimas: [], color: '#f59e0b', bg: '#fef3c7' },
+    'pendiente_almacen': { label: '⏳ Pendiente recibir', tarimas: [], color: '#f59e0b', bg: '#fef3c7' },
+    'en_almacen_planta': { label: '🏭 En almacén planta', tarimas: [], color: '#4338ca', bg: '#e0e7ff' },
+    'en_transito_cedis_mty': { label: '🚚 En tránsito a CEDIS-MTY', tarimas: [], color: '#92400e', bg: '#fde68a' },
+    'en_cedis_mty': { label: '📦 En CEDIS-MTY', tarimas: [], color: '#1e40af', bg: '#dbeafe' },
+    'en_cedis_mex': { label: '📦 En CEDIS-MEX', tarimas: [], color: '#166534', bg: '#bbf7d0' },
+    'embarcada': { label: '🚛 Embarcada', tarimas: [], color: '#15803d', bg: '#dcfce7' },
+    'entregada': { label: '✅ Entregada', tarimas: [], color: '#15803d', bg: '#dcfce7' },
+  };
+  
+  tarimasPI.forEach(t => {
+    if (ubicaciones[t.estatus]) ubicaciones[t.estatus].tarimas.push(t);
+  });
+  
+  return Object.entries(ubicaciones).filter(([k, v]) => v.tarimas.length > 0).map(([k, v]) => `
+    <div class="panel" style="margin-bottom:12px;border-left:4px solid ${v.color};">
+      <div style="padding:10px 16px;background:${v.bg};display:flex;justify-content:space-between;align-items:center;">
+        <strong style="color:${v.color};font-size:13px;">${v.label}</strong>
+        <span style="background:${v.color};color:#fff;padding:2px 10px;border-radius:99px;font-size:11px;font-weight:700;">${v.tarimas.length} tarima(s)</span>
+      </div>
+      <div style="padding:10px 16px;">
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f8fafc;">
+              <th style="padding:6px;text-align:left;">Tarima</th>
+              <th style="padding:6px;text-align:left;">Lote</th>
+              <th style="padding:6px;text-align:left;">ODP</th>
+              <th style="padding:6px;text-align:right;">Cantidad</th>
+              <th style="padding:6px;text-align:right;">Kg neto</th>
+              <th style="padding:6px;text-align:left;">OTI</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${v.tarimas.map(t => `
+              <tr style="border-top:1px solid #f1f5f9;">
+                <td style="padding:6px;font-weight:700;">T${String(t.numero_tarima || '').padStart(2,'0')}</td>
+                <td style="padding:6px;" class="text-mono">${t.lote_codigo || '—'}</td>
+                <td style="padding:6px;" class="text-mono">${t.odp_folio || '—'}</td>
+                <td style="padding:6px;text-align:right;font-weight:600;color:#1e40af;">${fmtCantidadUM(t.cantidad, t.um)}</td>
+                <td style="padding:6px;text-align:right;color:#475569;">${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg</td>
+                <td style="padding:6px;" class="text-mono">${t.oti_folio || '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ============================================================
+// MODAL: DETALLE DE PEDIDO
 // ============================================================
 function modalDetallePedido() {
   const p = state.pedidos.find(x => x.id === state.modalData);
