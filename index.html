@@ -1564,8 +1564,10 @@ function renderTarjetaCalidad(o, contexto) {
         ${o.estatus === 'pendiente_calidad' ? `
           <button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>
         ` : ''}
-        ${o.packing_list ? `
-          <button class="btn-primary" onclick="imprimirPackingList('${o.packing_list}')" style="padding:8px 14px;background:#f59e0b;">📄 Packing List ${o.packing_list}</button>
+        ${o.estatus === 'liberada_empaque' || o.packing_list ? `
+          <button onclick="imprimirPackingListPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📦 Packing List PDF</button>
+          <button onclick="imprimirEtiquetasTarimasPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🏷️ Etiquetas tarimas</button>
+          <button onclick="imprimirReporteProduccionPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📊 Reporte producción</button>
         ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
@@ -4095,6 +4097,675 @@ window.imprimirListaCargaPDF = (ovId) => {
   const filename = `ListaCarga_${ov.folio}_${ov.cliente_codigo || ''}.pdf`;
   _mostrarVistaPreviaPDF(docPDF, filename, `Lista de Carga ${ov.folio} · ${ov.cliente_nombre || ''}`);
 };
+// ============================================================
+// PDF: PACKING LIST (al liberar calidad - documento de trazabilidad)
+// ============================================================
+window.imprimirPackingListPDF = (odpId) => {
+  const odp = state.odps.find(x => x.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  
+  // Buscar PI, producto, packing list y tarimas
+  const pi = state.pedidos.find(p => p.id === odp.pedido_id);
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
+    .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+  
+  if (tarimas.length === 0) { toast('No hay tarimas para esta ODP', 'error'); return; }
+  
+  // Buscar packing list (lote calidad)
+  const pkl = (state.packing_lists || []).find(p => p.odp_id === odpId);
+  
+  const totalPiezas = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0) * (t.um === 'millar' ? 1000 : 1), 0);
+  const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const totalKgBruto = tarimas.reduce((s, t) => s + (Number(t.peso_bruto || t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const totalKgNeto = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  
+  let y = _pdfHeaderEmpresa(docPDF, 'PACKING LIST', pkl?.folio || `PL-${odp.folio}`);
+  
+  // ===== TÍTULO PRINCIPAL =====
+  docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.rect(0, y, 210, 14, 'F');
+  
+  docPDF.setFontSize(16);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.text('PACKING LIST', 105, y + 7, { align: 'center' });
+  
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text('DOCUMENTO DE EMPAQUE Y TRAZABILIDAD', 105, y + 11, { align: 'center' });
+  
+  docPDF.setTextColor(0, 0, 0);
+  y += 18;
+  
+  // ===== INFORMACIÓN GENERAL (2 cajas: cliente + documento) =====
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
+  
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 91, 32, 2, 2, 'F');
+  docPDF.roundedRect(107, y, 89, 32, 2, 2, 'F');
+  
+  // Header bloques
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('CLIENTE', 17, y + 5);
+  docPDF.text('DATOS DEL DOCUMENTO', 110, y + 5);
+  
+  // Cliente
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFontSize(10);
+  docPDF.setFont('helvetica', 'bold');
+  const cliNom = pi?.cliente_nombre || odp.cliente_nombre || '—';
+  docPDF.text(cliNom.length > 38 ? cliNom.substring(0,35)+'...' : cliNom, 17, y + 11);
+  
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(`Código: ${pi?.cliente_codigo || odp.cliente_codigo || '—'}`, 17, y + 16);
+  docPDF.text(`PI: ${odp.pedido_folio || '—'}`, 17, y + 21);
+  docPDF.text(`ODC Cliente: ${pi?.odc_cliente || '—'}`, 17, y + 26);
+  docPDF.text(`Fecha entrega: ${pi?.fecha_entrega || '—'}`, 17, y + 31);
+  
+  // Documento
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.text('Folio PKL:', 110, y + 11);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(pkl?.folio || '—', 138, y + 11);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('ODP:', 110, y + 16);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(odp.folio || '—', 138, y + 16);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('Fecha:', 110, y + 21);
+  docPDF.setFont('helvetica', 'normal');
+  const fechaPkl = pkl?.created_at?.seconds 
+    ? new Date(pkl.created_at.seconds*1000).toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })
+    : new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+  docPDF.text(fechaPkl, 138, y + 21);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('Liberado por:', 110, y + 26);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(pkl?.liberado_por_nombre || odp.calidad_por_nombre || '—', 138, y + 26);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('Estado:', 110, y + 31);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+  docPDF.text(pkl?.estatus === 'rechazado' ? 'RECHAZADO' : 'LIBERADO', 128, y + 31);
+  docPDF.setTextColor(0, 0, 0);
+  
+  y += 36;
+  
+  // ===== ESPECIFICACIONES DEL PRODUCTO =====
+  y = _pdfSeccionTitulo(docPDF, y, 'ESPECIFICACIONES DEL PRODUCTO', _COL_AZUL);
+  
+  const especH = 28;
+  docPDF.setFillColor(239, 246, 255);
+  docPDF.setDrawColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+  docPDF.setLineWidth(0.4);
+  docPDF.roundedRect(14, y, 182, especH, 2, 2, 'FD');
+  docPDF.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+  docPDF.rect(14, y, 3, especH, 'F');
+  
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('CÓDIGO DE PRODUCTO', 22, y + 5);
+  
+  docPDF.setFontSize(11);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.text(odp.producto_codigo || '—', 22, y + 11);
+  
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'normal');
+  const desc = producto?.descripcion || odp.descripcion || '';
+  if (desc) {
+    const descSplit = docPDF.splitTextToSize(desc, 100);
+    docPDF.text(descSplit, 22, y + 16);
+  }
+  
+  // Especificaciones técnicas
+  if (producto) {
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('ESPECIFICACIONES', 130, y + 5);
+    
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(8);
+    docPDF.setTextColor(0, 0, 0);
+    let specY = y + 10;
+    if (producto.ancho) { docPDF.text(`Ancho: ${producto.ancho} cm`, 130, specY); specY += 4; }
+    if (producto.fuelle) { docPDF.text(`Fuelle: ${producto.fuelle} cm`, 130, specY); specY += 4; }
+    if (producto.largo) { docPDF.text(`Largo: ${producto.largo} cm`, 130, specY); specY += 4; }
+    if (producto.calibre) { docPDF.text(`Calibre: ${producto.calibre} micras`, 165, y + 10); }
+    if (producto.color) { docPDF.text(`Color: ${producto.color}`, 165, y + 14); }
+    if (producto.material) { docPDF.text(`Material: ${producto.material}`, 165, y + 18); }
+  }
+  
+  y += especH + 4;
+  
+  // ===== DETALLE POR TARIMA =====
+  y = _pdfSeccionTitulo(docPDF, y, 'DETALLE POR TARIMA', _COL_AZUL);
+  
+  const um = (tarimas[0]?.um || '').toUpperCase();
+  
+  docPDF.autoTable({
+    startY: y,
+    head: [['#', 'Tarima', 'Lote', 'Máquina', 'Cantidad', 'UM', 'Peso bruto (kg)', 'Peso neto (kg)']],
+    body: tarimas.map((t, i) => [
+      i + 1,
+      `T${String(t.numero_tarima || '').padStart(2, '0')}`,
+      t.lote_codigo || '—',
+      t.maquina_codigo || odp.maquina_codigo || '—',
+      fmtNum(t.cantidad || 0),
+      (t.um || '').toUpperCase(),
+      fmtNum(t.peso_bruto || t.peso_neto_kg || t.peso_neto || 0),
+      fmtNum(t.peso_neto_kg || t.peso_neto || 0)
+    ]),
+    foot: [['', '', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, fmtNum(totalCant), um, fmtNum(totalKgBruto), fmtNum(totalKgNeto)]],
+    theme: 'striped',
+    headStyles: { 
+      fillColor: _COL_AZUL, textColor: 255, fontSize: 9, fontStyle: 'bold',
+      halign: 'center', cellPadding: 3
+    },
+    footStyles: { fillColor: _COL_VERDE, textColor: 255, fontSize: 10, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 9, cellPadding: 2.5 },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center' },
+      1: { cellWidth: 16, halign: 'center', fontStyle: 'bold' },
+      2: { cellWidth: 30 },
+      3: { cellWidth: 22, halign: 'center' },
+      4: { cellWidth: 24, halign: 'right' },
+      5: { cellWidth: 14, halign: 'center' },
+      6: { cellWidth: 32, halign: 'right' },
+      7: { cellWidth: 32, halign: 'right' }
+    },
+    margin: { left: 14, right: 14 }
+  });
+  
+  y = docPDF.lastAutoTable.finalY + 6;
+  
+  // ===== PROCESOS DE PRODUCCIÓN =====
+  // Buscar lineas de producción (proceso, máquina, fechas, mermas)
+  const lineasOdp = (state.lineas_produccion || []).filter(l => l.odp_id === odpId);
+  if (lineasOdp.length > 0) {
+    y = _pdfSeccionTitulo(docPDF, y, 'PROCESOS DE PRODUCCIÓN', _COL_AZUL);
+    
+    docPDF.autoTable({
+      startY: y,
+      head: [['Proceso', 'Máquina', 'Producido (kg)', 'Merma (kg)', 'Estatus', 'Operador']],
+      body: lineasOdp.map(l => [
+        l.proceso_codigo || l.proceso || '—',
+        l.maquina_codigo || '—',
+        fmtNum(l.producido_kg || l.cantidad_producida || 0),
+        fmtNum(l.merma_kg || 0),
+        (l.estatus || '').replace(/_/g,' ').toUpperCase(),
+        l.completado_por_nombre || l.operador_nombre || '—'
+      ]),
+      theme: 'grid',
+      headStyles: { fillColor: _COL_AZUL_OSCURO, textColor: 255, fontSize: 8.5, fontStyle: 'bold', halign: 'center', cellPadding: 2.5 },
+      bodyStyles: { fontSize: 8.5, cellPadding: 2 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 30, fontStyle: 'bold' },
+        1: { cellWidth: 24, halign: 'center' },
+        2: { cellWidth: 32, halign: 'right' },
+        3: { cellWidth: 28, halign: 'right' },
+        4: { cellWidth: 32, halign: 'center' },
+        5: { cellWidth: 36 }
+      },
+      margin: { left: 14, right: 14 }
+    });
+    y = docPDF.lastAutoTable.finalY + 6;
+  }
+  
+  // ===== CONTROL DE CALIDAD =====
+  if (y < 240) {
+    y = _pdfSeccionTitulo(docPDF, y, 'CONTROL DE CALIDAD', _COL_AZUL);
+    
+    const calH = 22;
+    docPDF.setFillColor(240, 253, 244);
+    docPDF.setDrawColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.setLineWidth(0.4);
+    docPDF.roundedRect(14, y, 182, calH, 2, 2, 'FD');
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.rect(14, y, 3, calH, 'F');
+    
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(22, 101, 52);
+    docPDF.text('LOTE PKL', 22, y + 5);
+    docPDF.text('ESTATUS', 80, y + 5);
+    docPDF.text('LIBERADO POR', 130, y + 5);
+    
+    docPDF.setFontSize(10);
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text(pkl?.folio || '—', 22, y + 11);
+    
+    const estCal = pkl?.estatus === 'rechazado' ? 'RECHAZADO' : 'LIBERADO TOTAL';
+    docPDF.setTextColor(pkl?.estatus === 'rechazado' ? 220 : 22, pkl?.estatus === 'rechazado' ? 38 : 163, pkl?.estatus === 'rechazado' ? 38 : 74);
+    docPDF.text(estCal, 80, y + 11);
+    
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(pkl?.liberado_por_nombre || '—', 130, y + 11);
+    
+    if (pkl?.observaciones) {
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text('Observaciones:', 22, y + 17);
+      docPDF.setFont('helvetica', 'normal');
+      const obsSplit = docPDF.splitTextToSize(pkl.observaciones, 145);
+      docPDF.text(obsSplit, 22, y + 21);
+    }
+    
+    y += calH + 4;
+  }
+  
+  // ===== FIRMAS =====
+  if (y < 250) {
+    y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS', _COL_AZUL);
+    
+    const firmaW = 58, firmaH = 24;
+    const firmas = ['CALIDAD', 'ALMACÉN', 'CLIENTE'];
+    firmas.forEach((titulo, i) => {
+      const x = 14 + (i * (firmaW + 2));
+      docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+      docPDF.rect(x, y, firmaW, 5, 'F');
+      docPDF.setFillColor(255, 255, 255);
+      docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.setLineWidth(0.3);
+      docPDF.rect(x, y + 5, firmaW, firmaH - 5, 'FD');
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.text(titulo, x + firmaW/2, y + 3.5, { align: 'center' });
+      docPDF.setDrawColor(0, 0, 0);
+      docPDF.setLineWidth(0.5);
+      docPDF.line(x + 4, y + 16, x + firmaW - 4, y + 16);
+      docPDF.setFontSize(7);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.text('Nombre y firma', x + firmaW/2, y + 21, { align: 'center' });
+    });
+  }
+  
+  _pdfPiePagina(docPDF);
+  
+  const filename = `PackingList_${pkl?.folio || odp.folio}_${odp.cliente_codigo || ''}.pdf`;
+  _mostrarVistaPreviaPDF(docPDF, filename, `Packing List ${pkl?.folio || odp.folio} · ${cliNom}`);
+};
+
+// ============================================================
+// PDF: ETIQUETAS POR TARIMA (4 por hoja A4)
+// ============================================================
+window.imprimirEtiquetasTarimasPDF = (odpId) => {
+  const odp = state.odps.find(x => x.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  
+  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
+    .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+  if (tarimas.length === 0) { toast('No hay tarimas para esta ODP', 'error'); return; }
+  
+  const pi = state.pedidos.find(p => p.id === odp.pedido_id);
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  
+  // 4 etiquetas por hoja: 2 columnas × 2 filas
+  // Hoja A4: 210mm × 297mm
+  // Margen: 10mm cada lado
+  // Cada etiqueta: 95mm × 138mm
+  const margenX = 10, margenY = 10, etiqW = 95, etiqH = 138, gap = 10;
+  
+  tarimas.forEach((t, idx) => {
+    const posInHoja = idx % 4;
+    if (idx > 0 && posInHoja === 0) {
+      docPDF.addPage();
+    }
+    
+    const col = posInHoja % 2;
+    const row = Math.floor(posInHoja / 2);
+    const x = margenX + col * (etiqW + gap);
+    const y = margenY + row * (etiqH + gap);
+    
+    // Marco con esquina redondeada (estilo etiqueta corporativa)
+    // Borde decorativo verde superior
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.roundedRect(x, y, etiqW, 5, 2, 2, 'F');
+    docPDF.rect(x, y + 3, etiqW, 3, 'F'); // ajuste para eliminar redondeo abajo del verde
+    
+    // Cuerpo blanco
+    docPDF.setFillColor(255, 255, 255);
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.setLineWidth(0.4);
+    docPDF.rect(x, y + 6, etiqW, etiqH - 6, 'FD');
+    
+    // Logo en esquina superior izquierda (si existe)
+    if (DATOS_EMPRESA.logo_url) {
+      try {
+        docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', x + 3, y + 8, 28, 18);
+      } catch(e) {}
+    }
+    
+    // Nombre empresa
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('NEWPACK ABASTECEDORA', x + 33, y + 13);
+    docPDF.setFontSize(6);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(`RFC: ${DATOS_EMPRESA.rfc}`, x + 33, y + 17);
+    docPDF.text(DATOS_EMPRESA.telefono, x + 33, y + 21);
+    
+    // Línea separadora
+    docPDF.setDrawColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+    docPDF.setLineWidth(0.5);
+    docPDF.line(x + 3, y + 28, x + etiqW - 3, y + 28);
+    
+    // Número de tarima GIGANTE
+    docPDF.setFontSize(28);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text(`T${String(t.numero_tarima || '').padStart(2, '0')}`, x + etiqW/2, y + 42, { align: 'center' });
+    
+    // Caja de información (cliente + producto)
+    let yi = y + 48;
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text('CLIENTE', x + 5, yi);
+    docPDF.setFontSize(11);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    const cliNom = pi?.cliente_nombre || odp.cliente_nombre || '—';
+    docPDF.text(cliNom.length > 28 ? cliNom.substring(0,25)+'...' : cliNom, x + 5, yi + 6);
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(`Código: ${pi?.cliente_codigo || odp.cliente_codigo || '—'}`, x + 5, yi + 11);
+    
+    yi += 16;
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('PRODUCTO', x + 5, yi);
+    docPDF.setFontSize(8.5);
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text(odp.producto_codigo || '—', x + 5, yi + 5);
+    if (producto?.descripcion) {
+      docPDF.setFontSize(6.5);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(_COL_GRIS_TEXTO[0], _COL_GRIS_TEXTO[1], _COL_GRIS_TEXTO[2]);
+      const descSplit = docPDF.splitTextToSize(producto.descripcion, etiqW - 10);
+      docPDF.text(descSplit.slice(0, 2), x + 5, yi + 9);
+    }
+    
+    yi += 18;
+    
+    // Datos clave (lote, cantidad, peso, ODP, PI)
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.setLineWidth(0.2);
+    docPDF.line(x + 3, yi, x + etiqW - 3, yi);
+    yi += 4;
+    
+    const datos = [
+      ['LOTE', t.lote_codigo || '—'],
+      ['CANTIDAD', `${fmtNum(t.cantidad || 0)} ${(t.um || '').toUpperCase()}`],
+      ['PESO NETO', `${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg`],
+      ['ODP', odp.folio || '—'],
+      ['PI', odp.pedido_folio || '—']
+    ];
+    datos.forEach((d, i) => {
+      const fila = Math.floor(i / 1);
+      const yd = yi + (fila * 7);
+      docPDF.setFontSize(6.5);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.text(d[0] + ':', x + 5, yd);
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(0, 0, 0);
+      docPDF.text(d[1], x + 26, yd);
+    });
+    
+    yi += datos.length * 7 + 2;
+    
+    // Fecha producción
+    if (yi < y + etiqH - 15) {
+      docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.line(x + 3, yi, x + etiqW - 3, yi);
+      yi += 4;
+      
+      docPDF.setFontSize(6.5);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      const fechaProd = t.created_at?.seconds 
+        ? new Date(t.created_at.seconds*1000).toLocaleDateString('es-MX')
+        : new Date().toLocaleDateString('es-MX');
+      docPDF.text(`Fabricado: ${fechaProd}`, x + 5, yi);
+      docPDF.text(`Tarima ${idx+1} de ${tarimas.length}`, x + etiqW - 5, yi, { align: 'right' });
+    }
+  });
+  
+  const filename = `Etiquetas_${odp.folio}_${odp.cliente_codigo || ''}.pdf`;
+  _mostrarVistaPreviaPDF(docPDF, filename, `Etiquetas Tarimas · ${odp.folio}`);
+};
+
+// ============================================================
+// PDF: REPORTE DE PRODUCCIÓN POR ODP
+// ============================================================
+window.imprimirReporteProduccionPDF = (odpId) => {
+  const odp = state.odps.find(x => x.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  
+  const pi = state.pedidos.find(p => p.id === odp.pedido_id);
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
+    .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+  const lineas = (state.lineas_produccion || []).filter(l => l.odp_id === odpId);
+  const pkl = (state.packing_lists || []).find(p => p.odp_id === odpId);
+  
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  
+  let y = _pdfHeaderEmpresa(docPDF, 'REPORTE PROD.', odp.folio);
+  
+  // ===== TÍTULO =====
+  docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.rect(0, y, 210, 14, 'F');
+  docPDF.setFontSize(16);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.text('REPORTE DE PRODUCCIÓN', 105, y + 7, { align: 'center' });
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text('ANÁLISIS DETALLADO DE LA ORDEN DE PRODUCCIÓN', 105, y + 11, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 18;
+  
+  // ===== KPIs (4 cards arriba) =====
+  const totalProducidoKg = lineas.reduce((s, l) => s + (Number(l.producido_kg || l.cantidad_producida) || 0), 0);
+  const totalMermaKg = lineas.reduce((s, l) => s + (Number(l.merma_kg) || 0), 0);
+  const cantPlanKg = Number(odp.cantidad_planeada_kg || odp.cantidad_planeada) || 0;
+  const eficiencia = cantPlanKg > 0 ? Math.round((totalProducidoKg / cantPlanKg) * 100) : 0;
+  const mermaPct = totalProducidoKg > 0 ? Math.round((totalMermaKg / totalProducidoKg) * 1000) / 10 : 0;
+  
+  const kpiW = 43.5, kpiH = 18;
+  const kpis = [
+    { label: 'PLANEADO (kg)', value: fmtNum(cantPlanKg), color: _COL_AZUL },
+    { label: 'PRODUCIDO (kg)', value: fmtNum(totalProducidoKg), color: _COL_VERDE },
+    { label: 'MERMA (kg)', value: fmtNum(totalMermaKg), color: [220, 38, 38] },
+    { label: 'EFICIENCIA', value: `${eficiencia}%`, color: eficiencia >= 95 ? _COL_VERDE : (eficiencia >= 80 ? [245, 158, 11] : [220, 38, 38]) }
+  ];
+  kpis.forEach((k, i) => {
+    const x = 14 + (i * (kpiW + 2));
+    docPDF.setFillColor(k.color[0], k.color[1], k.color[2]);
+    docPDF.rect(x, y, kpiW, 4, 'F');
+    docPDF.setFillColor(255, 255, 255);
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.setLineWidth(0.3);
+    docPDF.rect(x, y + 4, kpiW, kpiH - 4, 'FD');
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(k.label, x + kpiW/2, y + 9, { align: 'center' });
+    docPDF.setFontSize(13);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(k.color[0], k.color[1], k.color[2]);
+    docPDF.text(k.value, x + kpiW/2, y + 15, { align: 'center' });
+  });
+  docPDF.setTextColor(0, 0, 0);
+  y += kpiH + 4;
+  
+  // ===== INFORMACIÓN GENERAL =====
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE LA ODP', _COL_AZUL);
+  
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 182, 24, 2, 2, 'F');
+  
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('CLIENTE', 18, y + 5);
+  docPDF.text('PI ORIGEN', 70, y + 5);
+  docPDF.text('PRODUCTO', 110, y + 5);
+  docPDF.text('CANTIDAD', 165, y + 5);
+  
+  docPDF.text('FECHA INICIO', 18, y + 14);
+  docPDF.text('FECHA FIN', 70, y + 14);
+  docPDF.text('PKL CALIDAD', 110, y + 14);
+  docPDF.text('ESTATUS', 165, y + 14);
+  
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  const cliNom2 = pi?.cliente_nombre || odp.cliente_nombre || '—';
+  docPDF.text(cliNom2.length > 25 ? cliNom2.substring(0,22)+'...' : cliNom2, 18, y + 10);
+  docPDF.text(odp.pedido_folio || '—', 70, y + 10);
+  docPDF.setFontSize(8);
+  docPDF.text(odp.producto_codigo || '—', 110, y + 10);
+  docPDF.setFontSize(9);
+  docPDF.text(`${fmtNum(cantPlanKg)} kg`, 165, y + 10);
+  
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'normal');
+  const fIni = lineas[0]?.iniciado_at?.seconds 
+    ? new Date(lineas[0].iniciado_at.seconds*1000).toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : '—';
+  const fFin = pkl?.created_at?.seconds 
+    ? new Date(pkl.created_at.seconds*1000).toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : '—';
+  docPDF.text(fIni, 18, y + 19);
+  docPDF.text(fFin, 70, y + 19);
+  docPDF.text(pkl?.folio || '—', 110, y + 19);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+  docPDF.text((odp.estatus || '').replace(/_/g,' ').toUpperCase(), 165, y + 19);
+  docPDF.setTextColor(0, 0, 0);
+  
+  y += 28;
+  
+  // ===== PROCESOS =====
+  y = _pdfSeccionTitulo(docPDF, y, 'PROCESOS DE PRODUCCIÓN', _COL_AZUL);
+  
+  if (lineas.length > 0) {
+    docPDF.autoTable({
+      startY: y,
+      head: [['#', 'Proceso', 'Máquina', 'Inicio', 'Fin', 'Producido (kg)', 'Merma (kg)', 'Operador']],
+      body: lineas.map((l, i) => [
+        i + 1,
+        l.proceso_codigo || l.proceso || '—',
+        l.maquina_codigo || '—',
+        l.iniciado_at?.seconds 
+          ? new Date(l.iniciado_at.seconds*1000).toLocaleString('es-MX', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+          : '—',
+        l.completado_at?.seconds 
+          ? new Date(l.completado_at.seconds*1000).toLocaleString('es-MX', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+          : '—',
+        fmtNum(l.producido_kg || l.cantidad_producida || 0),
+        fmtNum(l.merma_kg || 0),
+        l.completado_por_nombre || l.operador_nombre || '—'
+      ]),
+      theme: 'striped',
+      headStyles: { fillColor: _COL_AZUL_OSCURO, textColor: 255, fontSize: 8.5, fontStyle: 'bold', halign: 'center', cellPadding: 2.5 },
+      bodyStyles: { fontSize: 8.5, cellPadding: 2 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 8, halign: 'center' },
+        1: { cellWidth: 28, fontStyle: 'bold' },
+        2: { cellWidth: 18, halign: 'center' },
+        3: { cellWidth: 26 },
+        4: { cellWidth: 26 },
+        5: { cellWidth: 26, halign: 'right' },
+        6: { cellWidth: 22, halign: 'right' },
+        7: { cellWidth: 28 }
+      },
+      margin: { left: 14, right: 14 }
+    });
+    y = docPDF.lastAutoTable.finalY + 6;
+  }
+  
+  // ===== TARIMAS PRODUCIDAS =====
+  if (tarimas.length > 0 && y < 240) {
+    y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS PRODUCIDAS', _COL_AZUL);
+    
+    const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+    const totalKgN = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+    
+    docPDF.autoTable({
+      startY: y,
+      head: [['#', 'Tarima', 'Lote', 'Cantidad', 'UM', 'Peso neto (kg)', 'Almacén actual']],
+      body: tarimas.map((t, i) => [
+        i + 1,
+        `T${String(t.numero_tarima || '').padStart(2, '0')}`,
+        t.lote_codigo || '—',
+        fmtNum(t.cantidad || 0),
+        (t.um || '').toUpperCase(),
+        fmtNum(t.peso_neto_kg || t.peso_neto || 0),
+        t.almacen_actual || (t.estatus === 'en_almacen_planta' ? 'Planta-MTY' : t.estatus.replace(/_/g,' '))
+      ]),
+      foot: [['', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKgN), '']],
+      theme: 'striped',
+      headStyles: { fillColor: _COL_VERDE, textColor: 255, fontSize: 8.5, fontStyle: 'bold', halign: 'center', cellPadding: 2.5 },
+      footStyles: { fillColor: _COL_GRIS_CLARO, textColor: _COL_AZUL_OSCURO, fontSize: 9, fontStyle: 'bold' },
+      bodyStyles: { fontSize: 8.5, cellPadding: 2 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 8, halign: 'center' },
+        1: { cellWidth: 16, halign: 'center', fontStyle: 'bold' },
+        2: { cellWidth: 32 },
+        3: { cellWidth: 24, halign: 'right' },
+        4: { cellWidth: 14, halign: 'center' },
+        5: { cellWidth: 32, halign: 'right' },
+        6: { cellWidth: 36 }
+      },
+      margin: { left: 14, right: 14 }
+    });
+  }
+  
+  _pdfPiePagina(docPDF);
+  
+  const filename = `Reporte_${odp.folio}_${odp.cliente_codigo || ''}.pdf`;
+  _mostrarVistaPreviaPDF(docPDF, filename, `Reporte Producción · ${odp.folio}`);
+};
+
+
 
 // ============================================================
 // MIGRACIÓN: OVs legacy → nuevo flujo Embarques
@@ -5626,7 +6297,12 @@ function modalDetalleODP() {
             `).join('')}
           ` : ''}
         </div>
-        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;">
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+          ${odp && (odp.estatus === 'liberada_empaque' || odp.packing_list || ['en_almacen_planta','en_transito_cedis_mty','en_cedis_mty','en_cedis_mex','embarcada','entregada'].includes(odp.estatus)) ? `
+            <button onclick="imprimirPackingListPDF('${odp.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">📦 Packing List</button>
+            <button onclick="imprimirEtiquetasTarimasPDF('${odp.id}')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">🏷️ Etiquetas</button>
+            <button onclick="imprimirReporteProduccionPDF('${odp.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">📊 Reporte</button>
+          ` : ''}
           <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
         </div>
       </div>
