@@ -1659,15 +1659,44 @@ function calcularFasePI(p) {
     fases[3].en_curso = true;
   }
   
-  // Almacén / OTI
+  // Almacén / OTI - etiqueta dinámica según ubicación predominante
   const tarimasPI = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
-  const tarimasEnAlmacen = tarimasPI.filter(t => 
-    ['en_almacen_planta','en_transito_cedis_mty','en_cedis_mty','en_cedis_mex'].includes(t.estatus)
-  ).length;
+  const enPlanta = tarimasPI.filter(t => t.estatus === 'en_almacen_planta').length;
+  const enTransitoMTY = tarimasPI.filter(t => t.estatus === 'en_transito_cedis_mty').length;
+  const enCedisMTY = tarimasPI.filter(t => t.estatus === 'en_cedis_mty').length;
+  const enTransitoMEX = tarimasPI.filter(t => t.estatus === 'en_transito_cedis_mex').length;
+  const enCedisMEX = tarimasPI.filter(t => t.estatus === 'en_cedis_mex').length;
+  const tarimasEnAlmacen = enPlanta + enTransitoMTY + enCedisMTY + enTransitoMEX + enCedisMEX;
+  
   if (tarimasPI.length > 0 && tarimasEnAlmacen === tarimasPI.length) {
     fases[4].completada = true;
   } else if (tarimasEnAlmacen > 0) {
     fases[4].en_curso = true;
+  }
+  
+  // Etiqueta dinámica según donde están la mayoría
+  if (tarimasEnAlmacen > 0) {
+    if (enCedisMEX === tarimasEnAlmacen) {
+      fases[4].label = 'CEDIS-MEX';
+      fases[4].icon = '🇲🇽';
+    } else if (enCedisMTY === tarimasEnAlmacen) {
+      fases[4].label = 'CEDIS-MTY';
+      fases[4].icon = '📦';
+    } else if (enPlanta === tarimasEnAlmacen) {
+      fases[4].label = 'Planta-MTY';
+      fases[4].icon = '🏭';
+    } else if (enTransitoMTY > 0 && enCedisMTY === 0 && enCedisMEX === 0) {
+      fases[4].label = '→ CEDIS-MTY';
+      fases[4].icon = '🚚';
+    } else if (enTransitoMEX > 0) {
+      fases[4].label = '→ CEDIS-MEX';
+      fases[4].icon = '🚚';
+    } else {
+      // Mixto: mostrar el más avanzado
+      if (enCedisMEX > 0) { fases[4].label = `Mixto → MEX`; fases[4].icon = '🇲🇽'; }
+      else if (enCedisMTY > 0) { fases[4].label = `Mixto → MTY`; fases[4].icon = '📦'; }
+      else { fases[4].label = `Distribuido`; fases[4].icon = '🔀'; }
+    }
   }
   
   // Embarque (OVs)
