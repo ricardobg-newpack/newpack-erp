@@ -589,6 +589,12 @@ function renderApp() {
         ${esCEDMTY ? `
           <button class="nav-item ${state.vista === 'cedis_mty' ? 'active' : ''}" data-vista="cedis_mty">📦 CEDIS-MTY</button>
         ` : ''}
+        ${esCS || esCEDMTY || esCEDMEX ? `
+          <button class="nav-item ${state.vista === 'embarques' ? 'active' : ''}" data-vista="embarques">🚚 Embarques (OV)</button>
+        ` : ''}
+        ${esCS || esCEDMTY || esCEDMEX ? `
+          <button class="nav-item ${state.vista === 'embarques' ? 'active' : ''}" data-vista="embarques">🚚 Embarques (OV)</button>
+        ` : ''}
         
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
@@ -628,7 +634,8 @@ function tituloVista() {
     seguimiento: 'Seguimiento de Pedidos',
     almacen_planta: '🏭 Almacén Planta-MTY',
     oti_planta: '🚚 OTI Planta → CEDIS-MTY',
-    cedis_mty: '📦 CEDIS-MTY'
+    cedis_mty: '📦 CEDIS-MTY',
+    embarques: '🚚 Embarques (Órdenes de Venta)'
   })[state.vista] || '';
 }
 
@@ -645,6 +652,7 @@ function renderVista() {
   if (v === 'almacen_planta') return renderAlmacenPlanta();
   if (v === 'oti_planta') return renderOTIPlanta();
   if (v === 'cedis_mty') return renderCedisMTY();
+  if (v === 'embarques') return renderEmbarques();
   return '';
 }
 
@@ -1827,6 +1835,9 @@ function renderModal() {
   if (m === 'completar-proceso') return modalCompletarProceso();
   if (m === 'liberar-calidad') return modalLiberarCalidad();
   if (m === 'crear-oti') return modalCrearOTI();
+  if (m === 'asignar-tarimas-ov') return modalAsignarTarimasOV();
+  if (m === 'generar-remision-ov') return modalGenerarRemisionOV();
+  if (m === 'detalle-ov') return modalDetalleOV();
   if (m === 'detalle-odp') return modalDetalleODP();
   if (m === 'detalle-pedido') return modalDetallePedido();
   if (m === 'trazabilidad-pi') return modalTrazabilidadPI();
@@ -2726,6 +2737,398 @@ function renderCedisMTY() {
 window.setSubTabCedis = (tab) => { state.subTabCedis = tab; render(); };
 
 // ============================================================
+// VISTA: EMBARQUES (Órdenes de Venta) - CS/KAM/CEDMTY/CEDMEX/CEO/ADMIN
+// ============================================================
+function renderEmbarques() {
+  const subTab = state.subTabEmbarques || 'pendiente_asignar';
+  const filtro = (state.filtros.embarques || '').toLowerCase();
+  
+  let arr = state.ordenes_venta || [];
+  if (filtro) arr = arr.filter(o => 
+    (o.folio + ' ' + o.pedido_folio + ' ' + o.cliente_nombre + ' ' + o.cliente_codigo + ' ' + o.producto_codigo + ' ' + (o.remision || '') + ' ' + (o.factura || ''))
+    .toLowerCase().includes(filtro)
+  );
+  
+  // Contadores
+  const cnt = {
+    pendiente_asignar: arr.filter(o => o.estatus === 'pendiente_asignar').length,
+    esperando_produccion: arr.filter(o => o.estatus === 'esperando_produccion').length,
+    preparando: arr.filter(o => o.estatus === 'preparando').length,
+    lista_embarcar: arr.filter(o => o.estatus === 'lista_embarcar').length,
+    por_cargar: arr.filter(o => o.estatus === 'por_cargar').length,
+    enviada: arr.filter(o => o.estatus === 'enviada').length,
+    entregada: arr.filter(o => o.estatus === 'entregada').length,
+  };
+  
+  const filtered = arr.filter(o => o.estatus === subTab);
+  
+  return `
+    <!-- Búsqueda -->
+    <div style="padding:14px;background:#fff;border:2px solid #3b82f6;border-radius:14px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:20px;">🔍</span>
+        <input class="input" id="filtro-embarques" style="flex:1;padding:10px;font-size:14px;font-weight:600;" placeholder="Buscar OV-XXXXX, PI-XXXXX, cliente, remisión, factura..." value="${filtro}" autocomplete="off" />
+      </div>
+    </div>
+    
+    <!-- Tabs -->
+    <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
+      ${[
+        ['esperando_produccion','⏳ Esperando producción','#94a3b8'],
+        ['pendiente_asignar','🟡 Por asignar tarimas','#f59e0b'],
+        ['preparando','🔄 Preparando (CEDIS)','#8b5cf6'],
+        ['lista_embarcar','✅ Lista embarcar','#16a34a'],
+        ['por_cargar','📦 Por cargar','#3b82f6'],
+        ['enviada','🚚 En camino','#06b6d4'],
+        ['entregada','🏁 Entregadas','#15803d'],
+      ].map(([id, lbl, color]) => `
+        <button onclick="setSubTabEmbarques('${id}')" style="padding:8px 14px;background:${subTab === id ? color : '#fff'};color:${subTab === id ? '#fff' : '#475569'};border:1px solid ${subTab === id ? color : '#e2e8f0'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+          ${lbl} (${cnt[id] || 0})
+        </button>
+      `).join('')}
+    </div>
+    
+    <!-- Lista OVs -->
+    ${filtered.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📭</div>
+        <div style="font-weight:700;color:#475569;">Sin órdenes de venta en este estado</div>
+      </div>
+    ` : filtered.map(o => renderTarjetaOV(o, subTab)).join('')}
+  `;
+}
+
+function renderTarjetaOV(o, subTab) {
+  const tarimas = state.tarimas.filter(t => (o.tarimas_ids || []).includes(t.id));
+  const totalEnviado = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const totalKgEnviado = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const cantSolicitada = Number(o.cantidad_solicitada || o.cantidad) || 0;
+  const pendiente = Math.max(0, cantSolicitada - totalEnviado);
+  const pct = cantSolicitada > 0 ? Math.min(100, Math.round((totalEnviado / cantSolicitada) * 100)) : 0;
+  
+  const colorEst = {
+    esperando_produccion: '#94a3b8',
+    pendiente_asignar: '#f59e0b',
+    preparando: '#8b5cf6',
+    lista_embarcar: '#16a34a',
+    por_cargar: '#3b82f6',
+    enviada: '#06b6d4',
+    entregada: '#15803d',
+  }[o.estatus] || '#64748b';
+  
+  // Permisos
+  const u = state.user;
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin';
+  const esCS = u.depto === 'CS' || u.depto === 'KAM' || esCEO;
+  const esCEDIS = ['CEDMTY','CEDMEX'].includes(u.depto) || esCEO;
+  
+  // Acciones según estado
+  let acciones = '';
+  if (o.estatus === 'pendiente_asignar' && esCS) {
+    acciones += `<button class="btn-primary" onclick="abrirAsignarTarimasOV('${o.id}')" style="padding:8px 14px;background:#f59e0b;">📋 Asignar tarimas</button>`;
+  }
+  if (o.estatus === 'preparando' && esCEDIS) {
+    acciones += `<button class="btn-primary" onclick="marcarOVLista('${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Marcar como LISTA</button>`;
+  }
+  if (o.estatus === 'lista_embarcar' && esCS) {
+    acciones += `<button class="btn-primary" onclick="abrirModal('generar-remision-ov','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📄 Generar remisión/factura</button>`;
+  }
+  if (o.estatus === 'por_cargar' && esCEDIS) {
+    acciones += `<button class="btn-primary" onclick="confirmarCargaOV('${o.id}')" style="padding:8px 14px;background:#06b6d4;">🚚 Confirmar carga y enviar</button>`;
+  }
+  if (o.estatus === 'enviada' && (esCS || esCEO)) {
+    acciones += `<button class="btn-primary" onclick="marcarOVEntregada('${o.id}')" style="padding:8px 14px;background:#15803d;">✅ Marcar entregada</button>`;
+  }
+  acciones += `<button class="btn-secondary" onclick="abrirModal('detalle-ov','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Ver detalle</button>`;
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${colorEst};margin-bottom:14px;">
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div style="flex:1;min-width:280px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+            <span class="text-mono" style="font-size:16px;font-weight:800;">${o.folio}</span>
+            <span style="background:${colorEst};color:#fff;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;">${o.estatus.replace(/_/g,' ').toUpperCase()}</span>
+            ${o.tipo_origen === 'producir' ? '<span style="background:#fde68a;color:#92400e;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">🏭 PRODUCIR</span>' : '<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">📦 STOCK</span>'}
+          </div>
+          <div style="font-weight:600;font-size:14px;color:#475569;">${o.cliente_nombre} <span style="color:#64748b;font-weight:400;font-size:12px;">(${o.cliente_codigo})</span></div>
+          <div style="font-size:12px;color:#64748b;margin-top:3px;">
+            📋 PI: <span class="text-mono" style="color:#3b82f6;font-weight:700;">${o.pedido_folio}</span>
+            ${o.odp_folio ? ` · 🏭 ODP: <span class="text-mono">${o.odp_folio}</span>` : ''}
+            · <span class="text-mono">${o.producto_codigo}</span>
+            ${o.cedis ? ` · 📦 ${o.cedis}` : ''}
+          </div>
+          ${o.remision ? `<div style="font-size:12px;color:#475569;margin-top:3px;">📄 Remisión: <strong>${o.remision}</strong>${o.factura ? ` · 💰 Factura: <strong>${o.factura}</strong>` : ''}</div>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Avance OV</div>
+          <div style="font-size:24px;font-weight:800;color:${colorEst};">${pct}%</div>
+          <div style="font-size:11px;color:#64748b;">${fmtCantidadUM(totalEnviado, o.um)} / ${fmtCantidadUM(cantSolicitada, o.um)}</div>
+          ${pendiente > 0 ? `<div style="font-size:10px;color:#dc2626;font-weight:700;">⚠ Pendiente: ${fmtCantidadUM(pendiente, o.um)}</div>` : ''}
+        </div>
+      </div>
+      
+      ${tarimas.length > 0 ? `
+        <div style="padding:10px 18px;border-top:1px solid #e2e8f0;background:#f8fafc;">
+          <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:6px;">📦 ${tarimas.length} tarima(s) asignadas · ${fmtNum(totalKgEnviado)} kg</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${tarimas.map(t => `<span style="padding:4px 8px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;font-size:11px;"><strong>T${String(t.numero_tarima).padStart(2,'0')}</strong> ${t.lote_codigo} · ${fmtCantidadUM(t.cantidad, t.um)}</span>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
+        ${acciones}
+      </div>
+    </div>
+  `;
+}
+
+window.setSubTabEmbarques = (tab) => { state.subTabEmbarques = tab; render(); };
+
+// ============================================================
+// FUNCIONES OV: asignar, marcar lista, generar remisión, cargar, entregar
+// ============================================================
+window.abrirAsignarTarimasOV = (ovId) => {
+  state.modal = 'asignar-tarimas-ov';
+  state.modalData = ovId;
+  state.formAsignarOV = { tarimas_seleccionadas: [] };
+  render();
+};
+
+window.confirmarAsignarTarimasOV = async () => {
+  const ov = state.ordenes_venta.find(x => x.id === state.modalData);
+  if (!ov) return;
+  const f = state.formAsignarOV;
+  if (!f || !f.tarimas_seleccionadas || f.tarimas_seleccionadas.length === 0) {
+    toast('Selecciona al menos 1 tarima', 'error'); return;
+  }
+  
+  const tarimasSel = state.tarimas.filter(t => f.tarimas_seleccionadas.includes(t.id));
+  const totalAsignado = tarimasSel.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const cantSol = Number(ov.cantidad_solicitada) || 0;
+  
+  if (totalAsignado > cantSol * 1.05) {
+    if (!confirm(`Estás asignando ${fmtCantidadUM(totalAsignado, ov.um)} pero el cliente solicitó ${fmtCantidadUM(cantSol, ov.um)}.\n\n¿Continuar de todos modos?`)) return;
+  }
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    // 1. Update OV
+    batch.update(doc(db, 'ordenes_venta', ov.id), {
+      estatus: 'preparando',
+      tarimas_ids: f.tarimas_seleccionadas,
+      cantidad_enviada: totalAsignado,
+      asignada_at: serverTimestamp(),
+      asignada_por: state.user.id,
+      asignada_por_nombre: state.user.nombre,
+      updated_at: serverTimestamp()
+    });
+    // 2. Update tarimas
+    tarimasSel.forEach(t => {
+      batch.update(doc(db, 'tarimas', t.id), {
+        ov_id: ov.id, ov_folio: ov.folio,
+        asignada_ov_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    // 3. Notificar a CEDIS
+    const deptoCedis = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
+    batch.set(doc(collection(db, 'notificaciones')), {
+      titulo: `📋 Tarimas asignadas a ${ov.folio}`,
+      mensaje: `${tarimasSel.length} tarima(s) · ${fmtCantidadUM(totalAsignado, ov.um)} · ${ov.cliente_nombre} · Preparar para embarque`,
+      depto_destino: deptoCedis, tipo: 'info', folio_ref: ov.folio,
+      created_at: serverTimestamp()
+    });
+    await batch.commit();
+    
+    state.formAsignarOV = null;
+    state.modal = null;
+    toast(`✅ ${ov.folio}: ${tarimasSel.length} tarima(s) asignadas. CEDIS notificado.`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.asignarOVToggleTarima = (id) => {
+  if (!state.formAsignarOV) state.formAsignarOV = { tarimas_seleccionadas: [] };
+  const idx = state.formAsignarOV.tarimas_seleccionadas.indexOf(id);
+  if (idx >= 0) state.formAsignarOV.tarimas_seleccionadas.splice(idx, 1);
+  else state.formAsignarOV.tarimas_seleccionadas.push(id);
+  render();
+};
+
+window.marcarOVLista = async (ovId) => {
+  const ov = state.ordenes_venta.find(x => x.id === ovId);
+  if (!ov) return;
+  if (!confirm(`Marcar ${ov.folio} como LISTA para embarcar?\n\nEsto notificará a CS/KAM para generar remisión y factura.`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'ordenes_venta', ov.id), {
+      estatus: 'lista_embarcar',
+      lista_at: serverTimestamp(),
+      lista_por: state.user.id,
+      lista_por_nombre: state.user.nombre,
+      updated_at: serverTimestamp()
+    });
+    // Notificar a CS/KAM
+    ['CS','KAM','CEO'].forEach(d => {
+      batch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `✅ ${ov.folio} LISTA para embarcar`,
+        mensaje: `${ov.cliente_nombre} · ${fmtCantidadUM(ov.cantidad_enviada || 0, ov.um)} · ${ov.cedis} · Genera remisión/factura`,
+        depto_destino: d, tipo: 'success', folio_ref: ov.folio,
+        created_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${ov.folio} lista. CS/KAM notificados.`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.confirmarGenerarRemisionOV = async () => {
+  const ov = state.ordenes_venta.find(x => x.id === state.modalData);
+  if (!ov) return;
+  
+  const remision = ($('#ov-remision')?.value || '').trim();
+  const factura = ($('#ov-factura')?.value || '').trim();
+  const transportista = ($('#ov-transportista')?.value || '').trim();
+  const conductor = ($('#ov-conductor')?.value || '').trim();
+  const placas = ($('#ov-placas')?.value || '').trim();
+  const fechaSalida = ($('#ov-fecha-salida')?.value || '').trim();
+  const obs = ($('#ov-obs')?.value || '').trim();
+  
+  if (!remision) { toast('Captura número de remisión', 'error'); return; }
+  if (!transportista) { toast('Captura transportista', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'ordenes_venta', ov.id), {
+      estatus: 'por_cargar',
+      remision: remision,
+      factura: factura || '',
+      transportista: transportista,
+      conductor: conductor || '',
+      placas: placas || '',
+      fecha_salida_programada: fechaSalida || '',
+      observaciones_embarque: obs || '',
+      remision_at: serverTimestamp(),
+      remision_por: state.user.id,
+      remision_por_nombre: state.user.nombre,
+      updated_at: serverTimestamp()
+    });
+    
+    // 🔔 NOTIFICAR a CEDIS, ALP y CEO (lo que pediste)
+    const deptoCedis = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
+    [deptoCedis, 'ALP', 'CEO'].forEach(d => {
+      batch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `📦 ${ov.folio} POR CARGAR — Remisión ${remision}`,
+        mensaje: `${ov.cliente_nombre} · ${ov.cedis} · ${transportista} ${placas?'· '+placas:''} · ${fmtCantidadUM(ov.cantidad_enviada || 0, ov.um)}`,
+        depto_destino: d, tipo: 'warning', folio_ref: ov.folio,
+        created_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    
+    state.modal = null;
+    toast(`✅ Remisión ${remision} generada. CEDIS notificado para cargar.`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.confirmarCargaOV = async (ovId) => {
+  const ov = state.ordenes_venta.find(x => x.id === ovId);
+  if (!ov) return;
+  if (!confirm(`Confirmar carga de ${ov.folio}?\n\nLa OV pasará a "ENVIADA" hacia el cliente.\nRemisión: ${ov.remision || '—'}\nTransportista: ${ov.transportista || '—'}`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'ordenes_venta', ov.id), {
+      estatus: 'enviada',
+      cargada_at: serverTimestamp(),
+      cargada_por: state.user.id,
+      cargada_por_nombre: state.user.nombre,
+      updated_at: serverTimestamp()
+    });
+    // Update tarimas a "embarcada"
+    (ov.tarimas_ids || []).forEach(tid => {
+      batch.update(doc(db, 'tarimas', tid), {
+        estatus: 'embarcada',
+        embarcada_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    // Notificar a CS/KAM/CEO
+    ['CS','KAM','CEO'].forEach(d => {
+      batch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `🚚 ${ov.folio} EN CAMINO al cliente`,
+        mensaje: `${ov.cliente_nombre} · Remisión ${ov.remision} · ${ov.transportista}`,
+        depto_destino: d, tipo: 'info', folio_ref: ov.folio,
+        created_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`🚚 ${ov.folio} ENVIADA al cliente`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.marcarOVEntregada = async (ovId) => {
+  const ov = state.ordenes_venta.find(x => x.id === ovId);
+  if (!ov) return;
+  if (!confirm(`Confirmar que ${ov.folio} fue ENTREGADA al cliente?`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'ordenes_venta', ov.id), {
+      estatus: 'entregada',
+      entregada_at: serverTimestamp(),
+      entregada_por: state.user.id,
+      entregada_por_nombre: state.user.nombre,
+      updated_at: serverTimestamp()
+    });
+    (ov.tarimas_ids || []).forEach(tid => {
+      batch.update(doc(db, 'tarimas', tid), {
+        estatus: 'entregada',
+        entregada_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    // Notificar a todos
+    ['CS','KAM','CEO','ALP'].forEach(d => {
+      batch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `🏁 ${ov.folio} ENTREGADA`,
+        mensaje: `${ov.cliente_nombre} · ${ov.pedido_folio}`,
+        depto_destino: d, tipo: 'success', folio_ref: ov.folio,
+        created_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`🏁 ${ov.folio} ENTREGADA`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
 // FUNCIONES: RECEPCIÓN ALP, CREAR OTI, RECIBIR EN CEDIS
 // ============================================================
 // ============================================================
@@ -3046,6 +3449,275 @@ window.abrirRecepcionOTI = async (otiId) => {
     state.loadingAccion = false; render();
   }
 };
+
+// ============================================================
+// MODAL: CREAR OTI (datos transportista)
+// ============================================================
+// ============================================================
+// MODAL: ASIGNAR TARIMAS A OV (CS/KAM)
+// ============================================================
+function modalAsignarTarimasOV() {
+  const ov = state.ordenes_venta.find(x => x.id === state.modalData);
+  if (!ov) return '';
+  const f = state.formAsignarOV || { tarimas_seleccionadas: [] };
+  
+  // Tarimas disponibles: del MISMO PI, en CEDIS, no asignadas a otra OV, mismo producto
+  const disponibles = state.tarimas.filter(t => 
+    (t.pedido_folio === ov.pedido_folio || t.pedido_id === ov.pedido_id) &&
+    t.producto_codigo === ov.producto_codigo &&
+    ['en_cedis_mty','en_cedis_mex','en_almacen_planta'].includes(t.estatus) &&
+    !t.ov_id
+  );
+  
+  const seleccionadas = disponibles.filter(t => f.tarimas_seleccionadas.includes(t.id));
+  const totalAsignado = seleccionadas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const totalKg = seleccionadas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const cantSol = Number(ov.cantidad_solicitada) || 0;
+  const pendiente = Math.max(0, cantSol - totalAsignado);
+  
+  // Agrupar por ubicación
+  const porUbicacion = {};
+  disponibles.forEach(t => {
+    const k = t.almacen_actual || (t.estatus === 'en_almacen_planta' ? 'PLANTA-MTY' : t.estatus);
+    if (!porUbicacion[k]) porUbicacion[k] = [];
+    porUbicacion[k].push(t);
+  });
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:880px;max-height:92vh;">
+        <div class="modal-header">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">📋 Asignar tarimas a <span style="color:#3b82f6;" class="text-mono">${ov.folio}</span></h2>
+            <div style="font-size:12px;color:#64748b;margin-top:2px;">${ov.cliente_nombre} · PI ${ov.pedido_folio} · ${ov.producto_codigo}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        
+        <div class="modal-body" style="padding:18px 22px;max-height:60vh;overflow-y:auto;">
+          <!-- Resumen -->
+          <div style="background:#dbeafe;padding:12px 14px;border-radius:10px;margin-bottom:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+            <div>
+              <div style="font-size:11px;color:#1e40af;font-weight:700;text-transform:uppercase;">Cliente solicitó</div>
+              <div style="font-size:18px;font-weight:800;color:#1e40af;">${fmtCantidadUM(cantSol, ov.um)}</div>
+            </div>
+            <div>
+              <div style="font-size:11px;color:#16a34a;font-weight:700;text-transform:uppercase;">Asignado</div>
+              <div style="font-size:18px;font-weight:800;color:#16a34a;">${fmtCantidadUM(totalAsignado, ov.um)}</div>
+              <div style="font-size:10px;color:#64748b;">${fmtNum(totalKg)} kg · ${seleccionadas.length} tarima(s)</div>
+            </div>
+            <div>
+              <div style="font-size:11px;color:${pendiente > 0 ? '#dc2626' : '#16a34a'};font-weight:700;text-transform:uppercase;">${pendiente > 0 ? 'Pendiente' : 'Completo ✓'}</div>
+              <div style="font-size:18px;font-weight:800;color:${pendiente > 0 ? '#dc2626' : '#16a34a'};">${fmtCantidadUM(pendiente, ov.um)}</div>
+            </div>
+          </div>
+          
+          ${disponibles.length === 0 ? `
+            <div style="padding:40px;text-align:center;color:#94a3b8;background:#f8fafc;border-radius:10px;">
+              <div style="font-size:48px;margin-bottom:10px;">📦</div>
+              <div style="font-weight:700;color:#475569;">No hay tarimas disponibles</div>
+              <div style="font-size:12px;margin-top:6px;">Esperando que se reciban en CEDIS o se generen tarimas para este PI.</div>
+            </div>
+          ` : Object.entries(porUbicacion).map(([loc, tarimas]) => `
+            <div style="margin-bottom:14px;">
+              <div style="padding:8px 12px;background:#f1f5f9;font-weight:700;font-size:12px;color:#475569;border-radius:8px 8px 0 0;border:1px solid #e2e8f0;">
+                📍 ${loc} (${tarimas.length} tarima(s))
+              </div>
+              <table style="width:100%;font-size:11px;border-collapse:collapse;border:1px solid #e2e8f0;border-top:none;">
+                <thead>
+                  <tr style="background:#f8fafc;">
+                    <th style="padding:8px;text-align:center;width:40px;"></th>
+                    <th style="padding:8px;text-align:left;">Tarima</th>
+                    <th style="padding:8px;text-align:left;">Lote</th>
+                    <th style="padding:8px;text-align:left;">ODP</th>
+                    <th style="padding:8px;text-align:right;">Cantidad</th>
+                    <th style="padding:8px;text-align:right;">Kg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${tarimas.map(t => `
+                    <tr style="border-top:1px solid #f1f5f9;${f.tarimas_seleccionadas.includes(t.id) ? 'background:#dcfce7;' : ''}">
+                      <td style="padding:8px;text-align:center;"><input type="checkbox" ${f.tarimas_seleccionadas.includes(t.id) ? 'checked' : ''} onchange="asignarOVToggleTarima('${t.id}')" style="width:16px;height:16px;cursor:pointer;" /></td>
+                      <td style="padding:8px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</td>
+                      <td style="padding:8px;" class="text-mono">${t.lote_codigo}</td>
+                      <td style="padding:8px;" class="text-mono">${t.odp_folio || '—'}</td>
+                      <td style="padding:8px;text-align:right;font-weight:600;color:#1e40af;">${fmtCantidadUM(t.cantidad, t.um)}</td>
+                      <td style="padding:8px;text-align:right;">${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `).join('')}
+        </div>
+        
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarAsignarTarimasOV()" ${seleccionadas.length === 0 ? 'disabled' : ''} style="background:#16a34a;${seleccionadas.length === 0 ? 'opacity:0.5;cursor:not-allowed;' : ''}">${ICONS.check} Asignar y enviar a preparar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: GENERAR REMISIÓN/FACTURA OV (CS/KAM)
+// ============================================================
+function modalGenerarRemisionOV() {
+  const ov = state.ordenes_venta.find(x => x.id === state.modalData);
+  if (!ov) return '';
+  const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id));
+  const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:580px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📄 Generar Remisión/Factura</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="padding:18px 22px;">
+          <div style="background:#dbeafe;padding:12px;border-radius:10px;margin-bottom:14px;">
+            <div style="font-size:11px;color:#1e40af;font-weight:700;">${ov.folio} · ${ov.cliente_nombre}</div>
+            <div style="font-size:14px;font-weight:700;color:#1e40af;margin-top:2px;">${tarimas.length} tarima(s) · ${fmtNum(totalKg)} kg · ${ov.cedis}</div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Número de Remisión *</label>
+            <input class="input" id="ov-remision" placeholder="Ej: REM-12345" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label class="field-label">Número de Factura</label>
+            <input class="input" id="ov-factura" placeholder="Ej: FAC-2026-001 (opcional, se puede agregar después)" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label class="field-label">Transportista *</label>
+            <input class="input" id="ov-transportista" placeholder="Nombre del transportista" autocomplete="off" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Conductor</label>
+              <input class="input" id="ov-conductor" placeholder="Nombre" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label class="field-label">Placas</label>
+              <input class="input" id="ov-placas" placeholder="Ej: AB-12-345" autocomplete="off" />
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">Fecha programada de salida</label>
+            <input class="input" type="date" id="ov-fecha-salida" />
+          </div>
+          <div class="field">
+            <label class="field-label">Observaciones</label>
+            <textarea class="input" id="ov-obs" style="min-height:60px;" placeholder="Indicaciones especiales para CEDIS o transportista..."></textarea>
+          </div>
+          
+          <div style="background:#fef3c7;padding:10px 12px;border-radius:8px;font-size:11px;color:#92400e;margin-top:10px;">
+            ⚠️ Al guardar, CEDIS-${ov.cedis === 'CEDIS-MEX' ? 'MEX' : 'MTY'} recibirá notificación inmediata para preparar la carga.
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarGenerarRemisionOV()" style="background:#3b82f6;">📄 Generar y notificar a CEDIS</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: DETALLE OV (lectura)
+// ============================================================
+function modalDetalleOV() {
+  const ov = state.ordenes_venta.find(x => x.id === state.modalData);
+  if (!ov) return '';
+  const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id));
+  const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:760px;max-height:92vh;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📋 ${ov.folio} <span style="font-size:13px;font-weight:400;color:#64748b;">· ${ov.estatus.replace(/_/g,' ').toUpperCase()}</span></h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="padding:18px 22px;max-height:60vh;overflow-y:auto;">
+          <!-- Datos básicos -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;">
+            <div><strong>Cliente:</strong><br>${ov.cliente_nombre} (${ov.cliente_codigo})</div>
+            <div><strong>PI origen:</strong><br><span class="text-mono" style="color:#3b82f6;">${ov.pedido_folio}</span></div>
+            <div><strong>Producto:</strong><br><span class="text-mono">${ov.producto_codigo}</span></div>
+            <div><strong>CEDIS:</strong><br>${ov.cedis || '—'}</div>
+            <div><strong>Cant. solicitada:</strong><br>${fmtCantidadUM(ov.cantidad_solicitada || 0, ov.um)}</div>
+            <div><strong>Cant. enviada:</strong><br>${fmtCantidadUM(ov.cantidad_enviada || 0, ov.um)} (${ov.cantidad_solicitada > 0 ? Math.round((ov.cantidad_enviada || 0) / ov.cantidad_solicitada * 100) : 0}%)</div>
+          </div>
+          
+          ${ov.remision ? `
+            <div style="background:#f0fdf4;padding:12px;border-radius:10px;margin-bottom:14px;border-left:4px solid #16a34a;">
+              <div style="font-size:11px;color:#166534;font-weight:700;text-transform:uppercase;">📄 Remisión y embarque</div>
+              <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
+                <div><strong>Remisión:</strong> ${ov.remision}</div>
+                <div><strong>Factura:</strong> ${ov.factura || '—'}</div>
+                <div><strong>Transportista:</strong> ${ov.transportista || '—'}</div>
+                <div><strong>Conductor:</strong> ${ov.conductor || '—'}</div>
+                <div><strong>Placas:</strong> ${ov.placas || '—'}</div>
+                <div><strong>Fecha salida:</strong> ${ov.fecha_salida_programada || '—'}</div>
+              </div>
+              ${ov.observaciones_embarque ? `<div style="margin-top:8px;font-size:11px;color:#475569;"><strong>Observaciones:</strong> ${ov.observaciones_embarque}</div>` : ''}
+            </div>
+          ` : ''}
+          
+          <!-- Tarimas asignadas -->
+          ${tarimas.length > 0 ? `
+            <div style="margin-bottom:14px;">
+              <div style="font-weight:700;margin-bottom:8px;">📦 Tarimas asignadas (${tarimas.length}) · ${fmtNum(totalKg)} kg · ${fmtCantidadUM(totalCant, ov.um)}</div>
+              <table style="width:100%;font-size:11px;border-collapse:collapse;">
+                <thead>
+                  <tr style="background:#f1f5f9;">
+                    <th style="padding:6px;text-align:left;">Tarima</th>
+                    <th style="padding:6px;text-align:left;">Lote</th>
+                    <th style="padding:6px;text-align:left;">ODP</th>
+                    <th style="padding:6px;text-align:left;">Estatus</th>
+                    <th style="padding:6px;text-align:right;">Cant.</th>
+                    <th style="padding:6px;text-align:right;">Kg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${tarimas.map(t => `
+                    <tr style="border-top:1px solid #f1f5f9;">
+                      <td style="padding:6px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</td>
+                      <td style="padding:6px;" class="text-mono">${t.lote_codigo}</td>
+                      <td style="padding:6px;" class="text-mono">${t.odp_folio || '—'}</td>
+                      <td style="padding:6px;font-size:10px;">${t.estatus}</td>
+                      <td style="padding:6px;text-align:right;font-weight:600;">${fmtCantidadUM(t.cantidad, t.um)}</td>
+                      <td style="padding:6px;text-align:right;">${fmtNum(t.peso_neto_kg || t.peso_neto || 0)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : `<div style="padding:20px;text-align:center;color:#94a3b8;">Sin tarimas asignadas todavía</div>`}
+          
+          <!-- Historial -->
+          <div style="background:#f8fafc;padding:12px;border-radius:10px;font-size:11px;">
+            <div style="font-weight:700;margin-bottom:8px;">📅 Historial</div>
+            <div>📝 Creada: ${fmtFechaHora(ov.created_at)}</div>
+            ${ov.asignada_at ? `<div>📋 Asignada: ${fmtFechaHora(ov.asignada_at)} por ${ov.asignada_por_nombre || '—'}</div>` : ''}
+            ${ov.lista_at ? `<div>✅ Lista embarcar: ${fmtFechaHora(ov.lista_at)} por ${ov.lista_por_nombre || '—'}</div>` : ''}
+            ${ov.remision_at ? `<div>📄 Remisión emitida: ${fmtFechaHora(ov.remision_at)} por ${ov.remision_por_nombre || '—'}</div>` : ''}
+            ${ov.cargada_at ? `<div>🚚 Cargada/Enviada: ${fmtFechaHora(ov.cargada_at)} por ${ov.cargada_por_nombre || '—'}</div>` : ''}
+            ${ov.entregada_at ? `<div>🏁 Entregada: ${fmtFechaHora(ov.entregada_at)} por ${ov.entregada_por_nombre || '—'}</div>` : ''}
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-primary" onclick="cerrarModal()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
 
 // ============================================================
 // MODAL: CREAR OTI (datos transportista)
@@ -5491,11 +6163,22 @@ window.aprobarPedido = async (pedidoId, folio) => {
         await addDoc(collection(db, 'ordenes_venta'), {
           folio: folioOV, pedido_id: pedidoId, pedido_folio: pedido.folio,
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
-          cedis: pedido.cedis_asignado,
+          cedis: pedido.cedis_asignado || 'CEDIS-MTY',
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
-          cantidad: cantStock, um: l.um, estatus: 'pendiente',
+          // Tracking solicitada/enviada
+          cantidad_solicitada: cantStock,
+          cantidad_enviada: 0,
+          cantidad: cantStock, // legacy
+          um: l.um,
+          // Tipo origen para saber si esperar producción
+          tipo_origen: 'stock',
+          // Estatus pendiente_asignar — CS/KAM debe asignar tarimas
+          estatus: 'pendiente_asignar',
+          tarimas_ids: [],
+          fecha_entrega_solicitada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
-          created_at: serverTimestamp()
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp()
         });
         ovs.push(folioOV);
       }
@@ -5512,15 +6195,38 @@ window.aprobarPedido = async (pedidoId, folio) => {
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
           cantidad: cantProd, um: l.um, estatus: 'pendiente_planeacion',
-          // Conversión a kg para producción (cuando el cliente pide en pza/millar)
           cantidad_kg_produccion: cantidadKg,
-          peso_teorico_millar: pesoMillar, // kg/millar
-          peso_teorico_pieza: pesoPieza,    // kg/pieza
+          peso_teorico_millar: pesoMillar,
+          peso_teorico_pieza: pesoPieza,
           fecha_entrega_programada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
           created_at: serverTimestamp()
         });
         odps.push(folioODP);
+        
+        // ADEMÁS de la ODP, generar OV vinculada en estado "esperando_produccion"
+        const numOV = await siguienteFolio('ov');
+        const folioOVprod = 'OV-' + String(numOV).padStart(5, '0');
+        await addDoc(collection(db, 'ordenes_venta'), {
+          folio: folioOVprod, pedido_id: pedidoId, pedido_folio: pedido.folio,
+          cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
+          cedis: pedido.cedis_asignado || 'CEDIS-MTY',
+          producto_codigo: l.producto_codigo, descripcion: l.descripcion,
+          cantidad_solicitada: cantProd,
+          cantidad_enviada: 0,
+          cantidad: cantProd,
+          um: l.um,
+          tipo_origen: 'producir',
+          odp_folio: folioODP,
+          // Esperando que termine producción y lleguen tarimas a CEDIS
+          estatus: 'esperando_produccion',
+          tarimas_ids: [],
+          fecha_entrega_solicitada: pedido.fecha_requerida || null,
+          observaciones: l.observaciones || '',
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+        ovs.push(folioOVprod);
       }
     }
     
