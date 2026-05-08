@@ -99,6 +99,10 @@ tr:hover td { background: #f8fafc; }
 
 <div id="app"></div>
 
+<!-- jsPDF para generación de documentos PDF (remisiones, listas de carga) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
 <!-- Firebase desde CDN (no necesitas instalar nada) -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
@@ -238,6 +242,21 @@ window.UM_ENTEROS = UM_ENTEROS;
 // peso_pieza (kg) = peso_millar / 1000
 // ============================================================
 const FACTOR_PESO = 0.470; // densidad efectiva del polietileno
+
+// ============================================================
+// DATOS DE LA EMPRESA (PARA DOCUMENTOS PDF)
+// Editable: cambia estos valores para que aparezcan en remisiones, listas de carga, etc.
+// ============================================================
+const DATOS_EMPRESA = {
+  razon_social: 'NEWPACK ABASTECEDORA DE EMPAQUES S.A. DE C.V.',
+  rfc: 'NPA1706227X2',
+  direccion: 'Prolongación Las Torres 203, Regio Parque Industrial Santa Catarina, 66367, Santa Catarina, Nuevo León',
+  telefono: '+52 81 2472 6583',
+  email: 'customerservice@newpackempaques.com',
+  color_azul: '#38b6ff',
+  color_verde: '#3fd34b',
+  logo_url: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCACzAZADASIAAhEBAxEB/8QAHQABAAICAwEBAAAAAAAAAAAAAAcIBgkCAwUEAf/EAFUQAAEDBAADBQUCBg8EBQ0AAAEAAgMEBQYRBxIhCBMxQVEUImFxgTKRFThClKGxCRYXGCNSVldicnOCssHRM3WitCg2N5KzNDVFRlNUY2R0k5XS8P/EABsBAQACAwEBAAAAAAAAAAAAAAAFBgECBAMH/8QALxEBAAIBAwIFAwIGAwAAAAAAAAECAwQFESExEiJBUXETodFh4QYWgZHB8CREgv/aAAwDAQACEQMRAD8AuWiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICImx6oC4l7RrZHVYjmmc2+xCSlg1V14H+yafdZ/WPl8vFRvl9+u81XS09TXSipptTSch5RHM7rpuvJo5R8+b1Ubq90w6eJ9ZhFavd8On5iPNMeyeAdoscwLIosgszZXENq4dMqGejteI+B8Vka7sWWuWkXrPSUjhy1zUi9J6SIiL0egiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIeix7LsstuPQEVDu9qnDcdOw+874n0HxK0yZaYqze88RDzy5aYaze88Q9mvq6aipZKmqmjhhjG3ve7QAUUZrxDqa1z6OxufT0/UOqNakk+X8UfHx+SxfJskueQVPeVsuomnccDOjGf6n4leOOpVT3De7ZeaYOke/rKobhvd83NMPSvv6z+H3WcM9rNZUDnjpR37wT9t2/dafm7X02vkqJZJ53zTO55JHFz3epJ2SvqqHCC2Q0gGpJj7RKT6a0xv3bd/eC+EqFyz4Yin9Z+ZQlp4iKvYxK+VFgvUVfFzPj+xNGD/tGenzHiFYC3VkFfRxVdNIJIZmh7HDzBVZ1n/CbKDb6wWWtk1S1Dv4Bzj0jkPl8nfr+amdk3D6V/oX7T2/Sf3Teybh9G/0bz5Z7fpP7phRfgO1+q4LmIiICIiAiwPj5ndVw24X3PL6Oggr5qJ0IbBM8sa7nkaw9R16c21VpvbdyPnHNgtp5d9dVsm9fcgvCiwXN8+ZZ+C1bxFtNPFXMitTbhTxPfpsgc1pAJH9ZVX/AH7uS9QMGtH55L/ogvEiivjJxSrsF4J0/ECltVNWVMrKRxppJXNYO+5d9R16bVcf372SfyFtH57L/ogvEio6O27km/8AqLaPz2X/AEWdcRu1DkWK4dhGQRYhbqhmS2x9W8PqZGiKRr+UsaQOo1o9fVBahFTXCO2Pfr/mVlsdRhlrghuFfBSvlZVyFzBI8N2AR1I2pu7T3F2q4Q4nbbvRWmnudRXV3swimlMbWtDHOLunU+AH1QS4io6O27kn8hbR+eS/6K0Np4je2cBGcTX0cUbzY3XN1N3h5A9sZcY+bx1zDW0EgoqOfv3cl/kLaPzyX/RSdB2j787s51HFSTFqBlQy8i3x0ntD+7ezpt/Nre9kj6ILKoqO/v3sk/kLaPzyX/RdtJ2374J2mrwK3Ph37wir3tdr4EtIQXdRQ7wF7QeI8V6h9rpoai0XyOMyGgqXB3eNHi6N46O15jQIHXWl8/al411fB232OWgs1NdJ7pNK0snlcxrGRtaSfdHjtwQTUio7+/eyT+Qto/PJf9FnPAftU3TiHxQtWIXPGLdbYLgJWieKpe9we2Nz2gAjXXl0gtSi/NjW1Wjj32r7PhN5qcbxC3RX660rzHU1EshbSwPHiz3esjgfHRAHhsoLMItd8/bB4uPqXSRnH42F2xELeS0D02X7/SpS4SdsqnuN1htfEOzU1sjmcGNuVAXGKMnzkjcSQ31cCdeiC3yLwMzyAWXAbvk9C2GtFFbZa6Ec/wDBzBkZe33h5HQ6j1VPP37uSj/1FtH55L/ogvEiibs98Wp+JHC+vzW826mtMdFVTxSMhlc9ojjja8u274OP3KvVT23b+KmQU+D2t0POe7L6yQOLd9N9PHSC7yKM+zfxDvnE/h8csvFlpbSyarkipI4JXP7yNmgXkuA/K5h9FJiAiIgIiIC4TSsijMj3Naxo25xOgB6lc1F/G+vq4/YLex7mU0rXSSAbAeQQAD8t70ubWamNNhnLMc8OXW6qNLhnLMc8OWacR2s56LHy2R3g+qI20f1B5/M9PmoxqJpaiZ808r5ZXnbnvO3OPxK60VE1muzau3N56e3ooer1ubV28WSf6egu2liE07WOOmdS8+jR1J+5dS+gfwdEXflTHlHwaD1+86H0K5scRM8z2hyw4VUzqipfO8AF53oeQ8h9BofRdSItZmbTzLEzyL9B0djofVfi76Clmrq2Gjpm800zwxg+JWaxNrREdyImZ4hO3Dm51F2xWmqqs80wLonP/j8p1v6rI14UctqxLHYYqioZBTU0YYCfF589DzJOyo5vHEu6zXSOS3Rtp6OJ++6eAXSjf5R8vp4K+ZNbi0WOlc9vNxHz8r7fX49FipXPbm3EfPymNF8FiulNd7XT19I7mimbvr4tPmD8QV96ka2i0RMdklW0XiLVnpIiIstkJ9t/8W7Iv7Sl/wCYYtanmtlfbf8Axbsi/tKX/mGLWmUFzuGeWjIuwbl9olm56qwUk1G4Hx7ouD4j8tOLf7qpkPtH6qSOD+ZMsOL57jlXMGUuQWCSJgJ6e0RuDo/vBePqFG4+0fqg2A9rP8Tyi/srX+pi1/DxWwHtZ/ieUX9la/1MWv4eKCxGAdk3NMywy05TQZFj9PS3OmbUxRzGXnY13gHaYRv5FZP2w8Gq8N4F8MLVXyRVFXZzNQTzwb7slzQ8a2AfyT4+izLgv2oeGWI8Ksbxq6i+Gut1BHTz9zRBzOZvjo842FkHbmdTZL2bLfkdGyY04raOuhLm6IjlY4AuHl0ePqgophdS6jy+zVbHBroK+CQEnWi2Rp/yVsf2Si6bmwuzt5SA2rqndevUxtHT6FU6ie6OVr2khzSCCPIhWG7eV4F04k47Ex3MyHG6Z4dvx7xz37+7SCu48VeCDIHRfsczqk8hebe63gE+Tqru/v5SqPkaVj5rywdgGK3hxc52VGlI/i+M3/8AfNBXDxf9VbLKrcLd+x3WEDm5qq5MqXbHm+ol/wAgFU0eKvF2h7b+COwvi9v97cUNs3saOyzmP6Sgo4PFTJxI4MRYxwLxHibRXeapbemRCqpZIgBC+RrnNLXA9R7pGiobHirS8cMwx6bsdcOsWpbtRVV2LaaWWlhna+SFscbw4vaPs9XAdUEM9na5VFq44YbV0ry2T8LwRHr4tkdyOH1DiFOP7JHcRLnWLWgH/wAmtss597zkl0Onyj/SoB4HgnjHhuh/6cpP/FapF7dt0Fx7RF1ha5rm0FJTUw5Tvr3fOQfjt5QQbDBLKyV8bC5sTed5A+yNgbP1IWa8ALv+AuNWH3Muc1sV3ga8gbPK93I79DivW4Q48Ltw24oXIg7t9jgcx2umzVRuP10wqOLdUvo7jBVx/bglbI3rrq0g/wCSDa1xyvtVjPB/Kr5QyGOqpLXM6B48WyFvK0/QkFan5XOklLnuLnE7Lidkn1WzbtL1rLl2W8muMbmllVaIpmlp2CHOjd0P1Wsc/a+qCx3Dzgvit57KGQ8Sa8134cpmVU1I9k2o2NhIAaWa67Idsn6KuO9O2rxcFaSqruwHfaOippqmpmpLkyKGFhe97i86AaOpPwCqF+59nv8AInJf/wAXN/8AqgutwOvdVe+w1d/a5DJJQWi5UQcTsljGPLB9GuA+ioIVe3s+2m6WbsW5nR3e21luqTFdH9zVQOifymAaPK4A66FUSPigs5g2XftU7CWQxRS8lXer9LbINHR0+OIyH/7bXfeq00NPNWV0NLTRmSeeRscTB4uc46A+8he1X5NVVWB2vExtlJQVtRWkc3SSSVsbd6+DY9fUqSexfhv7buOtpfPD3lFZw65VG27G49d2D85C37ig2EcLMYhwzh3YcYhA1bqGOF5H5Umtvd9XFx+qyZB0CICIiAiIgLxcwx+kyG1OpKgcsjTzQyjxjfrx+XqF7SLTJSuSs1tHMS0yY65aTS0cxKtd4t1XabjLQV0XdzRHr6EeRB8wV8anjPsWhyG3EsDY66EEwSHz/ou+B/QoMq6eakqpaapidFLE4texw6tI8lRdy262jydOtZ7T/hQty2+2jycd6z2lxgifNMyKP7b3BrfmV2VsjHznuh/BNAZH/VHgfr4/VdlM0w0ktUR1duGI/E/aI+Ten95fIuGfLSI9+rgnpHAiL7LZbqm4SObA1ojjHNLLIeWOJvq5x8P1laUpa8+GscyxWs2niIfI1pc4Na0uJOgANkn0WT2GaPEqt1wroWzXMRltPSb33RP5ch/J6eDfHr5L4TcKS1NMVlLpKgjlfXyM074iJv5A/pH3j8F4xJJJJJJOyT4krqpeumtFqzzeP7R+Z+3y96XjBaLVnm0f2j8z9vl918u9wvNaau4VDpZPBo8GsHo0eQXwIi5b3tktNrTzMvC17XmbWnmZZlwxyc2S5+xVUmqCqcA4k9In+Ad8vI/RTaw7G/FVg+CmDhJkzrjR/gasc51TTM3G8nfPGOmvmPD5aVm2LcP+tefj8LNsW4cf8e8/H4SAiBFaFqQn23/xbsi/tKX/AJhi1s0kElVVRU0LeaWV7WMG/Ek6H6Stk/be/FuyP+vS/wDMMWuPG/8ArFbtf+9xf4wg+e5UdTbbjU2+siMVTTSvhmjPi17SQ4H5EFfO3x+imztsYn+1fj1dpYoiylvDGXKHQ0NvBEg/77XH6qE2+P0QbAe1n+J5Rf2Vr/Uxa/R4rYF2s/xPKL+ytf6mLX8PFBKGNdn/AIt5FYaK+2bEpKu3V0ImpphVwN52HwOnPBH1Cuhx7sNUOxtW2iuhdFWW6w0RmjBBLJIO6Lh06HXKVlvZkkjHADCQXs3+CIvMfFZBxYt8d74W5TbPecKq0VUXudTsxO1r6oNSR+0VInaAvLL5mtBUx71HYLXCRveiKSPf6SVHZ8V21FRNUyiSeR0jw1rdn0aAAPoAAgyvK8UbaeHWHZKObmvorSeuxqGYMB+HienwXtyXYnsxR2USNGsxdO5m+rh7GAD9Dv71LHaKxZ9u7I/CWtEZ5qRmpOVugPaYzL1+Ox+tVj9ql9g9iLj3IkMvL/S1rf3IFupzVV8FK3xmkbGPqQP81sF7ctK2i7NDaJp22Ctooh/d2P8AJUf4NW03fizidtG9VF5pWHQ3071pP6Ar1dvr8Xyp/wB50v8Aicg10LLbbw34hXOigrbdhWQ1dLUsEkM0NulcyRp8HNcBog+qxJbWOzh/2DYR4/8AmSm/wBBVnspdnPNKbiDbMxzS2PstvtUwqIKao139RKB7nuD7LQTsk9egAHmoM7RV2F645ZlcGva9jrvPGwt8C2N3dj9DQtqddPHSUc1VKdRwxukcfg0bP6lp7v8AWuuN8r7g9xe6qqZJi4+Zc8u3+lBaDskY6Ln2c+LsghMklZSOpmA+BMdO94/S4KqfmPivQtt+vlto5aO3Xi4UdNNsyRQVT42P2NHbWkA9OnVecd76oNgOQXd97/Y/TcHyGR5xyGF7iNe9HI2M/pYtfx+19VcjhXXPvf7H7l9ua4uktftcRHNzEMD2T+HkNOP3Km5+0g2J9im5W+zdl+jul1q4qOhpamslnnldysjYJTtxPkFIP7t3CL+cXHPz5qgbhEQf2PrIwCCRRXMH4e+VSQoNqPEDJLBlXArMbrjd3o7rQ/geti7+llD2c7YXbbseY2PvWq4+KvJ2a4nR9h/LXOPSWG6vHy7nX+So2fFB2OgmZBHO+N7Y5CQxxHR2vHR+Gwpz7DWVftb470FFLLyUt8gkt8npzn34/wDiaB/eXg3DGBW9lW05ZDEXTW7KKqjmcPKKaGIt38Odn/Eo0x651Flv1Bd6RxbUUNTHUxEHXvMcHD9SDcSDsbReZit5pchxq2X2icHU1wpIqqIg7917Q4frXpoCIiAiIgIiIBWLZXhdsv8AXwVlQZIZGdJDFoGVvkCf81lKx3iFeRZsZqZ2P5aiQdzB68zvP6DZ+i59VGKcUzmjmsdf7OXWVxThtOaOax1Q7m1VSTXySlt0bYqCiHcU7G+HQ+874knfVeGvooKOpr6ltPSRPmlI3oeQ8yT4AfEr03S0Fm92lMVwuI8agjmghP8AQB+24fxj0HkPNUK0TnvOW/SP96R7vn9onNaclukT/vEOuntcVLA2svT5KeJ45oadn+3nHqAfsN/pH6Ar57lc5qyNlOxjKajjO46aLfID6nzc74lfJUTS1E7555XyyvO3ve7bnH4lda0vmiI8GOOI+8/P4a2ycR4adI+8iIi53iIv3S5RRvkkbHGxz3uIDWtGySfQeaREz2Z7uCz7g1aauW/fhYxvZSQxvaH60Hud00PXXivuwvhw5/JW5A0taeraQHx/rkfqH1UoU8MUETYoY2xsYNNa0aAHoArPtWz5K3rny9OO0flZdq2fJF658vTjrEersCIitK2IU7b34t2R/wBel/8AHYtceNA/tit3/wBXF/jC26ZPYLNk9mms1/ttNcrfMWmWnqGczH8pBGx8CAVh0XA/hHDKyWLh9YGSMcHNcKUAgg7BQQl+yNYp7Zh1gzCCLctuq3UdQ4f+ylG2k/APZ/xKjQB34eS3BZLj9myWyzWa/wBtprlb5y0y09QzmY7lII2PgQCsMPArhB/N3j35qEEY9rMf9D2iH/wrX+pi1+6K2+X/ABPHL/jrMevNmo660sEYbSTR80YDPsdPhoaWKfuF8IP5u8e/NQg1bMrKxjAxlTO1rRoASEAfpWxXsOh1X2cLfHO97+8q6xji47OjIR5rNP3C+EH83ePfmoWYYrjdjxazMs+O2ultlBG9z2U9OzlY1zjskD4lBqMv9GbffK+g0Qaaplh0ehHK8jr9y+ajp5Kmrip4ml0kr2saB4kk6H61tTr+C3CmvrqiurcCsM9VUSulmlfTAue9x25x+JJJXCm4I8Jaapiqafh/YI5oniSN7aUba4HYI+qDA+13jPedleroombdZYqOZgI6gRFrD4f0XOWuYgglbi71a7ferTU2m60cNZQ1cZinglbzMkYfEEeYWC/uF8IP5u8e/NQgoZ2OLf8AhDtG4nGeghnlqD039iF7h+nStx2+vxe6j/edL/icpQxXhdw9xW8Mu+O4haLXXsY5jainpw14a7oQD8V7WWY1YcstBtGR2qlulA57ZDT1LOZhc3wOvgg0/wCitq/Zw/7BsI/3JTf4Aun9wvhB/N3j35qFndltlBZrVTWq10kVJQ0sTYqeCJumRsA0GgeQCDGuNl2Fj4R5ZdNuaae0VLmlviHGMga+pC1MkErcRf7RbL9aKm0XiihraCqZyT08zeZkjd70R9Fg/wC4Xwg/m7x781CCC+wpw+xLIOD90ueQ4vabrUy3eWKKWtpGSuaxsUY00uGwNk/VUsvFM+kutXSvZyuhnfGW+GiHEa/Qtu2J4zYMTtItON2mktdCJHSCCmj5GczvE69ToLFKvgnwnq6qaqqsAsM080jpJJHUoJc5x2SfiSUFbOwNHS5Lw+4jYJWP1FWxxkjl3ps0T4nO+nK37lV3iDh99wfLK3G8gopKWtpHlvUabK38mRh/Ka4dQQtp+G8PcKw2pqKnFcattnlqWBkz6WLkMjQdgH6rtzjBcRzehbR5Vj9Bdomb7szxbfHvx5XjTm/QoNY1j4sZpZuGFy4c0NdCyw3F7nTMMAMgDtc7Wv8AEB3KNj9W1i2NWK75JfKWzWO3z19wqnhkMELducf8h6k9AFsQm7J3BeSodKLDXsBdvu23KUNHwHXwUkYBw3wfA4Xx4njdBbHSDUksbOaV49HSO24j4bQYHQ4QeHnZJuuKSPZJU0uO1j6p7PsumfG979HzALtA+gC1okHf0W4+5UNJcrdUW6vp46ikqYnQzQyDbZGOGnNI9CCsBHArhB/N3j35qEFcuAWM/tt7Dua2ZsYfOa2qqIB595FHFI3X1br6qnmve3pbesVxHG8VtEloxyzUdroJJHSPp6aPlY5zgASR6kAD6LFTwL4QE7PDvH9n/wCVCDCOwlln7YeBlLbJpQ6qsVS+hcD492ffjP8A3XEf3VPqx3DMGxHDG1LcVx+gs7aotM4pY+QSFu9bHw2fvWRICIiAiIgIiICivisTX3qOKsqDRWyib1e5u3TSO0SI2/lEDQ34DrsqVFhfEfEBfoRW0Z5bjCzlaCfdlb48p9D6H71w7jivl081pHM+3ujt0w5MunmtI5n290T190Dqd1BboTR0JPvM3uSb4yO8/kOg9F5ZXOeKWCZ8M0bo5GOLXscNFpHkQuCoOW9728/p9lBve1p8wiIvNoLEsryQ0lxFJGJBSQuY2rljmZG90jnAMhaXuA5nb6669PLqR6WU7pHUV7DyG0MhMrNgc0Thp31HQ6UbZBUvut9r6iiI/BzqlgbLVEdyXA+9LrxAaSdO9OulJaDT0veLX6x/lc/4U/h+u55bTbmY8Mzzx0i0THf/AMzzH68eyWOHFDWZFSQtxm019Zb3zHnqpZm/we36cTt2yAfTZIGxtWFw7Drbj8YlDfaK0j3qh46j4NH5I/Sse7N1DS0HCe201N3HMyWobN3EgfGJGyuaeQjxbpo18FJCtWi2zDgn6nHNv19ElXaNPpc9rR5p5nrIBoaREUo7RERB+SOaxjnucGtaNknwAUO0PG+K68HJ+IFmsftcjLuLXFQuqwwPe6obCxxk5egIe13h02sw443qTH+EmT3SEnv2W6WOn0dHvpB3cev7z2qsNzo7liXDvL8Oy6ghx3u6nHrkGUld3obAJoqeWZsgA07cAcdDoTvqgnS68aW2fhdlGV3nHJaG6YzWigrrWatrw6c92WhkoGnNc2Vrgdb8RpffnfFGutlxtdsxLFpcmrqy0PvcsQq204jomlo20kHnkcXaa0Dy6lQRR+03O0U+LYbROyahu2dVVwoJLnUOiN0pKelY+R8kzm7kaJXgBxB2GAeS+5uRYzDwwxmPLKq84xltis1bRW++0U7mAVVLK6F1FzN2JHO5I3cjhpwOx1KCXLrxQytuU4xarNgsVVS5NSmqoJqy5+yzNayJkkoliMZLHND9a2dkeSY9xWyCsxm75jdMOp6HFrbDXSmqjuglqJfZnvYQIeQa5ix3i7p0XmwVV5uOf8D6/IITFdp7LcJa5hZylszqSEvBHl7xPTyUaYXPj9Zwez2w2zMrlccoqaC+MONmsL44f4eV3NFBy9HEaOwTvmPqglM8YMlpcTutyu3DyooLlS+wyUdMa4Pp6yOrlbHHqoDOUPaXe83R18ivvyPiJnVkGP26bAKGe/XuqqooaGK+N7sRwQ96Xd6YwOYjmHLryHXqo94g8Qsby/gZcLdaqqsFttDLJ7ZeYdsiikdURc7GOI33kbW8zunu7Hn0Xffstwaz3zhnfoc9lvdho7jd45rvX1hqXCR1GdRl4aN9XNAGvMBBllbxvmrbBjVZiGIVV5uF7t1Rc3UU1Yym9mp6dwbNt5BDnhx5WgePj0C677xur4/wfVY5hsl4oJ8Xbk9U6SvZTywUpcQ5oaWkPeACdbG1FOLVsGEWPh3ecsbNaKGXEL1SsmqIXgd9NUCWKM6HR7mdQD1PzXx3vGb1V47aYoKi72+ttXCelmqaGCQwmsjbUbmp5RrenMDhoaOyPkgsS/inaHcQcQxOnhdIcotUlzp53P5TGwNDmAt115hzefTlX0cU81vGLV2O2ywY7HfblfKuWnhgkrRStb3cLpSectI8GkKvF/vVXXZ9LxIxi00dThmM19ko4q8VmnUtOyMd7GyP8tpFXonY1yeeiph483y0Y3nnDG+X24QW+20t2rDNUzHTGA0UrRvXqSAPmg/Y+MF1vVDiD8PxBtwrMip6yV1PXXEU3sppXNZK1zg1wceckAjx1tZTxDzC84tilpr4Mfhr7xca+loG0HtojjbNMda73lPutPnrqq42r8E2uw8JZMtyW6YZRywX6dtbBUGkmDZahr4gXFpLQ9rgdEeil7tGVlnl4Y4vXz5BUUdnff7XK67U8/LJHCXb75smjo6682vig9390mvtWY4fieWWGntdyyVtZydxX9/HC+HlLG83K3mLwT6aI112scr+OpmmvNNjmOMu09DlNPjdMH1wiZUyyscS8u5TyhrmlvnvxWFcQbJR53csMjwTKai+11BY7rWWK8T1glkdXQVFM5hfIQAdElh2NAFYlbMQfZa+44hRXGpoZ4eIdijNfAGulZOaIuklbzAtLi8uPUEdfBBN1Zxyt1vxG03m52aaiq6rJRjtbRPqGuNJOHlsrg8DUjWgA7GtgjwXdxM4wz4hktyt9JitRd7fYaWnrL9WMq2RGlineWs7tjhuV3ulxHTp8VE3GXB7nFc6TAMOoX5DUUNmuV9uVRcK4RTPqat4Y2pJDdOkBY8hoA+YWOcU85ofwTltdXR1Tps6xSyfgsRxEiVzRIZjv0Y7o4DZGx0QWJyviq2xMyR34HdOLJdrbbh/D8vfe1iE8/h05e+8PPl8lzs3EDJLplV9pocUo2Y5Y7jNQ1l0fdNSjuohI5zYOTr9oD7Xqoi4m3Wgnv8AleMxSPlu+QX7Ha2z0zInONbAxtNzyxkDTmN7t+zvQ11XucPrni9BxfzqGuzC4i+yZDWezYwyt5Ya1ppmaPclunudpwB5h1aPRBnnC7ideMuulJFcsMq7PbrtQG5WeuFQKhk8AIGpeUARSEODg3Z2D49Cuqt4rXJmc1dsoMNrbhj1BdorNXXWCcOkhqpGsOxABzGJvO0OfvpvetBYVwIvlmfxHpLRw6uV3fis1kmqrnZax7pG2SqErBHC3m6xOO5AY9ke7sdF0ZrkFpt/FsOw+ovNjzibJKOjuFmLnGC80h5Q+qMXVpaIt6lBaQWaKCW+MvECi4bYb+2KtpjUtNbT0rYhJycxkeATvR+y3mdrz5VmbHtfGHtPM0jYI8wq99ompqs+yLH8Nw2lt+RTU5udRX00laIWRvii9m052jpzH1G9a8WhSHwLzChv/D7G6OethN8Fmilq6Tn3I3kcYHvI9O8jcPmEHiTcY6ylz6qstZib22KHIYse/C0Vc1zxVSxtfHzQloPIeYDYJ0vbwbN8pyfJrjAzE6SmsFBdKy3PuJugdM58DyzmEPJ4Fw/jdPFQnerjR1nEi7YjSTe0X2TipQXEUUbS6QUsUEJfMemgwaPUnyWW8Cbji8PEvKqGTOa4X+fJruGY86u1Byd853eCHl+1ygu3v1QZjlvFO5WnOK+yWrDK282+yikN7rKecd7TipP8GYoNF0oAHM7RGgsoy7LP2v5TilnkoHTQZBWS0XtIkA7iRsLpWbb+Vzcjh8NKMKnNrXgXHTPvwpDVzV96jszbPQQREzXAhj4391voeUu2476AFej2mLxFNwmuGUY3UwVtfh93hqiGO33c8TwySN2uoIbKdgIM/wCGGVnNcTZkIoHUUE1VURU7XP5jJHFM+NsngNc3JvXltZQsI4LQ22z4JacQpqyKa4WS20sdwha7b4ZJIhJ73xdsn4rN0BERAREQEREBCOiIgwniJhkd8hdXUDWx3Fg+QmA8j8fQ/RQxPFJBM+GZjo5GOLXtcNFpHiCFZwjYWE8RcLivcT7hQNbHcmN+QmA8j8fQ/QqA3bafrROXFHm9Y9/3V3d9o+tzmwx5vWPf90LL7bPbK671raOgp3zSnqdeDR6k+QWRYlgl1vE3eVkb6Cka7le+Runu0dENaf1np81L9islvstGKW307YmflHxc8+rj5lROg2bJnnxZfLX7yidBs2XU+bJ5a/efhSvPaavivt0t91YY62CR8JjcdcrQenLvycOoPnvayzs64ZZs3vdVU1MNRLZaONriyM8kTpi4EMcCNkFodsDp96s5l8WNUduqL9kVHbnwUETpX1FVCxxjaB5Fw+gHqVEPZcqvwrfciucVTRwwd3E00NM9pEbpZZagNIB6CNsojB8N84/JU9g2umLJzM8x6Q+xfzB4NurpdLijH4axXmJ9vbt39e/PKascsVox23fg6yW+nt9J3j5e5gbysDnu5nEDy2SvSRFLqrM89xERAREQcZI2SN5ZGNe30cNhcJaanmJMsEUmxo8zAem966rtRB1tghaWFsTAWDlYQ0e6PQei/HU9O4aMMZHPz6LB9r1+fxXaiDiY2F7XljS5u+UkdRvxXXFSUsUneR08LH9feawA9fiu5EHV7NT906LuIu7cdlnINE/JcfYqPkDPZYOVp5gO7GgfXwXeiDhLFFK0NljY8Ag6cN9fXqhijLy8xtLi3lJ11I9PkuaIOllLTMhdAynibE7xYGANP0XKangnDRNDHIGnYD2g6+9diIOqemp59d/BFLrw52B2vvX7JTwSRCJ8MboxrTXNBA14dF2Ig6oqeni5e7gjZy7DeVgGt+K/TBAXFxhj5i4OJ5RvY8D812Ig493H3hk5G85Gi7XUj02uHs1OAwdxFqPfIOQe7vx16LtRBw7mLnY/umczBpp5Rto9B6Lh7JTd933s8Pe73z8g5t/NdyIOEcUUbnuZGxrnnbiGgFx9T6oYojKJTGwyAcodyjYHptc0QdbIIWSGRsUbXne3BoBO/HqkcEMbuaOKNh1rbWgee/1rsRB1sghZM6ZkUbZH/aeGgE/Mri2kpWTd82nhbITvnDAHb+a7kQcHRRukbI6NpezfK4jqN+Oj5L87mHkezumcryS4co04n19V2Ig4tjY1zntY0OdrmIHU69VyREBERAREQEREBERAQhEQNdUREHh53jFDmGL1mPXJ8zKWrDQ8xO073XBw+BGwNg+KxDhdwitmBXeS5W+51MkkrCyWMMaxkg9SAPHfX034a67ktFjiOeW8ZLRXwxPQREWWgiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiIP/9k='
+};
 
 function calcularPesoMillar(producto) {
   if (!producto) return 0;
@@ -556,7 +575,10 @@ function renderApp() {
   return `
     <div class="app">
       <aside class="sidebar">
-        <div class="sidebar-logo">📦 NewPack ERP</div>
+        <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
+          <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6</span></div>
+        </div>
         
         <div class="sidebar-section">General</div>
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
@@ -2867,6 +2889,16 @@ function renderTarjetaOV(o, subTab) {
   if (o.estatus === 'enviada' && (esCS || esCEO)) {
     acciones += `<button class="btn-primary" onclick="marcarOVEntregada('${o.id}')" style="padding:8px 14px;background:#15803d;">✅ Marcar entregada</button>`;
   }
+  
+  // Botones PDF (disponibles desde que se genera remisión en adelante)
+  if (['por_cargar','enviada','entregada'].includes(o.estatus) || o.remision) {
+    acciones += `<button onclick="imprimirRemisionPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#1e40af;border:1px solid #1e40af;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📄 Imprimir Remisión</button>`;
+    acciones += `<button onclick="imprimirListaCargaPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📋 Imprimir Lista de Carga</button>`;
+  } else if (o.estatus === 'lista_embarcar' && (o.tarimas_ids || []).length > 0) {
+    // Aún sin remisión pero ya con tarimas asignadas: solo lista de carga (preparación CEDIS)
+    acciones += `<button onclick="imprimirListaCargaPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📋 Lista de Carga (preparación)</button>`;
+  }
+  
   acciones += `<button class="btn-secondary" onclick="abrirModal('detalle-ov','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Ver detalle</button>`;
   
   return `
@@ -3178,6 +3210,353 @@ window.toggleDetalleStock = (key) => {
   if (!state.stockDetalleAbierto) state.stockDetalleAbierto = {};
   state.stockDetalleAbierto[key] = !state.stockDetalleAbierto[key];
   render();
+};
+
+// ============================================================
+// MIGRACIÓN: OVs legacy → nuevo flujo Embarques
+// ============================================================
+// ============================================================
+// PDF: REMISIÓN Y LISTA DE CARGA
+// ============================================================
+
+// Helper común: header con datos de empresa
+function _pdfHeaderEmpresa(doc, titulo, folioDoc) {
+  // Encabezado con verde NewPack
+  doc.setFillColor(63, 211, 75); // #3fd34b verde corporativo
+  doc.rect(0, 0, 210, 32, 'F');
+  
+  // Logo (si está disponible)
+  if (DATOS_EMPRESA.logo_url) {
+    try {
+      doc.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 8, 5, 35, 22);
+    } catch(e) { /* si falla, sigue sin logo */ }
+  }
+  
+  // Razón social en negro/blanco según fondo
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(13);
+  doc.setFont('helvetica', 'bold');
+  doc.text(DATOS_EMPRESA.razon_social, 50, 11);
+  
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`RFC: ${DATOS_EMPRESA.rfc}  ·  Tel: ${DATOS_EMPRESA.telefono}`, 50, 17);
+  doc.text(DATOS_EMPRESA.email, 50, 22);
+  // Dirección puede ser larga, dividir si necesario
+  const dirSplit = doc.splitTextToSize(DATOS_EMPRESA.direccion, 95);
+  doc.text(dirSplit, 50, 27);
+  
+  // Folio del documento (esquina derecha) - color azul corporativo
+  doc.setFillColor(56, 182, 255); // #38b6ff azul celeste
+  doc.roundedRect(150, 5, 55, 22, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'bold');
+  doc.text(titulo, 177, 11, { align: 'center' });
+  doc.setFontSize(13);
+  doc.text(folioDoc, 177, 19, { align: 'center' });
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'normal');
+  doc.text(new Date().toLocaleDateString('es-MX'), 177, 24, { align: 'center' });
+  
+  // Reset color texto
+  doc.setTextColor(0, 0, 0);
+  
+  return 38; // Y donde sigue el contenido
+}
+
+// Helper: pie con numeración página
+function _pdfPiePagina(doc) {
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(120, 120, 120);
+    doc.text(`Página ${i} de ${pageCount}`, 105, 290, { align: 'center' });
+    doc.text(`Generado: ${new Date().toLocaleString('es-MX')}`, 14, 290);
+    doc.text(`Sistema NewPack ERP`, 196, 290, { align: 'right' });
+  }
+}
+
+window.imprimirRemisionPDF = (ovId) => {
+  const ov = state.ordenes_venta.find(x => x.id === ovId);
+  if (!ov) { toast('OV no encontrada', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  
+  const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id))
+    .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+  if (tarimas.length === 0) { toast('No hay tarimas asignadas', 'error'); return; }
+  
+  const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  
+  let y = _pdfHeaderEmpresa(docPDF, 'REMISIÓN', ov.remision || ov.folio);
+  
+  // Título grande
+  docPDF.setFontSize(16);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('REMISIÓN DE EMBARQUE', 105, y + 5, { align: 'center' });
+  y += 12;
+  
+  // Datos generales en 2 columnas
+  docPDF.setDrawColor(200, 200, 200);
+  docPDF.setLineWidth(0.3);
+  
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFillColor(241, 245, 249);
+  docPDF.rect(14, y, 90, 28, 'F');
+  docPDF.rect(106, y, 90, 28, 'F');
+  
+  docPDF.text('CLIENTE', 16, y + 4);
+  docPDF.text('DATOS DEL DOCUMENTO', 108, y + 4);
+  
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(9);
+  docPDF.text(ov.cliente_nombre || '—', 16, y + 10);
+  docPDF.setFontSize(8);
+  docPDF.text(`Código: ${ov.cliente_codigo || '—'}`, 16, y + 15);
+  docPDF.text(`PI origen: ${ov.pedido_folio || '—'}`, 16, y + 20);
+  docPDF.text(`OV: ${ov.folio || '—'}`, 16, y + 25);
+  
+  docPDF.text(`Remisión: ${ov.remision || '—'}`, 108, y + 10);
+  docPDF.text(`Factura: ${ov.factura || '—'}`, 108, y + 15);
+  docPDF.text(`Fecha: ${ov.remision_at ? new Date(ov.remision_at.seconds*1000).toLocaleDateString('es-MX') : new Date().toLocaleDateString('es-MX')}`, 108, y + 20);
+  docPDF.text(`Almacén: ${ov.cedis || '—'}`, 108, y + 25);
+  
+  y += 32;
+  
+  // Tabla de tarimas con autoTable
+  docPDF.autoTable({
+    startY: y,
+    head: [['#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cantidad', 'UM', 'Kg netos']],
+    body: tarimas.map((t, i) => [
+      i + 1,
+      `T${String(t.numero_tarima || '').padStart(2, '0')}`,
+      t.lote_codigo || '—',
+      t.odp_folio || '—',
+      t.producto_codigo || '—',
+      fmtNum(t.cantidad || 0),
+      (t.um || '').toUpperCase(),
+      fmtNum(t.peso_neto_kg || t.peso_neto || 0)
+    ]),
+    foot: [['', '', '', '', 'TOTALES', fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg)]],
+    theme: 'grid',
+    headStyles: { fillColor: [56, 182, 255], textColor: 255, fontSize: 8, fontStyle: 'bold' },
+    footStyles: { fillColor: [220, 252, 231], textColor: [22, 101, 52], fontSize: 9, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8 },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center' },
+      1: { cellWidth: 15, halign: 'center', fontStyle: 'bold' },
+      2: { cellWidth: 28 },
+      3: { cellWidth: 22 },
+      4: { cellWidth: 50 },
+      5: { cellWidth: 22, halign: 'right' },
+      6: { cellWidth: 12, halign: 'center' },
+      7: { cellWidth: 22, halign: 'right' }
+    },
+    margin: { left: 14, right: 14 }
+  });
+  
+  y = docPDF.lastAutoTable.finalY + 6;
+  
+  // Datos transportista
+  docPDF.setFillColor(241, 245, 249);
+  docPDF.rect(14, y, 182, 22, 'F');
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('DATOS DE TRANSPORTE', 16, y + 4);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(9);
+  docPDF.text(`Transportista: ${ov.transportista || '—'}`, 16, y + 10);
+  docPDF.text(`Conductor: ${ov.conductor || '—'}`, 16, y + 15);
+  docPDF.text(`Placas: ${ov.placas || '—'}`, 16, y + 20);
+  docPDF.text(`Fecha de salida: ${ov.fecha_salida_programada || '—'}`, 110, y + 10);
+  if (ov.observaciones_embarque) {
+    docPDF.setFontSize(8);
+    docPDF.text(`Obs: ${ov.observaciones_embarque}`.substring(0, 80), 110, y + 15);
+  }
+  
+  y += 28;
+  
+  // Espacios para firmas
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.setLineWidth(0.4);
+  docPDF.line(20, y + 25, 90, y + 25);
+  docPDF.line(120, y + 25, 190, y + 25);
+  
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('ENTREGA (NewPack)', 55, y + 30, { align: 'center' });
+  docPDF.text('RECIBE CONFORME (Cliente)', 155, y + 30, { align: 'center' });
+  
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(7);
+  docPDF.text('Nombre y firma', 55, y + 34, { align: 'center' });
+  docPDF.text('Nombre, firma, fecha y hora', 155, y + 34, { align: 'center' });
+  
+  // Notas pie
+  y += 42;
+  docPDF.setFontSize(7);
+  docPDF.setTextColor(100, 100, 100);
+  docPDF.text('• Este documento ampara la entrega física del material descrito.', 14, y);
+  docPDF.text('• Cualquier inconformidad debe ser reportada al momento de recibir.', 14, y + 4);
+  docPDF.text('• Conserve esta remisión para futuros reclamos o referencias.', 14, y + 8);
+  
+  _pdfPiePagina(docPDF);
+  
+  // Descargar
+  const filename = `Remision_${ov.remision || ov.folio}_${ov.cliente_codigo || ''}.pdf`;
+  docPDF.save(filename);
+  toast(`📄 Remisión descargada: ${filename}`);
+};
+
+window.imprimirListaCargaPDF = (ovId) => {
+  const ov = state.ordenes_venta.find(x => x.id === ovId);
+  if (!ov) { toast('OV no encontrada', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  
+  const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id))
+    .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+  if (tarimas.length === 0) { toast('No hay tarimas asignadas', 'error'); return; }
+  
+  const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  
+  let y = _pdfHeaderEmpresa(docPDF, 'LISTA CARGA', ov.folio);
+  
+  docPDF.setFontSize(16);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('LISTA DE CARGA', 105, y + 5, { align: 'center' });
+  
+  docPDF.setFontSize(10);
+  docPDF.setTextColor(80, 80, 80);
+  docPDF.text(`${ov.cedis || '—'} → ${ov.cliente_nombre || '—'}`, 105, y + 11, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 18;
+  
+  // Datos generales
+  docPDF.setFillColor(254, 243, 199);
+  docPDF.rect(14, y, 182, 16, 'F');
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(`OV: ${ov.folio}`, 18, y + 5);
+  docPDF.text(`PI: ${ov.pedido_folio || '—'}`, 70, y + 5);
+  docPDF.text(`Cliente: ${ov.cliente_nombre} (${ov.cliente_codigo})`, 18, y + 11);
+  docPDF.text(`Remisión: ${ov.remision || 'PENDIENTE'}`, 130, y + 5);
+  docPDF.text(`Factura: ${ov.factura || 'PENDIENTE'}`, 130, y + 11);
+  
+  y += 22;
+  
+  // Tabla con checkbox para cargar
+  docPDF.autoTable({
+    startY: y,
+    head: [['☐', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cantidad', 'UM', 'Kg', 'Verificó']],
+    body: tarimas.map((t, i) => [
+      '☐',
+      i + 1,
+      `T${String(t.numero_tarima || '').padStart(2, '0')}`,
+      t.lote_codigo || '—',
+      t.odp_folio || '—',
+      t.producto_codigo || '—',
+      fmtNum(t.cantidad || 0),
+      (t.um || '').toUpperCase(),
+      fmtNum(t.peso_neto_kg || t.peso_neto || 0),
+      ''
+    ]),
+    foot: [['', '', '', '', '', 'TOTALES', fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg), '']],
+    theme: 'grid',
+    headStyles: { fillColor: [245, 158, 11], textColor: 255, fontSize: 9, fontStyle: 'bold' },
+    footStyles: { fillColor: [254, 243, 199], textColor: [120, 53, 15], fontSize: 9, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 9, minCellHeight: 8 },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center', fontSize: 14 },
+      1: { cellWidth: 8, halign: 'center' },
+      2: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
+      3: { cellWidth: 26 },
+      4: { cellWidth: 20 },
+      5: { cellWidth: 38 },
+      6: { cellWidth: 18, halign: 'right' },
+      7: { cellWidth: 11, halign: 'center' },
+      8: { cellWidth: 16, halign: 'right' },
+      9: { cellWidth: 23 }
+    },
+    margin: { left: 14, right: 14 }
+  });
+  
+  y = docPDF.lastAutoTable.finalY + 6;
+  
+  // Verificación de carga
+  docPDF.setFillColor(241, 245, 249);
+  docPDF.rect(14, y, 182, 28, 'F');
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('VERIFICACIÓN DE CARGA', 18, y + 5);
+  
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(9);
+  const checks = [
+    'Tarimas verificadas físicamente contra esta lista',
+    'Tarimas en buen estado (sin daño visible)',
+    'Cargadas en vehículo correctamente',
+    'Sello de seguridad en buen estado'
+  ];
+  checks.forEach((c, i) => {
+    const col = i < 2 ? 18 : 105;
+    const row = i % 2;
+    docPDF.text(`☐  ${c}`, col, y + 12 + (row * 6));
+  });
+  
+  y += 34;
+  
+  // Datos transporte
+  docPDF.setFillColor(220, 252, 231);
+  docPDF.rect(14, y, 182, 14, 'F');
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('TRANSPORTE', 18, y + 5);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(`Transportista: ${ov.transportista || '—'}`, 18, y + 10);
+  docPDF.text(`Placas: ${ov.placas || '—'}`, 100, y + 10);
+  docPDF.text(`Conductor: ${ov.conductor || '—'}`, 145, y + 10);
+  
+  y += 20;
+  
+  // Firmas
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.setLineWidth(0.4);
+  docPDF.line(18, y + 18, 80, y + 18);
+  docPDF.line(95, y + 18, 145, y + 18);
+  docPDF.line(155, y + 18, 195, y + 18);
+  
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('CARGADOR', 49, y + 23, { align: 'center' });
+  docPDF.text('VERIFICÓ (CEDIS)', 120, y + 23, { align: 'center' });
+  docPDF.text('CONDUCTOR', 175, y + 23, { align: 'center' });
+  
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(7);
+  docPDF.text('Nombre y firma', 49, y + 27, { align: 'center' });
+  docPDF.text('Nombre y firma', 120, y + 27, { align: 'center' });
+  docPDF.text('Nombre y firma', 175, y + 27, { align: 'center' });
+  
+  y += 34;
+  docPDF.setFontSize(8);
+  docPDF.text(`Hora salida: __________________`, 18, y);
+  docPDF.text(`Sello de seguridad N°: __________________`, 110, y);
+  
+  _pdfPiePagina(docPDF);
+  
+  const filename = `ListaCarga_${ov.folio}_${ov.cliente_codigo || ''}.pdf`;
+  docPDF.save(filename);
+  toast(`📋 Lista de carga descargada: ${filename}`);
 };
 
 // ============================================================
@@ -4091,7 +4470,13 @@ function modalDetalleOV() {
             ${ov.entregada_at ? `<div>🏁 Entregada: ${fmtFechaHora(ov.entregada_at)} por ${ov.entregada_por_nombre || '—'}</div>` : ''}
           </div>
         </div>
-        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+          ${(ov.tarimas_ids || []).length > 0 ? `
+            <button onclick="imprimirListaCargaPDF('${ov.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;">📋 Lista de Carga</button>
+          ` : ''}
+          ${ov.remision ? `
+            <button onclick="imprimirRemisionPDF('${ov.id}')" style="padding:8px 14px;background:#fff;color:#1e40af;border:1px solid #1e40af;border-radius:6px;cursor:pointer;font-weight:700;">📄 Remisión</button>
+          ` : ''}
           <button class="btn-primary" onclick="cerrarModal()">Cerrar</button>
         </div>
       </div>
