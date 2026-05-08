@@ -653,10 +653,12 @@ function renderDashboard() {
   const ovsPend = state.ordenes_venta.filter(o => o.estatus === 'pendiente').length;
   const odpsPend = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_planeacion').length;
   
-  // Tarimas viejas sin pedido_folio (para migración)
-  const esCEO = state.user.depto === 'CEO' || state.user.rol === 'admin';
+  // Tarimas viejas sin pedido_folio (para migración) — visible para CEO/admin/ALP
+  const esCEO = state.user.depto === 'CEO' || state.user.rol === 'admin' || state.user.depto === 'ADMIN';
   const tarimasSinPI = state.tarimas.filter(t => !t.pedido_folio);
   const lotesSinPI = state.lotes.filter(l => !l.pedido_folio);
+  const otisSinPI = (state.oti || []).filter(o => !o.pedidos_folios || o.pedidos_folios.length === 0);
+  const totalSinPI = tarimasSinPI.length + lotesSinPI.length + otisSinPI.length;
   
   return `
     <div class="grid-stats" style="margin-bottom:24px;">
@@ -668,19 +670,43 @@ function renderDashboard() {
       <div class="stat-card"><div class="stat-icon">${ICONS.boxes}</div><div class="stat-value">${state.productos_pt.length}</div><div class="stat-label">Productos PT</div></div>
     </div>
     
-    ${esCEO && (tarimasSinPI.length > 0 || lotesSinPI.length > 0) ? `
-      <div class="panel" style="margin-bottom:18px;border-left:4px solid #f59e0b;background:#fffbeb;">
+    ${esCEO ? `
+      <div class="panel" style="margin-bottom:18px;border-left:4px solid ${totalSinPI > 0 ? '#f59e0b' : '#16a34a'};background:${totalSinPI > 0 ? '#fffbeb' : '#f0fdf4'};">
         <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
           <div>
-            <div style="font-weight:700;color:#92400e;">⚠️ Datos sin trazabilidad PI</div>
+            <div style="font-weight:700;color:${totalSinPI > 0 ? '#92400e' : '#166534'};">${totalSinPI > 0 ? '⚠️ Datos sin trazabilidad PI' : '✅ Trazabilidad PI completa'}</div>
             <div style="font-size:12px;color:#475569;margin-top:4px;">
-              Hay <strong>${tarimasSinPI.length} tarima(s)</strong> y <strong>${lotesSinPI.length} lote(s)</strong> sin folio PI guardado. 
-              Click "Migrar" para asignarles automáticamente el PI desde su ODP.
+              ${totalSinPI > 0 
+                ? `Sin PI: <strong>${tarimasSinPI.length} tarima(s)</strong>, <strong>${lotesSinPI.length} lote(s)</strong>, <strong>${otisSinPI.length} OTI(s)</strong>. Click "Migrar" para asignarlos automáticamente.`
+                : `Todas las tarimas, lotes y OTIs tienen su folio PI asignado. Si necesitas correr la migración nuevamente, presiona "Re-ejecutar".`}
             </div>
           </div>
-          <button class="btn-primary" onclick="migrarPIaTarimasYLotes()" style="background:#f59e0b;padding:10px 18px;">
-            🔧 Migrar PIs ahora
+          <button class="btn-primary" onclick="migrarPIaTarimasYLotes()" style="background:${totalSinPI > 0 ? '#f59e0b' : '#3b82f6'};padding:10px 18px;">
+            🔧 ${totalSinPI > 0 ? 'Migrar PIs ahora' : 'Re-ejecutar migración'}
           </button>
+        </div>
+      </div>
+      
+      <!-- DIAGNÓSTICO TARIMAS -->
+      <div class="panel" style="margin-bottom:18px;">
+        <div style="padding:12px 18px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+          <strong>🔍 Diagnóstico de tarimas (${state.tarimas.length} total)</strong>
+          <button onclick="diagnosticoTarimasConsola()" style="font-size:11px;padding:4px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;">📊 Ver detalle en consola</button>
+        </div>
+        <div style="padding:14px 18px;display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:8px;font-size:11px;">
+          ${(() => {
+            const grupos = {};
+            state.tarimas.forEach(t => {
+              const k = `${t.estatus || 'sin_estatus'} / ${t.almacen_actual || 'sin_almacen'}`;
+              grupos[k] = (grupos[k] || 0) + 1;
+            });
+            return Object.entries(grupos).sort((a,b) => b[1]-a[1]).map(([k, v]) => `
+              <div style="padding:8px 10px;background:#f1f5f9;border-radius:6px;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;">${k}</div>
+                <div style="font-size:18px;font-weight:800;color:#1e40af;">${v}</div>
+              </div>
+            `).join('');
+          })()}
         </div>
       </div>
     ` : ''}
@@ -2583,9 +2609,9 @@ function renderCedisMTY() {
   const subTab = state.subTabCedis || 'pendiente';
   // OTIs pendientes de recibir en CEDIS-MTY
   const otiPendientes = state.oti.filter(o => o.estatus === 'en_transito' && o.destino === 'CEDIS-MTY');
-  // Tarimas en stock CEDIS-MTY
+  // Tarimas en stock CEDIS-MTY (cualquiera que esté en CEDIS-MTY)
   const enStock = state.tarimas.filter(t => 
-    t.estatus === 'en_cedis_mty' && t.almacen_actual === 'CEDIS-MTY'
+    t.estatus === 'en_cedis_mty' || t.almacen_actual === 'CEDIS-MTY'
   );
   
   return `
@@ -2610,6 +2636,33 @@ window.setSubTabCedis = (tab) => { state.subTabCedis = tab; render(); };
 // ============================================================
 // MIGRACIÓN: Agregar pedido_folio a tarimas/lotes/PKLs/OTIs viejos
 // ============================================================
+window.diagnosticoTarimasConsola = () => {
+  console.group('🔍 DIAGNÓSTICO DE TARIMAS - NewPack ERP');
+  console.log(`Total tarimas: ${state.tarimas.length}`);
+  console.log(`Total OTIs: ${state.oti.length}`);
+  console.log(`Total lotes: ${state.lotes.length}`);
+  console.log(`Total packing_lists: ${state.packing_lists.length}`);
+  console.groupCollapsed('Tarimas detalle (todas)');
+  state.tarimas.forEach((t, i) => {
+    console.log(`#${i+1}`, {
+      codigo: t.codigo,
+      estatus: t.estatus,
+      almacen_actual: t.almacen_actual,
+      packing_list: t.packing_list,
+      odp_folio: t.odp_folio,
+      pedido_folio: t.pedido_folio || '(SIN PI)',
+      cantidad: t.cantidad,
+      um: t.um
+    });
+  });
+  console.groupEnd();
+  console.groupCollapsed('OTIs detalle');
+  state.oti.forEach(o => console.log(o.folio, o.estatus, o.destino, 'tarimas:', o.tarimas_ids?.length));
+  console.groupEnd();
+  console.groupEnd();
+  toast('📊 Diagnóstico impreso en consola del navegador (F12)');
+};
+
 window.migrarPIaTarimasYLotes = async () => {
   if (!confirm('¿Migrar pedido_folio a tarimas, lotes, packing lists y OTIs antiguos?\n\nEsto buscará el PI correspondiente en cada ODP y lo asignará. Es seguro y no destructivo.')) return;
   
@@ -2825,6 +2878,7 @@ window.confirmarCrearOTI = async () => {
     tarimasSel.forEach(t => {
       batch.update(doc(db, 'tarimas', t.id), {
         estatus: 'en_transito_cedis_mty',
+        almacen_actual: 'EN_TRANSITO',
         oti_id: otiRef.id,
         oti_folio: folio,
         salida_planta_at: serverTimestamp(),
