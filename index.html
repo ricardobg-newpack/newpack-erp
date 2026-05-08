@@ -1648,7 +1648,7 @@ window.limpiarFiltroSeguimiento = () => {
 // Devuelve: { fase: 0-5, label, porcentaje, color }
 // ============================================================
 function calcularFasePI(p) {
-  // 5 fases: Captura → Producción → Calidad → Almacén → Embarque
+  // 6 fases: Captura → Aprobación → Producción → Calidad → Almacén → Embarque
   const lineas = window.pedidoLineas(p.id);
   const odps = window.odpsDePedido(p.id);
   const ovs = window.ovsDePedido(p.id);
@@ -1672,49 +1672,97 @@ function calcularFasePI(p) {
     return { fases, fase_actual: 1, porcentaje: 5, color: '#f59e0b', label: '🟡 Por aprobar' };
   }
   
-  // Producción
-  const odpsCompletas = odps.filter(o => 
-    ['pendiente_calidad','liberada_empaque','rechazada','en_almacen_planta','en_transito_cedis_mty','en_cedis_mty'].includes(o.estatus)
+  // ===== EMBARQUE primero (porque puede determinar el resto si está completo) =====
+  // OV completada: estatus 'enviada' o 'entregada' o 'completada' (legacy)
+  const ovsTotales = ovs.length;
+  const ovsCompletadas = ovs.filter(o => 
+    ['enviada','entregada','completada'].includes(o.estatus)
   ).length;
-  const odpsEnCurso = odps.filter(o => o.estatus === 'en_produccion').length;
-  if (odps.length > 0 && odpsCompletas === odps.length) {
+  const ovsEnProgreso = ovs.filter(o => 
+    ['preparando','lista_embarcar','por_cargar','pendiente_asignar'].includes(o.estatus)
+  ).length;
+  
+  if (ovsTotales > 0 && ovsCompletadas === ovsTotales) {
+    fases[5].completada = true;
+  } else if (ovsEnProgreso > 0 || ovsCompletadas > 0) {
+    fases[5].en_curso = true;
+  }
+  
+  // ===== Si las OVs están completadas, marcar todo lo anterior como completado también =====
+  // Porque significa que el material se entregó al cliente (todo el flujo se cumplió)
+  const todoEntregado = ovsTotales > 0 && ovsCompletadas === ovsTotales;
+  
+  // Producción
+  if (todoEntregado) {
     fases[2].completada = true;
-  } else if (odpsEnCurso > 0 || odps.some(o => o.estatus === 'programada')) {
-    fases[2].en_curso = true;
+  } else {
+    const odpsCompletas = odps.filter(o => 
+      ['pendiente_calidad','liberada_empaque','rechazada','en_almacen_planta','en_transito_cedis_mty','en_cedis_mty','en_cedis_mex','embarcada','entregada','completada'].includes(o.estatus)
+    ).length;
+    const odpsEnCurso = odps.filter(o => o.estatus === 'en_produccion').length;
+    if (odps.length > 0 && odpsCompletas === odps.length) {
+      fases[2].completada = true;
+    } else if (odpsEnCurso > 0 || odps.some(o => o.estatus === 'programada')) {
+      fases[2].en_curso = true;
+    } else if (odps.length === 0 && lineas.every(l => l.tipo_origen === 'stock')) {
+      // Si todo es de stock, no hay producción que esperar — marcar como N/A completada
+      fases[2].completada = true;
+      fases[2].label = 'Stock (sin producir)';
+      fases[2].icon = '📦';
+    }
   }
   
-  // Calidad (al menos 1 ODP liberada por calidad)
-  const odpsLiberadas = odps.filter(o => o.estatus === 'liberada_empaque' || o.liberacion_calidad).length;
-  if (odps.length > 0 && odpsLiberadas === odps.length) {
+  // Calidad
+  if (todoEntregado) {
     fases[3].completada = true;
-  } else if (odpsLiberadas > 0) {
-    fases[3].en_curso = true;
+  } else {
+    const odpsLiberadas = odps.filter(o => 
+      o.estatus === 'liberada_empaque' || o.liberacion_calidad ||
+      ['en_almacen_planta','en_transito_cedis_mty','en_cedis_mty','en_cedis_mex','embarcada','entregada','completada'].includes(o.estatus)
+    ).length;
+    if (odps.length > 0 && odpsLiberadas === odps.length) {
+      fases[3].completada = true;
+    } else if (odpsLiberadas > 0) {
+      fases[3].en_curso = true;
+    } else if (odps.length === 0 && lineas.every(l => l.tipo_origen === 'stock')) {
+      // Stock no requiere calidad nueva
+      fases[3].completada = true;
+      fases[3].label = 'Stock (calidad previa)';
+      fases[3].icon = '📦';
+    }
   }
   
-  // Almacén / OTI - etiqueta dinámica según ubicación predominante
+  // Almacén
   const tarimasPI = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
   const enPlanta = tarimasPI.filter(t => t.estatus === 'en_almacen_planta').length;
   const enTransitoMTY = tarimasPI.filter(t => t.estatus === 'en_transito_cedis_mty').length;
   const enCedisMTY = tarimasPI.filter(t => t.estatus === 'en_cedis_mty').length;
   const enTransitoMEX = tarimasPI.filter(t => t.estatus === 'en_transito_cedis_mex').length;
   const enCedisMEX = tarimasPI.filter(t => t.estatus === 'en_cedis_mex').length;
-  const tarimasEnAlmacen = enPlanta + enTransitoMTY + enCedisMTY + enTransitoMEX + enCedisMEX;
+  const embarcadas = tarimasPI.filter(t => ['embarcada','entregada'].includes(t.estatus)).length;
+  const tarimasEnAlmacenOPosterior = enPlanta + enTransitoMTY + enCedisMTY + enTransitoMEX + enCedisMEX + embarcadas;
   
-  if (tarimasPI.length > 0 && tarimasEnAlmacen === tarimasPI.length) {
+  if (todoEntregado) {
     fases[4].completada = true;
-  } else if (tarimasEnAlmacen > 0) {
+  } else if (tarimasPI.length > 0 && tarimasEnAlmacenOPosterior === tarimasPI.length) {
+    fases[4].completada = true;
+  } else if (tarimasEnAlmacenOPosterior > 0) {
     fases[4].en_curso = true;
   }
   
-  // Etiqueta dinámica según donde están la mayoría
-  if (tarimasEnAlmacen > 0) {
-    if (enCedisMEX === tarimasEnAlmacen) {
+  // Etiqueta dinámica según donde están la mayoría (de las que aún están en almacén físico)
+  const enAlmacenAhora = enPlanta + enTransitoMTY + enCedisMTY + enTransitoMEX + enCedisMEX;
+  if (todoEntregado) {
+    fases[4].label = 'Entregado';
+    fases[4].icon = '✅';
+  } else if (enAlmacenAhora > 0) {
+    if (enCedisMEX === enAlmacenAhora) {
       fases[4].label = 'CEDIS-MEX';
       fases[4].icon = '🇲🇽';
-    } else if (enCedisMTY === tarimasEnAlmacen) {
+    } else if (enCedisMTY === enAlmacenAhora) {
       fases[4].label = 'CEDIS-MTY';
       fases[4].icon = '📦';
-    } else if (enPlanta === tarimasEnAlmacen) {
+    } else if (enPlanta === enAlmacenAhora) {
       fases[4].label = 'Planta-MTY';
       fases[4].icon = '🏭';
     } else if (enTransitoMTY > 0 && enCedisMTY === 0 && enCedisMEX === 0) {
@@ -1724,19 +1772,13 @@ function calcularFasePI(p) {
       fases[4].label = '→ CEDIS-MEX';
       fases[4].icon = '🚚';
     } else {
-      // Mixto: mostrar el más avanzado
       if (enCedisMEX > 0) { fases[4].label = `Mixto → MEX`; fases[4].icon = '🇲🇽'; }
       else if (enCedisMTY > 0) { fases[4].label = `Mixto → MTY`; fases[4].icon = '📦'; }
       else { fases[4].label = `Distribuido`; fases[4].icon = '🔀'; }
     }
-  }
-  
-  // Embarque (OVs)
-  const ovsCompletas = ovs.filter(o => o.estatus === 'completada').length;
-  if (ovs.length > 0 && ovsCompletas === ovs.length) {
-    fases[5].completada = true;
-  } else if (ovs.length > 0) {
-    fases[5].en_curso = true;
+  } else if (embarcadas > 0 && embarcadas < tarimasPI.length) {
+    fases[4].label = 'Parc. embarcado';
+    fases[4].icon = '🚛';
   }
   
   // Calcular porcentaje y fase actual
@@ -3216,68 +3258,117 @@ window.toggleDetalleStock = (key) => {
 // MIGRACIÓN: OVs legacy → nuevo flujo Embarques
 // ============================================================
 // ============================================================
-// PDF: REMISIÓN Y LISTA DE CARGA
+// PDF: REMISIÓN Y LISTA DE CARGA — DISEÑO CORPORATIVO NEWPACK
 // ============================================================
 
-// Helper común: header con datos de empresa
-function _pdfHeaderEmpresa(doc, titulo, folioDoc) {
-  // Encabezado con verde NewPack
-  doc.setFillColor(63, 211, 75); // #3fd34b verde corporativo
-  doc.rect(0, 0, 210, 32, 'F');
-  
-  // Logo (si está disponible)
-  if (DATOS_EMPRESA.logo_url) {
-    try {
-      doc.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 8, 5, 35, 22);
-    } catch(e) { /* si falla, sigue sin logo */ }
-  }
-  
-  // Razón social en negro/blanco según fondo
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(13);
-  doc.setFont('helvetica', 'bold');
-  doc.text(DATOS_EMPRESA.razon_social, 50, 11);
-  
-  doc.setFontSize(7.5);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`RFC: ${DATOS_EMPRESA.rfc}  ·  Tel: ${DATOS_EMPRESA.telefono}`, 50, 17);
-  doc.text(DATOS_EMPRESA.email, 50, 22);
-  // Dirección puede ser larga, dividir si necesario
-  const dirSplit = doc.splitTextToSize(DATOS_EMPRESA.direccion, 95);
-  doc.text(dirSplit, 50, 27);
-  
-  // Folio del documento (esquina derecha) - color azul corporativo
-  doc.setFillColor(56, 182, 255); // #38b6ff azul celeste
-  doc.roundedRect(150, 5, 55, 22, 2, 2, 'F');
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'bold');
-  doc.text(titulo, 177, 11, { align: 'center' });
-  doc.setFontSize(13);
-  doc.text(folioDoc, 177, 19, { align: 'center' });
-  doc.setFontSize(7);
-  doc.setFont('helvetica', 'normal');
-  doc.text(new Date().toLocaleDateString('es-MX'), 177, 24, { align: 'center' });
-  
-  // Reset color texto
-  doc.setTextColor(0, 0, 0);
-  
-  return 38; // Y donde sigue el contenido
+// COLORES CORPORATIVOS (RGB para jsPDF)
+const _COL_VERDE = [63, 211, 75];     // #3fd34b
+const _COL_AZUL  = [56, 182, 255];    // #38b6ff
+const _COL_AZUL_OSCURO = [14, 116, 165]; // azul más oscuro para textos
+const _COL_GRIS_TEXTO = [55, 65, 81];
+const _COL_GRIS_CLARO = [243, 244, 246];
+const _COL_GRIS_MEDIO = [156, 163, 175];
+
+// Helper: Rectángulo con sombra
+function _pdfRectSombra(doc, x, y, w, h, fillRgb) {
+  // Sombra suave
+  doc.setFillColor(220, 220, 220);
+  doc.roundedRect(x + 0.4, y + 0.4, w, h, 1.5, 1.5, 'F');
+  // Rectángulo principal
+  doc.setFillColor(fillRgb[0], fillRgb[1], fillRgb[2]);
+  doc.roundedRect(x, y, w, h, 1.5, 1.5, 'F');
 }
 
-// Helper: pie con numeración página
+// Header corporativo elegante
+function _pdfHeaderEmpresa(doc, tituloDoc, folioDoc) {
+  // Banda superior verde gruesa
+  doc.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+  doc.rect(0, 0, 210, 4, 'F');
+  
+  // Banda blanca con datos
+  doc.setFillColor(255, 255, 255);
+  doc.rect(0, 4, 210, 38, 'F');
+  
+  // Logo (más grande y visible)
+  if (DATOS_EMPRESA.logo_url) {
+    try {
+      doc.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 12, 8, 42, 26);
+    } catch(e) { /* sigue sin logo */ }
+  }
+  
+  // Datos empresa lado derecho del logo
+  doc.setTextColor(_COL_GRIS_TEXTO[0], _COL_GRIS_TEXTO[1], _COL_GRIS_TEXTO[2]);
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'bold');
+  doc.text(DATOS_EMPRESA.razon_social, 60, 13);
+  
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.text(`RFC: ${DATOS_EMPRESA.rfc}`, 60, 18);
+  doc.text(`Tel: ${DATOS_EMPRESA.telefono}  ·  ${DATOS_EMPRESA.email}`, 60, 22);
+  const dirSplit = doc.splitTextToSize(DATOS_EMPRESA.direccion, 87);
+  doc.text(dirSplit, 60, 26);
+  
+  // Recuadro del documento (esquina derecha) - verde
+  _pdfRectSombra(doc, 152, 10, 50, 28, _COL_VERDE);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.text(tituloDoc.toUpperCase(), 177, 16, { align: 'center' });
+  
+  doc.setFontSize(15);
+  doc.text(folioDoc, 177, 26, { align: 'center' });
+  
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.text(new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }), 177, 33, { align: 'center' });
+  
+  // Banda inferior azul delgada (decoración)
+  doc.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+  doc.rect(0, 42, 210, 2, 'F');
+  
+  doc.setTextColor(0, 0, 0);
+  return 50; // Y donde sigue
+}
+
+// Pie de página
 function _pdfPiePagina(doc) {
   const pageCount = doc.internal.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
-    doc.setFontSize(8);
-    doc.setTextColor(120, 120, 120);
-    doc.text(`Página ${i} de ${pageCount}`, 105, 290, { align: 'center' });
-    doc.text(`Generado: ${new Date().toLocaleString('es-MX')}`, 14, 290);
-    doc.text(`Sistema NewPack ERP`, 196, 290, { align: 'right' });
+    
+    // Línea decorativa verde
+    doc.setDrawColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    doc.setLineWidth(0.5);
+    doc.line(14, 283, 196, 283);
+    
+    doc.setFontSize(7);
+    doc.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Generado: ${new Date().toLocaleString('es-MX')}`, 14, 288);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`NewPack ERP`, 105, 288, { align: 'center' });
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Página ${i} de ${pageCount}`, 196, 288, { align: 'right' });
   }
 }
 
+// Sección título estilizada
+function _pdfSeccionTitulo(doc, y, texto, color) {
+  const c = color || _COL_AZUL;
+  doc.setFillColor(c[0], c[1], c[2]);
+  doc.rect(14, y, 4, 6, 'F');
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(c[0], c[1], c[2]);
+  doc.text(texto, 21, y + 4.5);
+  doc.setTextColor(0, 0, 0);
+  return y + 8;
+}
+
+// ============================================================
+// REMISIÓN
+// ============================================================
 window.imprimirRemisionPDF = (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
   if (!ov) { toast('OV no encontrada', 'error'); return; }
@@ -3295,44 +3386,77 @@ window.imprimirRemisionPDF = (ovId) => {
   
   let y = _pdfHeaderEmpresa(docPDF, 'REMISIÓN', ov.remision || ov.folio);
   
-  // Título grande
-  docPDF.setFontSize(16);
+  // Título principal centrado
+  docPDF.setFontSize(20);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text('REMISIÓN DE EMBARQUE', 105, y + 5, { align: 'center' });
-  y += 12;
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('REMISIÓN DE EMBARQUE', 105, y + 4, { align: 'center' });
   
-  // Datos generales en 2 columnas
-  docPDF.setDrawColor(200, 200, 200);
-  docPDF.setLineWidth(0.3);
-  
+  // Subtítulo
   docPDF.setFontSize(8);
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFillColor(241, 245, 249);
-  docPDF.rect(14, y, 90, 28, 'F');
-  docPDF.rect(106, y, 90, 28, 'F');
-  
-  docPDF.text('CLIENTE', 16, y + 4);
-  docPDF.text('DATOS DEL DOCUMENTO', 108, y + 4);
-  
   docPDF.setFont('helvetica', 'normal');
-  docPDF.setFontSize(9);
-  docPDF.text(ov.cliente_nombre || '—', 16, y + 10);
+  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.text('Documento de salida de mercancía', 105, y + 9, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 16;
+  
+  // === SECCIÓN 1: CLIENTE Y DATOS ===
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
+  
+  // Bloque cliente
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 91, 28, 2, 2, 'F');
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(107, y, 89, 28, 2, 2, 'F');
+  
+  // Header bloques
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('CLIENTE', 17, y + 5);
+  docPDF.text('REFERENCIAS', 110, y + 5);
+  
+  // Cliente
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFontSize(10);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(ov.cliente_nombre || '—', 17, y + 11);
   docPDF.setFontSize(8);
-  docPDF.text(`Código: ${ov.cliente_codigo || '—'}`, 16, y + 15);
-  docPDF.text(`PI origen: ${ov.pedido_folio || '—'}`, 16, y + 20);
-  docPDF.text(`OV: ${ov.folio || '—'}`, 16, y + 25);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(`Código: ${ov.cliente_codigo || '—'}`, 17, y + 16);
+  docPDF.text(`PI origen: ${ov.pedido_folio || '—'}`, 17, y + 21);
+  docPDF.text(`OV: ${ov.folio || '—'}`, 17, y + 26);
   
-  docPDF.text(`Remisión: ${ov.remision || '—'}`, 108, y + 10);
-  docPDF.text(`Factura: ${ov.factura || '—'}`, 108, y + 15);
-  docPDF.text(`Fecha: ${ov.remision_at ? new Date(ov.remision_at.seconds*1000).toLocaleDateString('es-MX') : new Date().toLocaleDateString('es-MX')}`, 108, y + 20);
-  docPDF.text(`Almacén: ${ov.cedis || '—'}`, 108, y + 25);
+  // Referencias
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(`Remisión:`, 110, y + 11);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.remision || '—', 132, y + 11);
   
-  y += 32;
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(`Factura:`, 110, y + 16);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.factura || '—', 132, y + 16);
   
-  // Tabla de tarimas con autoTable
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(`Fecha:`, 110, y + 21);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.remision_at ? new Date(ov.remision_at.seconds*1000).toLocaleDateString('es-MX') : new Date().toLocaleDateString('es-MX'), 132, y + 21);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(`Almacén:`, 110, y + 26);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.cedis || '—', 132, y + 26);
+  
+  y += 33;
+  
+  // === SECCIÓN 2: DETALLE TARIMAS ===
+  y = _pdfSeccionTitulo(docPDF, y, 'DETALLE DEL EMBARQUE', _COL_AZUL);
+  
   docPDF.autoTable({
     startY: y,
-    head: [['#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cantidad', 'UM', 'Kg netos']],
+    head: [['#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cant.', 'UM', 'Kg netos']],
     body: tarimas.map((t, i) => [
       i + 1,
       `T${String(t.numero_tarima || '').padStart(2, '0')}`,
@@ -3343,77 +3467,123 @@ window.imprimirRemisionPDF = (ovId) => {
       (t.um || '').toUpperCase(),
       fmtNum(t.peso_neto_kg || t.peso_neto || 0)
     ]),
-    foot: [['', '', '', '', 'TOTALES', fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg)]],
-    theme: 'grid',
-    headStyles: { fillColor: [56, 182, 255], textColor: 255, fontSize: 8, fontStyle: 'bold' },
-    footStyles: { fillColor: [220, 252, 231], textColor: [22, 101, 52], fontSize: 9, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 8 },
+    foot: [['', '', '', '', { content: 'TOTALES', styles: { halign: 'right' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg)]],
+    theme: 'striped',
+    headStyles: { 
+      fillColor: _COL_AZUL, 
+      textColor: 255, 
+      fontSize: 9, 
+      fontStyle: 'bold',
+      halign: 'center',
+      cellPadding: 3
+    },
+    footStyles: { 
+      fillColor: _COL_VERDE, 
+      textColor: 255, 
+      fontSize: 10, 
+      fontStyle: 'bold' 
+    },
+    bodyStyles: { 
+      fontSize: 9,
+      cellPadding: 2.5
+    },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 15, halign: 'center', fontStyle: 'bold' },
-      2: { cellWidth: 28 },
+      1: { cellWidth: 16, halign: 'center', fontStyle: 'bold' },
+      2: { cellWidth: 30 },
       3: { cellWidth: 22 },
-      4: { cellWidth: 50 },
+      4: { cellWidth: 48 },
       5: { cellWidth: 22, halign: 'right' },
       6: { cellWidth: 12, halign: 'center' },
-      7: { cellWidth: 22, halign: 'right' }
+      7: { cellWidth: 24, halign: 'right' }
     },
     margin: { left: 14, right: 14 }
   });
   
-  y = docPDF.lastAutoTable.finalY + 6;
+  y = docPDF.lastAutoTable.finalY + 8;
   
-  // Datos transportista
-  docPDF.setFillColor(241, 245, 249);
-  docPDF.rect(14, y, 182, 22, 'F');
+  // === SECCIÓN 3: TRANSPORTE ===
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE TRANSPORTE', _COL_AZUL);
+  
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 182, 22, 2, 2, 'F');
+  
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text('DATOS DE TRANSPORTE', 16, y + 4);
-  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('TRANSPORTISTA', 17, y + 5);
+  docPDF.text('CONDUCTOR', 75, y + 5);
+  docPDF.text('PLACAS', 130, y + 5);
+  docPDF.text('FECHA SALIDA', 165, y + 5);
+  
+  docPDF.setTextColor(0, 0, 0);
   docPDF.setFontSize(9);
-  docPDF.text(`Transportista: ${ov.transportista || '—'}`, 16, y + 10);
-  docPDF.text(`Conductor: ${ov.conductor || '—'}`, 16, y + 15);
-  docPDF.text(`Placas: ${ov.placas || '—'}`, 16, y + 20);
-  docPDF.text(`Fecha de salida: ${ov.fecha_salida_programada || '—'}`, 110, y + 10);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.transportista || '—', 17, y + 11);
+  docPDF.text(ov.conductor || '—', 75, y + 11);
+  docPDF.text(ov.placas || '—', 130, y + 11);
+  docPDF.text(ov.fecha_salida_programada || '—', 165, y + 11);
+  
   if (ov.observaciones_embarque) {
+    docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(8);
-    docPDF.text(`Obs: ${ov.observaciones_embarque}`.substring(0, 80), 110, y + 15);
+    docPDF.text('Observaciones:', 17, y + 17);
+    docPDF.setFont('helvetica', 'normal');
+    const obsSplit = docPDF.splitTextToSize(ov.observaciones_embarque, 165);
+    docPDF.text(obsSplit, 42, y + 17);
   }
   
-  y += 28;
+  y += 30;
   
-  // Espacios para firmas
+  // === SECCIÓN 4: FIRMAS ===
+  y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS DE CONFORMIDAD', _COL_AZUL);
+  
+  // Cajas de firma
+  docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.setLineWidth(0.3);
+  docPDF.roundedRect(14, y, 88, 30, 2, 2);
+  docPDF.roundedRect(108, y, 88, 30, 2, 2);
+  
+  // Línea para firma
   docPDF.setDrawColor(0, 0, 0);
-  docPDF.setLineWidth(0.4);
-  docPDF.line(20, y + 25, 90, y + 25);
-  docPDF.line(120, y + 25, 190, y + 25);
+  docPDF.setLineWidth(0.5);
+  docPDF.line(20, y + 18, 96, y + 18);
+  docPDF.line(114, y + 18, 190, y + 18);
   
-  docPDF.setFontSize(8);
+  docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text('ENTREGA (NewPack)', 55, y + 30, { align: 'center' });
-  docPDF.text('RECIBE CONFORME (Cliente)', 155, y + 30, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.text('ENTREGA — NewPack', 58, y + 23, { align: 'center' });
+  docPDF.text('RECIBE CONFORME — Cliente', 152, y + 23, { align: 'center' });
   
   docPDF.setFont('helvetica', 'normal');
   docPDF.setFontSize(7);
-  docPDF.text('Nombre y firma', 55, y + 34, { align: 'center' });
-  docPDF.text('Nombre, firma, fecha y hora', 155, y + 34, { align: 'center' });
+  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.text('Nombre y firma', 58, y + 27, { align: 'center' });
+  docPDF.text('Nombre, firma, fecha y hora de recepción', 152, y + 27, { align: 'center' });
   
-  // Notas pie
-  y += 42;
-  docPDF.setFontSize(7);
-  docPDF.setTextColor(100, 100, 100);
-  docPDF.text('• Este documento ampara la entrega física del material descrito.', 14, y);
-  docPDF.text('• Cualquier inconformidad debe ser reportada al momento de recibir.', 14, y + 4);
-  docPDF.text('• Conserve esta remisión para futuros reclamos o referencias.', 14, y + 8);
+  y += 36;
+  
+  // Notas finales
+  if (y < 270) {
+    docPDF.setFontSize(7);
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text('• Este documento ampara la entrega física del material descrito.', 14, y + 2);
+    docPDF.text('• Cualquier inconformidad debe ser reportada al momento de recibir.', 14, y + 6);
+    docPDF.text('• Conserve esta remisión para futuros reclamos o referencias.', 14, y + 10);
+  }
   
   _pdfPiePagina(docPDF);
   
-  // Descargar
   const filename = `Remision_${ov.remision || ov.folio}_${ov.cliente_codigo || ''}.pdf`;
   docPDF.save(filename);
   toast(`📄 Remisión descargada: ${filename}`);
 };
 
+// ============================================================
+// LISTA DE CARGA
+// ============================================================
 window.imprimirListaCargaPDF = (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
   if (!ov) { toast('OV no encontrada', 'error'); return; }
@@ -3431,33 +3601,72 @@ window.imprimirListaCargaPDF = (ovId) => {
   
   let y = _pdfHeaderEmpresa(docPDF, 'LISTA CARGA', ov.folio);
   
-  docPDF.setFontSize(16);
+  // Título
+  docPDF.setFontSize(20);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text('LISTA DE CARGA', 105, y + 5, { align: 'center' });
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('LISTA DE CARGA', 105, y + 4, { align: 'center' });
   
-  docPDF.setFontSize(10);
-  docPDF.setTextColor(80, 80, 80);
-  docPDF.text(`${ov.cedis || '—'} → ${ov.cliente_nombre || '—'}`, 105, y + 11, { align: 'center' });
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.text(`Documento operativo para verificación de embarque`, 105, y + 9, { align: 'center' });
   docPDF.setTextColor(0, 0, 0);
-  y += 18;
+  y += 16;
   
-  // Datos generales
-  docPDF.setFillColor(254, 243, 199);
-  docPDF.rect(14, y, 182, 16, 'F');
+  // Banner naranja con ruta
+  docPDF.setFillColor(254, 215, 170);
+  docPDF.roundedRect(14, y, 182, 14, 2, 2, 'F');
+  docPDF.setFontSize(11);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(154, 52, 18);
+  docPDF.text(`${ov.cedis || '—'}  →  ${ov.cliente_nombre || '—'}`, 105, y + 9, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 19;
+  
+  // Datos generales en grid
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
+  
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 182, 22, 2, 2, 'F');
+  
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('OV', 17, y + 5);
+  docPDF.text('PI', 65, y + 5);
+  docPDF.text('CÓDIGO CLIENTE', 110, y + 5);
+  docPDF.text('FECHA', 165, y + 5);
+  
+  docPDF.text('REMISIÓN', 17, y + 14);
+  docPDF.text('FACTURA', 65, y + 14);
+  docPDF.text('TOTAL TARIMAS', 110, y + 14);
+  docPDF.text('TOTAL KG', 165, y + 14);
+  
+  docPDF.setTextColor(0, 0, 0);
   docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text(`OV: ${ov.folio}`, 18, y + 5);
-  docPDF.text(`PI: ${ov.pedido_folio || '—'}`, 70, y + 5);
-  docPDF.text(`Cliente: ${ov.cliente_nombre} (${ov.cliente_codigo})`, 18, y + 11);
-  docPDF.text(`Remisión: ${ov.remision || 'PENDIENTE'}`, 130, y + 5);
-  docPDF.text(`Factura: ${ov.factura || 'PENDIENTE'}`, 130, y + 11);
+  docPDF.text(ov.folio, 17, y + 9);
+  docPDF.text(ov.pedido_folio || '—', 65, y + 9);
+  docPDF.text(ov.cliente_codigo || '—', 110, y + 9);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(new Date().toLocaleDateString('es-MX'), 165, y + 9);
   
-  y += 22;
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.remision || 'Pendiente', 17, y + 18);
+  docPDF.text(ov.factura || 'Pendiente', 65, y + 18);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(`${tarimas.length} tarima(s)`, 110, y + 18);
+  docPDF.text(`${fmtNum(totalKg)} kg`, 165, y + 18);
   
-  // Tabla con checkbox para cargar
+  y += 28;
+  
+  // Tabla con checkboxes
+  y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS A CARGAR — VERIFICAR Y MARCAR', _COL_AZUL);
+  
   docPDF.autoTable({
     startY: y,
-    head: [['☐', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cantidad', 'UM', 'Kg', 'Verificó']],
+    head: [['☐', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cant.', 'UM', 'Kg', 'Verificó']],
     body: tarimas.map((t, i) => [
       '☐',
       i + 1,
@@ -3470,11 +3679,28 @@ window.imprimirListaCargaPDF = (ovId) => {
       fmtNum(t.peso_neto_kg || t.peso_neto || 0),
       ''
     ]),
-    foot: [['', '', '', '', '', 'TOTALES', fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg), '']],
-    theme: 'grid',
-    headStyles: { fillColor: [245, 158, 11], textColor: 255, fontSize: 9, fontStyle: 'bold' },
-    footStyles: { fillColor: [254, 243, 199], textColor: [120, 53, 15], fontSize: 9, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 9, minCellHeight: 8 },
+    foot: [['', '', '', '', '', { content: 'TOTALES', styles: { halign: 'right' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg), '']],
+    theme: 'striped',
+    headStyles: { 
+      fillColor: _COL_AZUL, 
+      textColor: 255, 
+      fontSize: 9, 
+      fontStyle: 'bold',
+      halign: 'center',
+      cellPadding: 3
+    },
+    footStyles: { 
+      fillColor: _COL_VERDE, 
+      textColor: 255, 
+      fontSize: 10, 
+      fontStyle: 'bold' 
+    },
+    bodyStyles: { 
+      fontSize: 9, 
+      minCellHeight: 9,
+      cellPadding: 2.5
+    },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
       0: { cellWidth: 8, halign: 'center', fontSize: 14 },
       1: { cellWidth: 8, halign: 'center' },
@@ -3490,19 +3716,19 @@ window.imprimirListaCargaPDF = (ovId) => {
     margin: { left: 14, right: 14 }
   });
   
-  y = docPDF.lastAutoTable.finalY + 6;
+  y = docPDF.lastAutoTable.finalY + 8;
   
   // Verificación de carga
-  docPDF.setFillColor(241, 245, 249);
-  docPDF.rect(14, y, 182, 28, 'F');
-  docPDF.setFontSize(9);
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.text('VERIFICACIÓN DE CARGA', 18, y + 5);
+  y = _pdfSeccionTitulo(docPDF, y, 'CHECKLIST DE VERIFICACIÓN', _COL_AZUL);
   
-  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFillColor(254, 249, 195);
+  docPDF.roundedRect(14, y, 182, 22, 2, 2, 'F');
+  
   docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(0, 0, 0);
   const checks = [
-    'Tarimas verificadas físicamente contra esta lista',
+    'Tarimas verificadas físicamente contra lista',
     'Tarimas en buen estado (sin daño visible)',
     'Cargadas en vehículo correctamente',
     'Sello de seguridad en buen estado'
@@ -3510,47 +3736,70 @@ window.imprimirListaCargaPDF = (ovId) => {
   checks.forEach((c, i) => {
     const col = i < 2 ? 18 : 105;
     const row = i % 2;
-    docPDF.text(`☐  ${c}`, col, y + 12 + (row * 6));
+    docPDF.text(`☐  ${c}`, col, y + 7 + (row * 6));
   });
   
-  y += 34;
+  y += 28;
   
   // Datos transporte
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE TRANSPORTE', _COL_AZUL);
+  
   docPDF.setFillColor(220, 252, 231);
-  docPDF.rect(14, y, 182, 14, 'F');
-  docPDF.setFontSize(9);
+  docPDF.roundedRect(14, y, 182, 14, 2, 2, 'F');
+  
+  docPDF.setFontSize(7);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text('TRANSPORTE', 18, y + 5);
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('TRANSPORTISTA', 17, y + 4);
+  docPDF.text('PLACAS', 90, y + 4);
+  docPDF.text('CONDUCTOR', 140, y + 4);
+  
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'normal');
-  docPDF.text(`Transportista: ${ov.transportista || '—'}`, 18, y + 10);
-  docPDF.text(`Placas: ${ov.placas || '—'}`, 100, y + 10);
-  docPDF.text(`Conductor: ${ov.conductor || '—'}`, 145, y + 10);
+  docPDF.text(ov.transportista || '—', 17, y + 10);
+  docPDF.text(ov.placas || '—', 90, y + 10);
+  docPDF.text(ov.conductor || '—', 140, y + 10);
   
   y += 20;
   
   // Firmas
-  docPDF.setDrawColor(0, 0, 0);
-  docPDF.setLineWidth(0.4);
-  docPDF.line(18, y + 18, 80, y + 18);
-  docPDF.line(95, y + 18, 145, y + 18);
-  docPDF.line(155, y + 18, 195, y + 18);
+  y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS', _COL_AZUL);
   
-  docPDF.setFontSize(8);
+  // 3 cajas de firma con borde
+  docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.setLineWidth(0.3);
+  docPDF.roundedRect(14, y, 58, 28, 2, 2);
+  docPDF.roundedRect(76, y, 58, 28, 2, 2);
+  docPDF.roundedRect(138, y, 58, 28, 2, 2);
+  
+  // Líneas para firmas
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.setLineWidth(0.5);
+  docPDF.line(18, y + 16, 68, y + 16);
+  docPDF.line(80, y + 16, 130, y + 16);
+  docPDF.line(142, y + 16, 192, y + 16);
+  
+  docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text('CARGADOR', 49, y + 23, { align: 'center' });
-  docPDF.text('VERIFICÓ (CEDIS)', 120, y + 23, { align: 'center' });
-  docPDF.text('CONDUCTOR', 175, y + 23, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.text('CARGADOR', 43, y + 21, { align: 'center' });
+  docPDF.text('VERIFICÓ — CEDIS', 105, y + 21, { align: 'center' });
+  docPDF.text('CONDUCTOR', 167, y + 21, { align: 'center' });
   
   docPDF.setFont('helvetica', 'normal');
   docPDF.setFontSize(7);
-  docPDF.text('Nombre y firma', 49, y + 27, { align: 'center' });
-  docPDF.text('Nombre y firma', 120, y + 27, { align: 'center' });
-  docPDF.text('Nombre y firma', 175, y + 27, { align: 'center' });
+  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.text('Nombre y firma', 43, y + 25, { align: 'center' });
+  docPDF.text('Nombre y firma', 105, y + 25, { align: 'center' });
+  docPDF.text('Nombre y firma', 167, y + 25, { align: 'center' });
   
-  y += 34;
-  docPDF.setFontSize(8);
-  docPDF.text(`Hora salida: __________________`, 18, y);
-  docPDF.text(`Sello de seguridad N°: __________________`, 110, y);
+  y += 33;
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.text(`Hora salida: ___________________`, 14, y);
+  docPDF.text(`Sello de seguridad N°: ___________________`, 110, y);
   
   _pdfPiePagina(docPDF);
   
