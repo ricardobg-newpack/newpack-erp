@@ -592,6 +592,9 @@ function renderApp() {
         ${esCS || esCEDMTY || esCEDMEX ? `
           <button class="nav-item ${state.vista === 'embarques' ? 'active' : ''}" data-vista="embarques">🚚 Embarques (OV)</button>
         ` : ''}
+        ${esCS || esCEDMTY || esCEDMEX || esALP ? `
+          <button class="nav-item ${state.vista === 'stock_producto' ? 'active' : ''}" data-vista="stock_producto">📊 Stock CEDIS</button>
+        ` : ''}
         
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
@@ -632,7 +635,8 @@ function tituloVista() {
     almacen_planta: '🏭 Almacén Planta-MTY',
     oti_planta: '🚚 OTI Planta → CEDIS-MTY',
     cedis_mty: '📦 CEDIS-MTY',
-    embarques: '🚚 Embarques (Órdenes de Venta)'
+    embarques: '🚚 Embarques (Órdenes de Venta)',
+    stock_producto: '📊 Stock por Producto en CEDIS'
   })[state.vista] || '';
 }
 
@@ -650,6 +654,7 @@ function renderVista() {
   if (v === 'oti_planta') return renderOTIPlanta();
   if (v === 'cedis_mty') return renderCedisMTY();
   if (v === 'embarques') return renderEmbarques();
+  if (v === 'stock_producto') return renderStockProducto();
   return '';
 }
 
@@ -2907,6 +2912,273 @@ function renderTarjetaOV(o, subTab) {
 }
 
 window.setSubTabEmbarques = (tab) => { state.subTabEmbarques = tab; render(); };
+
+// ============================================================
+// MIGRACIÓN: OVs legacy → nuevo flujo Embarques
+// ============================================================
+// ============================================================
+// VISTA: STOCK POR PRODUCTO EN CEDIS (CS/KAM/CEDMTY/CEDMEX/ALP/CEO)
+// ============================================================
+function renderStockProducto() {
+  const filtro = (state.filtros.stock_producto || '').toLowerCase();
+  const filtroCli = state.filtros.stock_producto_cliente || '';
+  const filtroAlm = state.filtros.stock_producto_almacen || '';
+  
+  // Tarimas en stock (cualquier almacén con material)
+  let tarimasStock = state.tarimas.filter(t => 
+    ['en_almacen_planta','en_cedis_mty','en_cedis_mex','en_transito_cedis_mty','en_transito_cedis_mex'].includes(t.estatus)
+  );
+  
+  // Aplicar filtros
+  if (filtroCli) tarimasStock = tarimasStock.filter(t => t.cliente_codigo === filtroCli);
+  if (filtroAlm) {
+    tarimasStock = tarimasStock.filter(t => {
+      const almReal = t.almacen_actual || (t.estatus === 'en_almacen_planta' ? 'PLANTA-MTY' : '');
+      return almReal === filtroAlm;
+    });
+  }
+  
+  // Agrupar por producto + cliente (clave única)
+  const agrupado = {};
+  tarimasStock.forEach(t => {
+    const key = `${t.producto_codigo}|${t.cliente_codigo}`;
+    if (!agrupado[key]) {
+      agrupado[key] = {
+        producto_codigo: t.producto_codigo,
+        descripcion: t.descripcion || '',
+        cliente_codigo: t.cliente_codigo,
+        cliente_nombre: t.cliente_nombre,
+        um: t.um,
+        tarimas: [],
+        pedidos: new Set()
+      };
+    }
+    agrupado[key].tarimas.push(t);
+    if (t.pedido_folio) agrupado[key].pedidos.add(t.pedido_folio);
+  });
+  
+  // Filtrar por búsqueda libre
+  let productos = Object.values(agrupado);
+  if (filtro) {
+    productos = productos.filter(p => 
+      (p.producto_codigo + ' ' + p.descripcion + ' ' + p.cliente_nombre + ' ' + p.cliente_codigo + ' ' + Array.from(p.pedidos).join(' '))
+      .toLowerCase().includes(filtro)
+    );
+  }
+  
+  // Ordenar por cliente y producto
+  productos.sort((a, b) => {
+    const cmpCli = (a.cliente_nombre || '').localeCompare(b.cliente_nombre || '');
+    if (cmpCli !== 0) return cmpCli;
+    return (a.producto_codigo || '').localeCompare(b.producto_codigo || '');
+  });
+  
+  // Stats agregados
+  const totalTarimas = tarimasStock.length;
+  const totalKg = tarimasStock.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const clientesUnicos = new Set(tarimasStock.map(t => t.cliente_codigo)).size;
+  const productosUnicos = productos.length;
+  
+  // Lista de clientes con stock
+  const clientesConStock = [...new Set(tarimasStock.map(t => t.cliente_codigo).filter(Boolean))]
+    .map(cod => state.clientes.find(c => c.codigo === cod))
+    .filter(Boolean)
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  
+  return `
+    <!-- Búsqueda y filtros -->
+    <div style="padding:14px;background:#fff;border:2px solid #3b82f6;border-radius:14px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <span style="font-size:20px;">🔍</span>
+        <input class="input" id="filtro-stock-producto" style="flex:1;padding:10px;font-size:14px;font-weight:600;" placeholder="Buscar código, descripción, cliente, PI..." value="${filtro}" autocomplete="off" />
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select class="input" id="filtro-stock-producto-cliente" style="max-width:280px;font-size:13px;">
+          <option value="">📋 Todos los clientes (${clientesConStock.length})</option>
+          ${clientesConStock.map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} - ${c.nombre}</option>`).join('')}
+        </select>
+        <select class="input" id="filtro-stock-producto-almacen" style="max-width:200px;font-size:13px;">
+          <option value="">🏭 Todos los almacenes</option>
+          <option value="PLANTA-MTY" ${filtroAlm === 'PLANTA-MTY' ? 'selected' : ''}>🏭 Planta-MTY</option>
+          <option value="CEDIS-MTY" ${filtroAlm === 'CEDIS-MTY' ? 'selected' : ''}>📦 CEDIS-MTY</option>
+          <option value="CEDIS-MEX" ${filtroAlm === 'CEDIS-MEX' ? 'selected' : ''}>🇲🇽 CEDIS-MEX</option>
+          <option value="EN_TRANSITO" ${filtroAlm === 'EN_TRANSITO' ? 'selected' : ''}>🚚 En tránsito</option>
+        </select>
+        <span style="font-size:13px;color:#64748b;font-weight:600;margin-left:auto;">📊 ${productosUnicos} producto(s) · ${totalTarimas} tarima(s)</span>
+      </div>
+    </div>
+    
+    <!-- Stats -->
+    <div class="grid-stats" style="margin-bottom:14px;">
+      <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-value">${productosUnicos}</div><div class="stat-label">Productos en stock</div></div>
+      <div class="stat-card"><div class="stat-icon">🎯</div><div class="stat-value">${totalTarimas}</div><div class="stat-label">Tarimas totales</div></div>
+      <div class="stat-card"><div class="stat-icon">⚖️</div><div class="stat-value">${fmtNum(totalKg)}</div><div class="stat-label">Kg en stock</div></div>
+      <div class="stat-card"><div class="stat-icon">${ICONS.users}</div><div class="stat-value">${clientesUnicos}</div><div class="stat-label">Clientes</div></div>
+    </div>
+    
+    ${productos.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📭</div>
+        <div style="font-weight:700;color:#475569;">Sin stock disponible</div>
+        <div style="font-size:12px;margin-top:6px;">No hay productos con tarimas en almacenes con los filtros actuales.</div>
+      </div>
+    ` : productos.map(renderTarjetaStockProducto).join('')}
+  `;
+}
+
+function renderTarjetaStockProducto(p) {
+  // Subdivision por almacén
+  const planta = p.tarimas.filter(t => t.estatus === 'en_almacen_planta');
+  const transitoMTY = p.tarimas.filter(t => t.estatus === 'en_transito_cedis_mty');
+  const cedisMTY = p.tarimas.filter(t => t.estatus === 'en_cedis_mty');
+  const transitoMEX = p.tarimas.filter(t => t.estatus === 'en_transito_cedis_mex');
+  const cedisMEX = p.tarimas.filter(t => t.estatus === 'en_cedis_mex');
+  
+  // Disponible vs asignada a OV
+  const asignadasOV = p.tarimas.filter(t => t.ov_id || t.ov_folio);
+  const disponibles = p.tarimas.filter(t => !t.ov_id && !t.ov_folio);
+  
+  const totalCant = p.tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const totalKg = p.tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const cantDisp = disponibles.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  const cantAsig = asignadasOV.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  
+  // Color según disponibilidad
+  const pctDisp = totalCant > 0 ? Math.round((cantDisp / totalCant) * 100) : 0;
+  const colorBorder = pctDisp > 50 ? '#16a34a' : (pctDisp > 0 ? '#f59e0b' : '#dc2626');
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${colorBorder};margin-bottom:12px;">
+      <!-- HEADER: Producto + Cliente -->
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;background:${colorBorder}11;">
+        <div style="flex:1;min-width:280px;">
+          <div class="text-mono" style="font-size:14px;font-weight:800;color:#1e293b;">${p.producto_codigo}</div>
+          ${p.descripcion ? `<div style="font-size:12px;color:#475569;margin-top:2px;">${p.descripcion}</div>` : ''}
+          <div style="font-size:12px;color:#64748b;margin-top:6px;">
+            ${ICONS.users} <strong>${p.cliente_nombre}</strong> <span style="color:#94a3b8;">(${p.cliente_codigo})</span>
+          </div>
+          ${p.pedidos.size > 0 ? `
+            <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">
+              <span style="font-size:10px;color:#64748b;">Origen:</span>
+              ${Array.from(p.pedidos).map(pi => `<span class="text-mono" style="background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">${pi}</span>`).join('')}
+            </div>
+          ` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Stock total</div>
+          <div style="font-size:22px;font-weight:800;color:${colorBorder};">${fmtCantidadUM(totalCant, p.um)}</div>
+          <div style="font-size:11px;color:#64748b;">${p.tarimas.length} tarima(s) · ${fmtNum(totalKg)} kg</div>
+        </div>
+      </div>
+      
+      <!-- DESGLOSE POR ALMACÉN -->
+      <div style="padding:12px 18px;border-top:1px solid #e2e8f0;display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:8px;">
+        ${planta.length > 0 ? `
+          <div style="padding:8px 10px;background:#e0e7ff;border-radius:8px;text-align:center;">
+            <div style="font-size:10px;color:#4338ca;font-weight:700;">🏭 PLANTA-MTY</div>
+            <div style="font-size:16px;font-weight:800;color:#4338ca;">${fmtCantidadUM(planta.reduce((s,t)=>s+(Number(t.cantidad)||0),0), p.um)}</div>
+            <div style="font-size:10px;color:#64748b;">${planta.length} tar · ${fmtNum(planta.reduce((s,t)=>s+(Number(t.peso_neto_kg||t.peso_neto)||0),0))} kg</div>
+          </div>
+        ` : ''}
+        ${transitoMTY.length > 0 ? `
+          <div style="padding:8px 10px;background:#fde68a;border-radius:8px;text-align:center;">
+            <div style="font-size:10px;color:#92400e;font-weight:700;">🚚 → CEDIS-MTY</div>
+            <div style="font-size:16px;font-weight:800;color:#92400e;">${fmtCantidadUM(transitoMTY.reduce((s,t)=>s+(Number(t.cantidad)||0),0), p.um)}</div>
+            <div style="font-size:10px;color:#64748b;">${transitoMTY.length} tar · ${fmtNum(transitoMTY.reduce((s,t)=>s+(Number(t.peso_neto_kg||t.peso_neto)||0),0))} kg</div>
+          </div>
+        ` : ''}
+        ${cedisMTY.length > 0 ? `
+          <div style="padding:8px 10px;background:#dbeafe;border-radius:8px;text-align:center;">
+            <div style="font-size:10px;color:#1e40af;font-weight:700;">📦 CEDIS-MTY</div>
+            <div style="font-size:16px;font-weight:800;color:#1e40af;">${fmtCantidadUM(cedisMTY.reduce((s,t)=>s+(Number(t.cantidad)||0),0), p.um)}</div>
+            <div style="font-size:10px;color:#64748b;">${cedisMTY.length} tar · ${fmtNum(cedisMTY.reduce((s,t)=>s+(Number(t.peso_neto_kg||t.peso_neto)||0),0))} kg</div>
+          </div>
+        ` : ''}
+        ${transitoMEX.length > 0 ? `
+          <div style="padding:8px 10px;background:#fde68a;border-radius:8px;text-align:center;">
+            <div style="font-size:10px;color:#92400e;font-weight:700;">🚚 → CEDIS-MEX</div>
+            <div style="font-size:16px;font-weight:800;color:#92400e;">${fmtCantidadUM(transitoMEX.reduce((s,t)=>s+(Number(t.cantidad)||0),0), p.um)}</div>
+            <div style="font-size:10px;color:#64748b;">${transitoMEX.length} tar · ${fmtNum(transitoMEX.reduce((s,t)=>s+(Number(t.peso_neto_kg||t.peso_neto)||0),0))} kg</div>
+          </div>
+        ` : ''}
+        ${cedisMEX.length > 0 ? `
+          <div style="padding:8px 10px;background:#bbf7d0;border-radius:8px;text-align:center;">
+            <div style="font-size:10px;color:#166534;font-weight:700;">🇲🇽 CEDIS-MEX</div>
+            <div style="font-size:16px;font-weight:800;color:#166534;">${fmtCantidadUM(cedisMEX.reduce((s,t)=>s+(Number(t.cantidad)||0),0), p.um)}</div>
+            <div style="font-size:10px;color:#64748b;">${cedisMEX.length} tar · ${fmtNum(cedisMEX.reduce((s,t)=>s+(Number(t.peso_neto_kg||t.peso_neto)||0),0))} kg</div>
+          </div>
+        ` : ''}
+      </div>
+      
+      <!-- DISPONIBLE vs ASIGNADO -->
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;background:#f8fafc;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+        <div style="flex:1;min-width:140px;">
+          <div style="font-size:10px;color:#16a34a;font-weight:700;text-transform:uppercase;">✓ Disponible para OV</div>
+          <div style="font-size:18px;font-weight:800;color:#16a34a;">${fmtCantidadUM(cantDisp, p.um)}</div>
+          <div style="font-size:10px;color:#64748b;">${disponibles.length} tarima(s) libres</div>
+        </div>
+        ${asignadasOV.length > 0 ? `
+          <div style="flex:1;min-width:140px;">
+            <div style="font-size:10px;color:#f59e0b;font-weight:700;text-transform:uppercase;">⚠ Asignado a OV</div>
+            <div style="font-size:18px;font-weight:800;color:#f59e0b;">${fmtCantidadUM(cantAsig, p.um)}</div>
+            <div style="font-size:10px;color:#64748b;">${asignadasOV.length} tarima(s)</div>
+          </div>
+        ` : ''}
+        <button onclick="toggleDetalleStock('${p.producto_codigo}|${p.cliente_codigo}')" style="padding:6px 12px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">
+          ${state.stockDetalleAbierto && state.stockDetalleAbierto[`${p.producto_codigo}|${p.cliente_codigo}`] ? '▲ Ocultar' : '▼ Ver'} tarimas
+        </button>
+      </div>
+      
+      <!-- DETALLE TARIMAS (colapsable) -->
+      ${state.stockDetalleAbierto && state.stockDetalleAbierto[`${p.producto_codigo}|${p.cliente_codigo}`] ? `
+        <div style="padding:10px 18px;border-top:1px solid #e2e8f0;background:#fff;">
+          <table style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead>
+              <tr style="background:#f1f5f9;">
+                <th style="padding:6px;text-align:left;">Tarima</th>
+                <th style="padding:6px;text-align:left;">PI</th>
+                <th style="padding:6px;text-align:left;">ODP</th>
+                <th style="padding:6px;text-align:left;">Lote</th>
+                <th style="padding:6px;text-align:left;">Almacén</th>
+                <th style="padding:6px;text-align:right;">Cantidad</th>
+                <th style="padding:6px;text-align:right;">Kg</th>
+                <th style="padding:6px;text-align:left;">Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${p.tarimas.sort((a,b) => (a.numero_tarima||0)-(b.numero_tarima||0)).map(t => {
+                const almLbl = t.estatus === 'en_almacen_planta' ? '🏭 Planta-MTY' : 
+                              (t.estatus === 'en_cedis_mty' ? '📦 CEDIS-MTY' : 
+                              (t.estatus === 'en_cedis_mex' ? '🇲🇽 CEDIS-MEX' :
+                              (t.estatus === 'en_transito_cedis_mty' ? '🚚 → MTY' :
+                              (t.estatus === 'en_transito_cedis_mex' ? '🚚 → MEX' : t.estatus))));
+                const estadoOV = t.ov_folio ? `<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">⚠ ${t.ov_folio}</span>` : '<span style="color:#16a34a;font-weight:700;font-size:10px;">✓ LIBRE</span>';
+                return `
+                  <tr style="border-top:1px solid #f1f5f9;">
+                    <td style="padding:6px;font-weight:700;">T${String(t.numero_tarima || '').padStart(2,'0')}</td>
+                    <td style="padding:6px;" class="text-mono"><strong style="color:#3b82f6;">${t.pedido_folio || '—'}</strong></td>
+                    <td style="padding:6px;" class="text-mono">${t.odp_folio || '—'}</td>
+                    <td style="padding:6px;" class="text-mono">${t.lote_codigo || '—'}</td>
+                    <td style="padding:6px;font-size:10px;">${almLbl}</td>
+                    <td style="padding:6px;text-align:right;font-weight:600;color:#1e40af;">${fmtCantidadUM(t.cantidad, t.um)}</td>
+                    <td style="padding:6px;text-align:right;color:#475569;">${fmtNum(t.peso_neto_kg || t.peso_neto || 0)}</td>
+                    <td style="padding:6px;">${estadoOV}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+window.toggleDetalleStock = (key) => {
+  if (!state.stockDetalleAbierto) state.stockDetalleAbierto = {};
+  state.stockDetalleAbierto[key] = !state.stockDetalleAbierto[key];
+  render();
+};
 
 // ============================================================
 // MIGRACIÓN: OVs legacy → nuevo flujo Embarques
@@ -5641,6 +5913,22 @@ function attachAppEvents() {
       const inp = $('#filtro-embarques');
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
+  }
+  // Filtro Stock por Producto
+  if ($('#filtro-stock-producto')) {
+    $('#filtro-stock-producto').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.stock_producto = e.target.value;
+      render();
+      const inp = $('#filtro-stock-producto');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-stock-producto-cliente')) {
+    $('#filtro-stock-producto-cliente').onchange = (e) => { state.filtros.stock_producto_cliente = e.target.value; render(); };
+  }
+  if ($('#filtro-stock-producto-almacen')) {
+    $('#filtro-stock-producto-almacen').onchange = (e) => { state.filtros.stock_producto_almacen = e.target.value; render(); };
   }
   $$('.prod-um-select').forEach(sel => {
     sel.onchange = async (e) => {
