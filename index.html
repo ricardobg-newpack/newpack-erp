@@ -653,6 +653,11 @@ function renderDashboard() {
   const ovsPend = state.ordenes_venta.filter(o => o.estatus === 'pendiente').length;
   const odpsPend = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_planeacion').length;
   
+  // Tarimas viejas sin pedido_folio (para migración)
+  const esCEO = state.user.depto === 'CEO' || state.user.rol === 'admin';
+  const tarimasSinPI = state.tarimas.filter(t => !t.pedido_folio);
+  const lotesSinPI = state.lotes.filter(l => !l.pedido_folio);
+  
   return `
     <div class="grid-stats" style="margin-bottom:24px;">
       <div class="stat-card"><div class="stat-icon">📋</div><div class="stat-value">${pedidosPend}</div><div class="stat-label">Pedidos por aprobar</div></div>
@@ -662,6 +667,24 @@ function renderDashboard() {
       <div class="stat-card"><div class="stat-icon">${ICONS.users}</div><div class="stat-value">${state.clientes.length}</div><div class="stat-label">Clientes activos</div></div>
       <div class="stat-card"><div class="stat-icon">${ICONS.boxes}</div><div class="stat-value">${state.productos_pt.length}</div><div class="stat-label">Productos PT</div></div>
     </div>
+    
+    ${esCEO && (tarimasSinPI.length > 0 || lotesSinPI.length > 0) ? `
+      <div class="panel" style="margin-bottom:18px;border-left:4px solid #f59e0b;background:#fffbeb;">
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-weight:700;color:#92400e;">⚠️ Datos sin trazabilidad PI</div>
+            <div style="font-size:12px;color:#475569;margin-top:4px;">
+              Hay <strong>${tarimasSinPI.length} tarima(s)</strong> y <strong>${lotesSinPI.length} lote(s)</strong> sin folio PI guardado. 
+              Click "Migrar" para asignarles automáticamente el PI desde su ODP.
+            </div>
+          </div>
+          <button class="btn-primary" onclick="migrarPIaTarimasYLotes()" style="background:#f59e0b;padding:10px 18px;">
+            🔧 Migrar PIs ahora
+          </button>
+        </div>
+      </div>
+    ` : ''}
+    
     <div class="panel">
       <div class="panel-header">${ICONS.bell} Últimas notificaciones</div>
       <div>
@@ -2584,11 +2607,111 @@ window.setSubTabCedis = (tab) => { state.subTabCedis = tab; render(); };
 // ============================================================
 // FUNCIONES: RECEPCIÓN ALP, CREAR OTI, RECIBIR EN CEDIS
 // ============================================================
+// ============================================================
+// MIGRACIÓN: Agregar pedido_folio a tarimas/lotes/PKLs/OTIs viejos
+// ============================================================
+window.migrarPIaTarimasYLotes = async () => {
+  if (!confirm('¿Migrar pedido_folio a tarimas, lotes, packing lists y OTIs antiguos?\n\nEsto buscará el PI correspondiente en cada ODP y lo asignará. Es seguro y no destructivo.')) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    let countTarimas = 0, countLotes = 0, countPKLs = 0, countOTIs = 0;
+    
+    // Mapa rápido odp_folio → pedido_folio
+    const mapaOdpAPedido = {};
+    state.ordenes_produccion.forEach(odp => {
+      if (odp.folio && odp.pedido_folio) {
+        mapaOdpAPedido[odp.folio] = { pedido_folio: odp.pedido_folio, pedido_id: odp.pedido_id };
+      }
+    });
+    
+    // 1. Migrar tarimas
+    const tarimasUpd = state.tarimas.filter(t => !t.pedido_folio && t.odp_folio && mapaOdpAPedido[t.odp_folio]);
+    for (let i = 0; i < tarimasUpd.length; i += 400) {
+      const batch = writeBatch(db);
+      const slice = tarimasUpd.slice(i, i + 400);
+      slice.forEach(t => {
+        const info = mapaOdpAPedido[t.odp_folio];
+        batch.update(doc(db, 'tarimas', t.id), {
+          pedido_folio: info.pedido_folio,
+          pedido_id: info.pedido_id || '',
+          updated_at: serverTimestamp()
+        });
+      });
+      await batch.commit();
+      countTarimas += slice.length;
+    }
+    
+    // 2. Migrar lotes
+    const lotesUpd = state.lotes.filter(l => !l.pedido_folio && l.odp_folio && mapaOdpAPedido[l.odp_folio]);
+    for (let i = 0; i < lotesUpd.length; i += 400) {
+      const batch = writeBatch(db);
+      const slice = lotesUpd.slice(i, i + 400);
+      slice.forEach(l => {
+        const info = mapaOdpAPedido[l.odp_folio];
+        batch.update(doc(db, 'lotes', l.id), {
+          pedido_folio: info.pedido_folio,
+          pedido_id: info.pedido_id || '',
+          updated_at: serverTimestamp()
+        });
+      });
+      await batch.commit();
+      countLotes += slice.length;
+    }
+    
+    // 3. Migrar packing lists
+    const pklsUpd = (state.packing_lists || []).filter(p => !p.pedido_folio && p.odp_folio && mapaOdpAPedido[p.odp_folio]);
+    for (let i = 0; i < pklsUpd.length; i += 400) {
+      const batch = writeBatch(db);
+      const slice = pklsUpd.slice(i, i + 400);
+      slice.forEach(p => {
+        const info = mapaOdpAPedido[p.odp_folio];
+        batch.update(doc(db, 'packing_lists', p.id), {
+          pedido_folio: info.pedido_folio,
+          pedido_id: info.pedido_id || '',
+          updated_at: serverTimestamp()
+        });
+      });
+      await batch.commit();
+      countPKLs += slice.length;
+    }
+    
+    // 4. Migrar OTIs (recalcular pedidos_folios desde sus tarimas)
+    const otisUpd = state.oti.filter(o => !o.pedidos_folios || o.pedidos_folios.length === 0);
+    for (const oti of otisUpd) {
+      const tarimasOti = state.tarimas.filter(t => (oti.tarimas_ids || []).includes(t.id));
+      // Combinar PI ya guardados + actualizar con la migración (en memoria, después de Firestore)
+      const pedidosUnicos = [...new Set(tarimasOti.map(t => {
+        return t.pedido_folio || (mapaOdpAPedido[t.odp_folio]?.pedido_folio) || '';
+      }).filter(Boolean))];
+      const odpsUnicas = [...new Set(tarimasOti.map(t => t.odp_folio).filter(Boolean))];
+      const clientesUnicos = [...new Set(tarimasOti.map(t => t.cliente_nombre).filter(Boolean))];
+      
+      if (pedidosUnicos.length > 0) {
+        await updateDoc(doc(db, 'oti', oti.id), {
+          pedidos_folios: pedidosUnicos,
+          odps_folios: odpsUnicas,
+          clientes_nombres: clientesUnicos,
+          updated_at: serverTimestamp()
+        });
+        countOTIs++;
+      }
+    }
+    
+    toast(`✅ Migración completa: ${countTarimas} tarimas, ${countLotes} lotes, ${countPKLs} PKLs, ${countOTIs} OTIs`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 window.abrirRecepcionPKL = async (pkl) => {
   const tarimasPKL = state.tarimas.filter(t => 
-    t.packing_list === pkl && (t.estatus === 'pendiente_empaque' || t.estatus === 'pendiente_almacen')
+    (t.packing_list === pkl || (!t.packing_list && t.odp_folio === pkl)) &&
+    (t.estatus === 'pendiente_empaque' || t.estatus === 'pendiente_almacen')
   );
-  if (tarimasPKL.length === 0) { toast('No hay tarimas pendientes en este packing list', 'error'); return; }
+  if (tarimasPKL.length === 0) { toast('No hay tarimas pendientes de este packing list', 'error'); return; }
   if (!confirm(`Confirmar recepción de ${tarimasPKL.length} tarima(s) del ${pkl} en almacén planta-MTY?`)) return;
   
   state.loadingAccion = true; render();
