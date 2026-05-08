@@ -1578,60 +1578,112 @@ function renderTarjetaCalidad(o, contexto) {
 // ============================================================
 function renderSeguimiento() {
   const filtro = (state.filtros.seguimiento || '').toLowerCase();
-  const filtroEst = state.filtros.seguimiento_estatus || '';
   const filtroCli = state.filtros.seguimiento_cliente || '';
+  const tabActivo = state.filtros.seguimiento_tab || 'activos'; // activos | completados | cancelados | urgentes
   
-  let arr = state.pedidos;
-  if (filtro) arr = arr.filter(p => 
+  // Pre-calcular fase para todos los pedidos UNA SOLA VEZ (caché en memoria)
+  const todosPedidos = state.pedidos.map(p => ({
+    p,
+    fase: calcularFasePI(p)
+  }));
+  
+  // Categorizar
+  const todosActivos = todosPedidos.filter(x => 
+    !x.fase.cancelado && x.fase.porcentaje < 100 && x.p.estatus !== 'cancelado'
+  );
+  const todosCompletados = todosPedidos.filter(x => 
+    x.fase.porcentaje === 100 && !x.fase.cancelado && x.p.estatus !== 'cancelado'
+  );
+  const todosCancelados = todosPedidos.filter(x => 
+    x.fase.cancelado || x.p.estatus === 'cancelado'
+  );
+  
+  // PIs urgentes (con fecha de entrega vencida y no completados)
+  const hoy = new Date().toISOString().split('T')[0];
+  const todosUrgentes = todosActivos.filter(x => 
+    x.p.fecha_entrega && x.p.fecha_entrega <= hoy
+  );
+  
+  // Filtrar por tab
+  let arrConFase = [];
+  if (tabActivo === 'activos') arrConFase = todosActivos;
+  else if (tabActivo === 'completados') arrConFase = todosCompletados;
+  else if (tabActivo === 'cancelados') arrConFase = todosCancelados;
+  else if (tabActivo === 'urgentes') arrConFase = todosUrgentes;
+  
+  // Aplicar filtros texto y cliente
+  if (filtro) arrConFase = arrConFase.filter(({p}) => 
     (p.folio + ' ' + (p.cliente_nombre||'') + ' ' + (p.cliente_codigo||'') + ' ' + (p.odc_cliente||'')).toLowerCase().includes(filtro)
   );
-  if (filtroEst) arr = arr.filter(p => p.estatus === filtroEst);
-  if (filtroCli) arr = arr.filter(p => p.cliente_codigo === filtroCli);
+  if (filtroCli) arrConFase = arrConFase.filter(({p}) => p.cliente_codigo === filtroCli);
   
-  // Lista única de clientes con pedidos
+  // Ordenar: por fecha más reciente primero
+  arrConFase.sort((a, b) => {
+    const fa = a.p.created_at?.seconds || 0;
+    const fb = b.p.created_at?.seconds || 0;
+    return fb - fa;
+  });
+  
   const clientesConPedidos = [...new Set(state.pedidos.map(p => p.cliente_codigo))]
     .map(cod => state.clientes.find(c => c.codigo === cod))
     .filter(Boolean)
     .sort((a,b) => a.nombre.localeCompare(b.nombre));
   
   return `
-    <!-- BÚSQUEDA GIGANTE -->
-    <div style="padding:18px;background:#fff;border:2px solid #3b82f6;border-radius:14px;margin-bottom:16px;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+    <!-- BÚSQUEDA + FILTROS -->
+    <div style="padding:18px;background:#fff;border:2px solid #3b82f6;border-radius:14px;margin-bottom:14px;box-shadow:0 4px 6px -1px rgba(0,0,0,0.08);">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
         <div style="font-size:24px;">🔍</div>
         <div style="flex:1;">
           <input class="input" id="filtro-seguimiento" style="width:100%;padding:14px;font-size:16px;font-weight:600;border:2px solid #cbd5e1;border-radius:10px;" placeholder="Escribe PI-XXXXX, nombre del cliente, código de producto..." value="${filtro}" autocomplete="off" />
         </div>
-        ${filtro ? `<button onclick="limpiarFiltroSeguimiento()" style="padding:10px 14px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:700;">✗ Limpiar</button>` : ''}
+        ${(filtro || filtroCli) ? `<button onclick="limpiarFiltroSeguimiento()" style="padding:10px 14px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:700;">✗ Limpiar</button>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <select class="input" id="filtro-seguimiento-cliente" style="max-width:280px;font-size:13px;">
-          <option value="">📋 Todos los clientes (${state.pedidos.length})</option>
+        <select class="input" id="filtro-seguimiento-cliente" style="max-width:320px;font-size:13px;">
+          <option value="">📋 Todos los clientes (${clientesConPedidos.length})</option>
           ${clientesConPedidos.map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} - ${c.nombre}</option>`).join('')}
         </select>
-        <select class="input" id="filtro-seguimiento-estatus" style="max-width:200px;font-size:13px;">
-          <option value="">🎯 Todos los estatus</option>
-          <option value="pendiente_aprobacion" ${filtroEst === 'pendiente_aprobacion' ? 'selected' : ''}>🟡 Por aprobar</option>
-          <option value="aprobado" ${filtroEst === 'aprobado' ? 'selected' : ''}>✅ Aprobados</option>
-          <option value="en_proceso" ${filtroEst === 'en_proceso' ? 'selected' : ''}>🔄 En proceso</option>
-          <option value="completado" ${filtroEst === 'completado' ? 'selected' : ''}>🏁 Completados</option>
-          <option value="cancelado" ${filtroEst === 'cancelado' ? 'selected' : ''}>❌ Cancelados</option>
-        </select>
-        <span style="font-size:13px;color:#64748b;font-weight:600;margin-left:auto;">📊 ${arr.length} pedido(s)</span>
+        <span style="font-size:12px;color:#64748b;font-weight:600;margin-left:auto;">📊 Mostrando ${arrConFase.length} de ${todosPedidos.length}</span>
       </div>
     </div>
     
-    ${arr.length === 0 ? `
+    <!-- TABS PRINCIPALES -->
+    <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
+      <button onclick="setTabSeguimiento('activos')" style="padding:10px 18px;background:${tabActivo==='activos'?'#3b82f6':'#fff'};color:${tabActivo==='activos'?'#fff':'#475569'};border:1px solid ${tabActivo==='activos'?'#3b82f6':'#e2e8f0'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;">
+        🔄 Activos <span style="background:${tabActivo==='activos'?'#fff':'#3b82f6'};color:${tabActivo==='activos'?'#3b82f6':'#fff'};padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;">${todosActivos.length}</span>
+      </button>
+      ${todosUrgentes.length > 0 ? `
+        <button onclick="setTabSeguimiento('urgentes')" style="padding:10px 18px;background:${tabActivo==='urgentes'?'#dc2626':'#fff'};color:${tabActivo==='urgentes'?'#fff':'#dc2626'};border:1px solid #dc2626;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;animation:${tabActivo==='urgentes'?'none':'pulse 1.5s ease-in-out infinite'};">
+          🚨 Urgentes <span style="background:${tabActivo==='urgentes'?'#fff':'#dc2626'};color:${tabActivo==='urgentes'?'#dc2626':'#fff'};padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;">${todosUrgentes.length}</span>
+        </button>
+      ` : ''}
+      <button onclick="setTabSeguimiento('completados')" style="padding:10px 18px;background:${tabActivo==='completados'?'#16a34a':'#fff'};color:${tabActivo==='completados'?'#fff':'#16a34a'};border:1px solid #16a34a;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;">
+        🏁 Completados <span style="background:${tabActivo==='completados'?'#fff':'#16a34a'};color:${tabActivo==='completados'?'#16a34a':'#fff'};padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;">${todosCompletados.length}</span>
+      </button>
+      ${todosCancelados.length > 0 ? `
+        <button onclick="setTabSeguimiento('cancelados')" style="padding:10px 18px;background:${tabActivo==='cancelados'?'#94a3b8':'#fff'};color:${tabActivo==='cancelados'?'#fff':'#475569'};border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;">
+          ❌ Cancelados <span style="background:${tabActivo==='cancelados'?'#fff':'#94a3b8'};color:${tabActivo==='cancelados'?'#475569':'#fff'};padding:2px 8px;border-radius:99px;font-size:11px;font-weight:800;">${todosCancelados.length}</span>
+        </button>
+      ` : ''}
+    </div>
+    
+    ${arrConFase.length === 0 ? `
       <div style="padding:80px 20px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
-        <div style="font-size:48px;margin-bottom:12px;">📋</div>
-        <div style="font-weight:700;color:#475569;font-size:16px;">No hay pedidos que coincidan</div>
-        <div style="font-size:13px;margin-top:6px;">Prueba con otra búsqueda o limpia los filtros</div>
+        <div style="font-size:48px;margin-bottom:12px;">${tabActivo === 'completados' ? '🏁' : tabActivo === 'cancelados' ? '❌' : '📋'}</div>
+        <div style="font-weight:700;color:#475569;font-size:16px;">${
+          (filtro || filtroCli) ? 'No hay pedidos que coincidan con los filtros' : 
+          tabActivo === 'activos' ? 'Sin pedidos activos' :
+          tabActivo === 'completados' ? 'Aún no hay pedidos completados' :
+          tabActivo === 'urgentes' ? 'Sin pedidos urgentes 🎉' : 'Sin pedidos cancelados'
+        }</div>
+        <div style="font-size:13px;margin-top:6px;">${(filtro || filtroCli) ? 'Prueba con otra búsqueda o limpia los filtros' : ''}</div>
       </div>
     ` : `
       <div style="display:flex;flex-direction:column;gap:14px;">
-        ${arr.slice(0, 50).map(renderTarjetaSeguimiento).join('')}
+        ${arrConFase.slice(0, 50).map(({p, fase}) => renderTarjetaSeguimiento(p, fase)).join('')}
       </div>
-      ${arr.length > 50 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 50 de ${arr.length} pedidos</div>` : ''}
+      ${arrConFase.length > 50 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 50 de ${arrConFase.length} pedidos</div>` : ''}
     `}
   `;
 }
@@ -1640,6 +1692,11 @@ window.limpiarFiltroSeguimiento = () => {
   state.filtros.seguimiento = '';
   state.filtros.seguimiento_cliente = '';
   state.filtros.seguimiento_estatus = '';
+  render();
+};
+
+window.setTabSeguimiento = (tab) => {
+  state.filtros.seguimiento_tab = tab;
   render();
 };
 
@@ -1798,11 +1855,11 @@ function calcularFasePI(p) {
   return { fases, fase_actual: faseActual, porcentaje, color, label };
 }
 
-function renderTarjetaSeguimiento(p) {
+function renderTarjetaSeguimiento(p, fasesData) {
   const lineas = window.pedidoLineas(p.id);
   const odps = window.odpsDePedido(p.id);
   const tarimasPI = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
-  const fasesData = calcularFasePI(p);
+  if (!fasesData) fasesData = calcularFasePI(p);
   
   // Resumen ubicación tarimas
   const ubicaciones = {
@@ -1910,6 +1967,7 @@ function renderModal() {
   if (m === 'comentar-pedido') return modalComentarPedido();
   if (m === 'crear-producto-pt') return modalCrearProductoPT();
   if (m === 'editar-producto-pt') return modalEditarProductoPT();
+  if (m === 'pdf-preview') return modalPdfPreview();
   return '';
 }
 
@@ -3367,6 +3425,89 @@ function _pdfSeccionTitulo(doc, y, texto, color) {
 }
 
 // ============================================================
+// VISTA PREVIA DE PDF (modal con iframe)
+// ============================================================
+function _mostrarVistaPreviaPDF(docPDF, filename, titulo) {
+  // Generar blob URL del PDF
+  const blob = docPDF.output('blob');
+  const blobUrl = URL.createObjectURL(blob);
+  
+  // Guardar en state para que el modal lo use
+  state.pdfPreview = {
+    blobUrl,
+    filename,
+    titulo,
+    docPDF // referencia para descarga
+  };
+  state.modal = 'pdf-preview';
+  render();
+}
+
+function modalPdfPreview() {
+  const p = state.pdfPreview;
+  if (!p) return '';
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarVistaPreviaPDF()">
+      <div class="modal" style="max-width:1100px;max-height:96vh;width:96vw;display:flex;flex-direction:column;">
+        <div class="modal-header" style="background:linear-gradient(90deg, #3fd34b 0%, #38b6ff 100%);color:#fff;">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;color:#fff;">📄 ${p.titulo}</h2>
+            <div style="font-size:11px;opacity:0.9;margin-top:2px;">${p.filename}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarVistaPreviaPDF()" style="color:#fff;">${ICONS.x}</button>
+        </div>
+        
+        <div style="flex:1;background:#525659;display:flex;align-items:center;justify-content:center;overflow:hidden;min-height:500px;">
+          <iframe src="${p.blobUrl}#zoom=page-fit&navpanes=0" style="width:100%;height:100%;border:none;background:#fff;" title="Vista previa PDF"></iframe>
+        </div>
+        
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;background:#f8fafc;">
+          <div style="font-size:12px;color:#64748b;">
+            💡 <strong>Tip:</strong> Usa <kbd style="background:#fff;padding:2px 6px;border:1px solid #cbd5e1;border-radius:4px;font-family:monospace;font-size:11px;">Ctrl+P</kbd> para imprimir desde el visor
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button onclick="cerrarVistaPreviaPDF()" style="padding:9px 16px;background:#fff;color:#475569;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;font-weight:700;">✗ Cerrar</button>
+            <button onclick="imprimirVistaPreviaPDF()" style="padding:9px 16px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">🖨️ Imprimir</button>
+            <button onclick="descargarVistaPreviaPDF()" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">📥 Descargar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.cerrarVistaPreviaPDF = () => {
+  if (state.pdfPreview && state.pdfPreview.blobUrl) {
+    URL.revokeObjectURL(state.pdfPreview.blobUrl);
+  }
+  state.pdfPreview = null;
+  state.modal = null;
+  render();
+};
+
+window.descargarVistaPreviaPDF = () => {
+  const p = state.pdfPreview;
+  if (!p || !p.docPDF) return;
+  p.docPDF.save(p.filename);
+  toast(`📥 Descargado: ${p.filename}`);
+};
+
+window.imprimirVistaPreviaPDF = () => {
+  const p = state.pdfPreview;
+  if (!p || !p.blobUrl) return;
+  // Abrir en nueva ventana e imprimir
+  const w = window.open(p.blobUrl, '_blank');
+  if (w) {
+    w.addEventListener('load', () => {
+      setTimeout(() => w.print(), 500);
+    });
+  } else {
+    toast('Permite ventanas emergentes para imprimir', 'error');
+  }
+};
+
+// ============================================================
 // REMISIÓN
 // ============================================================
 window.imprimirRemisionPDF = (ovId) => {
@@ -3577,12 +3718,11 @@ window.imprimirRemisionPDF = (ovId) => {
   _pdfPiePagina(docPDF);
   
   const filename = `Remision_${ov.remision || ov.folio}_${ov.cliente_codigo || ''}.pdf`;
-  docPDF.save(filename);
-  toast(`📄 Remisión descargada: ${filename}`);
+  _mostrarVistaPreviaPDF(docPDF, filename, `Remisión ${ov.remision || ov.folio} · ${ov.cliente_nombre || ''}`);
 };
 
 // ============================================================
-// LISTA DE CARGA
+// LISTA DE CARGA — DISEÑO INSTITUCIONAL
 // ============================================================
 window.imprimirListaCargaPDF = (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
@@ -3601,72 +3741,110 @@ window.imprimirListaCargaPDF = (ovId) => {
   
   let y = _pdfHeaderEmpresa(docPDF, 'LISTA CARGA', ov.folio);
   
-  // Título
-  docPDF.setFontSize(20);
+  // ===== TÍTULO PRINCIPAL CON FONDO =====
+  docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.rect(0, y, 210, 18, 'F');
+  
+  docPDF.setFontSize(18);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-  docPDF.text('LISTA DE CARGA', 105, y + 4, { align: 'center' });
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.text('LISTA DE CARGA', 105, y + 8, { align: 'center' });
   
-  docPDF.setFontSize(9);
+  docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'normal');
-  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-  docPDF.text(`Documento operativo para verificación de embarque`, 105, y + 9, { align: 'center' });
-  docPDF.setTextColor(0, 0, 0);
-  y += 16;
+  docPDF.text('DOCUMENTO INTERNO DE VERIFICACIÓN PARA EMBARQUE', 105, y + 14, { align: 'center' });
   
-  // Banner naranja con ruta
-  docPDF.setFillColor(254, 215, 170);
-  docPDF.roundedRect(14, y, 182, 14, 2, 2, 'F');
+  doc_PDF_NoTextoNegro(docPDF);
+  y += 22;
+  
+  // ===== BANNER RUTA =====
+  // Caja decorativa con flecha de origen → destino
+  docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+  docPDF.roundedRect(14, y, 88, 20, 3, 3, 'F');
+  docPDF.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+  docPDF.roundedRect(108, y, 88, 20, 3, 3, 'F');
+  
+  // Flecha en el centro
+  docPDF.setFontSize(20);
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('▶', 103, y + 12, { align: 'center' });
+  
+  // Origen
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFontSize(7);
+  docPDF.text('ORIGEN', 18, y + 6);
   docPDF.setFontSize(11);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.setTextColor(154, 52, 18);
-  docPDF.text(`${ov.cedis || '—'}  →  ${ov.cliente_nombre || '—'}`, 105, y + 9, { align: 'center' });
-  docPDF.setTextColor(0, 0, 0);
-  y += 19;
-  
-  // Datos generales en grid
-  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
-  
-  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
-  docPDF.roundedRect(14, y, 182, 22, 2, 2, 'F');
-  
+  docPDF.text(ov.cedis || '—', 18, y + 12);
+  docPDF.setFont('helvetica', 'normal');
   docPDF.setFontSize(7);
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-  docPDF.text('OV', 17, y + 5);
-  docPDF.text('PI', 65, y + 5);
-  docPDF.text('CÓDIGO CLIENTE', 110, y + 5);
-  docPDF.text('FECHA', 165, y + 5);
+  docPDF.text('Centro de Distribución', 18, y + 17);
   
-  docPDF.text('REMISIÓN', 17, y + 14);
-  docPDF.text('FACTURA', 65, y + 14);
-  docPDF.text('TOTAL TARIMAS', 110, y + 14);
-  docPDF.text('TOTAL KG', 165, y + 14);
-  
-  docPDF.setTextColor(0, 0, 0);
-  docPDF.setFontSize(9);
+  // Destino
+  docPDF.setFontSize(7);
+  docPDF.text('DESTINO', 112, y + 6);
+  docPDF.setFontSize(11);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text(ov.folio, 17, y + 9);
-  docPDF.text(ov.pedido_folio || '—', 65, y + 9);
-  docPDF.text(ov.cliente_codigo || '—', 110, y + 9);
+  const cliNombre = ov.cliente_nombre || '—';
+  docPDF.text(cliNombre.length > 35 ? cliNombre.substring(0,35)+'…' : cliNombre, 112, y + 12);
   docPDF.setFont('helvetica', 'normal');
-  docPDF.text(new Date().toLocaleDateString('es-MX'), 165, y + 9);
+  docPDF.setFontSize(7);
+  docPDF.text(`Cliente: ${ov.cliente_codigo || '—'}`, 112, y + 17);
   
-  docPDF.setFont('helvetica', 'normal');
-  docPDF.text(ov.remision || 'Pendiente', 17, y + 18);
-  docPDF.text(ov.factura || 'Pendiente', 65, y + 18);
+  doc_PDF_NoTextoNegro(docPDF);
+  y += 26;
+  
+  // ===== CARDS DE INFO RÁPIDA (4 cuadros) =====
+  const cardW = 43.5;
+  const cards = [
+    { label: 'OV', value: ov.folio, color: _COL_AZUL },
+    { label: 'PI ORIGEN', value: ov.pedido_folio || '—', color: _COL_AZUL_OSCURO },
+    { label: 'TARIMAS', value: `${tarimas.length}`, color: _COL_VERDE },
+    { label: 'TOTAL KG', value: fmtNum(totalKg), color: _COL_VERDE }
+  ];
+  cards.forEach((c, i) => {
+    const x = 14 + (i * (cardW + 2));
+    // Borde superior con color
+    docPDF.setFillColor(c.color[0], c.color[1], c.color[2]);
+    docPDF.rect(x, y, cardW, 3, 'F');
+    // Cuerpo blanco con borde
+    docPDF.setFillColor(255, 255, 255);
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.setLineWidth(0.3);
+    docPDF.rect(x, y + 3, cardW, 14, 'FD');
+    // Label
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(c.label, x + cardW/2, y + 8, { align: 'center' });
+    // Valor
+    docPDF.setFontSize(12);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(c.color[0], c.color[1], c.color[2]);
+    docPDF.text(c.value, x + cardW/2, y + 14, { align: 'center' });
+  });
+  doc_PDF_NoTextoNegro(docPDF);
+  y += 22;
+  
+  // Datos de remisión/factura más compactos
+  docPDF.setFillColor(254, 249, 195);
+  docPDF.roundedRect(14, y, 182, 11, 2, 2, 'F');
+  docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text(`${tarimas.length} tarima(s)`, 110, y + 18);
-  docPDF.text(`${fmtNum(totalKg)} kg`, 165, y + 18);
+  docPDF.setTextColor(146, 64, 14);
+  docPDF.text(`📄 Remisión: ${ov.remision || 'PENDIENTE'}`, 18, y + 7);
+  docPDF.text(`💰 Factura: ${ov.factura || 'PENDIENTE'}`, 80, y + 7);
+  docPDF.text(`📅 ${new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })}`, 145, y + 7);
+  doc_PDF_NoTextoNegro(docPDF);
+  y += 16;
   
-  y += 28;
-  
-  // Tabla con checkboxes
-  y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS A CARGAR — VERIFICAR Y MARCAR', _COL_AZUL);
+  // ===== SECCIÓN: TARIMAS A CARGAR =====
+  y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS A CARGAR — VERIFICAR ✓ AL CARGAR', _COL_AZUL_OSCURO);
   
   docPDF.autoTable({
     startY: y,
-    head: [['☐', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cant.', 'UM', 'Kg', 'Verificó']],
+    head: [['☐', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cant.', 'UM', 'Kg netos', 'Verifica']],
     body: tarimas.map((t, i) => [
       '☐',
       i + 1,
@@ -3679,134 +3857,183 @@ window.imprimirListaCargaPDF = (ovId) => {
       fmtNum(t.peso_neto_kg || t.peso_neto || 0),
       ''
     ]),
-    foot: [['', '', '', '', '', { content: 'TOTALES', styles: { halign: 'right' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg), '']],
-    theme: 'striped',
+    foot: [['', '', '', '', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg), '']],
+    theme: 'grid',
     headStyles: { 
-      fillColor: _COL_AZUL, 
+      fillColor: _COL_AZUL_OSCURO, 
       textColor: 255, 
       fontSize: 9, 
       fontStyle: 'bold',
       halign: 'center',
-      cellPadding: 3
+      cellPadding: 3,
+      lineColor: _COL_AZUL_OSCURO,
+      lineWidth: 0.2
     },
     footStyles: { 
       fillColor: _COL_VERDE, 
       textColor: 255, 
       fontSize: 10, 
-      fontStyle: 'bold' 
+      fontStyle: 'bold',
+      cellPadding: 3
     },
     bodyStyles: { 
       fontSize: 9, 
-      minCellHeight: 9,
-      cellPadding: 2.5
+      minCellHeight: 10,
+      cellPadding: 3,
+      lineColor: [220, 220, 220],
+      lineWidth: 0.1
     },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
-      0: { cellWidth: 8, halign: 'center', fontSize: 14 },
-      1: { cellWidth: 8, halign: 'center' },
+      0: { cellWidth: 9, halign: 'center', fontSize: 13 },
+      1: { cellWidth: 8, halign: 'center', textColor: _COL_GRIS_MEDIO },
       2: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
       3: { cellWidth: 26 },
       4: { cellWidth: 20 },
-      5: { cellWidth: 38 },
-      6: { cellWidth: 18, halign: 'right' },
+      5: { cellWidth: 36 },
+      6: { cellWidth: 17, halign: 'right' },
       7: { cellWidth: 11, halign: 'center' },
-      8: { cellWidth: 16, halign: 'right' },
-      9: { cellWidth: 23 }
+      8: { cellWidth: 17, halign: 'right' },
+      9: { cellWidth: 24 }
     },
     margin: { left: 14, right: 14 }
   });
   
-  y = docPDF.lastAutoTable.finalY + 8;
+  y = docPDF.lastAutoTable.finalY + 6;
   
-  // Verificación de carga
-  y = _pdfSeccionTitulo(docPDF, y, 'CHECKLIST DE VERIFICACIÓN', _COL_AZUL);
+  // ===== SECCIÓN: CHECKLIST DE VERIFICACIÓN =====
+  y = _pdfSeccionTitulo(docPDF, y, 'CHECKLIST DE VERIFICACIÓN', _COL_AZUL_OSCURO);
   
-  docPDF.setFillColor(254, 249, 195);
-  docPDF.roundedRect(14, y, 182, 22, 2, 2, 'F');
+  // Caja con borde verde elegante
+  docPDF.setFillColor(240, 253, 244);
+  docPDF.setDrawColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+  docPDF.setLineWidth(0.5);
+  docPDF.roundedRect(14, y, 182, 24, 2, 2, 'FD');
   
   docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(0, 0, 0);
   const checks = [
-    'Tarimas verificadas físicamente contra lista',
-    'Tarimas en buen estado (sin daño visible)',
-    'Cargadas en vehículo correctamente',
-    'Sello de seguridad en buen estado'
+    'Tarimas verificadas físicamente vs lista',
+    'Tarimas en buen estado (sin daños)',
+    'Cargadas correctamente en vehículo',
+    'Sello de seguridad en buen estado',
+    'Cantidad y kg coinciden con detalle',
+    'Documentación entregada al transportista'
   ];
   checks.forEach((c, i) => {
-    const col = i < 2 ? 18 : 105;
-    const row = i % 2;
+    const col = i < 3 ? 18 : 105;
+    const row = i % 3;
     docPDF.text(`☐  ${c}`, col, y + 7 + (row * 6));
   });
   
-  y += 28;
+  y += 30;
   
-  // Datos transporte
-  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE TRANSPORTE', _COL_AZUL);
+  // ===== SECCIÓN: TRANSPORTE =====
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE TRANSPORTE', _COL_AZUL_OSCURO);
   
-  docPDF.setFillColor(220, 252, 231);
-  docPDF.roundedRect(14, y, 182, 14, 2, 2, 'F');
+  // Card horizontal
+  docPDF.setFillColor(239, 246, 255);
+  docPDF.setDrawColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+  docPDF.setLineWidth(0.4);
+  docPDF.roundedRect(14, y, 182, 16, 2, 2, 'FD');
+  
+  // Línea decorativa azul a la izquierda
+  docPDF.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
+  docPDF.rect(14, y, 3, 16, 'F');
   
   docPDF.setFontSize(7);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-  docPDF.text('TRANSPORTISTA', 17, y + 4);
-  docPDF.text('PLACAS', 90, y + 4);
-  docPDF.text('CONDUCTOR', 140, y + 4);
+  docPDF.text('TRANSPORTISTA', 22, y + 5);
+  docPDF.text('PLACAS', 90, y + 5);
+  docPDF.text('CONDUCTOR', 130, y + 5);
   
   docPDF.setTextColor(0, 0, 0);
-  docPDF.setFontSize(9);
-  docPDF.setFont('helvetica', 'normal');
-  docPDF.text(ov.transportista || '—', 17, y + 10);
-  docPDF.text(ov.placas || '—', 90, y + 10);
-  docPDF.text(ov.conductor || '—', 140, y + 10);
-  
-  y += 20;
-  
-  // Firmas
-  y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS', _COL_AZUL);
-  
-  // 3 cajas de firma con borde
-  docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-  docPDF.setLineWidth(0.3);
-  docPDF.roundedRect(14, y, 58, 28, 2, 2);
-  docPDF.roundedRect(76, y, 58, 28, 2, 2);
-  docPDF.roundedRect(138, y, 58, 28, 2, 2);
-  
-  // Líneas para firmas
-  docPDF.setDrawColor(0, 0, 0);
-  docPDF.setLineWidth(0.5);
-  docPDF.line(18, y + 16, 68, y + 16);
-  docPDF.line(80, y + 16, 130, y + 16);
-  docPDF.line(142, y + 16, 192, y + 16);
-  
-  docPDF.setFontSize(9);
+  docPDF.setFontSize(10);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.setTextColor(0, 0, 0);
-  docPDF.text('CARGADOR', 43, y + 21, { align: 'center' });
-  docPDF.text('VERIFICÓ — CEDIS', 105, y + 21, { align: 'center' });
-  docPDF.text('CONDUCTOR', 167, y + 21, { align: 'center' });
-  
+  docPDF.text(ov.transportista || '—', 22, y + 11);
   docPDF.setFont('helvetica', 'normal');
-  docPDF.setFontSize(7);
-  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-  docPDF.text('Nombre y firma', 43, y + 25, { align: 'center' });
-  docPDF.text('Nombre y firma', 105, y + 25, { align: 'center' });
-  docPDF.text('Nombre y firma', 167, y + 25, { align: 'center' });
+  docPDF.text(ov.placas || '—', 90, y + 11);
+  docPDF.text(ov.conductor || '—', 130, y + 11);
   
-  y += 33;
-  docPDF.setFontSize(9);
+  y += 22;
+  
+  // ===== SECCIÓN: FIRMAS =====
+  y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS DE CONFORMIDAD', _COL_AZUL_OSCURO);
+  
+  const cw = 58;
+  const firmas = [
+    { titulo: 'CARGADOR', subtitulo: 'NewPack' },
+    { titulo: 'VERIFICÓ', subtitulo: 'CEDIS' },
+    { titulo: 'CONDUCTOR', subtitulo: 'Recibe carga' }
+  ];
+  firmas.forEach((f, i) => {
+    const x = 14 + (i * (cw + 2));
+    // Caja con header colorido
+    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.rect(x, y, cw, 5, 'F');
+    docPDF.setFillColor(255, 255, 255);
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.setLineWidth(0.3);
+    docPDF.rect(x, y + 5, cw, 25, 'FD');
+    
+    // Título header
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.text(f.titulo, x + cw/2, y + 3.5, { align: 'center' });
+    
+    // Línea para firma
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.setLineWidth(0.5);
+    docPDF.line(x + 4, y + 18, x + cw - 4, y + 18);
+    
+    // Subtítulos
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text(f.subtitulo, x + cw/2, y + 22, { align: 'center' });
+    
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text('Nombre y firma', x + cw/2, y + 26, { align: 'center' });
+  });
+  
+  y += 35;
+  
+  // ===== INFORMACIÓN ADICIONAL =====
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 182, 14, 2, 2, 'F');
+  
+  docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.setTextColor(0, 0, 0);
-  docPDF.text(`Hora salida: ___________________`, 14, y);
-  docPDF.text(`Sello de seguridad N°: ___________________`, 110, y);
+  docPDF.setTextColor(_COL_GRIS_TEXTO[0], _COL_GRIS_TEXTO[1], _COL_GRIS_TEXTO[2]);
+  docPDF.text('Hora de salida:', 18, y + 5);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text('___________________', 47, y + 5);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('Sello de seguridad N°:', 95, y + 5);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text('___________________', 132, y + 5);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('Observaciones:', 18, y + 11);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.observaciones_embarque || '___________________________________________________________', 47, y + 11);
   
   _pdfPiePagina(docPDF);
   
   const filename = `ListaCarga_${ov.folio}_${ov.cliente_codigo || ''}.pdf`;
-  docPDF.save(filename);
-  toast(`📋 Lista de carga descargada: ${filename}`);
+  _mostrarVistaPreviaPDF(docPDF, filename, `Lista de Carga ${ov.folio} · ${ov.cliente_nombre || ''}`);
 };
+
+// Helper para resetear color a negro
+function doc_PDF_NoTextoNegro(doc) {
+  doc.setTextColor(0, 0, 0);
+}
 
 // ============================================================
 // MIGRACIÓN: OVs legacy → nuevo flujo Embarques
