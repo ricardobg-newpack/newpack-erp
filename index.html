@@ -2867,6 +2867,12 @@ function renderEmbarques() {
   const subTab = state.subTabEmbarques || 'pendiente_asignar';
   const filtro = (state.filtros.embarques || '').toLowerCase();
   
+  // 🔄 AUTO-SINCRONIZAR OVs en esperando_produccion (silencioso, sin confirm)
+  if (!state._yaIntentoSincOVs) {
+    state._yaIntentoSincOVs = true;
+    setTimeout(() => window.autoSincronizarOVsEsperando(), 500);
+  }
+  
   let arr = state.ordenes_venta || [];
   if (filtro) arr = arr.filter(o => 
     (o.folio + ' ' + o.pedido_folio + ' ' + o.cliente_nombre + ' ' + o.cliente_codigo + ' ' + o.producto_codigo + ' ' + (o.remision || '') + ' ' + (o.factura || ''))
@@ -2920,6 +2926,33 @@ function renderEmbarques() {
         <button onclick="migrarOVsLegacy()" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🔧 Migrar OVs legacy</button>
       </div>
     ` : ''}
+    
+    ${(() => {
+      // Detectar OVs esperando_produccion que YA tienen material disponible (búsqueda flexible)
+      const ovsActivables = (state.ordenes_venta || []).filter(ov => {
+        if (ov.estatus !== 'esperando_produccion') return false;
+        const tarimasDelPI = (state.tarimas || []).filter(t => {
+          const mismoProducto = t.producto_codigo === ov.producto_codigo;
+          const mismoPI = t.pedido_id === ov.pedido_id || t.pedido_folio === ov.pedido_folio;
+          const mismoCliente = t.cliente_codigo === ov.cliente_codigo;
+          const enAlmacen = ['en_almacen_planta','en_cedis_mty','en_cedis_mex','en_transito_cedis_mty','en_transito_cedis_mex'].includes(t.estatus);
+          const sinOV = !t.ov_id && !t.ov_folio;
+          return mismoProducto && (mismoPI || mismoCliente) && enAlmacen && sinOV;
+        });
+        return tarimasDelPI.length > 0;
+      });
+      if (ovsActivables.length === 0) return '';
+      return `
+        <div style="padding:12px 14px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div style="font-weight:700;color:#166534;font-size:13px;">🟢 ${ovsActivables.length} OV(s) listas para activarse</div>
+            <div style="font-size:11px;color:#475569;margin-top:2px;">Estas OVs están en "Esperando producción" pero su material ya está disponible. Click activar para pasarlas a "Por asignar tarimas".</div>
+            <div style="font-size:10px;color:#475569;margin-top:4px;">${ovsActivables.slice(0,3).map(o => `<span style="background:#fff;padding:2px 6px;border-radius:4px;margin-right:4px;font-weight:600;">${o.folio} - ${o.cliente_nombre}</span>`).join('')}${ovsActivables.length > 3 ? ` <span style="color:#94a3b8;">+${ovsActivables.length-3} más</span>` : ''}</div>
+          </div>
+          <button onclick="sincronizarOVsEsperando()" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🟢 Activar ${ovsActivables.length} OV(s)</button>
+        </div>
+      `;
+    })()}
     
     <!-- Tabs -->
     <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
@@ -3722,8 +3755,27 @@ window.imprimirRemisionPDF = (ovId) => {
 };
 
 // ============================================================
-// LISTA DE CARGA — DISEÑO INSTITUCIONAL (medidas precisas)
+// LISTA DE CARGA — DISEÑO INSTITUCIONAL (sin emojis, formas puras)
 // ============================================================
+
+// Helper: dibujar checkbox (cuadrado vacío) en PDF
+function _pdfCheckbox(doc, x, y, size) {
+  size = size || 3.5;
+  doc.setDrawColor(80, 80, 80);
+  doc.setLineWidth(0.4);
+  doc.setFillColor(255, 255, 255);
+  doc.rect(x, y, size, size, 'FD');
+}
+
+// Helper: dibujar flecha derecha simple (triángulo)
+function _pdfFlechaDerecha(doc, cx, cy, size, color) {
+  size = size || 6;
+  const c = color || [80, 80, 80];
+  doc.setFillColor(c[0], c[1], c[2]);
+  // Triángulo apuntando a la derecha
+  doc.triangle(cx - size/2, cy - size/2, cx - size/2, cy + size/2, cx + size/2, cy, 'F');
+}
+
 window.imprimirListaCargaPDF = (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
   if (!ov) { toast('OV no encontrada', 'error'); return; }
@@ -3742,7 +3794,6 @@ window.imprimirListaCargaPDF = (ovId) => {
   let y = _pdfHeaderEmpresa(docPDF, 'LISTA CARGA', ov.folio);
   
   // ===== TÍTULO PRINCIPAL =====
-  // y empieza en ~50, el título ocupa 18mm
   docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
   docPDF.rect(0, y, 210, 14, 'F');
   
@@ -3755,46 +3806,44 @@ window.imprimirListaCargaPDF = (ovId) => {
   docPDF.setFont('helvetica', 'normal');
   docPDF.text('DOCUMENTO INTERNO DE VERIFICACIÓN PARA EMBARQUE', 105, y + 11, { align: 'center' });
   
-  doc_PDF_NoTextoNegro(docPDF);
+  docPDF.setTextColor(0, 0, 0);
   y += 18;
   
-  // ===== BANNER RUTA (compacto) =====
-  // Bloque verde + flecha + bloque azul: 14mm de alto
+  // ===== BANNER RUTA con flecha gráfica =====
+  // Origen (verde)
   docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-  docPDF.roundedRect(14, y, 88, 14, 2, 2, 'F');
+  docPDF.roundedRect(14, y, 82, 16, 2, 2, 'F');
+  
+  // Flecha en el centro (gráfica con triángulo)
+  _pdfFlechaDerecha(docPDF, 105, y + 8, 8, _COL_AZUL_OSCURO);
+  
+  // Destino (azul)
   docPDF.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
-  docPDF.roundedRect(108, y, 88, 14, 2, 2, 'F');
+  docPDF.roundedRect(114, y, 82, 16, 2, 2, 'F');
   
-  // Flecha
-  docPDF.setFontSize(16);
-  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.text('▶', 105, y + 9, { align: 'center' });
-  
-  // Origen
+  // Texto Origen
   docPDF.setTextColor(255, 255, 255);
-  docPDF.setFontSize(6.5);
-  docPDF.text('ORIGEN', 18, y + 4.5);
-  docPDF.setFontSize(11);
+  docPDF.setFontSize(7);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text(ov.cedis || '—', 18, y + 10);
+  docPDF.text('ORIGEN', 18, y + 5);
+  docPDF.setFontSize(11);
+  docPDF.text(ov.cedis || '—', 18, y + 12);
   
-  // Destino
-  docPDF.setFont('helvetica', 'normal');
-  docPDF.setFontSize(6.5);
-  docPDF.text('DESTINO', 112, y + 4.5);
-  docPDF.setFontSize(11);
+  // Texto Destino
+  docPDF.setFontSize(7);
   docPDF.setFont('helvetica', 'bold');
+  docPDF.text('DESTINO', 118, y + 5);
+  docPDF.setFontSize(10);
   const cliNombre = ov.cliente_nombre || '—';
-  docPDF.text(cliNombre.length > 32 ? cliNombre.substring(0,32)+'…' : cliNombre, 112, y + 10);
+  // Truncar más para que quepa bien
+  docPDF.text(cliNombre.length > 38 ? cliNombre.substring(0,35)+'...' : cliNombre, 118, y + 12);
   
-  doc_PDF_NoTextoNegro(docPDF);
-  y += 18;
+  docPDF.setTextColor(0, 0, 0);
+  y += 20;
   
-  // ===== 4 CARDS DE INFO RÁPIDA (compactas) =====
-  // Cada card 43.5mm ancho, 14mm alto
+  // ===== 4 CARDS DE INFO RÁPIDA =====
   const cardW = 43.5;
-  const cardH = 14;
+  const cardH = 16;
   const cards = [
     { label: 'OV', value: ov.folio, color: _COL_AZUL },
     { label: 'PI ORIGEN', value: ov.pedido_folio || '—', color: _COL_AZUL_OSCURO },
@@ -3803,44 +3852,64 @@ window.imprimirListaCargaPDF = (ovId) => {
   ];
   cards.forEach((c, i) => {
     const x = 14 + (i * (cardW + 2));
+    // Borde superior con color
     docPDF.setFillColor(c.color[0], c.color[1], c.color[2]);
-    docPDF.rect(x, y, cardW, 2.5, 'F');
+    docPDF.rect(x, y, cardW, 3, 'F');
+    // Cuerpo blanco con borde
     docPDF.setFillColor(255, 255, 255);
     docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.setLineWidth(0.3);
-    docPDF.rect(x, y + 2.5, cardW, cardH - 2.5, 'FD');
+    docPDF.rect(x, y + 3, cardW, cardH - 3, 'FD');
+    // Label
     docPDF.setFontSize(6.5);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    docPDF.text(c.label, x + cardW/2, y + 6.5, { align: 'center' });
+    docPDF.text(c.label, x + cardW/2, y + 7.5, { align: 'center' });
+    // Valor
     docPDF.setFontSize(11);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(c.color[0], c.color[1], c.color[2]);
-    docPDF.text(c.value, x + cardW/2, y + 12, { align: 'center' });
+    docPDF.text(c.value, x + cardW/2, y + 13, { align: 'center' });
   });
-  doc_PDF_NoTextoNegro(docPDF);
-  y += cardH + 3;
+  docPDF.setTextColor(0, 0, 0);
+  y += cardH + 4;
   
-  // ===== BANNER REMISIÓN/FACTURA/FECHA =====
+  // ===== BANNER REMISIÓN/FACTURA/FECHA (sin emojis) =====
   docPDF.setFillColor(254, 249, 195);
-  docPDF.roundedRect(14, y, 182, 8, 2, 2, 'F');
+  docPDF.roundedRect(14, y, 182, 9, 2, 2, 'F');
+  
+  // Línea divisoria izquierda amarilla
+  docPDF.setFillColor(245, 158, 11);
+  docPDF.rect(14, y, 2, 9, 'F');
+  
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setTextColor(146, 64, 14);
-  docPDF.text(`📄 Remisión: ${ov.remision || 'PENDIENTE'}`, 18, y + 5.5);
-  docPDF.text(`💰 Factura: ${ov.factura || 'PENDIENTE'}`, 80, y + 5.5);
-  docPDF.text(`📅 ${new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })}`, 145, y + 5.5);
-  doc_PDF_NoTextoNegro(docPDF);
-  y += 12;
+  docPDF.text('REMISIÓN:', 19, y + 6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.remision || 'PENDIENTE', 39, y + 6);
   
-  // ===== TÍTULO + TABLA TARIMAS =====
-  y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS A CARGAR — VERIFICAR ✓ AL CARGAR', _COL_AZUL_OSCURO);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('FACTURA:', 80, y + 6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(ov.factura || 'PENDIENTE', 97, y + 6);
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('FECHA:', 145, y + 6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' }), 158, y + 6);
+  
+  docPDF.setTextColor(0, 0, 0);
+  y += 13;
+  
+  // ===== TÍTULO + TABLA TARIMAS (sin checkbox emoji - usar texto plano "[ ]") =====
+  y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS A CARGAR - VERIFICAR AL CARGAR', _COL_AZUL_OSCURO);
   
   docPDF.autoTable({
     startY: y,
-    head: [['☐', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cant.', 'UM', 'Kg', 'Verifica']],
+    head: [['', '#', 'Tarima', 'Lote', 'ODP', 'Producto', 'Cant.', 'UM', 'Kg', 'Verifica']],
     body: tarimas.map((t, i) => [
-      '☐',
+      '', // celda vacía donde dibujaremos checkbox después
       i + 1,
       `T${String(t.numero_tarima || '').padStart(2, '0')}`,
       t.lote_codigo || '—',
@@ -3858,10 +3927,10 @@ window.imprimirListaCargaPDF = (ovId) => {
       halign: 'center', cellPadding: 2.5, lineColor: _COL_AZUL_OSCURO, lineWidth: 0.2
     },
     footStyles: { fillColor: _COL_VERDE, textColor: 255, fontSize: 9, fontStyle: 'bold', cellPadding: 2.5 },
-    bodyStyles: { fontSize: 8.5, minCellHeight: 7, cellPadding: 2, lineColor: [220,220,220], lineWidth: 0.1 },
+    bodyStyles: { fontSize: 8.5, minCellHeight: 8, cellPadding: 2, lineColor: [220,220,220], lineWidth: 0.1 },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
-      0: { cellWidth: 8, halign: 'center', fontSize: 12 },
+      0: { cellWidth: 8, halign: 'center' },
       1: { cellWidth: 7, halign: 'center', textColor: _COL_GRIS_MEDIO },
       2: { cellWidth: 13, halign: 'center', fontStyle: 'bold' },
       3: { cellWidth: 24 },
@@ -3872,15 +3941,27 @@ window.imprimirListaCargaPDF = (ovId) => {
       8: { cellWidth: 17, halign: 'right' },
       9: { cellWidth: 28 }
     },
-    margin: { left: 14, right: 14 }
+    margin: { left: 14, right: 14 },
+    didDrawCell: function(data) {
+      // Dibujar checkbox real en la columna 0 del body
+      if (data.section === 'body' && data.column.index === 0) {
+        const cellX = data.cell.x + (data.cell.width / 2) - 2;
+        const cellY = data.cell.y + (data.cell.height / 2) - 2;
+        _pdfCheckbox(docPDF, cellX, cellY, 4);
+      }
+      // Checkbox en header también
+      if (data.section === 'head' && data.column.index === 0) {
+        // No dibujar nada, dejar vacío
+      }
+    }
   });
   
   y = docPDF.lastAutoTable.finalY + 4;
   
-  // ===== CHECKLIST DE VERIFICACIÓN =====
+  // ===== CHECKLIST DE VERIFICACIÓN (con checkboxes reales) =====
   y = _pdfSeccionTitulo(docPDF, y, 'CHECKLIST DE VERIFICACIÓN', _COL_AZUL_OSCURO);
   
-  const checklistH = 18;
+  const checklistH = 22;
   docPDF.setFillColor(240, 253, 244);
   docPDF.setDrawColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
   docPDF.setLineWidth(0.4);
@@ -3889,23 +3970,25 @@ window.imprimirListaCargaPDF = (ovId) => {
   docPDF.setFontSize(8.5);
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(0, 0, 0);
-  // 6 ítems en 3 columnas × 2 filas
+  // 6 ítems en 2 columnas × 3 filas (más espacio)
   const checks = [
     'Tarimas verificadas vs lista',
-    'Tarimas en buen estado',
-    'Cargadas correctamente',
     'Sello de seguridad correcto',
-    'Cantidad/kg coinciden',
-    'Documentación entregada'
+    'Tarimas en buen estado',
+    'Cantidad y kg coinciden',
+    'Cargadas correctamente en vehículo',
+    'Documentación entregada al transportista'
   ];
-  // 3 columnas: 14+5=19, 14+62=76, 14+121=135
-  // 2 filas: y+5, y+12
+  // 2 columnas, 3 filas
+  // Col 1: x=20 (texto en x=27)
+  // Col 2: x=110 (texto en x=117)
   checks.forEach((c, i) => {
-    const colIdx = Math.floor(i / 2);
-    const rowIdx = i % 2;
-    const x = 19 + (colIdx * 60);
-    const yi = y + 6 + (rowIdx * 7);
-    docPDF.text(`☐  ${c}`, x, yi);
+    const colIdx = i % 2;
+    const rowIdx = Math.floor(i / 2);
+    const xCheck = 20 + (colIdx * 90);
+    const yLine = y + 6 + (rowIdx * 6);
+    _pdfCheckbox(docPDF, xCheck, yLine - 2.5, 3.5);
+    docPDF.text(c, xCheck + 6, yLine);
   });
   
   y += checklistH + 4;
@@ -3944,7 +4027,7 @@ window.imprimirListaCargaPDF = (ovId) => {
   y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS DE CONFORMIDAD', _COL_AZUL_OSCURO);
   
   const firmaW = 58;
-  const firmaH = 26;
+  const firmaH = 28;
   const firmas = [
     { titulo: 'CARGADOR', subtitulo: 'NewPack' },
     { titulo: 'VERIFICÓ', subtitulo: 'CEDIS' },
@@ -3952,10 +4035,10 @@ window.imprimirListaCargaPDF = (ovId) => {
   ];
   firmas.forEach((f, i) => {
     const x = 14 + (i * (firmaW + 2));
-    // Header con fondo
+    // Header con fondo azul oscuro
     docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
     docPDF.rect(x, y, firmaW, 5, 'F');
-    // Cuerpo
+    // Cuerpo blanco
     docPDF.setFillColor(255, 255, 255);
     docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.setLineWidth(0.3);
@@ -3965,25 +4048,25 @@ window.imprimirListaCargaPDF = (ovId) => {
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(255, 255, 255);
     docPDF.text(f.titulo, x + firmaW/2, y + 3.5, { align: 'center' });
-    // Línea firma
+    // Línea de firma
     docPDF.setDrawColor(0, 0, 0);
     docPDF.setLineWidth(0.5);
-    docPDF.line(x + 4, y + 16, x + firmaW - 4, y + 16);
+    docPDF.line(x + 4, y + 18, x + firmaW - 4, y + 18);
     // Subtítulo
     docPDF.setFontSize(8);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
-    docPDF.text(f.subtitulo, x + firmaW/2, y + 20, { align: 'center' });
+    docPDF.text(f.subtitulo, x + firmaW/2, y + 22, { align: 'center' });
     docPDF.setFontSize(6.5);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    docPDF.text('Nombre y firma', x + firmaW/2, y + 23.5, { align: 'center' });
+    docPDF.text('Nombre y firma', x + firmaW/2, y + 25.5, { align: 'center' });
   });
   
   y += firmaH + 4;
   
-  // ===== INFO ADICIONAL: hora salida, sello, observaciones =====
-  if (y < 268) {
+  // ===== INFO ADICIONAL =====
+  if (y < 270) {
     const adicionalH = 14;
     docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
     docPDF.roundedRect(14, y, 182, adicionalH, 2, 2, 'F');
@@ -4003,8 +4086,8 @@ window.imprimirListaCargaPDF = (ovId) => {
     docPDF.setFont('helvetica', 'bold');
     docPDF.text('Observaciones:', 18, y + 11);
     docPDF.setFont('helvetica', 'normal');
-    const obs = ov.observaciones_embarque || '_______________________________________________________';
-    docPDF.text(obs.substring(0, 95), 47, y + 11);
+    const obs = ov.observaciones_embarque || '____________________________________________________________________';
+    docPDF.text(obs.substring(0, 100), 47, y + 11);
   }
   
   _pdfPiePagina(docPDF);
@@ -4013,14 +4096,119 @@ window.imprimirListaCargaPDF = (ovId) => {
   _mostrarVistaPreviaPDF(docPDF, filename, `Lista de Carga ${ov.folio} · ${ov.cliente_nombre || ''}`);
 };
 
-// Helper para resetear color a negro
-function doc_PDF_NoTextoNegro(doc) {
-  doc.setTextColor(0, 0, 0);
-}
-
 // ============================================================
 // MIGRACIÓN: OVs legacy → nuevo flujo Embarques
 // ============================================================
+// ============================================================
+// SINCRONIZADOR: Activar OVs esperando_produccion que ya tienen material
+// ============================================================
+window.sincronizarOVsEsperando = async () => {
+  // Buscar todas las OVs esperando produccion
+  const ovsEsperando = (state.ordenes_venta || []).filter(o => o.estatus === 'esperando_produccion');
+  if (ovsEsperando.length === 0) { toast('No hay OVs esperando producción', 'info'); return; }
+  
+  // Para cada una, verificar si su PI ya tiene tarimas disponibles (búsqueda flexible)
+  const ovsActivables = [];
+  ovsEsperando.forEach(ov => {
+    const tarimasDelPI = (state.tarimas || []).filter(t => {
+      const mismoProducto = t.producto_codigo === ov.producto_codigo;
+      const mismoPI = t.pedido_id === ov.pedido_id || t.pedido_folio === ov.pedido_folio;
+      const mismoCliente = t.cliente_codigo === ov.cliente_codigo;
+      const enAlmacen = ['en_almacen_planta','en_cedis_mty','en_cedis_mex','en_transito_cedis_mty','en_transito_cedis_mex'].includes(t.estatus);
+      const sinOV = !t.ov_id && !t.ov_folio;
+      return mismoProducto && (mismoPI || mismoCliente) && enAlmacen && sinOV;
+    });
+    if (tarimasDelPI.length > 0) {
+      ovsActivables.push({ ov, tarimasDisponibles: tarimasDelPI.length });
+    }
+  });
+  
+  if (ovsActivables.length === 0) {
+    toast(`${ovsEsperando.length} OV(s) en espera, pero ninguna tiene material listo aún`, 'info');
+    return;
+  }
+  
+  if (!confirm(`Activar ${ovsActivables.length} OV(s) que ya tienen material listo?\n\n${ovsActivables.map(x => `• ${x.ov.folio} - ${x.ov.cliente_nombre} (${x.tarimasDisponibles} tarimas listas)`).join('\n')}\n\nPasarán de "esperando producción" → "pendiente asignar".`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    ovsActivables.forEach(({ov}) => {
+      batch.update(doc(db, 'ordenes_venta', ov.id), {
+        estatus: 'pendiente_asignar',
+        material_disponible_at: serverTimestamp(),
+        sincronizado_manualmente: true,
+        updated_at: serverTimestamp()
+      });
+      ['CS', 'KAM', 'CEDMTY', 'CEO'].forEach(depto => {
+        const ref = doc(collection(db, 'notificaciones'));
+        batch.set(ref, {
+          titulo: `🟢 ${ov.folio} lista para asignar tarimas`,
+          mensaje: `Material de ${ov.cliente_nombre} ya está disponible · ${ov.producto_codigo}`,
+          depto_destino: depto, tipo: 'success', folio_ref: ov.folio,
+          created_at: serverTimestamp()
+        });
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${ovsActivables.length} OV(s) activadas correctamente`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// AUTO-SINCRONIZADOR: igual pero silencioso, ejecutado en background
+window.autoSincronizarOVsEsperando = async () => {
+  const ovsEsperando = (state.ordenes_venta || []).filter(o => o.estatus === 'esperando_produccion');
+  if (ovsEsperando.length === 0) return;
+  
+  const ovsActivables = [];
+  ovsEsperando.forEach(ov => {
+    // Búsqueda más flexible: por pedido_id O pedido_folio O por producto+cliente
+    const tarimasDelPI = (state.tarimas || []).filter(t => {
+      const mismoProducto = t.producto_codigo === ov.producto_codigo;
+      const mismoPI = t.pedido_id === ov.pedido_id || t.pedido_folio === ov.pedido_folio;
+      const mismoCliente = t.cliente_codigo === ov.cliente_codigo;
+      const enAlmacen = ['en_almacen_planta','en_cedis_mty','en_cedis_mex','en_transito_cedis_mty','en_transito_cedis_mex'].includes(t.estatus);
+      const sinOV = !t.ov_id && !t.ov_folio;
+      return mismoProducto && (mismoPI || mismoCliente) && enAlmacen && sinOV;
+    });
+    if (tarimasDelPI.length > 0) {
+      ovsActivables.push({ ov, tarimasDisponibles: tarimasDelPI.length });
+    }
+  });
+  
+  if (ovsActivables.length === 0) return;
+  
+  // Ejecutar en silencio (sin confirm)
+  try {
+    const batch = writeBatch(db);
+    ovsActivables.forEach(({ov, tarimasDisponibles}) => {
+      batch.update(doc(db, 'ordenes_venta', ov.id), {
+        estatus: 'pendiente_asignar',
+        material_disponible_at: serverTimestamp(),
+        sincronizado_auto: true,
+        updated_at: serverTimestamp()
+      });
+      ['CS', 'KAM', 'CEDMTY', 'CEO'].forEach(depto => {
+        const ref = doc(collection(db, 'notificaciones'));
+        batch.set(ref, {
+          titulo: `🟢 ${ov.folio} lista para asignar tarimas`,
+          mensaje: `Material de ${ov.cliente_nombre} ya está disponible · ${ov.producto_codigo} · ${tarimasDisponibles} tarima(s)`,
+          depto_destino: depto, tipo: 'success', folio_ref: ov.folio,
+          created_at: serverTimestamp()
+        });
+      });
+    });
+    await batch.commit();
+    toast(`🟢 ${ovsActivables.length} OV(s) activadas automáticamente: ${ovsActivables.map(x => x.ov.folio).join(', ')}`);
+  } catch (e) {
+    console.error('Auto-sincronización OVs falló:', e);
+  }
+};
+
 window.migrarOVsLegacy = async () => {
   const ovsLegacy = (state.ordenes_venta || []).filter(o => 
     o.estatus === 'pendiente' || 
@@ -4632,8 +4820,50 @@ window.abrirRecepcionOTI = async (otiId) => {
         created_at: serverTimestamp()
       });
     });
+    
+    // 3. TRIGGER AUTOMÁTICO: Activar OVs en 'esperando_produccion' que ya tengan tarimas disponibles
+    // Para cada PI que viene en este OTI, buscar OVs esperando produccion
+    const piIdsAfectados = new Set();
+    const piFoliosAfectados = new Set();
+    (oti.tarimas_ids || []).forEach(tid => {
+      const t = state.tarimas.find(x => x.id === tid);
+      if (t) {
+        if (t.pedido_id) piIdsAfectados.add(t.pedido_id);
+        if (t.pedido_folio) piFoliosAfectados.add(t.pedido_folio);
+      }
+    });
+    
+    // Buscar OVs que esperan producción de estos PIs
+    const ovsActivar = state.ordenes_venta.filter(ov => 
+      ov.estatus === 'esperando_produccion' &&
+      (piIdsAfectados.has(ov.pedido_id) || piFoliosAfectados.has(ov.pedido_folio))
+    );
+    
+    ovsActivar.forEach(ov => {
+      batch.update(doc(db, 'ordenes_venta', ov.id), {
+        estatus: 'pendiente_asignar',
+        material_disponible_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      // Notificar a CS y KAM y CEDIS
+      ['CS', 'KAM', 'CEDMTY', 'CEO'].forEach(depto => {
+        const ref = doc(collection(db, 'notificaciones'));
+        batch.set(ref, {
+          titulo: `🟢 ${ov.folio} lista para asignar tarimas`,
+          mensaje: `Material de ${ov.cliente_nombre} ya está en CEDIS-MTY · ${ov.producto_codigo}`,
+          depto_destino: depto, tipo: 'success', folio_ref: ov.folio,
+          created_at: serverTimestamp()
+        });
+      });
+    });
+    
     await batch.commit();
-    toast(`✅ ${oti.folio} recibido · ${oti.num_tarimas} tarima(s) en CEDIS-MTY`);
+    
+    let msg = `✅ ${oti.folio} recibido · ${oti.num_tarimas} tarima(s) en CEDIS-MTY`;
+    if (ovsActivar.length > 0) {
+      msg += ` · ${ovsActivar.length} OV(s) activadas para asignar tarimas`;
+    }
+    toast(msg);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
