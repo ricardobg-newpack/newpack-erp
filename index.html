@@ -2746,9 +2746,15 @@ function renderEmbarques() {
     .toLowerCase().includes(filtro)
   );
   
+  // OVs legacy (sin estatus nuevo) - normalizar a pendiente_asignar
+  const ovsLegacy = arr.filter(o => 
+    o.estatus === 'pendiente' || 
+    !['esperando_produccion','pendiente_asignar','preparando','lista_embarcar','por_cargar','enviada','entregada'].includes(o.estatus)
+  );
+  
   // Contadores
   const cnt = {
-    pendiente_asignar: arr.filter(o => o.estatus === 'pendiente_asignar').length,
+    pendiente_asignar: arr.filter(o => o.estatus === 'pendiente_asignar' || o.estatus === 'pendiente').length,
     esperando_produccion: arr.filter(o => o.estatus === 'esperando_produccion').length,
     preparando: arr.filter(o => o.estatus === 'preparando').length,
     lista_embarcar: arr.filter(o => o.estatus === 'lista_embarcar').length,
@@ -2757,7 +2763,17 @@ function renderEmbarques() {
     entregada: arr.filter(o => o.estatus === 'entregada').length,
   };
   
-  const filtered = arr.filter(o => o.estatus === subTab);
+  // Filtrado por tab incluyendo legacy
+  let filtered;
+  if (subTab === 'pendiente_asignar') {
+    filtered = arr.filter(o => o.estatus === 'pendiente_asignar' || o.estatus === 'pendiente');
+  } else {
+    filtered = arr.filter(o => o.estatus === subTab);
+  }
+  
+  // Detectar admin/CEO para ofrecer migración
+  const u = state.user;
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
   
   return `
     <!-- Búsqueda -->
@@ -2767,6 +2783,16 @@ function renderEmbarques() {
         <input class="input" id="filtro-embarques" style="flex:1;padding:10px;font-size:14px;font-weight:600;" placeholder="Buscar OV-XXXXX, PI-XXXXX, cliente, remisión, factura..." value="${filtro}" autocomplete="off" />
       </div>
     </div>
+    
+    ${esCEO && ovsLegacy.length > 0 ? `
+      <div style="padding:12px 14px;background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>
+          <div style="font-weight:700;color:#92400e;font-size:13px;">⚠️ ${ovsLegacy.length} OV(s) con estatus legacy</div>
+          <div style="font-size:11px;color:#475569;margin-top:2px;">Estas OVs se generaron antes del módulo Embarques. Migrarlas las hace aparecer en "Por asignar tarimas".</div>
+        </div>
+        <button onclick="migrarOVsLegacy()" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🔧 Migrar OVs legacy</button>
+      </div>
+    ` : ''}
     
     <!-- Tabs -->
     <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
@@ -2881,6 +2907,64 @@ function renderTarjetaOV(o, subTab) {
 }
 
 window.setSubTabEmbarques = (tab) => { state.subTabEmbarques = tab; render(); };
+
+// ============================================================
+// MIGRACIÓN: OVs legacy → nuevo flujo Embarques
+// ============================================================
+window.migrarOVsLegacy = async () => {
+  const ovsLegacy = (state.ordenes_venta || []).filter(o => 
+    o.estatus === 'pendiente' || 
+    !['esperando_produccion','pendiente_asignar','preparando','lista_embarcar','por_cargar','enviada','entregada'].includes(o.estatus)
+  );
+  if (ovsLegacy.length === 0) { toast('No hay OVs legacy para migrar', 'info'); return; }
+  if (!confirm(`Migrar ${ovsLegacy.length} OV(s) legacy?\n\nLas que tienen ODP vinculada → "esperando_produccion"\nLas demás → "pendiente_asignar"\n\nEsto las hará aparecer en el módulo Embarques.`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    let countAsignar = 0, countEsperando = 0;
+    for (let i = 0; i < ovsLegacy.length; i += 400) {
+      const batch = writeBatch(db);
+      const slice = ovsLegacy.slice(i, i + 400);
+      slice.forEach(o => {
+        // Buscar si tiene ODP vinculada en mismo PI con mismo producto
+        const odp = state.ordenes_produccion.find(odp => 
+          odp.pedido_id === o.pedido_id && 
+          odp.producto_codigo === o.producto_codigo &&
+          !['liberada_empaque','rechazada','en_almacen_planta','en_cedis_mty','en_cedis_mex','entregada'].includes(odp.estatus)
+        );
+        const tieneOdpAbierta = !!odp;
+        
+        const updates = {
+          // Garantizar campos nuevos
+          cantidad_solicitada: Number(o.cantidad_solicitada || o.cantidad) || 0,
+          cantidad_enviada: Number(o.cantidad_enviada) || 0,
+          tarimas_ids: o.tarimas_ids || [],
+          tipo_origen: o.tipo_origen || (tieneOdpAbierta ? 'producir' : 'stock'),
+          cedis: o.cedis || 'CEDIS-MTY',
+          updated_at: serverTimestamp()
+        };
+        
+        if (tieneOdpAbierta && updates.tipo_origen === 'producir') {
+          updates.estatus = 'esperando_produccion';
+          updates.odp_folio = odp.folio;
+          countEsperando++;
+        } else {
+          updates.estatus = 'pendiente_asignar';
+          countAsignar++;
+        }
+        
+        batch.update(doc(db, 'ordenes_venta', o.id), updates);
+      });
+      await batch.commit();
+    }
+    
+    toast(`✅ Migración completa: ${countAsignar} OVs por asignar, ${countEsperando} esperando producción`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
 
 // ============================================================
 // FUNCIONES OV: asignar, marcar lista, generar remisión, cargar, entregar
