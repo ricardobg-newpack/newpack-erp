@@ -2837,23 +2837,21 @@ function modalCapturarTurno() {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
               <div class="field" style="margin:0;">
                 <label class="field-label">✅ kg producidos *</label>
-                <input class="input" id="ct-prod" type="number" min="0" step="0.1" value="${f.producido_kg}" oninput="window.modalFormSet('producido_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;" />
+                <input class="input" id="ct-prod" type="number" min="0" step="0.1" value="${f.producido_kg || ''}" oninput="window.modalFormSetSilent('producido_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;" />
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label">⚠ kg mermas</label>
-                <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg}" oninput="window.modalFormSet('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;color:#dc2626;" />
+                <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;color:#dc2626;" />
               </div>
             </div>
-            ${prodKg > 0 ? `
-              <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;">
-                Total turno: <strong>${fmtNum(prodKg + mermKg)} kg</strong> · Después de capturar: <strong>${fmtNum(totalProducidoKg + prodKg)} kg / ${fmtNum(metaKg)} kg</strong> (${((totalProducidoKg + prodKg)/metaKg*100).toFixed(1)}%)
-              </div>
-            ` : ''}
+            <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;font-style:italic;">
+              💡 Captura kg producidos y kg mermas de tu turno
+            </div>
           </div>
           
           <div class="field" style="margin-top:8px;">
             <label class="field-label">📝 Notas <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
-            <textarea class="input" id="ct-notas" style="min-height:50px;" oninput="window.modalFormSet('notas', this.value)" placeholder="Eventos, paros, observaciones...">${f.notas || ''}</textarea>
+            <textarea class="input" id="ct-notas" style="min-height:50px;" oninput="window.modalFormSetSilent('notas', this.value)" placeholder="Eventos, paros, observaciones...">${f.notas || ''}</textarea>
           </div>
           
           <!-- HISTORIAL TURNOS PREVIOS -->
@@ -2888,7 +2886,7 @@ function modalCapturarTurno() {
         </div>
         <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="guardarCapturaTurno('${odp.id}')" ${!camposListos ? 'disabled' : ''} style="background:#16a34a;">
+          <button class="btn-primary" onclick="guardarCapturaTurno('${odp.id}')" style="background:#16a34a;">
             ${ICONS.check} Guardar mi turno
           </button>
         </div>
@@ -2897,6 +2895,13 @@ function modalCapturarTurno() {
   `;
 }
 
+// Silenciosa: para inputs (no provoca render, no pierde cursor)
+window.modalFormSetSilent = (key, val) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm[key] = val;
+};
+
+// Con render: para botones y selects (sí provoca re-render)
 window.modalFormSet = (key, val) => {
   if (!state.modalForm) state.modalForm = {};
   state.modalForm[key] = val;
@@ -2913,8 +2918,18 @@ window.modalFormSetGrupo = (g) => {
 };
 
 window.guardarCapturaTurno = async (odpId) => {
-  const f = state.modalForm;
-  if (!f) return;
+  const f = state.modalForm || {};
+  
+  // Leer también del DOM por si los inputs silenciosos no actualizaron state
+  const prodDom = ($('#ct-prod')?.value || '').trim();
+  const mermDom = ($('#ct-merm')?.value || '').trim();
+  const notasDom = ($('#ct-notas')?.value || '').trim();
+  const fechaDom = ($('#ct-fecha')?.value || '').trim();
+  
+  if (prodDom) f.producido_kg = prodDom;
+  if (mermDom) f.mermas_kg = mermDom;
+  if (notasDom) f.notas = notasDom;
+  if (fechaDom) f.fecha = fechaDom;
   
   const odp = state.ordenes_produccion.find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
@@ -2925,12 +2940,12 @@ window.guardarCapturaTurno = async (odpId) => {
   
   // Validaciones
   if (!f.fecha) { toast('Selecciona fecha', 'error'); return; }
-  if (!f.turno) { toast('Selecciona turno', 'error'); return; }
-  if (!f.grupo) { toast('Selecciona grupo', 'error'); return; }
+  if (!f.turno) { toast('Selecciona turno (Día o Noche)', 'error'); return; }
+  if (!f.grupo) { toast('Selecciona grupo (A, B, C o D)', 'error'); return; }
   if (!f.operador_id) { toast('Selecciona operador', 'error'); return; }
   if (!f.supervisor_id) { toast('Selecciona supervisor', 'error'); return; }
   const prodKg = Number(f.producido_kg) || 0;
-  if (prodKg <= 0) { toast('Captura kg producidos', 'error'); return; }
+  if (prodKg <= 0) { toast('Captura kg producidos (debe ser mayor a 0)', 'error'); return; }
   
   const op = (state.operadores || []).find(o => o.id === f.operador_id);
   const sup = (state.supervisores || []).find(s => s.id === f.supervisor_id);
@@ -2999,269 +3014,177 @@ function modalCompletarProceso() {
   
   const um = (odp.um || 'kg').toLowerCase();
   const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
-  const esEnUM = (um === 'pza' || um === 'millar'); // necesita conversión
   
-  // Inicializar form
-  if (!state.modalForm) {
-    // Cantidad de entrada al proceso (en kg)
-    let entradaKg;
-    if (procesoAnterior) {
-      // Lo que produjo el proceso anterior (ya en kg)
-      entradaKg = Number(procesoAnterior.cantidad_producida_kg) || 
-                  window.convertirAKg(procesoAnterior.cantidad_producida, um, producto) || 
-                  Number(procesoAnterior.cantidad_producida) || 0;
-    } else {
-      // Primer proceso: usa la cantidad solicitada convertida a kg
-      entradaKg = Number(odp.cantidad_kg_produccion) || 
-                  window.convertirAKg(odp.cantidad, um, producto) || 
-                  Number(odp.cantidad) || 0;
-    }
-    
-    // Mermas acumuladas en kg (de procesos anteriores)
-    const mermasAcumKg = procesosCompletados.reduce((s, pc) => 
-      s + (Number(pc.mermas_kg) || 0), 0);
-    
-    state.modalForm = {
-      entrada_kg: Number(entradaKg.toFixed(2)),
-      mermas_acum_anteriores_kg: Number(mermasAcumKg.toFixed(2)),
-      producido_kg: '',
-      mermas_kg: '',
-      operador: state.user.nombre || '',
-      turno: '',
-      notas: ''
-    };
+  // ⭐ ACUMULAR desde las capturas por turno del proceso actual
+  const capturasProcActual = (state.capturas_produccion || []).filter(c => 
+    c.odp_id === odp.id && c.proceso === ruta[idx]
+  );
+  
+  const totalProducidoKg = capturasProcActual.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const totalMermasKg = capturasProcActual.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  
+  // Entrada al proceso (kg de referencia para calcular %)
+  let entradaKg;
+  if (procesoAnterior) {
+    entradaKg = Number(procesoAnterior.cantidad_producida_kg) || 
+                window.convertirAKg(procesoAnterior.cantidad_producida, um, producto) || 
+                Number(procesoAnterior.cantidad_producida) || 0;
+  } else {
+    entradaKg = Number(odp.cantidad_kg_produccion) || 
+                window.convertirAKg(odp.cantidad, um, producto) || 
+                Number(odp.cantidad) || 0;
   }
-  const f = state.modalForm;
   
-  // Identificar si es proceso de extrusión (primer proceso, regla -2%/+5%)
-  // o proceso posterior (regla cuadre estricto + 3% merma máxima)
+  // Mermas acumuladas en kg (de procesos anteriores)
+  const mermasAcumAnterioresKg = procesosCompletados.reduce((s, pc) => 
+    s + (Number(pc.mermas_kg) || 0), 0);
+  
+  // Cálculos automáticos
+  const totalKg = totalProducidoKg + totalMermasKg;
+  const pctProducido = entradaKg > 0 ? (totalProducidoKg / entradaKg * 100) : 0;
+  const pctMerma = entradaKg > 0 ? (totalMermasKg / entradaKg * 100) : 0;
+  
+  // Validaciones según tipo de proceso
   const esExtrusion = ruta[idx] === 'P1-EXT';
+  let cuadra = true, colorCuadre = '#16a34a', statusTxt = '', warningTxt = '';
   
-  // Cálculos en vivo
-  const prodKg = Number(f.producido_kg) || 0;
-  const mermKg = Number(f.mermas_kg) || 0;
-  const totalKg = prodKg + mermKg;
-  
-  let cuadra, colorCuadre, statusTxt, warningTxt;
-  let bloquear = false;
-  let limiteSuperior, limiteInferior, mermaMaxKg, pctProd, pctMerma;
-  
-  if (esExtrusion) {
-    // P1-EXT: producido debe estar entre -2% y +5% de la cantidad solicitada
-    limiteInferior = f.entrada_kg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
-    limiteSuperior = f.entrada_kg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
-    pctProd = f.entrada_kg > 0 ? ((prodKg - f.entrada_kg) / f.entrada_kg * 100) : 0;
-    
-    if (prodKg === 0) {
-      cuadra = false;
-      colorCuadre = '#94a3b8';
-      statusTxt = 'Pendiente captura';
-      warningTxt = '';
-    } else if (prodKg > limiteSuperior) {
-      cuadra = false;
+  if (totalProducidoKg === 0 && totalMermasKg === 0) {
+    cuadra = false;
+    colorCuadre = '#94a3b8';
+    statusTxt = '⚠ Sin capturas todavía';
+    warningTxt = 'Captura al menos un turno antes de cerrar el proceso';
+  } else if (esExtrusion) {
+    const limiteSuperior = entradaKg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
+    const limiteInferior = entradaKg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
+    if (totalProducidoKg > limiteSuperior) {
       colorCuadre = '#f59e0b';
-      statusTxt = `⚠ EXCEDE +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}%`;
-      warningTxt = `⚠ Producido excede el máximo recomendado (+${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}% = ${fmtNum(limiteSuperior)} kg). Puedes continuar pero se pedirá motivo.`;
-    } else if (prodKg < limiteInferior) {
-      cuadra = false;
+      statusTxt = `⚠ Producido excede +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}%`;
+      warningTxt = `Acumulado supera el máximo recomendado (${fmtNum(limiteSuperior)} kg). Puedes continuar.`;
+    } else if (totalProducidoKg < limiteInferior) {
       colorCuadre = '#f59e0b';
-      statusTxt = `⚠ Bajo el -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}%`;
-      warningTxt = `⚠ Producido está bajo el mínimo (${fmtNum(limiteInferior)} kg). Pedirá confirmación.`;
+      statusTxt = `⚠ Producido bajo el -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}%`;
+      warningTxt = `Acumulado está bajo el mínimo (${fmtNum(limiteInferior)} kg).`;
     } else {
-      cuadra = true;
       colorCuadre = '#16a34a';
-      statusTxt = `✓ Dentro del rango (${pctProd >= 0 ? '+' : ''}${pctProd.toFixed(2)}%)`;
-      warningTxt = '';
+      statusTxt = `✓ Dentro del rango (${pctProducido >= 0 ? '+' : ''}${(pctProducido - 100).toFixed(2)}%)`;
     }
   } else {
-    // Procesos posteriores: producido NO puede exceder entrada + mermas ≤ 3% de la entrada
-    mermaMaxKg = f.entrada_kg * TOLERANCIAS.MERMA_MAX_PCT;
-    pctMerma = f.entrada_kg > 0 ? (mermKg / f.entrada_kg * 100) : 0;
-    
-    if (prodKg === 0 && mermKg === 0) {
-      cuadra = false;
-      colorCuadre = '#94a3b8';
-      statusTxt = 'Pendiente captura';
-      warningTxt = '';
-    } else if (prodKg > f.entrada_kg + 0.5) {
-      cuadra = false;
-      colorCuadre = '#dc2626';
-      statusTxt = '❌ Excede entrada';
-      warningTxt = `❌ Producido (${fmtNum(prodKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg). Físicamente imposible.`;
-      bloquear = true;
-    } else if (mermKg > mermaMaxKg + 0.01) {
-      cuadra = false;
+    // Procesos posteriores: merma máxima 3%
+    const mermaMaxKg = entradaKg * TOLERANCIAS.MERMA_MAX_PCT;
+    if (totalMermasKg > mermaMaxKg) {
       colorCuadre = '#f59e0b';
-      statusTxt = `⚠ Mermas > ${(TOLERANCIAS.MERMA_MAX_PCT*100)}%`;
-      warningTxt = `⚠ Mermas (${fmtNum(mermKg)} kg = ${pctMerma.toFixed(2)}%) exceden el máximo recomendado (${(TOLERANCIAS.MERMA_MAX_PCT*100)}% = ${fmtNum(mermaMaxKg)} kg). Puedes continuar pero se pedirá motivo.`;
+      statusTxt = `⚠ Merma > ${(TOLERANCIAS.MERMA_MAX_PCT*100)}%`;
+      warningTxt = `Mermas (${fmtNum(totalMermasKg)} kg) exceden el máximo permitido (${fmtNum(mermaMaxKg)} kg = ${(TOLERANCIAS.MERMA_MAX_PCT*100)}% de entrada).`;
     } else {
-      const diff = f.entrada_kg - totalKg;
-      if (Math.abs(diff) < 0.5) {
-        cuadra = true;
-        colorCuadre = '#16a34a';
-        statusTxt = '✓ Cuadra';
-        warningTxt = '';
-      } else {
-        cuadra = false;
-        colorCuadre = '#f59e0b';
-        statusTxt = `⚠ Diferencia: ${diff >= 0 ? '+' : ''}${fmtNum(diff)} kg`;
-        warningTxt = '⚠ Hay material sin contabilizar. Pedirá confirmación.';
-      }
+      colorCuadre = '#16a34a';
+      statusTxt = `✓ Mermas dentro de tolerancia (${pctMerma.toFixed(2)}%)`;
     }
   }
   
-  // Conversión a UM si aplica
-  const pesoMillar = window.calcularPesoMillar(producto);
-  const pesoPieza = window.calcularPesoPieza(producto);
-  let prodEnUM = 0;
-  if (um === 'millar' && pesoMillar > 0) prodEnUM = Math.round((prodKg / pesoMillar) * 1000) / 1000;
-  else if (um === 'pza' && pesoPieza > 0) prodEnUM = Math.round(prodKg / pesoPieza);
+  // Agrupación de capturas por turno
+  const totalKgCapturado = capturasProcActual.reduce((s, c) => s + (Number(c.producido_kg) || 0) + (Number(c.mermas_kg) || 0), 0);
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:620px;">
+      <div class="modal" style="max-width:720px;">
         <div class="modal-header">
-          <h2 style="font-size:18px;font-weight:800;">${esUltimo ? '🏁 Terminar' : '✅ Cerrar'} ${procActual.icono} ${procActual.nombre}</h2>
+          <h2 style="font-size:18px;font-weight:800;">${esUltimo ? '🏁 Terminar' : '➡ Cerrar'} ${procActual.icono} ${procActual.nombre}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
           
-          <div style="padding:12px;background:${procActual.color}11;border-radius:10px;margin-bottom:12px;font-size:12px;border-left:4px solid ${procActual.color};">
-            <strong>${odp.folio}</strong> • ${odp.cliente_nombre} • <span class="text-mono" style="font-size:11px;">${odp.producto_codigo}</span>
-          </div>
-          
-          <!-- Estado actual: Entrada + Mermas acumuladas -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-            <div style="padding:10px;background:#eff6ff;border-radius:8px;border:1px solid #bfdbfe;">
-              <div style="font-size:9px;color:#1e40af;font-weight:700;text-transform:uppercase;">${esExtrusion ? 'Cantidad solicitada' : 'Entrada al proceso'}</div>
-              <div style="font-size:18px;font-weight:800;color:#1e40af;">${fmtNum(f.entrada_kg)} kg</div>
-              ${esEnUM ? `<div style="font-size:10px;color:#3b82f6;">≈ ${fmtNum(um === 'millar' ? f.entrada_kg / pesoMillar : f.entrada_kg / pesoPieza)} ${UM_LABELS[um]}</div>` : ''}
-              ${procesoAnterior ? `<div style="font-size:9px;color:#64748b;margin-top:2px;">desde ${getProc(procesoAnterior.codigo)?.codigo || ''}</div>` : '<div style="font-size:9px;color:#64748b;margin-top:2px;">cantidad de la ODP</div>'}
-            </div>
-            <div style="padding:10px;background:#fef3c7;border-radius:8px;border:1px solid #fde68a;">
-              <div style="font-size:9px;color:#92400e;font-weight:700;text-transform:uppercase;">Mermas acumuladas</div>
-              <div style="font-size:18px;font-weight:800;color:#92400e;">${fmtNum(f.mermas_acum_anteriores_kg)} kg</div>
-              <div style="font-size:9px;color:#92400e;margin-top:2px;">de procesos anteriores</div>
-            </div>
-          </div>
-          
-          <!-- REGLAS DEL PROCESO -->
-          ${esExtrusion ? `
-            <div style="padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;margin-bottom:12px;border-left:4px solid #f59e0b;">
-              <strong>📐 Reglas Extrusión:</strong> Producido permitido entre 
-              <strong style="color:#dc2626;">${fmtNum(limiteInferior)} kg</strong> 
-              (-${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}%) y 
-              <strong style="color:#16a34a;">${fmtNum(limiteSuperior)} kg</strong> 
-              (+${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}%). 
-              Es OK producir más de lo solicitado para que pase suficiente al siguiente proceso.
-            </div>
-          ` : `
-            <div style="padding:10px;background:#dbeafe;border-radius:8px;font-size:11px;margin-bottom:12px;border-left:4px solid #3b82f6;">
-              <strong>📐 Reglas ${procActual.nombre}:</strong> Producido + mermas debe igualar la entrada. 
-              Mermas máximas: <strong>${(TOLERANCIAS.MERMA_MAX_PCT*100)}%</strong> = 
-              <strong style="color:#dc2626;">${fmtNum(mermaMaxKg)} kg</strong>. 
-              No se puede producir más de la entrada.
-            </div>
-          `}
-          
-          <!-- CAPTURA EN KG -->
-          <div style="padding:14px;background:#f0fdf4;border-radius:10px;border:2px solid #16a34a;margin-bottom:12px;">
-            <div style="font-size:12px;font-weight:700;color:#16a34a;margin-bottom:8px;">⚖️ Captura en kg (báscula)</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <!-- INFO ODP -->
+          <div style="padding:14px;background:${procActual.color}11;border-left:4px solid ${procActual.color};border-radius:10px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:10px;">
               <div>
-                <label class="field-label" style="font-size:10px;">Producido en kg *</label>
-                <input class="input form-comp" data-field="producido_kg" type="number" min="0" step="0.01" value="${f.producido_kg}" placeholder="0.00" autocomplete="off" />
-                ${esEnUM ? `<div id="comp-prod-um" style="font-size:10px;color:#16a34a;margin-top:4px;font-weight:600;">${prodKg > 0 ? `≈ ${fmtNum(prodEnUM)} ${UM_LABELS[um]}` : ''}</div>` : ''}
+                <div class="text-mono" style="font-size:15px;font-weight:800;">${odp.folio}</div>
+                <div style="font-size:13px;font-weight:600;margin-top:2px;">${odp.cliente_nombre} · ${odp.producto_codigo}</div>
+                <div style="font-size:11px;color:#475569;margin-top:2px;">Entrada al proceso: <strong>${fmtNum(entradaKg)} kg</strong></div>
               </div>
-              <div>
-                <label class="field-label" style="font-size:10px;">Mermas en kg *</label>
-                <input class="input form-comp" data-field="mermas_kg" type="number" min="0" step="0.01" value="${f.mermas_kg}" placeholder="0.00" autocomplete="off" />
-                ${!esExtrusion ? `<div id="comp-merma-pct" style="font-size:10px;color:${pctMerma > TOLERANCIAS.MERMA_MAX_PCT*100 ? '#dc2626' : '#16a34a'};margin-top:4px;font-weight:600;">${mermKg > 0 ? `${pctMerma.toFixed(2)}% de la entrada` : ''}</div>` : ''}
+              <div style="text-align:right;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;">MÁQUINA</div>
+                <div class="text-mono" style="font-size:14px;font-weight:800;">${(odp.maquinas_asignadas && odp.maquinas_asignadas[ruta[idx]]) || odp.maquina_codigo || '—'}</div>
               </div>
             </div>
           </div>
           
-          <!-- VALIDACIÓN/CUADRE -->
-          <div id="comp-cuadre-box" style="padding:12px;background:${colorCuadre}11;border:2px solid ${colorCuadre};border-radius:10px;margin-bottom:12px;font-size:12px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-              <strong style="color:${colorCuadre};">${esExtrusion ? 'Validación Extrusión' : 'Cuadre del proceso'}</strong>
-              <strong id="comp-cuadre-status" style="color:${colorCuadre};font-size:13px;">${statusTxt}</strong>
+          <!-- RESUMEN ACUMULADO -->
+          <div style="padding:16px;background:#f0fdf4;border:2px solid ${colorCuadre};border-radius:12px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+              <span style="font-weight:800;color:${colorCuadre};font-size:14px;">📊 Acumulado de ${capturasProcActual.length} turno(s) capturado(s)</span>
+              <span style="background:${colorCuadre};color:#fff;padding:4px 12px;border-radius:99px;font-size:11px;font-weight:800;">${statusTxt}</span>
             </div>
-            <div id="comp-cuadre-detalle" style="margin-top:6px;font-size:11px;color:#475569;">
-              ${esExtrusion ? `
-                Solicitado: <strong>${fmtNum(f.entrada_kg)} kg</strong> · 
-                Producido: <strong id="comp-cuadre-prod">${fmtNum(prodKg)} kg</strong> 
-                <span id="comp-cuadre-pctprod" style="color:${colorCuadre};font-weight:700;">${prodKg > 0 ? `(${pctProd >= 0 ? '+' : ''}${pctProd.toFixed(2)}%)` : ''}</span>
-              ` : `
-                Entrada: <strong>${fmtNum(f.entrada_kg)} kg</strong> = 
-                Producido: <strong id="comp-cuadre-prod">${fmtNum(prodKg)} kg</strong> + 
-                Mermas: <strong id="comp-cuadre-merm">${fmtNum(mermKg)} kg</strong>
-                <span id="comp-cuadre-diff" style="float:right;color:${colorCuadre};font-weight:700;">
-                  ${cuadra ? '' : `Diferencia: ${(f.entrada_kg - totalKg) >= 0 ? '+' : ''}${fmtNum(f.entrada_kg - totalKg)} kg`}
-                </span>
-              `}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+              <div style="background:#fff;padding:14px;border-radius:8px;border:1px solid #e2e8f0;">
+                <div style="font-size:11px;color:#64748b;font-weight:700;">✅ TOTAL PRODUCIDO</div>
+                <div style="font-size:28px;font-weight:800;color:#16a34a;margin-top:4px;">${fmtNum(totalProducidoKg)} kg</div>
+                <div style="font-size:10px;color:#475569;margin-top:2px;">${pctProducido.toFixed(2)}% de entrada</div>
+              </div>
+              <div style="background:#fff;padding:14px;border-radius:8px;border:1px solid #e2e8f0;">
+                <div style="font-size:11px;color:#64748b;font-weight:700;">⚠ TOTAL MERMAS</div>
+                <div style="font-size:28px;font-weight:800;color:#dc2626;margin-top:4px;">${fmtNum(totalMermasKg)} kg</div>
+                <div style="font-size:10px;color:#475569;margin-top:2px;">${pctMerma.toFixed(2)}% de entrada</div>
+              </div>
             </div>
-            <div id="comp-cuadre-warning" style="margin-top:6px;padding:6px;background:#fff;border-radius:4px;font-size:10px;color:${colorCuadre};display:${warningTxt ? 'block' : 'none'};">
-              ${warningTxt}
-            </div>
+            ${warningTxt ? `<div style="margin-top:10px;padding:8px 10px;background:${colorCuadre}22;border-left:3px solid ${colorCuadre};border-radius:4px;font-size:11px;color:#475569;">${warningTxt}</div>` : ''}
           </div>
           
-          <!-- Después del proceso -->
-          <div style="padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:12px;font-size:11px;">
-            <strong style="color:#475569;">Después de este proceso:</strong>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
-              <div>Pasa al siguiente: <strong style="color:#16a34a;" id="comp-pasa">${fmtNum(prodKg)} kg</strong></div>
-              <div>Mermas totales: <strong style="color:#dc2626;" id="comp-mermas-tot">${fmtNum(f.mermas_acum_anteriores_kg + mermKg)} kg</strong></div>
-            </div>
-          </div>
-          
-          ${esUltimo ? `
-            <div style="padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;border:1px solid #fde68a;margin-bottom:12px;">
-              🏁 <strong>Último proceso:</strong> al confirmar, la ODP pasa a 🟡 Pendiente Liberación de Calidad. Calidad recibirá: <strong>${fmtNum(prodKg)} kg producidos</strong> con <strong>${fmtNum(f.mermas_acum_anteriores_kg + mermKg)} kg de mermas acumuladas</strong>.
+          <!-- DETALLE DE TURNOS -->
+          ${capturasProcActual.length > 0 ? `
+            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px;">
+              <div style="padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:800;font-size:12px;color:#475569;">
+                📋 Capturas por turno (${capturasProcActual.length})
+              </div>
+              <div style="max-height:220px;overflow-y:auto;">
+                ${capturasProcActual.slice().sort((a,b) => {
+                  const ta = a.created_at?.seconds || 0;
+                  const tb = b.created_at?.seconds || 0;
+                  return tb - ta;
+                }).map(c => {
+                  const grupo = TURNOS.find(t => t.codigo === c.grupo);
+                  return `
+                    <div style="padding:8px 14px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;font-size:12px;">
+                      <div style="flex:1;">
+                        <strong>${c.fecha || ''} · ${c.turno === 'dia' ? '☀️ DÍA' : '🌙 NOCHE'}</strong>
+                        ${grupo ? `<span style="background:${grupo.color};color:#fff;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;margin:0 5px;">${grupo.codigo}</span>` : ''}
+                        <div style="font-size:11px;color:#64748b;margin-top:2px;">
+                          👷 ${c.operador || '—'} · 👔 ${c.supervisor || '—'}
+                        </div>
+                      </div>
+                      <div style="text-align:right;">
+                        <div><strong style="color:#16a34a;">${fmtNum(c.producido_kg||0)} kg</strong></div>
+                        ${c.mermas_kg ? `<div style="color:#dc2626;font-size:10px;">⚠ ${fmtNum(c.mermas_kg)} kg merma</div>` : ''}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
             </div>
           ` : `
-            <div style="padding:10px;background:#dbeafe;border-radius:8px;font-size:11px;margin-bottom:12px;">
-              💡 Al avanzar, el siguiente proceso recibirá <strong>${fmtNum(prodKg)} kg</strong> como entrada.
+            <div style="padding:20px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;text-align:center;margin-bottom:14px;">
+              <div style="font-size:24px;">⚠</div>
+              <div style="font-weight:700;color:#92400e;font-size:13px;margin-top:6px;">Sin capturas de turno todavía</div>
+              <div style="font-size:11px;color:#475569;margin-top:4px;">Primero debes registrar al menos un turno de producción</div>
             </div>
           `}
           
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div class="field">
-              <label class="field-label">Operador</label>
-              <input class="input form-comp" data-field="operador" placeholder="Nombre" value="${f.operador}" autocomplete="off" />
-            </div>
-            <div class="field">
-              <label class="field-label">Turno</label>
-              <select class="input form-comp" data-field="turno">
-                <option value="">— Sin especificar —</option>
-                ${TURNOS.map(t => `<option value="${t.codigo}" ${f.turno === t.codigo ? 'selected' : ''}>${t.nombre}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-          
+          <!-- NOTAS FINALES (opcional, para anotar cierre) -->
           <div class="field">
-            <label class="field-label">Notas / observaciones</label>
-            <textarea class="input form-comp" data-field="notas" style="min-height:50px;" placeholder="Incidencias, motivo de diferencias, etc.">${f.notas}</textarea>
+            <label class="field-label">📝 Notas de cierre <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <textarea class="input" id="comp-notas-cierre" style="min-height:50px;" placeholder="Observaciones finales del proceso..."></textarea>
           </div>
           
-          ${procesosCompletados.length > 0 ? `
-            <div style="margin-top:12px;padding:10px;background:#f8fafc;border-radius:8px;">
-              <div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px;">📋 Procesos ya completados</div>
-              ${procesosCompletados.map(pc => {
-                const p = getProc(pc.codigo);
-                return `
-                  <div style="font-size:11px;margin-bottom:3px;display:flex;justify-content:space-between;gap:6px;">
-                    <span>${p?.icono || '✓'} ${p?.codigo} — ${pc.operador || '—'}</span>
-                    <span><strong>${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida)} kg</strong>${pc.mermas_kg ? ` · -${fmtNum(pc.mermas_kg)} kg merma` : ''}</span>
-                  </div>
-                `;
-              }).join('')}
-            </div>
-          ` : ''}
+          <!-- INFO ÚLTIMO PASO -->
+          <div style="margin-top:10px;padding:10px;background:${esUltimo ? '#fef3c7' : '#eff6ff'};border-radius:8px;font-size:11px;color:#475569;">
+            ${esUltimo 
+              ? '🏁 <strong>Es el último proceso.</strong> Al cerrar, la ODP pasará a <strong>Calidad</strong> con los acumulados actuales.'
+              : `➡ Al cerrar, el material pasará a <strong>${getProc(ruta[idx+1])?.icono || ''} ${getProc(ruta[idx+1])?.nombre || ''}</strong> con ${fmtNum(totalProducidoKg)} kg como entrada.`}
+          </div>
+          
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button id="comp-btn-confirmar" class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" style="background:${esUltimo ? '#f59e0b' : procActual.color};">${ICONS.check} ${esUltimo ? 'Terminar y enviar a Calidad' : 'Avanzar al siguiente proceso'}</button>
+          <button class="btn-primary" onclick="confirmarCompletarProceso('${odp.id}')" ${capturasProcActual.length === 0 ? 'disabled' : ''} style="background:${esUltimo ? '#f59e0b' : procActual.color};">${ICONS.check} ${esUltimo ? 'Cerrar y enviar a Calidad' : 'Cerrar y avanzar'}</button>
         </div>
       </div>
     </div>
@@ -10379,9 +10302,6 @@ window.iniciarProceso = async (odpId) => {
 
 // Confirmar completar proceso actual (avanza al siguiente o termina la ODP)
 window.confirmarCompletarProceso = async (odpId) => {
-  const f = state.modalForm;
-  if (!f) return;
-  
   const odp = state.ordenes_produccion.find(o => o.id === odpId);
   if (!odp) return;
   const ruta = odp.ruta_procesos || [];
@@ -10392,134 +10312,129 @@ window.confirmarCompletarProceso = async (odpId) => {
   const um = (odp.um || 'kg').toLowerCase();
   const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
   
-  const prodKg = Number(f.producido_kg) || 0;
-  const mermKg = Number(f.mermas_kg) || 0;
-  let notas = (f.notas || '').trim(); // declarar al inicio para validaciones
+  // ⭐ Sumar acumulados desde las capturas por turno (NO pedir captura nueva)
+  const capturasProcActual = (state.capturas_produccion || []).filter(c => 
+    c.odp_id === odp.id && c.proceso === ruta[idx]
+  );
   
-  if (prodKg <= 0) { toast('Captura el producido en kg', 'error'); return; }
+  if (capturasProcActual.length === 0) {
+    toast('Primero registra al menos un turno de producción', 'error');
+    return;
+  }
+  
+  const prodKg = capturasProcActual.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const mermKg = capturasProcActual.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  
+  if (prodKg <= 0) {
+    toast('Los turnos capturados no tienen producción válida', 'error');
+    return;
+  }
+  
+  // Entrada al proceso
+  const procesosCompletadosPrev = odp.procesos_completados || [];
+  const procesoAnterior = procesosCompletadosPrev[procesosCompletadosPrev.length - 1];
+  let entradaKg;
+  if (procesoAnterior) {
+    entradaKg = Number(procesoAnterior.cantidad_producida_kg) || 
+                window.convertirAKg(procesoAnterior.cantidad_producida, um, producto) || 
+                Number(procesoAnterior.cantidad_producida) || 0;
+  } else {
+    entradaKg = Number(odp.cantidad_kg_produccion) || 
+                window.convertirAKg(odp.cantidad, um, producto) || 
+                Number(odp.cantidad) || 0;
+  }
+  
+  // Notas de cierre (opcional)
+  const notasCierre = ($('#comp-notas-cierre')?.value || '').trim();
   
   const esExtrusion = ruta[idx] === 'P1-EXT';
   const totalKg = prodKg + mermKg;
-  const diffKg = f.entrada_kg - totalKg;
+  const diffKg = entradaKg - totalKg;
   const cuadra = Math.abs(diffKg) < 0.5;
   
+  // Validaciones (con confirmación si está fuera de tolerancia)
   if (esExtrusion) {
-    // Validaciones específicas de extrusión
-    const limInf = f.entrada_kg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
-    const limSup = f.entrada_kg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
+    const limInf = entradaKg * (1 - TOLERANCIAS.EXTRUSION_MIN_PCT);
+    const limSup = entradaKg * (1 + TOLERANCIAS.EXTRUSION_MAX_PCT);
     
     if (prodKg > limSup) {
       const exceso = prodKg - limSup;
-      const pctExceso = ((prodKg - f.entrada_kg) / f.entrada_kg * 100).toFixed(2);
-      const msg = `⚠ Producción EXCEDE el +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}% permitido.\n\nMáximo permitido: ${fmtNum(limSup)} kg\nCapturaste: ${fmtNum(prodKg)} kg (+${pctExceso}%)\nExceso: ${fmtNum(exceso)} kg\n\n¿Continuar de todos modos?\n(Quedará registrado como excedente fuera de tolerancia)`;
+      const pctExceso = ((prodKg - entradaKg) / entradaKg * 100).toFixed(2);
+      const msg = `⚠ Producción EXCEDE el +${(TOLERANCIAS.EXTRUSION_MAX_PCT*100)}% permitido.\n\nMáximo permitido: ${fmtNum(limSup)} kg\nAcumulado: ${fmtNum(prodKg)} kg (+${pctExceso}%)\nExceso: ${fmtNum(exceso)} kg\n\n¿Cerrar de todos modos?\n(Quedará registrado como excedente fuera de tolerancia)`;
       if (!confirm(msg)) return;
-      if (!notas) {
-        const motivo = prompt('Anota el motivo del excedente (será registrado):');
-        if (!motivo || !motivo.trim()) { toast('Debes anotar el motivo del excedente', 'error'); return; }
-        f.notas = motivo.trim();
-        notas = f.notas;
-      }
     }
     if (prodKg < limInf) {
-      const msg = `⚠ Producido (${fmtNum(prodKg)} kg) está bajo el mínimo del -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}% (${fmtNum(limInf)} kg).\n\n¿Continuar de todos modos?`;
+      const msg = `⚠ Producido acumulado (${fmtNum(prodKg)} kg) está bajo el mínimo del -${(TOLERANCIAS.EXTRUSION_MIN_PCT*100)}% (${fmtNum(limInf)} kg).\n\n¿Cerrar de todos modos?`;
       if (!confirm(msg)) return;
     }
   } else {
-    // Validaciones procesos posteriores
-    // ÚNICO BLOQUEO REAL: producir más de lo que entró (físicamente imposible)
-    if (prodKg > f.entrada_kg + 0.5) {
-      toast(`❌ Producido (${fmtNum(prodKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(f.entrada_kg)} kg). Esto es físicamente imposible.`, 'error');
+    if (prodKg > entradaKg + 0.5) {
+      toast(`❌ Producido acumulado (${fmtNum(prodKg)} kg) NO PUEDE EXCEDER la entrada (${fmtNum(entradaKg)} kg). Físicamente imposible.`, 'error');
       return;
     }
     
-    const mermaMaxKg = f.entrada_kg * TOLERANCIAS.MERMA_MAX_PCT;
+    const mermaMaxKg = entradaKg * TOLERANCIAS.MERMA_MAX_PCT;
     if (mermKg > mermaMaxKg + 0.01) {
-      const pctActual = (mermKg / f.entrada_kg * 100).toFixed(2);
+      const pctActual = (mermKg / entradaKg * 100).toFixed(2);
       const exceso = mermKg - mermaMaxKg;
-      const msg = `⚠ Mermas EXCEDEN el ${(TOLERANCIAS.MERMA_MAX_PCT*100)}% permitido.\n\nMáximo permitido: ${fmtNum(mermaMaxKg)} kg (${(TOLERANCIAS.MERMA_MAX_PCT*100)}%)\nCapturaste: ${fmtNum(mermKg)} kg (${pctActual}%)\nExceso: ${fmtNum(exceso)} kg\n\n¿Continuar de todos modos?\n(Quedará registrado como merma excedente)`;
+      const msg = `⚠ Mermas acumuladas EXCEDEN el ${(TOLERANCIAS.MERMA_MAX_PCT*100)}% permitido.\n\nMáximo: ${fmtNum(mermaMaxKg)} kg (${(TOLERANCIAS.MERMA_MAX_PCT*100)}%)\nAcumulado: ${fmtNum(mermKg)} kg (${pctActual}%)\nExceso: ${fmtNum(exceso)} kg\n\n¿Cerrar de todos modos?`;
       if (!confirm(msg)) return;
-      if (!notas) {
-        const motivo = prompt('Anota el motivo de la merma excedente (será registrado):');
-        if (!motivo || !motivo.trim()) { toast('Debes anotar el motivo de la merma excedente', 'error'); return; }
-        f.notas = motivo.trim();
-        notas = f.notas;
-      }
     }
-    if (!cuadra) {
-      const msg = diffKg > 0 
-        ? `⚠ Hay ${fmtNum(diffKg)} kg sin contabilizar.\n\nEntrada: ${fmtNum(f.entrada_kg)} kg\nProducido: ${fmtNum(prodKg)} kg\nMermas: ${fmtNum(mermKg)} kg\nTotal: ${fmtNum(totalKg)} kg\n\n¿Continuar de todos modos?`
-        : `⚠ El total capturado excede la entrada.\n\n¿Continuar de todos modos?`;
+    if (!cuadra && diffKg > 0) {
+      const msg = `⚠ Hay ${fmtNum(diffKg)} kg sin contabilizar.\n\nEntrada: ${fmtNum(entradaKg)} kg\nProducido acum: ${fmtNum(prodKg)} kg\nMermas acum: ${fmtNum(mermKg)} kg\nTotal: ${fmtNum(totalKg)} kg\n\n¿Cerrar de todos modos?`;
       if (!confirm(msg)) return;
     }
   }
   
-  // Convertir a UM original para capturas y procesos
+  // Convertir a UM original para reporting
   let prodEnUM = prodKg;
   let mermEnUM = mermKg;
   if (um === 'millar' && producto) {
     const pesoMillar = window.calcularPesoMillar(producto);
     if (pesoMillar > 0) {
-      // Redondear a 3 decimales = precisión de 1 pieza (1 millar = 1000 pza)
-      // Ej: 402.9690374 → 402.969 (= 402 millares + 969 pza exactas)
       prodEnUM = Math.round((prodKg / pesoMillar) * 1000) / 1000;
       mermEnUM = Math.round((mermKg / pesoMillar) * 1000) / 1000;
     }
   } else if (um === 'pza' && producto) {
     const pesoPieza = window.calcularPesoPieza(producto);
     if (pesoPieza > 0) {
-      prodEnUM = prodKg / pesoPieza;
-      mermEnUM = mermKg / pesoPieza;
-      // Para piezas, redondear a entero
-      prodEnUM = Math.round(prodEnUM);
-      mermEnUM = Math.round(mermEnUM);
+      prodEnUM = Math.round(prodKg / pesoPieza);
+      mermEnUM = Math.round(mermKg / pesoPieza);
     }
   }
   
-  const operador = (f.operador || '').trim();
-  const turno = f.turno || '';
-  notas = (f.notas || '').trim(); // refrescar por si se actualizó en validaciones
+  // Resumen de turnos para guardar en procesos_completados
+  const turnosResumen = capturasProcActual.map(c => ({
+    fecha: c.fecha,
+    turno: c.turno,
+    grupo: c.grupo,
+    operador: c.operador,
+    supervisor: c.supervisor,
+    producido_kg: Number(c.producido_kg) || 0,
+    mermas_kg: Number(c.mermas_kg) || 0
+  }));
+  
   const esUltimo = idx === ruta.length - 1;
   
   state.loadingAccion = true; render();
   try {
-    // 1. Crear captura del proceso
-    await addDoc(collection(db, 'capturas_produccion'), {
-      odp_id: odpId, odp_folio: odp.folio,
-      cliente_codigo: odp.cliente_codigo, cliente_nombre: odp.cliente_nombre,
-      producto_codigo: odp.producto_codigo,
-      proceso: ruta[idx],
-      proceso_nombre: proc.nombre,
-      // Datos en kg (siempre)
-      entrada_kg: f.entrada_kg,
-      producido_kg: prodKg,
-      mermas_kg: mermKg,
-      diferencia_no_contabilizada_kg: Number(diffKg.toFixed(2)),
-      cuadra: cuadra,
-      // Datos en UM original (para reporting)
-      cantidad_producida: prodEnUM,
-      mermas: mermEnUM,
-      um, operador, turno, notas,
-      capturado_por: state.user.id,
-      capturado_por_nombre: state.user.nombre,
-      created_at: serverTimestamp()
-    });
-    
-    // 2. Actualizar array procesos_completados
-    const procesosCompletados = [...(odp.procesos_completados || []), {
+    // Actualizar procesos_completados con el resumen del proceso
+    const procesosCompletados = [...procesosCompletadosPrev, {
       codigo: ruta[idx],
       nombre: proc.nombre,
-      // En kg (lo que pasa al siguiente proceso y mermas acumulan en kg)
-      entrada_kg: f.entrada_kg,
+      maquina: (odp.maquinas_asignadas && odp.maquinas_asignadas[ruta[idx]]) || '',
+      entrada_kg: entradaKg,
       cantidad_producida_kg: prodKg,
       mermas_kg: mermKg,
       diferencia_no_contabilizada_kg: Number(diffKg.toFixed(2)),
       cuadra: cuadra,
-      // En UM original
       cantidad_producida: prodEnUM,
       mermas: mermEnUM,
-      operador, turno, notas,
+      num_turnos: capturasProcActual.length,
+      turnos: turnosResumen,
+      notas_cierre: notasCierre,
       completado_at: new Date().toISOString(),
-      completado_por: state.user.nombre
+      completado_por: state.user.nombre || state.user.email
     }];
     
     if (esUltimo) {
@@ -10531,7 +10446,6 @@ window.confirmarCompletarProceso = async (odpId) => {
         estatus: 'pendiente_calidad',
         proceso_actual: null,
         procesos_completados: procesosCompletados,
-        // Cantidad final en UM original (para que calidad libere)
         cantidad_producida_final: prodEnUM,
         cantidad_producida_final_kg: prodKg,
         mermas_finales: procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0),
@@ -10540,7 +10454,7 @@ window.confirmarCompletarProceso = async (odpId) => {
         produccion_terminada_at: serverTimestamp(),
         produccion_terminada_por: state.user.id,
         produccion_terminada_por_nombre: state.user.nombre,
-        notas_produccion_finales: notas,
+        notas_produccion_finales: notasCierre,
         updated_at: serverTimestamp()
       });
       
@@ -10549,15 +10463,16 @@ window.confirmarCompletarProceso = async (odpId) => {
         const ref = doc(collection(db, 'notificaciones'));
         batch.set(ref, {
           titulo: '🟡 Pendiente liberación calidad ' + odp.folio,
-          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtNum(prodKg)} kg producidos · ${fmtNum(totalMermasKg)} kg mermas`,
+          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtNum(prodKg)} kg producidos · ${fmtNum(totalMermasKg)} kg mermas · ${capturasProcActual.length} turno(s)`,
           depto_destino: depto, tipo: 'warning', folio_ref: odp.folio,
-          created_at: serverTimestamp()
+          vista_destino: 'calidad',
+          leida: false, created_at: serverTimestamp()
         });
       });
       await batch.commit();
       
       cerrarModal();
-      toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg (mermas acum: ${fmtNum(totalMermasKg)} kg)`);
+      toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas`);
     } else {
       // Avanzar al siguiente proceso
       const siguienteIdx = idx + 1;
@@ -10573,16 +10488,18 @@ window.confirmarCompletarProceso = async (odpId) => {
       });
       
       await addDoc(collection(db, 'notificaciones'), {
-        titulo: `${proc.icono} ${proc.nombre} terminado en ${odp.folio}`,
-        mensaje: `Pasa ${fmtNum(prodKg)} kg al siguiente: ${siguienteProc?.icono || ''} ${siguienteProc?.nombre || ruta[siguienteIdx]}`,
+        titulo: `${proc.icono} ${proc.nombre} cerrado en ${odp.folio}`,
+        mensaje: `${capturasProcActual.length} turno(s) · ${fmtNum(prodKg)} kg producidos · Pasa a ${siguienteProc?.icono || ''} ${siguienteProc?.nombre || ruta[siguienteIdx]}`,
         depto_destino: 'PRO', tipo: 'info', folio_ref: odp.folio,
-        created_at: serverTimestamp()
+        vista_destino: 'captura_produccion',
+        leida: false, created_at: serverTimestamp()
       });
       
       cerrarModal();
-      toast(`✅ ${proc.nombre} terminado · Pasa ${fmtNum(prodKg)} kg a ${siguienteProc?.nombre || ''}`);
+      toast(`✅ ${proc.nombre} cerrado · ${fmtNum(prodKg)} kg de ${capturasProcActual.length} turno(s) pasan a ${siguienteProc?.nombre || ''}`);
     }
   } catch (e) {
+    console.error('Error cerrar proceso:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
