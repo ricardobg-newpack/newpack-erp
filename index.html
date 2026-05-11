@@ -3583,7 +3583,40 @@ window.setSubTabCedis = (tab) => { state.subTabCedis = tab; render(); };
 // VISTA: EMBARQUES (Órdenes de Venta) - CS/KAM/CEDMTY/CEDMEX/CEO/ADMIN
 // ============================================================
 function renderEmbarques() {
-  const subTab = state.subTabEmbarques || 'pendiente_asignar';
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esCS = ['CS','KAM'].includes(u.depto) || esCEO;
+  const esCEDIS = ['CEDMTY','CEDMEX'].includes(u.depto) || esCEO;
+  
+  // ⭐ Definir qué tabs ve cada área
+  const tabsDisponibles = [];
+  const tabsAll = [
+    { id: 'esperando_produccion', lbl: '⏳ Esperando producción', color: '#94a3b8', verCS: true, verCEDIS: false },
+    { id: 'pendiente_asignar', lbl: '🟡 Por asignar tarimas', color: '#f59e0b', verCS: true, verCEDIS: false },
+    { id: 'preparando', lbl: '🔄 Preparando', color: '#8b5cf6', verCS: true, verCEDIS: true },
+    { id: 'lista_embarcar', lbl: '✅ Lista embarcar', color: '#16a34a', verCS: true, verCEDIS: true },
+    { id: 'por_cargar', lbl: '📦 Por cargar', color: '#3b82f6', verCS: true, verCEDIS: true },
+    { id: 'enviada', lbl: '🚚 En camino', color: '#06b6d4', verCS: true, verCEDIS: false },
+    { id: 'entregada', lbl: '🏁 Entregadas', color: '#15803d', verCS: true, verCEDIS: false },
+  ];
+  
+  tabsAll.forEach(t => {
+    if (esCEO) tabsDisponibles.push(t);
+    else if (esCS && t.verCS) tabsDisponibles.push(t);
+    else if (esCEDIS && t.verCEDIS) tabsDisponibles.push(t);
+  });
+  
+  // Tab default según área
+  let subTabDefault = 'pendiente_asignar';
+  if (esCEDIS && !esCS) subTabDefault = 'preparando';
+  const subTab = state.subTabEmbarques || subTabDefault;
+  
+  // Verificar que el tab seleccionado esté disponible para este usuario
+  if (!tabsDisponibles.find(t => t.id === subTab)) {
+    state.subTabEmbarques = tabsDisponibles[0]?.id || 'pendiente_asignar';
+    return renderEmbarques();
+  }
+  
   const filtro = (state.filtros.embarques || '').toLowerCase();
   
   // 🔄 AUTO-SINCRONIZAR OVs en esperando_produccion (silencioso, sin confirm)
@@ -3593,6 +3626,12 @@ function renderEmbarques() {
   }
   
   let arr = state.ordenes_venta || [];
+  
+  // ⭐ FILTRO POR ÁREA: si es solo CEDIS, no muestra ni esperando_produccion ni entregadas
+  if (esCEDIS && !esCS && !esCEO) {
+    arr = arr.filter(o => ['preparando','lista_embarcar','por_cargar'].includes(o.estatus));
+  }
+  
   if (filtro) arr = arr.filter(o => 
     (o.folio + ' ' + o.pedido_folio + ' ' + o.cliente_nombre + ' ' + o.cliente_codigo + ' ' + o.producto_codigo + ' ' + (o.remision || '') + ' ' + (o.factura || ''))
     .toLowerCase().includes(filtro)
@@ -3601,7 +3640,7 @@ function renderEmbarques() {
   // OVs legacy (sin estatus nuevo) - normalizar a pendiente_asignar
   const ovsLegacy = arr.filter(o => 
     o.estatus === 'pendiente' || 
-    !['esperando_produccion','pendiente_asignar','preparando','lista_embarcar','por_cargar','enviada','entregada'].includes(o.estatus)
+    !['esperando_produccion','pendiente_asignar','preparando','lista_embarcar','por_cargar','enviada','entregada','cancelada'].includes(o.estatus)
   );
   
   // Contadores
@@ -3623,11 +3662,17 @@ function renderEmbarques() {
     filtered = arr.filter(o => o.estatus === subTab);
   }
   
-  // Detectar admin/CEO para ofrecer migración
-  const u = state.user;
-  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
-  
   return `
+    <!-- ROL DEL USUARIO -->
+    <div style="padding:10px 14px;background:${esCEDIS && !esCS ? '#eff6ff' : '#fef3c7'};border:1px solid ${esCEDIS && !esCS ? '#3b82f6' : '#f59e0b'};border-radius:10px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div style="font-size:12px;color:#475569;">
+        <strong style="color:${esCEDIS && !esCS ? '#1e40af' : '#92400e'};">${esCEO ? '👑 CEO/ADMIN' : esCEDIS && !esCS ? '📦 CEDIS' : esCS ? '👥 CS / KAM' : '👁️ Lectura'}:</strong>
+        ${esCEO ? 'Ves toda la operación de embarques' : 
+          esCEDIS && !esCS ? 'Ves OVs en tu área de trabajo (Preparando, Lista embarcar, Por cargar). Las OVs en camino y entregadas son responsabilidad de CS.' :
+          esCS ? 'Coordinas asignaciones, remisiones y confirmas entregas. CEDIS prepara y carga físicamente.' : 'Solo lectura'}
+      </div>
+    </div>
+    
     <!-- Búsqueda -->
     <div style="padding:14px;background:#fff;border:2px solid #3b82f6;border-radius:14px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;gap:10px;">
@@ -3647,7 +3692,8 @@ function renderEmbarques() {
     ` : ''}
     
     ${(() => {
-      // Detectar OVs esperando_produccion que YA tienen material disponible (búsqueda flexible)
+      // Detectar OVs esperando_produccion que YA tienen material disponible (solo CS y CEO)
+      if (!esCS && !esCEO) return '';
       const ovsActivables = (state.ordenes_venta || []).filter(ov => {
         if (ov.estatus !== 'esperando_produccion') return false;
         const tarimasDelPI = (state.tarimas || []).filter(t => {
@@ -3665,27 +3711,18 @@ function renderEmbarques() {
         <div style="padding:12px 14px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div>
             <div style="font-weight:700;color:#166534;font-size:13px;">🟢 ${ovsActivables.length} OV(s) listas para activarse</div>
-            <div style="font-size:11px;color:#475569;margin-top:2px;">Estas OVs están en "Esperando producción" pero su material ya está disponible. Click activar para pasarlas a "Por asignar tarimas".</div>
-            <div style="font-size:10px;color:#475569;margin-top:4px;">${ovsActivables.slice(0,3).map(o => `<span style="background:#fff;padding:2px 6px;border-radius:4px;margin-right:4px;font-weight:600;">${o.folio} - ${o.cliente_nombre}</span>`).join('')}${ovsActivables.length > 3 ? ` <span style="color:#94a3b8;">+${ovsActivables.length-3} más</span>` : ''}</div>
+            <div style="font-size:11px;color:#475569;margin-top:2px;">Estas OVs están en "Esperando producción" pero su material ya está disponible.</div>
           </div>
           <button onclick="sincronizarOVsEsperando()" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🟢 Activar ${ovsActivables.length} OV(s)</button>
         </div>
       `;
     })()}
     
-    <!-- Tabs -->
+    <!-- Tabs (solo los que ve el usuario) -->
     <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
-      ${[
-        ['esperando_produccion','⏳ Esperando producción','#94a3b8'],
-        ['pendiente_asignar','🟡 Por asignar tarimas','#f59e0b'],
-        ['preparando','🔄 Preparando (CEDIS)','#8b5cf6'],
-        ['lista_embarcar','✅ Lista embarcar','#16a34a'],
-        ['por_cargar','📦 Por cargar','#3b82f6'],
-        ['enviada','🚚 En camino','#06b6d4'],
-        ['entregada','🏁 Entregadas','#15803d'],
-      ].map(([id, lbl, color]) => `
-        <button onclick="setSubTabEmbarques('${id}')" style="padding:8px 14px;background:${subTab === id ? color : '#fff'};color:${subTab === id ? '#fff' : '#475569'};border:1px solid ${subTab === id ? color : '#e2e8f0'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
-          ${lbl} (${cnt[id] || 0})
+      ${tabsDisponibles.map(t => `
+        <button onclick="setSubTabEmbarques('${t.id}')" style="padding:8px 14px;background:${subTab === t.id ? t.color : '#fff'};color:${subTab === t.id ? '#fff' : '#475569'};border:1px solid ${subTab === t.id ? t.color : '#e2e8f0'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+          ${t.lbl} (${cnt[t.id] || 0})
         </button>
       `).join('')}
     </div>
