@@ -153,6 +153,7 @@ const state = {
   oti: [],
   comentarios_pedidos: [],
   notificaciones: [],
+  maquinas: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -183,6 +184,7 @@ const PROCESOS = [
   { codigo: 'P2-IMP', nombre: 'Impresión',          icono: '🎨', color: '#7c3aed' },
   { codigo: 'P3-BS',  nombre: 'Bolsa Suelta',       icono: '🛍️', color: '#3b82f6' },
   { codigo: 'P4-BR',  nombre: 'Bolsa en Rollo',     icono: '🌀', color: '#0891b2' },
+  { codigo: 'P5-PEL', nombre: 'Peletizado',         icono: '⚙️', color: '#64748b' },
   { codigo: 'P6-REF', nombre: 'Refilación/Embobinado', icono: '✂️', color: '#f59e0b' },
 ];
 window.PROCESOS = PROCESOS;
@@ -441,6 +443,10 @@ async function cargarTodo() {
       onSnapshot(query(collection(db, 'notificaciones'), orderBy('created_at', 'desc'), limit(50)), (snap) => {
         state.notificaciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'maquinas'), (snap) => {
+        state.maquinas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
       })
     );
   } catch (err) {
@@ -620,6 +626,9 @@ function renderApp() {
         
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
+        ${esPLN || esCEO || u.rol === 'admin' ? `
+          <button class="nav-item ${state.vista === 'maquinas' ? 'active' : ''}" data-vista="maquinas">🛠️ Máquinas</button>
+        ` : ''}
       </aside>
       
       <main class="main">
@@ -658,7 +667,8 @@ function tituloVista() {
     oti_planta: '🚚 OTI Planta → CEDIS-MTY',
     cedis_mty: '📦 CEDIS-MTY',
     embarques: '🚚 Embarques (Órdenes de Venta)',
-    stock_producto: '📊 Inventario CEDIS-MTY'
+    stock_producto: '📊 Inventario CEDIS-MTY',
+    maquinas: '🛠️ Máquinas de Producción'
   })[state.vista] || '';
 }
 
@@ -677,6 +687,7 @@ function renderVista() {
   if (v === 'cedis_mty') return renderCedisMTY();
   if (v === 'embarques') return renderEmbarques();
   if (v === 'stock_producto') return renderStockProducto();
+  if (v === 'maquinas') return renderMaquinas();
   return '';
 }
 
@@ -1258,13 +1269,19 @@ function renderListaODPs(odps) {
 // VISTA: PROGRAMACIÓN DE PRODUCCIÓN (PLN/CEO/ADMIN)
 // ============================================================
 function renderProgramacion() {
+  const u = state.user || {};
+  const esPLN = ['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  
   const subTab = state.tabs.programacion || 'pendientes';
+  const vistaModo = state.vistaModo?.programacion || 'lista'; // 'lista' | 'proceso'
+  
   const odpsPend = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_planeacion');
   const odpsProg = state.ordenes_produccion.filter(o => o.estatus === 'programada');
   const odpsEnProd = state.ordenes_produccion.filter(o => o.estatus === 'en_produccion');
   const odpsCompletadas = state.ordenes_produccion.filter(o => o.estatus === 'completada').slice(0, 30);
   
   const filtro = (state.filtros.programacion || '').toLowerCase();
+  const filtroProc = state.filtros.programacion_proceso || '';
   const filtroMaq = state.filtros.programacion_maquina || '';
   
   // Lista actual según tab
@@ -1277,10 +1294,21 @@ function renderProgramacion() {
   if (filtro) arr = arr.filter(o => 
     (o.folio + ' ' + (o.cliente_nombre||'') + ' ' + (o.producto_codigo||'')).toLowerCase().includes(filtro)
   );
-  if (filtroMaq) arr = arr.filter(o => o.proceso_actual === filtroMaq);
+  if (filtroProc) arr = arr.filter(o => (o.ruta_procesos || []).includes(filtroProc));
+  if (filtroMaq) arr = arr.filter(o => {
+    const maquinas = Object.values(o.maquinas_asignadas || {});
+    return maquinas.includes(filtroMaq) || o.maquina_codigo === filtroMaq;
+  });
+  
+  // KPIs
+  const kpiAtrasadas = arr.filter(o => {
+    if (!o.fecha_entrega_programada) return false;
+    return new Date(o.fecha_entrega_programada) < new Date() && o.estatus !== 'completada';
+  }).length;
   
   return `
-    <div style="margin-bottom:18px;">
+    <!-- TABS DE ESTATUS -->
+    <div style="margin-bottom:14px;">
       <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">
         <button class="tab-btn ${subTab === 'pendientes' ? 'active' : ''}" onclick="cambiarTab('programacion','pendientes')">⏳ Por programar (${odpsPend.length})</button>
         <button class="tab-btn ${subTab === 'programadas' ? 'active' : ''}" onclick="cambiarTab('programacion','programadas')">📅 Programadas (${odpsProg.length})</button>
@@ -1289,29 +1317,204 @@ function renderProgramacion() {
       </div>
     </div>
     
+    <!-- TOGGLE VISTA -->
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+      <span style="font-size:12px;color:#64748b;font-weight:700;">📐 VISTA:</span>
+      <button onclick="cambiarVistaProgramacion('lista')" style="padding:6px 12px;background:${vistaModo==='lista'?'#3b82f6':'#fff'};color:${vistaModo==='lista'?'#fff':'#475569'};border:2px solid ${vistaModo==='lista'?'#3b82f6':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+        📋 Lista
+      </button>
+      <button onclick="cambiarVistaProgramacion('proceso')" style="padding:6px 12px;background:${vistaModo==='proceso'?'#3b82f6':'#fff'};color:${vistaModo==='proceso'?'#fff':'#475569'};border:2px solid ${vistaModo==='proceso'?'#3b82f6':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+        🔥 Por proceso → máquina
+      </button>
+      ${kpiAtrasadas > 0 ? `<span style="background:#fef2f2;color:#dc2626;padding:4px 10px;border-radius:6px;font-weight:700;font-size:11px;border:1px solid #fecaca;margin-left:auto;">⚠ ${kpiAtrasadas} atrasada(s)</span>` : ''}
+    </div>
+    
+    <!-- FILTROS -->
     <div class="toolbar" style="flex-wrap:wrap;">
-      <input class="input" id="filtro-programacion" style="max-width:340px;flex:1;min-width:220px;" placeholder="Buscar por folio, cliente, producto..." value="${filtro}" autocomplete="off" />
-      <select class="input" id="filtro-programacion-maquina" style="max-width:220px;">
+      <input class="input" id="filtro-programacion" style="max-width:280px;flex:1;min-width:200px;" placeholder="🔍 Folio, cliente, producto..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-programacion-proceso" style="max-width:200px;">
         <option value="">Todos los procesos</option>
-        ${PROCESOS.map(p => `<option value="${p.codigo}" ${filtroMaq === p.codigo ? 'selected' : ''}>${p.icono} ${p.codigo} — ${p.nombre}</option>`).join('')}
+        ${PROCESOS.map(p => `<option value="${p.codigo}" ${filtroProc === p.codigo ? 'selected' : ''}>${p.icono} ${p.codigo} — ${p.nombre}</option>`).join('')}
       </select>
-      <span style="font-size:12px;color:#64748b;">${arr.length} ODPs</span>
+      <select class="input" id="filtro-programacion-maquina" style="max-width:180px;">
+        <option value="">Todas las máquinas</option>
+        ${(state.maquinas || []).filter(m => m.activa !== false && (!filtroProc || m.proceso_codigo === filtroProc)).sort((a,b) => a.codigo.localeCompare(b.codigo)).map(m => `<option value="${m.codigo}" ${filtroMaq === m.codigo ? 'selected' : ''}>${m.codigo}</option>`).join('')}
+      </select>
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} ODP(s)</span>
     </div>
     
     ${arr.length === 0 ? `
       <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
-        ${subTab === 'pendientes' ? '✨ No hay ODPs pendientes de programar' : 
-          subTab === 'programadas' ? '📅 No hay ODPs programadas' :
-          subTab === 'en_produccion' ? '🔄 No hay ODPs en producción' : 
-          '✅ Sin ODPs completadas recientes'}
+        <div style="font-size:42px;margin-bottom:10px;">${subTab === 'pendientes' ? '✨' : subTab === 'programadas' ? '📅' : subTab === 'en_produccion' ? '🔄' : '✅'}</div>
+        <div style="font-weight:700;color:#475569;">${subTab === 'pendientes' ? 'No hay ODPs pendientes de programar' : 
+          subTab === 'programadas' ? 'No hay ODPs programadas' :
+          subTab === 'en_produccion' ? 'No hay ODPs en producción' : 
+          'Sin ODPs completadas recientes'}</div>
       </div>
-    ` : `
+    ` : (vistaModo === 'proceso' ? renderProgramacionPorProceso(arr, subTab) : `
       <div style="display:flex;flex-direction:column;gap:12px;">
         ${arr.map(o => renderTarjetaODP(o, subTab)).join('')}
       </div>
-    `}
+    `)}
   `;
 }
+
+// ============================================================
+// VISTA: Programación agrupada por proceso → máquina
+// ============================================================
+function renderProgramacionPorProceso(odps, subTab) {
+  // Agrupar ODPs por proceso y máquina
+  // Cada ODP puede tener varios procesos (ruta_procesos) y máquinas (maquinas_asignadas)
+  // Para "pendientes" todavía no tienen máquinas, así que las mostramos en "Sin asignar"
+  
+  // Estructura: { 'P1-EXT': { 'COEX01': [odps], 'COEX02': [odps], 'sin_maq': [odps] } }
+  const grupos = {};
+  
+  PROCESOS.forEach(p => { grupos[p.codigo] = { _proc: p, maquinas: {} }; });
+  grupos['_sin_proceso'] = { _proc: { codigo: '_sin', nombre: 'Sin proceso asignado', icono: '❓', color: '#94a3b8' }, maquinas: {} };
+  
+  odps.forEach(o => {
+    const procs = o.ruta_procesos || [];
+    if (procs.length === 0) {
+      // ODP sin ruta
+      if (!grupos['_sin_proceso'].maquinas['_sin_maq']) grupos['_sin_proceso'].maquinas['_sin_maq'] = [];
+      grupos['_sin_proceso'].maquinas['_sin_maq'].push(o);
+    } else {
+      procs.forEach(procCod => {
+        if (!grupos[procCod]) grupos[procCod] = { _proc: getProc(procCod) || { codigo: procCod, nombre: procCod, icono: '⚙️', color: '#64748b' }, maquinas: {} };
+        const maq = (o.maquinas_asignadas && o.maquinas_asignadas[procCod]) || '_sin_maq';
+        if (!grupos[procCod].maquinas[maq]) grupos[procCod].maquinas[maq] = [];
+        grupos[procCod].maquinas[maq].push(o);
+      });
+    }
+  });
+  
+  // Filtrar procesos sin ODPs
+  const procesosConODPs = Object.entries(grupos).filter(([_, g]) => Object.keys(g.maquinas).length > 0);
+  
+  if (procesosConODPs.length === 0) {
+    return `<div style="padding:60px;text-align:center;color:#94a3b8;">Sin ODPs para agrupar</div>`;
+  }
+  
+  return `
+    <div style="display:flex;flex-direction:column;gap:18px;">
+      ${procesosConODPs.map(([procCod, g]) => {
+        const totalOdps = Object.values(g.maquinas).reduce((s, arr) => s + arr.length, 0);
+        const p = g._proc;
+        const maquinasSorted = Object.entries(g.maquinas).sort(([a], [b]) => {
+          if (a === '_sin_maq') return 1;
+          if (b === '_sin_maq') return -1;
+          return a.localeCompare(b);
+        });
+        
+        return `
+          <div style="background:#fff;border:2px solid ${p.color};border-radius:14px;overflow:hidden;">
+            <!-- HEADER PROCESO -->
+            <div style="padding:12px 18px;background:${p.color}15;border-bottom:1px solid ${p.color}33;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <span style="font-size:24px;">${p.icono}</span>
+                <div>
+                  <div style="font-weight:800;color:${p.color};font-size:16px;">${p.nombre}</div>
+                  <div style="font-size:11px;color:#64748b;">${p.codigo}</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <span style="background:${p.color};color:#fff;padding:5px 12px;border-radius:99px;font-weight:800;font-size:13px;">${totalOdps} ODP${totalOdps>1?'s':''}</span>
+                <span style="font-size:11px;color:#64748b;">${maquinasSorted.length} máquina${maquinasSorted.length>1?'s':''}</span>
+              </div>
+            </div>
+            
+            <!-- MÁQUINAS DEL PROCESO -->
+            <div style="padding:12px;display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:12px;">
+              ${maquinasSorted.map(([maqCod, maqOdps]) => {
+                const maq = (state.maquinas || []).find(m => m.codigo === maqCod);
+                const esSinAsignar = maqCod === '_sin_maq';
+                const totalKg = maqOdps.reduce((s, o) => s + (Number(o.cantidad_kg_produccion || o.cantidad) || 0), 0);
+                
+                return `
+                  <div style="border:1px solid ${esSinAsignar?'#fbbf24':'#e2e8f0'};border-radius:10px;overflow:hidden;background:${esSinAsignar?'#fffbeb':'#f8fafc'};">
+                    <!-- Header máquina -->
+                    <div style="padding:8px 12px;background:${esSinAsignar?'#fef3c7':'#fff'};border-bottom:1px solid ${esSinAsignar?'#fbbf24':'#e2e8f0'};display:flex;justify-content:space-between;align-items:center;">
+                      <div>
+                        <div class="text-mono" style="font-size:13px;font-weight:800;color:#1e293b;">
+                          ${esSinAsignar ? '⚠ SIN ASIGNAR' : '🛠️ ' + maqCod}
+                        </div>
+                        ${maq && maq.capacidad_kg_hr ? `<div style="font-size:10px;color:#64748b;">${maq.capacidad_kg_hr} kg/hr · ${maq.nombre || ''}</div>` : ''}
+                      </div>
+                      <div style="text-align:right;">
+                        <div style="font-weight:800;font-size:14px;color:${p.color};">${maqOdps.length}</div>
+                        <div style="font-size:9px;color:#64748b;">${fmtNum(totalKg)} kg</div>
+                      </div>
+                    </div>
+                    
+                    <!-- Lista mini-cards ODPs -->
+                    <div style="padding:8px;display:flex;flex-direction:column;gap:6px;max-height:480px;overflow-y:auto;">
+                      ${maqOdps
+                        .sort((a, b) => {
+                          // Prioridad alta primero, luego por fecha entrega
+                          const prioOrden = { alta: 0, normal: 1, baja: 2 };
+                          const pa = prioOrden[a.prioridad] ?? 1;
+                          const pb = prioOrden[b.prioridad] ?? 1;
+                          if (pa !== pb) return pa - pb;
+                          return (a.fecha_entrega_programada || '9999').localeCompare(b.fecha_entrega_programada || '9999');
+                        })
+                        .map(o => renderMiniCardODP(o, p, subTab))
+                        .join('')}
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+// Tarjeta compacta para vista agrupada por proceso/máquina
+function renderMiniCardODP(o, proc, subTab) {
+  const prio = { alta: { ico: '🔴', col: '#dc2626' }, normal: { ico: '🟡', col: '#64748b' }, baja: { ico: '🟢', col: '#16a34a' } }[o.prioridad || 'normal'];
+  const esStockInt = o.tipo_origen === 'stock_interno';
+  
+  // Fecha entrega
+  const fechaTxt = o.fecha_entrega_programada || '—';
+  const atrasada = o.fecha_entrega_programada && new Date(o.fecha_entrega_programada) < new Date() && o.estatus !== 'completada';
+  
+  return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${prio.col};border-radius:6px;padding:8px 10px;cursor:pointer;" onclick="abrirModal('detalle-odp','${o.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+            <span class="text-mono" style="font-weight:800;font-size:12px;color:#1e293b;">${o.folio}</span>
+            ${esStockInt ? `<span style="background:#3fd34b;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">🏭 STOCK</span>` : ''}
+            ${o.prioridad === 'alta' ? `<span style="font-size:11px;">${prio.ico}</span>` : ''}
+            ${atrasada ? `<span style="background:#fee2e2;color:#dc2626;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:800;">ATRASADA</span>` : ''}
+          </div>
+          <div style="font-size:11px;color:#475569;margin-top:2px;font-weight:600;">
+            ${esStockInt ? '🏭 Stock Interno' : (o.cliente_nombre || '—').substring(0, 24)}
+          </div>
+          <div class="text-mono" style="font-size:10px;color:#64748b;margin-top:2px;">${o.producto_codigo || ''}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-weight:800;font-size:11px;color:#1e293b;">${fmtCantidadUM(o.cantidad, o.um)}</div>
+          <div style="font-size:9px;color:${atrasada?'#dc2626':'#64748b'};font-weight:${atrasada?'700':'400'};">📅 ${fechaTxt}</div>
+        </div>
+      </div>
+      ${subTab === 'pendientes' ? `
+        <button onclick="event.stopPropagation();abrirModal('programar-odp','${o.id}')" style="margin-top:6px;width:100%;padding:4px;background:${proc.color};color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;">
+          📅 Programar
+        </button>
+      ` : ''}
+    </div>
+  `;
+}
+
+window.cambiarVistaProgramacion = (modo) => {
+  if (!state.vistaModo) state.vistaModo = {};
+  state.vistaModo.programacion = modo;
+  render();
+};
 
 function renderTarjetaODP(o, contexto) {
   const colores = {
@@ -2019,6 +2222,8 @@ function renderModal() {
   if (m === 'crear-producto-pt') return modalCrearProductoPT();
   if (m === 'editar-producto-pt') return modalEditarProductoPT();
   if (m === 'pdf-preview') return modalPdfPreview();
+  if (m === 'crear-maquina') return modalMaquina(false);
+  if (m === 'editar-maquina') return modalMaquina(true);
   return '';
 }
 
@@ -2144,14 +2349,19 @@ function modalProgramarODP() {
     state.modalForm = {
       ruta_procesos: odp.ruta_procesos && odp.ruta_procesos.length > 0 
         ? [...odp.ruta_procesos]
-        : window.sugerirRutaProcesos(producto)
+        : window.sugerirRutaProcesos(producto),
+      maquinas_asignadas: odp.maquinas_asignadas || {}
     };
   }
   const f = state.modalForm;
+  if (!f.maquinas_asignadas) f.maquinas_asignadas = {};
+  
+  // Máquinas disponibles por proceso
+  const maquinasActivas = (state.maquinas || []).filter(m => m.activa !== false);
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:620px;">
+      <div class="modal" style="max-width:700px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">Programar ${odp.folio}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
@@ -2196,11 +2406,40 @@ function modalProgramarODP() {
                   `;
                 }).join('')}
               </div>
-              <div style="font-size:10px;color:#94a3b8;margin-top:8px;">
-                💡 La ruta se sugiere según el tipo de producto. Puedes ajustarla quitando o agregando procesos.
-              </div>
             </div>
           </div>
+          
+          <!-- ⭐ ASIGNACIÓN DE MÁQUINAS POR PROCESO -->
+          ${f.ruta_procesos.length > 0 ? `
+            <div class="field">
+              <label class="field-label">🛠️ Máquinas asignadas * <span style="font-weight:400;color:#64748b;">(elige una máquina por cada proceso)</span></label>
+              <div style="padding:12px;background:#eff6ff;border-radius:10px;border:1px solid #3b82f6;">
+                ${f.ruta_procesos.map((procCod, i) => {
+                  const proc = getProc(procCod);
+                  if (!proc) return '';
+                  const maqsDeProceso = maquinasActivas.filter(m => m.proceso_codigo === procCod);
+                  const maqSel = f.maquinas_asignadas[procCod] || '';
+                  return `
+                    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                      <div style="min-width:140px;display:flex;align-items:center;gap:5px;">
+                        <span style="background:${proc.color}22;color:${proc.color};padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;">${i+1}. ${proc.icono} ${proc.codigo}</span>
+                      </div>
+                      ${maqsDeProceso.length === 0 ? `
+                        <div style="flex:1;padding:6px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;color:#92400e;">
+                          ⚠ No hay máquinas para este proceso. <a href="#" onclick="state.vista='maquinas';cerrarModal();render();return false;" style="color:#dc2626;font-weight:700;">Crear una →</a>
+                        </div>
+                      ` : `
+                        <select onchange="asignarMaquinaProceso('${procCod}', this.value)" style="flex:1;padding:6px 10px;border:2px solid ${maqSel?'#16a34a':'#cbd5e1'};border-radius:6px;font-size:12px;font-weight:600;background:#fff;">
+                          <option value="">— Selecciona máquina —</option>
+                          ${maqsDeProceso.map(m => `<option value="${m.codigo}" ${maqSel === m.codigo ? 'selected' : ''}>${m.codigo} ${m.nombre ? '· '+m.nombre : ''}${m.capacidad_kg_hr ? ' · '+m.capacidad_kg_hr+'kg/h' : ''}</option>`).join('')}
+                        </select>
+                      `}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : ''}
           
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field">
@@ -3394,6 +3633,338 @@ window.toggleDetalleStock = (key) => {
   if (!state.stockDetalleAbierto) state.stockDetalleAbierto = {};
   state.stockDetalleAbierto[key] = !state.stockDetalleAbierto[key];
   render();
+};
+
+// ============================================================
+// VISTA: MÁQUINAS DE PRODUCCIÓN (CRUD)
+// ============================================================
+function renderMaquinas() {
+  const u = state.user || {};
+  const puedeEditar = ['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const filtro = (state.filtros.maquinas || '').toLowerCase();
+  
+  let maquinas = state.maquinas || [];
+  if (filtro) maquinas = maquinas.filter(m => 
+    (m.codigo + ' ' + (m.nombre||'') + ' ' + (m.proceso_codigo||'')).toLowerCase().includes(filtro)
+  );
+  
+  // Agrupar por proceso
+  const porProceso = {};
+  maquinas.forEach(m => {
+    const k = m.proceso_codigo || 'sin_proceso';
+    if (!porProceso[k]) porProceso[k] = [];
+    porProceso[k].push(m);
+  });
+  
+  // Ordenar
+  Object.keys(porProceso).forEach(k => {
+    porProceso[k].sort((a, b) => (a.codigo || '').localeCompare(b.codigo || ''));
+  });
+  
+  const sinCargar = (state.maquinas || []).length === 0;
+  
+  // Detectar máquinas con códigos antiguos
+  const CODIGOS_ANTIGUOS = ['E01', 'E02', 'E03', 'BR1500', 'GLOW', 'SANTO', 'VENTA', 'G4', 'SB', 'FOAM'];
+  const tieneCodAntiguos = (state.maquinas || []).some(m => CODIGOS_ANTIGUOS.includes(m.codigo));
+  
+  return `
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-maquinas" style="max-width:340px;flex:1;min-width:220px;" placeholder="🔍 Buscar máquina por código, nombre o proceso..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${maquinas.length} máquina(s)</span>
+      ${puedeEditar ? `
+        <button class="btn-primary" onclick="abrirModal('crear-maquina')" style="margin-left:auto;">${ICONS.plus} Nueva máquina</button>
+        ${sinCargar ? `
+          <button onclick="cargarMaquinasIniciales()" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">⚡ Cargar 12 máquinas NewPack</button>
+        ` : ''}
+        ${tieneCodAntiguos ? `
+          <button onclick="actualizarCodigosMaquinas()" style="padding:8px 14px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">🔄 Actualizar a códigos nuevos</button>
+        ` : ''}
+      ` : ''}
+    </div>
+    
+    ${tieneCodAntiguos && puedeEditar ? `
+      <div style="padding:14px;background:#fef2f2;border:2px solid #dc2626;border-radius:10px;margin-bottom:14px;">
+        <div style="font-weight:800;color:#991b1b;font-size:13px;">⚠️ Tienes máquinas con códigos ANTIGUOS</div>
+        <div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.6;">
+          Detectamos máquinas con códigos viejos (E01, GLOW, SANTO, etc.). Click <strong>"🔄 Actualizar a códigos nuevos"</strong> para reemplazar por los códigos actualizados según MAQUINAS.xlsx. <strong>Las ODPs ya programadas seguirán funcionando.</strong>
+        </div>
+      </div>
+    ` : ''}
+    
+    ${sinCargar && puedeEditar ? `
+      <div style="padding:18px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+        <div style="font-weight:700;color:#92400e;font-size:14px;">⚡ Carga rápida de máquinas reales</div>
+        <div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.6;">
+          Click "⚡ Cargar 12 máquinas NewPack" para crear automáticamente las máquinas con sus <strong>códigos actualizados</strong>:<br>
+          🔥 <strong>Extrusión:</strong> COEX01, COEX02, COEX03 <em>(antes E01-E03)</em><br>
+          🛍️ <strong>Bolsa Suelta:</strong> BS01-2000, BS02-1400, BS03-600 <em>(SANTO)</em>, BS04-FOAM<br>
+          🌀 <strong>Bolsa en Rollo:</strong> BR01-900 <em>(G4)</em>, BR02-1400 <em>(GLOW)</em>, BR03-1500<br>
+          ✂️ <strong>Embobinado:</strong> DESDO <em>(Desdobladora)</em><br>
+          ⚙️ <strong>Peletizado:</strong> PELET01 <em>(Peletizadora1)</em>
+        </div>
+      </div>
+    ` : ''}
+    
+    ${maquinas.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">🛠️</div>
+        <div style="font-weight:700;color:#475569;">${(state.maquinas||[]).length === 0 ? 'Sin máquinas registradas' : 'No hay máquinas que coincidan'}</div>
+      </div>
+    ` : Object.entries(porProceso).map(([procCod, maqs]) => {
+      const proc = PROCESOS.find(p => p.codigo === procCod);
+      const procIcono = proc ? proc.icono : '⚙️';
+      const procNombre = proc ? proc.nombre : 'Sin proceso asignado';
+      const procColor = proc ? proc.color : '#64748b';
+      return `
+        <div style="margin-bottom:18px;">
+          <div style="padding:8px 14px;background:${procColor}15;border-left:4px solid ${procColor};border-radius:6px 6px 0 0;margin-bottom:0;font-weight:800;color:${procColor};">
+            ${procIcono} ${procNombre} <span style="font-weight:400;color:#64748b;font-size:12px;">(${maqs.length} máquina${maqs.length>1?'s':''})</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;padding:12px;background:#fff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;">
+            ${maqs.map(m => renderTarjetaMaquina(m, puedeEditar)).join('')}
+          </div>
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+function renderTarjetaMaquina(m, puedeEditar) {
+  const proc = PROCESOS.find(p => p.codigo === m.proceso_codigo);
+  const inactiva = m.activa === false;
+  const hayAlias = m.nombre_anterior && m.nombre_anterior !== m.codigo;
+  return `
+    <div style="background:#fff;border:1px solid ${inactiva ? '#cbd5e1' : '#e2e8f0'};border-radius:10px;padding:12px;${inactiva ? 'opacity:0.6;' : ''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">
+        <div>
+          <div class="text-mono" style="font-size:15px;font-weight:800;color:#1e293b;">${m.codigo}</div>
+          <div style="font-size:12px;color:#475569;margin-top:2px;">${m.nombre || ''}</div>
+          ${hayAlias ? `<div style="font-size:10px;color:#94a3b8;margin-top:2px;">Alias: <span class="text-mono">${m.nombre_anterior}</span></div>` : ''}
+        </div>
+        ${inactiva ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVA</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVA</span>`}
+      </div>
+      ${m.capacidad_kg_hr ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">⚡ Capacidad: <strong>${fmtNum(m.capacidad_kg_hr)} kg/hr</strong></div>` : ''}
+      ${m.observaciones && !m.observaciones.startsWith('Código anterior') ? `<div style="font-size:11px;color:#64748b;margin-top:4px;font-style:italic;">${m.observaciones}</div>` : ''}
+      ${puedeEditar ? `
+        <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;">
+          <button onclick="abrirModal('editar-maquina','${m.id}')" style="flex:1;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
+          <button onclick="toggleMaquinaActiva('${m.id}')" style="flex:1;padding:5px 8px;background:${inactiva?'#16a34a':'#f59e0b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactiva ? '✓ Activar' : '⏸ Desactivar'}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+window.toggleMaquinaActiva = async (id) => {
+  const m = state.maquinas.find(x => x.id === id);
+  if (!m) return;
+  try {
+    await updateDoc(doc(db, 'maquinas', id), {
+      activa: !m.activa,
+      updated_at: serverTimestamp()
+    });
+    toast(`Máquina ${m.codigo} ${!m.activa ? 'activada' : 'desactivada'}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.actualizarCodigosMaquinas = async () => {
+  if (!confirm('⚠️ ¿Reemplazar máquinas con códigos antiguos por los nuevos?\n\nSe ELIMINARÁN las máquinas con códigos: E01, E02, E03, BR1500, GLOW, SANTO, VENTA, G4, SB, FOAM\n\nSe CREARÁN las nuevas: COEX01-03, BS01-2000, BS02-1400, BS03-600, BS04-FOAM, BR01-900, BR02-1400, BR03-1500, DESDO, PELET01\n\nLas ODPs ya programadas seguirán mostrando el código que tenían.\n\n¿Continuar?')) return;
+  
+  const CODIGOS_ANTIGUOS = ['E01', 'E02', 'E03', 'BR1500', 'GLOW', 'SANTO', 'VENTA', 'G4', 'SB', 'FOAM'];
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    
+    // 1. Eliminar antiguas
+    const antiguas = (state.maquinas || []).filter(m => CODIGOS_ANTIGUOS.includes(m.codigo));
+    antiguas.forEach(m => batch.delete(doc(db, 'maquinas', m.id)));
+    
+    // 2. Crear nuevas (sin duplicar si ya existen)
+    const codigosExistentes = new Set((state.maquinas || []).filter(m => !CODIGOS_ANTIGUOS.includes(m.codigo)).map(m => m.codigo));
+    
+    const MAQS_NUEVAS = [
+      { codigo: 'COEX01', nombre: 'Coextrusora 01', nombre_anterior: 'E01', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 62 },
+      { codigo: 'COEX02', nombre: 'Coextrusora 02', nombre_anterior: 'E02', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 58 },
+      { codigo: 'COEX03', nombre: 'Coextrusora 03', nombre_anterior: 'E03', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 153 },
+      { codigo: 'BS01-2000', nombre: 'Bolsa Suelta 2000', nombre_anterior: 'BS01-2000', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+      { codigo: 'BS02-1400', nombre: 'Bolsa Suelta 1400', nombre_anterior: 'BS02-1400', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+      { codigo: 'BS03-600', nombre: 'Bolsa Suelta 600', nombre_anterior: 'SANTO', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+      { codigo: 'BS04-FOAM', nombre: 'Bolsa Suelta FOAM', nombre_anterior: 'FOAM', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+      { codigo: 'BR01-900', nombre: 'Bolsa en Rollo 900', nombre_anterior: 'G4', proceso_codigo: 'P4-BR', capacidad_kg_hr: 0 },
+      { codigo: 'BR02-1400', nombre: 'Bolsa en Rollo 1400', nombre_anterior: 'GLOW', proceso_codigo: 'P4-BR', capacidad_kg_hr: 0 },
+      { codigo: 'BR03-1500', nombre: 'Bolsa en Rollo 1500', nombre_anterior: 'BR1500', proceso_codigo: 'P4-BR', capacidad_kg_hr: 0 },
+      { codigo: 'DESDO', nombre: 'Desdobladora', nombre_anterior: 'DESDOBLADORA', proceso_codigo: 'P6-REF', capacidad_kg_hr: 0 },
+      { codigo: 'PELET01', nombre: 'Peletizadora 01', nombre_anterior: 'Peletizadora1', proceso_codigo: 'P5-PEL', capacidad_kg_hr: 0 }
+    ];
+    
+    let creadas = 0;
+    MAQS_NUEVAS.forEach(m => {
+      if (!codigosExistentes.has(m.codigo)) {
+        const ref = doc(collection(db, 'maquinas'));
+        batch.set(ref, {
+          ...m,
+          activa: true,
+          observaciones: m.nombre_anterior && m.nombre_anterior !== m.codigo ? `Código anterior: ${m.nombre_anterior}` : '',
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+        creadas++;
+      }
+    });
+    
+    await batch.commit();
+    toast(`✅ ${antiguas.length} máquinas eliminadas y ${creadas} máquinas nuevas creadas`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.cargarMaquinasIniciales = async () => {
+  if (!confirm('¿Cargar las 12 máquinas reales de NewPack?\n\n• EXTRUSIÓN (3): COEX01, COEX02, COEX03\n• BOLSA SUELTA (4): BS01-2000, BS02-1400, BS03-600, BS04-FOAM\n• BOLSA EN ROLLO (3): BR01-900, BR02-1400, BR03-1500\n• EMBOBINADO (1): DESDO\n• PELETIZADO (1): PELET01\n\nCódigos actualizados según el archivo MAQUINAS.xlsx')) return;
+  
+  const MAQS_INICIALES = [
+    // EXTRUSIÓN (P1-EXT) — antes E01, E02, E03
+    { codigo: 'COEX01', nombre: 'Coextrusora 01', nombre_anterior: 'E01', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 62 },
+    { codigo: 'COEX02', nombre: 'Coextrusora 02', nombre_anterior: 'E02', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 58 },
+    { codigo: 'COEX03', nombre: 'Coextrusora 03', nombre_anterior: 'E03', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 153 },
+    // BOLSA SUELTA (P3-BS)
+    { codigo: 'BS01-2000', nombre: 'Bolsa Suelta 2000', nombre_anterior: 'BS01-2000', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+    { codigo: 'BS02-1400', nombre: 'Bolsa Suelta 1400', nombre_anterior: 'BS02-1400', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+    { codigo: 'BS03-600', nombre: 'Bolsa Suelta 600', nombre_anterior: 'SANTO', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+    { codigo: 'BS04-FOAM', nombre: 'Bolsa Suelta FOAM', nombre_anterior: 'FOAM', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
+    // BOLSA EN ROLLO (P4-BR)
+    { codigo: 'BR01-900', nombre: 'Bolsa en Rollo 900', nombre_anterior: 'G4', proceso_codigo: 'P4-BR', capacidad_kg_hr: 0 },
+    { codigo: 'BR02-1400', nombre: 'Bolsa en Rollo 1400', nombre_anterior: 'GLOW', proceso_codigo: 'P4-BR', capacidad_kg_hr: 0 },
+    { codigo: 'BR03-1500', nombre: 'Bolsa en Rollo 1500', nombre_anterior: 'BR1500', proceso_codigo: 'P4-BR', capacidad_kg_hr: 0 },
+    // EMBOBINADO / REFILACIÓN (P6-REF)
+    { codigo: 'DESDO', nombre: 'Desdobladora', nombre_anterior: 'DESDOBLADORA', proceso_codigo: 'P6-REF', capacidad_kg_hr: 0 },
+    // PELETIZADO (P5-PEL)
+    { codigo: 'PELET01', nombre: 'Peletizadora 01', nombre_anterior: 'Peletizadora1', proceso_codigo: 'P5-PEL', capacidad_kg_hr: 0 }
+  ];
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    MAQS_INICIALES.forEach(m => {
+      const ref = doc(collection(db, 'maquinas'));
+      batch.set(ref, {
+        ...m,
+        activa: true,
+        observaciones: m.nombre_anterior && m.nombre_anterior !== m.codigo ? `Código anterior: ${m.nombre_anterior}` : '',
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${MAQS_INICIALES.length} máquinas cargadas con códigos actualizados`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// MODAL: Crear/Editar máquina
+// ============================================================
+function modalMaquina(esEdicion) {
+  const id = state.modalData;
+  const m = esEdicion ? state.maquinas.find(x => x.id === id) : null;
+  if (esEdicion && !m) return '';
+  
+  if (!state.modalForm) {
+    state.modalForm = m ? { ...m } : { codigo: '', nombre: '', proceso_codigo: '', capacidad_kg_hr: '', activa: true, observaciones: '' };
+  }
+  const f = state.modalForm;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '➕ Nueva'} máquina</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="field-label">Código de máquina *</label>
+            <input class="input" id="maq-codigo" value="${f.codigo || ''}" placeholder="Ej: E01, BS03, GLOW2" ${esEdicion ? 'disabled' : ''} />
+            <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Único, en mayúsculas, sin espacios</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre descriptivo</label>
+            <input class="input" id="maq-nombre" value="${f.nombre || ''}" placeholder="Ej: Extrusor 04, Bolseo nuevo" />
+          </div>
+          <div class="field">
+            <label class="field-label">Proceso al que pertenece *</label>
+            <select class="input" id="maq-proceso">
+              <option value="">— Selecciona proceso —</option>
+              ${PROCESOS.map(p => `<option value="${p.codigo}" ${f.proceso_codigo === p.codigo ? 'selected' : ''}>${p.icono} ${p.codigo} — ${p.nombre}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Capacidad (kg/hr) <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <input class="input" id="maq-cap" type="number" min="0" step="0.1" value="${f.capacidad_kg_hr || ''}" placeholder="0" />
+          </div>
+          <div class="field">
+            <label class="field-label">Observaciones <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <textarea class="input" id="maq-obs" style="min-height:60px;" placeholder="Notas, restricciones, mantenimiento, etc.">${f.observaciones || ''}</textarea>
+          </div>
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarMaquina(${esEdicion ? `'${id}'` : 'null'})">${ICONS.check} ${esEdicion ? 'Guardar cambios' : 'Crear máquina'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.confirmarMaquina = async (id) => {
+  const codigo = ($('#maq-codigo')?.value || '').trim().toUpperCase();
+  const nombre = ($('#maq-nombre')?.value || '').trim();
+  const proceso = ($('#maq-proceso')?.value || '').trim();
+  const cap = Number($('#maq-cap')?.value) || 0;
+  const obs = ($('#maq-obs')?.value || '').trim();
+  
+  if (!codigo) { toast('Código de máquina obligatorio', 'error'); return; }
+  if (!proceso) { toast('Selecciona el proceso', 'error'); return; }
+  
+  // Validar código único
+  if (!id) {
+    const existe = (state.maquinas || []).find(m => m.codigo === codigo);
+    if (existe) { toast(`Ya existe una máquina con código ${codigo}`, 'error'); return; }
+  }
+  
+  state.loadingAccion = true; render();
+  try {
+    const data = {
+      codigo,
+      nombre,
+      proceso_codigo: proceso,
+      capacidad_kg_hr: cap,
+      observaciones: obs,
+      updated_at: serverTimestamp()
+    };
+    if (id) {
+      await updateDoc(doc(db, 'maquinas', id), data);
+      toast(`Máquina ${codigo} actualizada`);
+    } else {
+      data.activa = true;
+      data.created_at = serverTimestamp();
+      await addDoc(collection(db, 'maquinas'), data);
+      toast(`✅ Máquina ${codigo} creada`);
+    }
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
 };
 
 // ============================================================
@@ -7569,6 +8140,13 @@ function attachAppEvents() {
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
+  if ($('#filtro-programacion-proceso')) {
+    $('#filtro-programacion-proceso').onchange = (e) => { 
+      state.filtros.programacion_proceso = e.target.value;
+      state.filtros.programacion_maquina = ''; // reset maquina al cambiar proceso
+      render(); 
+    };
+  }
   if ($('#filtro-programacion-maquina')) {
     $('#filtro-programacion-maquina').onchange = (e) => { state.filtros.programacion_maquina = e.target.value; render(); };
   }
@@ -8003,6 +8581,15 @@ function attachAppEvents() {
   if ($('#filtro-stock-producto-almacen')) {
     $('#filtro-stock-producto-almacen').onchange = (e) => { state.filtros.stock_producto_almacen = e.target.value; render(); };
   }
+  if ($('#filtro-maquinas')) {
+    $('#filtro-maquinas').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.maquinas = e.target.value;
+      render();
+      const inp = $('#filtro-maquinas');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
   $$('.prod-um-select').forEach(sel => {
     sel.onchange = async (e) => {
       const codigo = sel.dataset.codigo;
@@ -8157,7 +8744,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
@@ -8165,7 +8752,8 @@ window.cambiarTab = (vista, tab) => { state.tabs[vista] = tab; render(); };
 
 // Helpers para gestionar la ruta de procesos en el modal de programación
 window.agregarProcesoRuta = (codigo) => {
-  if (!state.modalForm) state.modalForm = { ruta_procesos: [] };
+  if (!state.modalForm) state.modalForm = { ruta_procesos: [], maquinas_asignadas: {} };
+  if (!state.modalForm.maquinas_asignadas) state.modalForm.maquinas_asignadas = {};
   if (!state.modalForm.ruta_procesos.includes(codigo)) {
     state.modalForm.ruta_procesos.push(codigo);
     render();
@@ -8173,7 +8761,18 @@ window.agregarProcesoRuta = (codigo) => {
 };
 window.quitarProcesoRuta = (idx) => {
   if (!state.modalForm) return;
+  const procRemovido = state.modalForm.ruta_procesos[idx];
   state.modalForm.ruta_procesos.splice(idx, 1);
+  // Limpiar la máquina asignada a ese proceso
+  if (state.modalForm.maquinas_asignadas && procRemovido) {
+    delete state.modalForm.maquinas_asignadas[procRemovido];
+  }
+  render();
+};
+window.asignarMaquinaProceso = (procCod, maqCod) => {
+  if (!state.modalForm) state.modalForm = { ruta_procesos: [], maquinas_asignadas: {} };
+  if (!state.modalForm.maquinas_asignadas) state.modalForm.maquinas_asignadas = {};
+  state.modalForm.maquinas_asignadas[procCod] = maqCod;
   render();
 };
 
@@ -8951,18 +9550,35 @@ window.prepararOVAccion = async (ovId, folio) => {
 window.confirmarProgramarODP = async (odpId) => {
   const fini = $('#podp-fini').value;
   const ruta = (state.modalForm && state.modalForm.ruta_procesos) || [];
+  const maquinas = (state.modalForm && state.modalForm.maquinas_asignadas) || {};
   
   if (ruta.length === 0) { toast('Define al menos un proceso en la ruta', 'error'); return; }
   if (!fini) { toast('Captura la fecha de inicio', 'error'); return; }
   
+  // Validar que cada proceso tenga una máquina asignada
+  const procsSinMaq = ruta.filter(p => !maquinas[p]);
+  if (procsSinMaq.length > 0) {
+    const nombres = procsSinMaq.map(p => {
+      const proc = getProc(p);
+      return proc ? `${proc.icono} ${proc.codigo}` : p;
+    }).join(', ');
+    toast(`Falta asignar máquina para: ${nombres}`, 'error');
+    return;
+  }
+  
   state.loadingAccion = true; render();
   try {
+    // Máquina principal (la primera del flujo) para compatibilidad legacy
+    const maquinaPrincipal = maquinas[ruta[0]] || '';
+    
     await updateDoc(doc(db, 'ordenes_produccion', odpId), {
       estatus: 'programada',
       fecha_inicio_programada: fini,
       fecha_entrega_programada: $('#podp-fent').value || null,
       ruta_procesos: ruta,
-      proceso_actual_idx: 0, // empieza en el primer proceso
+      maquinas_asignadas: maquinas,
+      maquina_codigo: maquinaPrincipal,
+      proceso_actual_idx: 0,
       proceso_actual: ruta[0],
       prioridad: $('#podp-prioridad').value || 'normal',
       planeacion_notas: $('#podp-notas').value || '',
@@ -8974,16 +9590,17 @@ window.confirmarProgramarODP = async (odpId) => {
     
     const odp = state.ordenes_produccion.find(o => o.id === odpId);
     const proc = getProc(ruta[0]);
+    const maqProc1 = maquinas[ruta[0]];
     await addDoc(collection(db, 'notificaciones'), {
       titulo: 'ODP programada ' + odp.folio,
-      mensaje: `${odp.cliente_nombre} • Inicia en ${proc?.nombre || ruta[0]} • ${fini}`,
+      mensaje: `${odp.cliente_nombre} • Inicia en ${proc?.nombre || ruta[0]} (${maqProc1}) • ${fini}`,
       depto_destino: 'PRO',
       tipo: 'info', folio_ref: odp.folio,
       created_at: serverTimestamp()
     });
     
     cerrarModal();
-    toast('✅ ODP programada con ' + ruta.length + ' proceso(s)');
+    toast(`✅ ODP programada con ${ruta.length} proceso(s) y máquinas asignadas`);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
