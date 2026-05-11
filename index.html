@@ -154,6 +154,8 @@ const state = {
   comentarios_pedidos: [],
   notificaciones: [],
   maquinas: [],
+  operadores: [],
+  supervisores: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -169,13 +171,6 @@ window.state = state;
 // ============================================================
 // PRODUCCIÓN: turnos y configuración
 // ============================================================
-const TURNOS = [
-  { codigo: 'T1', nombre: 'Turno 1 (06:00-14:00)', hora_inicio: '06:00', color: '#f59e0b' },
-  { codigo: 'T2', nombre: 'Turno 2 (14:00-22:00)', hora_inicio: '14:00', color: '#3b82f6' },
-  { codigo: 'T3', nombre: 'Turno 3 (22:00-06:00)', hora_inicio: '22:00', color: '#7c3aed' },
-];
-window.TURNOS = TURNOS;
-
 // ============================================================
 // PRODUCCIÓN: catálogo de procesos productivos
 // ============================================================
@@ -354,6 +349,88 @@ function toast(msg, tipo = 'success') {
 }
 window.toast = toast;
 
+// ============================================================
+// HELPER: Notificaciones automáticas entre áreas
+// ============================================================
+// Uso:
+//   await notificar({
+//     a: 'PLN',  // o ['PLN','CS'] para múltiples
+//     titulo: '...',
+//     mensaje: '...',
+//     tipo: 'info' | 'success' | 'warning' | 'error',
+//     folio_ref: 'PI-00050',
+//     vista: 'programacion'  // opcional, para navegar
+//   });
+//
+// Si se pasa batch, se agrega al batch (no escribe). Si no, hace addDoc directo.
+window.notificar = async (opciones, batch = null) => {
+  const { a, titulo, mensaje, tipo = 'info', folio_ref = '', vista = '' } = opciones;
+  const destinos = Array.isArray(a) ? a : [a];
+  
+  for (const depto of destinos) {
+    if (!depto) continue;
+    const data = {
+      titulo, mensaje,
+      depto_destino: depto,
+      tipo,
+      folio_ref,
+      vista_destino: vista,
+      leida: false,
+      origen_user: state.user?.id || null,
+      origen_nombre: state.user?.nombre || state.user?.email || '—',
+      created_at: serverTimestamp()
+    };
+    if (batch) {
+      const ref = doc(collection(db, 'notificaciones'));
+      batch.set(ref, data);
+    } else {
+      await addDoc(collection(db, 'notificaciones'), data);
+    }
+  }
+};
+
+window.abrirNotificacion = async (notifId) => {
+  const n = state.notificaciones.find(x => x.id === notifId);
+  if (!n) return;
+  
+  // Marcar como leída
+  if (!n.leida) {
+    try {
+      await updateDoc(doc(db, 'notificaciones', notifId), { 
+        leida: true, 
+        leida_at: serverTimestamp() 
+      });
+    } catch(e) { console.warn('No se pudo marcar leída', e); }
+  }
+  
+  // Navegar a la vista destino
+  if (n.vista_destino) {
+    state.vista = n.vista_destino;
+    render();
+  }
+};
+
+window.marcarTodasLeidas = async () => {
+  const misNotifs = state.notificaciones.filter(n => 
+    !n.leida && (n.depto_destino === state.user.depto || state.user.rol === 'admin')
+  );
+  if (misNotifs.length === 0) return;
+  
+  try {
+    const batch = writeBatch(db);
+    misNotifs.forEach(n => {
+      batch.update(doc(db, 'notificaciones', n.id), { 
+        leida: true, 
+        leida_at: serverTimestamp() 
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${misNotifs.length} notificación(es) marcadas como leídas`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
 const ICONS = {
   home: '🏠', cart: '🛒', users: '👥', boxes: '📦', factory: '🏭',
   warehouse: '🏗️', file: '📄', chart: '📊', list: '📋', search: '🔍',
@@ -446,6 +523,14 @@ async function cargarTodo() {
       }),
       onSnapshot(collection(db, 'maquinas'), (snap) => {
         state.maquinas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'operadores'), (snap) => {
+        state.operadores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'supervisores'), (snap) => {
+        state.supervisores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       })
     );
@@ -628,6 +713,7 @@ function renderApp() {
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
         ${esPLN || esCEO || u.rol === 'admin' ? `
           <button class="nav-item ${state.vista === 'maquinas' ? 'active' : ''}" data-vista="maquinas">🛠️ Máquinas</button>
+          <button class="nav-item ${state.vista === 'personal' ? 'active' : ''}" data-vista="personal">👷 Personal</button>
         ` : ''}
       </aside>
       
@@ -668,7 +754,8 @@ function tituloVista() {
     cedis_mty: '📦 CEDIS-MTY',
     embarques: '🚚 Embarques (Órdenes de Venta)',
     stock_producto: '📊 Inventario CEDIS-MTY',
-    maquinas: '🛠️ Máquinas de Producción'
+    maquinas: '🛠️ Máquinas de Producción',
+    personal: '👷 Operadores y Supervisores'
   })[state.vista] || '';
 }
 
@@ -688,6 +775,7 @@ function renderVista() {
   if (v === 'embarques') return renderEmbarques();
   if (v === 'stock_producto') return renderStockProducto();
   if (v === 'maquinas') return renderMaquinas();
+  if (v === 'personal') return renderPersonal();
   return '';
 }
 
@@ -756,22 +844,51 @@ function renderDashboard() {
     ` : ''}
     
     <div class="panel">
-      <div class="panel-header">${ICONS.bell} Últimas notificaciones</div>
-      <div>
-        ${state.notificaciones.slice(0, 10).length === 0 ? `
-          <div style="padding:40px;text-align:center;color:#94a3b8;">Sin notificaciones recientes</div>
-        ` : state.notificaciones.slice(0, 10).map(n => `
-          <div style="padding:12px 18px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;">
-            <div>
-              <div style="font-weight:600;font-size:13px;">${n.titulo}</div>
-              <div style="font-size:11px;color:#64748b;margin-top:2px;">${n.mensaje || ''}</div>
-            </div>
-            <div style="text-align:right;">
-              <div style="font-size:10px;color:#94a3b8;">${fmtFechaHora(n.created_at)}</div>
-              <span class="dept-tag">${n.depto_destino}</span>
-            </div>
-          </div>
-        `).join('')}
+      <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>${ICONS.bell} Notificaciones para ${state.user.depto || 'mí'}</span>
+        ${(() => {
+          const misNotifs = state.notificaciones.filter(n => 
+            n.depto_destino === state.user.depto || 
+            (state.user.rol === 'admin' && n.depto_destino === 'ADMIN')
+          );
+          const noLeidas = misNotifs.filter(n => !n.leida).length;
+          return noLeidas > 0 
+            ? `<button onclick="marcarTodasLeidas()" style="background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">${noLeidas} sin leer · Marcar todas</button>`
+            : `<span style="font-size:11px;color:#94a3b8;">Todo al día ✓</span>`;
+        })()}
+      </div>
+      <div style="max-height:520px;overflow-y:auto;">
+        ${(() => {
+          const misNotifs = state.notificaciones.filter(n => 
+            n.depto_destino === state.user.depto || 
+            (state.user.rol === 'admin')
+          ).slice(0, 30);
+          
+          if (misNotifs.length === 0) {
+            return `<div style="padding:40px;text-align:center;color:#94a3b8;">Sin notificaciones recientes para tu departamento</div>`;
+          }
+          
+          const colorTipo = { info: '#3b82f6', success: '#16a34a', warning: '#f59e0b', error: '#dc2626' };
+          
+          return misNotifs.map(n => {
+            const color = colorTipo[n.tipo] || '#64748b';
+            const esClic = !!n.vista_destino;
+            return `
+              <div style="padding:12px 18px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;gap:10px;background:${n.leida?'#fff':'#f0f9ff'};${esClic?'cursor:pointer;':''}border-left:3px solid ${color};" 
+                ${esClic ? `onclick="abrirNotificacion('${n.id}')"` : ''}>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-weight:${n.leida?'500':'700'};font-size:13px;color:${n.leida?'#475569':'#1e293b'};">${n.titulo}</div>
+                  <div style="font-size:11px;color:#64748b;margin-top:3px;">${n.mensaje || ''}</div>
+                  ${n.origen_nombre ? `<div style="font-size:10px;color:#94a3b8;margin-top:3px;">Por: ${n.origen_nombre}</div>` : ''}
+                </div>
+                <div style="text-align:right;flex-shrink:0;">
+                  <div style="font-size:10px;color:#94a3b8;">${fmtFechaHora(n.created_at)}</div>
+                  ${!n.leida ? `<div style="background:#3b82f6;color:#fff;font-size:9px;padding:1px 6px;border-radius:99px;margin-top:3px;display:inline-block;font-weight:700;">NUEVA</div>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('');
+        })()}
       </div>
     </div>
   `;
@@ -1537,10 +1654,28 @@ function renderTarjetaODP(o, contexto) {
   const capturas = state.capturas_produccion.filter(c => c.odp_id === o.id);
   const lotesODP = state.lotes.filter(l => l.odp_id === o.id);
   const ruta = o.ruta_procesos || [];
-  const procesosCompletados = o.procesos_completados || []; // [{codigo, fecha_inicio, fecha_fin, cantidad_producida, mermas}]
+  const procesosCompletados = o.procesos_completados || [];
   const procActual = o.proceso_actual;
+  const idx = o.proceso_actual_idx ?? 0;
   
-  // Calcular cantidad final producida (la del último proceso completado o capturas en proceso actual)
+  // ⭐ NUEVO: Avance del proceso actual por capturas de turno
+  const capturasProcActual = capturas.filter(c => c.proceso === procActual);
+  const acumProcActualKg = capturasProcActual.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const acumMermasKg = capturasProcActual.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  
+  // Meta del proceso actual
+  const producto = state.productos_pt.find(p => p.codigo === o.producto_codigo);
+  const um = (o.um || 'kg').toLowerCase();
+  let metaProcKg;
+  if (idx === 0) {
+    metaProcKg = Number(o.cantidad_kg_produccion) || window.convertirAKg(o.cantidad, um, producto) || Number(o.cantidad) || 0;
+  } else {
+    const procesoAnterior = procesosCompletados[procesosCompletados.length - 1];
+    metaProcKg = procesoAnterior ? (Number(procesoAnterior.cantidad_producida_kg) || 0) : 0;
+  }
+  const pctProcActual = metaProcKg > 0 ? Math.min(100, Math.round((acumProcActualKg / metaProcKg) * 100)) : 0;
+  
+  // Cálculo legacy
   let totalProducidoFinal = 0;
   let totalMermasFinal = 0;
   if (procesosCompletados.length > 0) {
@@ -1550,6 +1685,9 @@ function renderTarjetaODP(o, contexto) {
   }
   const pct = o.cantidad > 0 ? Math.min(100, Math.round((totalProducidoFinal / o.cantidad) * 100)) : 0;
   
+  // Máquina asignada al proceso actual
+  const maquinaActual = (o.maquinas_asignadas && o.maquinas_asignadas[procActual]) || o.maquina_codigo || '';
+  
   return `
     <div class="panel" style="border-left:4px solid ${color};">
       <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
@@ -1558,11 +1696,11 @@ function renderTarjetaODP(o, contexto) {
             <span class="text-mono" style="font-weight:800;font-size:15px;">${o.folio}</span>
             <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${color}22;color:${color};">${labels[o.estatus]}</span>
             ${o.prioridad === 'alta' ? `<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:#fee2e2;color:#dc2626;font-weight:700;">🔴 URGENTE</span>` : ''}
+            ${maquinaActual ? `<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:#1e293b;color:#fff;font-weight:700;" class="text-mono">🛠️ ${maquinaActual}</span>` : ''}
             ${o.pedido_folio ? `<span style="font-size:10px;color:#64748b;">desde ${o.pedido_folio}</span>` : ''}
           </div>
           <div style="font-size:13px;font-weight:600;">${o.cliente_nombre || '—'}</div>
           <div class="text-mono" style="font-size:11px;color:#64748b;margin-top:2px;">${o.producto_codigo}</div>
-          <div style="font-size:11px;color:#475569;margin-top:2px;">${o.descripcion || ''}</div>
         </div>
         <div style="text-align:right;">
           <div style="font-size:18px;font-weight:800;">${fmtCantidadUM(o.cantidad, o.um)}</div>
@@ -1585,15 +1723,16 @@ function renderTarjetaODP(o, contexto) {
               if (!proc) return '';
               const completado = procesosCompletados.find(p => p.codigo === codProc);
               const enCurso = procActual === codProc && o.estatus === 'en_produccion';
-              const pendiente = !completado && !enCurso;
               const bg = completado ? proc.color : (enCurso ? proc.color + '22' : '#f1f5f9');
               const txt = completado ? '#fff' : (enCurso ? proc.color : '#94a3b8');
               const border = enCurso ? `2px dashed ${proc.color}` : '1px solid transparent';
+              const maqAsig = (o.maquinas_asignadas && o.maquinas_asignadas[codProc]) || '';
               return `
                 <div style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:99px;background:${bg};color:${txt};font-size:11px;font-weight:700;border:${border};">
                   <span>${completado ? '✓' : enCurso ? '🔄' : '○'}</span>
                   <span>${proc.icono}</span>
                   <span>${proc.codigo}</span>
+                  ${maqAsig ? `<span class="text-mono" style="opacity:0.85;font-size:10px;background:rgba(0,0,0,0.15);padding:1px 5px;border-radius:4px;">${maqAsig}</span>` : ''}
                 </div>
                 ${i < ruta.length - 1 ? `<span style="color:#cbd5e1;font-size:10px;">→</span>` : ''}
               `;
@@ -1603,7 +1742,53 @@ function renderTarjetaODP(o, contexto) {
         </div>
       ` : ''}
       
-      ${pct > 0 ? `
+      <!-- ⭐ NUEVO: AVANCE DEL PROCESO ACTUAL POR TURNOS -->
+      ${(o.estatus === 'en_produccion' || (o.estatus === 'programada' && capturasProcActual.length > 0)) ? `
+        <div style="padding:12px 18px;background:linear-gradient(90deg, ${color}08, transparent);border-top:1px solid #e2e8f0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:11px;font-weight:800;color:${color};letter-spacing:0.05em;text-transform:uppercase;">
+              📊 Avance ${getProc(procActual)?.icono || ''} ${getProc(procActual)?.nombre || procActual}
+            </span>
+            <span style="font-size:12px;font-weight:800;color:${pctProcActual >= 95 ? '#16a34a' : color};">${pctProcActual}%</span>
+          </div>
+          <div style="height:10px;background:#e2e8f0;border-radius:6px;overflow:hidden;margin-bottom:6px;">
+            <div style="width:${pctProcActual}%;height:100%;background:${pctProcActual >= 95 ? '#16a34a' : color};transition:width 0.3s;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569;">
+            <span>✅ <strong>${fmtNum(acumProcActualKg)} kg</strong> acumulados${acumMermasKg > 0 ? ` · ⚠ ${fmtNum(acumMermasKg)} kg mermas` : ''}</span>
+            <span>🎯 Meta: <strong>${fmtNum(metaProcKg)} kg</strong> · Faltan: ${fmtNum(Math.max(0, metaProcKg - acumProcActualKg))} kg</span>
+          </div>
+          ${capturasProcActual.length > 0 ? `
+            <div style="margin-top:8px;padding:8px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;">
+              <div style="font-size:10px;font-weight:700;color:#64748b;margin-bottom:5px;">📋 ${capturasProcActual.length} turno(s) capturado(s):</div>
+              <div style="display:flex;flex-direction:column;gap:3px;max-height:120px;overflow-y:auto;">
+                ${capturasProcActual.slice().sort((a,b) => {
+                  const ta = a.created_at?.seconds || 0;
+                  const tb = b.created_at?.seconds || 0;
+                  return tb - ta;
+                }).map(c => {
+                  const grupo = TURNOS.find(t => t.codigo === c.grupo);
+                  return `
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:4px 6px;border-left:3px solid ${grupo?.color || '#94a3b8'};background:#f8fafc;border-radius:3px;">
+                      <div>
+                        ${c.fecha || ''} · ${c.turno === 'dia' ? '☀️' : '🌙'} 
+                        <span style="background:${grupo?.color || '#94a3b8'};color:#fff;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;margin:0 4px;">${c.grupo || '?'}</span>
+                        <span style="color:#475569;">${c.operador || ''}</span>
+                      </div>
+                      <div>
+                        <strong style="color:#16a34a;">${fmtNum(c.producido_kg||0)} kg</strong>
+                        ${c.mermas_kg ? `<span style="color:#dc2626;font-size:10px;margin-left:4px;">⚠${fmtNum(c.mermas_kg)}</span>` : ''}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      ` : ''}
+      
+      ${pct > 0 && o.estatus !== 'en_produccion' ? `
         <div style="padding:0 18px 12px;">
           <div style="background:#e2e8f0;height:8px;border-radius:99px;overflow:hidden;">
             <div style="background:${color};height:100%;width:${pct}%;transition:width 0.3s;"></div>
@@ -1622,11 +1807,16 @@ function renderTarjetaODP(o, contexto) {
           <button class="btn-primary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Programar</button>
         ` : ''}
         ${o.estatus === 'programada' ? `
-          <button class="btn-primary" onclick="iniciarProceso('${o.id}')" style="padding:8px 14px;background:#8b5cf6;">▶ Iniciar ${getProc(procActual)?.nombre || 'producción'}</button>
+          <button class="btn-primary" onclick="abrirModal('capturar-turno','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📝 Capturar mi turno</button>
           <button class="btn-secondary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Reprogramar</button>
         ` : ''}
         ${o.estatus === 'en_produccion' ? `
-          <button class="btn-primary" onclick="abrirModal('completar-proceso','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Terminar ${getProc(procActual)?.nombre || procActual}</button>
+          <button class="btn-primary" onclick="abrirModal('capturar-turno','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📝 Capturar mi turno</button>
+          ${pctProcActual >= 95 ? `
+            <button class="btn-primary" onclick="abrirModal('completar-proceso','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Cerrar ${getProc(procActual)?.nombre || procActual} (${pctProcActual}%)</button>
+          ` : `
+            <button onclick="abrirModal('completar-proceso','${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">⚠ Cerrar antes de meta (${pctProcActual}%)</button>
+          `}
         ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
@@ -2224,6 +2414,9 @@ function renderModal() {
   if (m === 'pdf-preview') return modalPdfPreview();
   if (m === 'crear-maquina') return modalMaquina(false);
   if (m === 'editar-maquina') return modalMaquina(true);
+  if (m === 'crear-personal') return modalPersonal(false);
+  if (m === 'editar-personal') return modalPersonal(true);
+  if (m === 'capturar-turno') return modalCapturarTurno();
   return '';
 }
 
@@ -2474,6 +2667,319 @@ function modalProgramarODP() {
     </div>
   `;
 }
+
+// ============================================================
+// MODAL: CAPTURAR TURNO (registro por operador/turno/grupo)
+// ============================================================
+function modalCapturarTurno() {
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return '';
+  
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procActual = getProc(ruta[idx]);
+  if (!procActual) return '';
+  
+  const um = (odp.um || 'kg').toLowerCase();
+  const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+  const maquinaAsignada = (odp.maquinas_asignadas && odp.maquinas_asignadas[ruta[idx]]) || odp.maquina_codigo || '';
+  
+  // Capturas previas de este proceso
+  const capturasProceso = (state.capturas_produccion || []).filter(c => 
+    c.odp_id === odp.id && c.proceso === ruta[idx]
+  );
+  const totalProducidoKg = capturasProceso.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const totalMermasKg = capturasProceso.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  
+  // Meta (kg planeados al proceso)
+  let metaKg;
+  if (idx === 0) {
+    metaKg = Number(odp.cantidad_kg_produccion) || window.convertirAKg(odp.cantidad, um, producto) || Number(odp.cantidad) || 0;
+  } else {
+    const procesoAnterior = (odp.procesos_completados || [])[odp.procesos_completados.length - 1];
+    metaKg = procesoAnterior ? (Number(procesoAnterior.cantidad_producida_kg) || 0) : 0;
+  }
+  
+  const pctAvance = metaKg > 0 ? Math.min(100, (totalProducidoKg / metaKg) * 100) : 0;
+  const faltaKg = Math.max(0, metaKg - totalProducidoKg);
+  const yaListo = totalProducidoKg >= metaKg * 0.95; // 95% para cerrar
+  
+  // Auto-detectar turno por hora
+  const ahora = new Date();
+  const hora = ahora.getHours();
+  const turnoSugerido = (hora >= 7 && hora < 19) ? 'dia' : 'noche';
+  
+  if (!state.modalForm) {
+    state.modalForm = {
+      fecha: ahora.toISOString().split('T')[0],
+      turno: turnoSugerido,
+      grupo: '',
+      operador_id: '',
+      supervisor_id: '',
+      producido_kg: '',
+      mermas_kg: '',
+      notas: ''
+    };
+  }
+  const f = state.modalForm;
+  
+  // Operadores y supervisores filtrados por grupo
+  const operadoresFiltrados = (state.operadores || []).filter(o => o.activo !== false && (!f.grupo || o.grupo === f.grupo));
+  const supervisoresFiltrados = (state.supervisores || []).filter(s => s.activo !== false && (!f.grupo || s.grupo === f.grupo));
+  
+  const sinPersonal = (state.operadores || []).length === 0 && (state.supervisores || []).length === 0;
+  
+  // Validaciones
+  const prodKg = Number(f.producido_kg) || 0;
+  const mermKg = Number(f.mermas_kg) || 0;
+  const camposListos = f.fecha && f.turno && f.grupo && f.operador_id && f.supervisor_id && prodKg > 0;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:680px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📝 Capturar mi turno</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <!-- INFO ODP -->
+          <div style="padding:14px;background:${procActual.color}11;border-left:4px solid ${procActual.color};border-radius:10px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:10px;flex-wrap:wrap;">
+              <div>
+                <div style="font-size:18px;font-weight:800;color:${procActual.color};">${procActual.icono} ${procActual.nombre}</div>
+                <div class="text-mono" style="font-size:13px;font-weight:700;margin-top:2px;">${odp.folio}</div>
+                <div style="font-size:12px;color:#475569;margin-top:2px;">${odp.cliente_nombre} · ${odp.producto_codigo}</div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;">MÁQUINA</div>
+                <div class="text-mono" style="font-size:16px;font-weight:800;">${maquinaAsignada || '—'}</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- BARRA DE AVANCE -->
+          <div style="margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:end;margin-bottom:6px;">
+              <span style="font-size:11px;color:#64748b;font-weight:700;">AVANCE TOTAL</span>
+              <span style="font-size:12px;font-weight:800;color:${pctAvance >= 95 ? '#16a34a' : '#3b82f6'};">${pctAvance.toFixed(1)}%</span>
+            </div>
+            <div style="height:10px;background:#f1f5f9;border-radius:6px;overflow:hidden;">
+              <div style="width:${pctAvance}%;height:100%;background:linear-gradient(90deg, ${procActual.color}, ${pctAvance >= 95 ? '#16a34a' : procActual.color});transition:width 0.3s;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569;margin-top:4px;">
+              <span>📊 Acumulado: <strong>${fmtNum(totalProducidoKg)} kg</strong> · Mermas: ${fmtNum(totalMermasKg)} kg</span>
+              <span>🎯 Meta: <strong>${fmtNum(metaKg)} kg</strong> · Faltan: ${fmtNum(faltaKg)} kg</span>
+            </div>
+          </div>
+          
+          ${sinPersonal ? `
+            <div style="padding:14px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+              <div style="font-weight:700;color:#92400e;font-size:13px;">⚠ Sin operadores/supervisores registrados</div>
+              <div style="font-size:11px;color:#475569;margin-top:4px;">
+                Antes de capturar, debes dar de alta operadores y supervisores por grupo. 
+                <a href="#" onclick="state.vista='personal';cerrarModal();render();return false;" style="color:#3b82f6;font-weight:700;">Ir a 👷 Personal →</a>
+              </div>
+            </div>
+          ` : ''}
+          
+          <!-- DATOS DEL TURNO -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">📅 Fecha *</label>
+              <input class="input" id="ct-fecha" type="date" value="${f.fecha || ''}" onchange="window.modalFormSet('fecha', this.value)" />
+            </div>
+            <div class="field">
+              <label class="field-label">⏰ Turno *</label>
+              <div style="display:flex;gap:8px;">
+                <button onclick="window.modalFormSet('turno','dia')" style="flex:1;padding:10px;border:2px solid ${f.turno==='dia'?'#f59e0b':'#cbd5e1'};background:${f.turno==='dia'?'#f59e0b':'#fff'};color:${f.turno==='dia'?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  ☀️ Día<br><span style="font-size:10px;font-weight:400;">7AM-7PM</span>
+                </button>
+                <button onclick="window.modalFormSet('turno','noche')" style="flex:1;padding:10px;border:2px solid ${f.turno==='noche'?'#1e3a8a':'#cbd5e1'};background:${f.turno==='noche'?'#1e3a8a':'#fff'};color:${f.turno==='noche'?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  🌙 Noche<br><span style="font-size:10px;font-weight:400;">7PM-7AM</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">👥 Grupo de turno *</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${TURNOS.map(t => `
+                <button onclick="window.modalFormSetGrupo('${t.codigo}')" style="flex:1;min-width:60px;padding:14px;border:2px solid ${f.grupo === t.codigo ? t.color : '#cbd5e1'};background:${f.grupo === t.codigo ? t.color : '#fff'};color:${f.grupo === t.codigo ? '#fff' : t.color};border-radius:8px;font-weight:800;font-size:18px;cursor:pointer;">
+                  ${t.codigo}
+                </button>
+              `).join('')}
+            </div>
+            ${f.grupo ? `<div style="font-size:10px;color:#16a34a;margin-top:4px;font-weight:700;">✓ Grupo ${f.grupo} seleccionado · ${operadoresFiltrados.length} operador(es) · ${supervisoresFiltrados.length} supervisor(es)</div>` : ''}
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">👷 Operador *</label>
+              <select class="input" id="ct-operador" onchange="window.modalFormSet('operador_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
+                <option value="">${f.grupo ? '— Selecciona —' : 'Primero elige un grupo'}</option>
+                ${operadoresFiltrados.map(o => `<option value="${o.id}" ${f.operador_id === o.id ? 'selected' : ''}>${o.nombre}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">👔 Supervisor *</label>
+              <select class="input" id="ct-supervisor" onchange="window.modalFormSet('supervisor_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
+                <option value="">${f.grupo ? '— Selecciona —' : 'Primero elige un grupo'}</option>
+                ${supervisoresFiltrados.map(s => `<option value="${s.id}" ${f.supervisor_id === s.id ? 'selected' : ''}>${s.nombre}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          
+          <!-- PRODUCCIÓN -->
+          <div style="padding:12px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-top:8px;">
+            <div style="font-weight:800;color:#166534;font-size:13px;margin-bottom:8px;">📊 Producción de este turno</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field" style="margin:0;">
+                <label class="field-label">✅ kg producidos *</label>
+                <input class="input" id="ct-prod" type="number" min="0" step="0.1" value="${f.producido_kg}" oninput="window.modalFormSet('producido_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;" />
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label">⚠ kg mermas</label>
+                <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg}" oninput="window.modalFormSet('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;color:#dc2626;" />
+              </div>
+            </div>
+            ${prodKg > 0 ? `
+              <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;">
+                Total turno: <strong>${fmtNum(prodKg + mermKg)} kg</strong> · Después de capturar: <strong>${fmtNum(totalProducidoKg + prodKg)} kg / ${fmtNum(metaKg)} kg</strong> (${((totalProducidoKg + prodKg)/metaKg*100).toFixed(1)}%)
+              </div>
+            ` : ''}
+          </div>
+          
+          <div class="field" style="margin-top:8px;">
+            <label class="field-label">📝 Notas <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <textarea class="input" id="ct-notas" style="min-height:50px;" oninput="window.modalFormSet('notas', this.value)" placeholder="Eventos, paros, observaciones...">${f.notas || ''}</textarea>
+          </div>
+          
+          <!-- HISTORIAL TURNOS PREVIOS -->
+          ${capturasProceso.length > 0 ? `
+            <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:12px;">
+              <div style="font-weight:800;font-size:12px;color:#475569;margin-bottom:8px;">📋 Turnos capturados previamente (${capturasProceso.length})</div>
+              <div style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;">
+                ${capturasProceso.slice().sort((a,b) => {
+                  const ta = a.created_at?.seconds || 0;
+                  const tb = b.created_at?.seconds || 0;
+                  return tb - ta;
+                }).map(c => {
+                  const grupo = TURNOS.find(t => t.codigo === c.grupo);
+                  return `
+                    <div style="padding:6px 10px;background:#f8fafc;border-left:3px solid ${grupo?.color || '#94a3b8'};border-radius:4px;display:flex;justify-content:space-between;align-items:center;font-size:11px;">
+                      <div>
+                        <strong>${c.fecha || ''} · ${c.turno === 'dia' ? '☀️' : '🌙'} ${c.turno?.toUpperCase()}</strong>
+                        ${grupo ? `<span style="background:${grupo.color};color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;margin-left:5px;">${grupo.codigo}</span>` : ''}
+                        <span style="color:#64748b;margin-left:5px;">${c.operador || ''}</span>
+                      </div>
+                      <div style="text-align:right;">
+                        <strong style="color:#16a34a;">${fmtNum(c.producido_kg||0)} kg</strong>
+                        ${c.mermas_kg ? `<span style="color:#dc2626;font-size:10px;margin-left:5px;">⚠${fmtNum(c.mermas_kg)} kg</span>` : ''}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : ''}
+          
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="guardarCapturaTurno('${odp.id}')" ${!camposListos ? 'disabled' : ''} style="background:#16a34a;">
+            ${ICONS.check} Guardar mi turno
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.modalFormSet = (key, val) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm[key] = val;
+  render();
+};
+
+window.modalFormSetGrupo = (g) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.grupo = g;
+  // Limpiar operador y supervisor cuando cambia el grupo
+  state.modalForm.operador_id = '';
+  state.modalForm.supervisor_id = '';
+  render();
+};
+
+window.guardarCapturaTurno = async (odpId) => {
+  const f = state.modalForm;
+  if (!f) return;
+  
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procActual = ruta[idx];
+  
+  // Validaciones
+  if (!f.fecha) { toast('Selecciona fecha', 'error'); return; }
+  if (!f.turno) { toast('Selecciona turno', 'error'); return; }
+  if (!f.grupo) { toast('Selecciona grupo', 'error'); return; }
+  if (!f.operador_id) { toast('Selecciona operador', 'error'); return; }
+  if (!f.supervisor_id) { toast('Selecciona supervisor', 'error'); return; }
+  const prodKg = Number(f.producido_kg) || 0;
+  if (prodKg <= 0) { toast('Captura kg producidos', 'error'); return; }
+  
+  const op = (state.operadores || []).find(o => o.id === f.operador_id);
+  const sup = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+  
+  state.loadingAccion = true; render();
+  try {
+    const maquinaAsignada = (odp.maquinas_asignadas && odp.maquinas_asignadas[procActual]) || odp.maquina_codigo || '';
+    
+    // 1. Crear captura
+    await addDoc(collection(db, 'capturas_produccion'), {
+      odp_id: odpId,
+      odp_folio: odp.folio,
+      proceso: procActual,
+      proceso_nombre: getProc(procActual)?.nombre || procActual,
+      maquina: maquinaAsignada,
+      fecha: f.fecha,
+      turno: f.turno,
+      grupo: f.grupo,
+      operador_id: f.operador_id,
+      operador: op?.nombre || '',
+      supervisor_id: f.supervisor_id,
+      supervisor: sup?.nombre || '',
+      producido_kg: prodKg,
+      mermas_kg: Number(f.mermas_kg) || 0,
+      notas: f.notas || '',
+      capturado_por: state.user.id,
+      capturado_por_nombre: state.user.nombre || state.user.email,
+      created_at: serverTimestamp()
+    });
+    
+    // 2. Si la ODP está en programada, pasar a en_produccion
+    if (odp.estatus === 'programada') {
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        estatus: 'en_produccion',
+        fecha_inicio_real: serverTimestamp(),
+        proceso_actual_inicio: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    }
+    
+    cerrarModal();
+    toast(`✅ Turno guardado: ${fmtNum(prodKg)} kg · ${op?.nombre || ''} · Grupo ${f.grupo}`);
+  } catch (e) {
+    console.error('Error guardar turno:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
 
 // ============================================================
 // MODAL: TERMINAR PROCESO ACTUAL
@@ -3958,6 +4464,198 @@ window.confirmarMaquina = async (id) => {
       data.created_at = serverTimestamp();
       await addDoc(collection(db, 'maquinas'), data);
       toast(`✅ Máquina ${codigo} creada`);
+    }
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// VISTA: PERSONAL (Operadores y Supervisores por turno A/B/C/D)
+// ============================================================
+const TURNOS = [
+  { codigo: 'A', nombre: 'Grupo A', color: '#3b82f6' },
+  { codigo: 'B', nombre: 'Grupo B', color: '#16a34a' },
+  { codigo: 'C', nombre: 'Grupo C', color: '#f59e0b' },
+  { codigo: 'D', nombre: 'Grupo D', color: '#7c3aed' }
+];
+window.TURNOS = TURNOS;
+
+function renderPersonal() {
+  const u = state.user || {};
+  const puedeEditar = ['PLN','CEO','ADMIN','PRO'].includes(u.depto) || u.rol === 'admin';
+  const filtro = (state.filtros.personal || '').toLowerCase();
+  const tabPers = state.tabs.personal || 'operadores';
+  
+  let lista = tabPers === 'operadores' ? (state.operadores || []) : (state.supervisores || []);
+  if (filtro) lista = lista.filter(p => (p.nombre + ' ' + (p.grupo||'')).toLowerCase().includes(filtro));
+  
+  // Agrupar por grupo (A/B/C/D)
+  const porGrupo = { A: [], B: [], C: [], D: [], sin: [] };
+  lista.forEach(p => {
+    const g = p.grupo || 'sin';
+    if (porGrupo[g]) porGrupo[g].push(p);
+    else porGrupo.sin.push(p);
+  });
+  
+  const total = (state.operadores || []).length + (state.supervisores || []).length;
+  
+  return `
+    <div style="margin-bottom:14px;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">
+        <button class="tab-btn ${tabPers === 'operadores' ? 'active' : ''}" onclick="cambiarTab('personal','operadores')">👷 Operadores (${(state.operadores||[]).length})</button>
+        <button class="tab-btn ${tabPers === 'supervisores' ? 'active' : ''}" onclick="cambiarTab('personal','supervisores')">👔 Supervisores (${(state.supervisores||[]).length})</button>
+      </div>
+    </div>
+    
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-personal" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar por nombre o grupo..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${lista.length} ${tabPers === 'operadores' ? 'operador(es)' : 'supervisor(es)'}</span>
+      ${puedeEditar ? `
+        <button class="btn-primary" onclick="abrirModal('crear-personal','${tabPers}')" style="margin-left:auto;">${ICONS.plus} Nuevo ${tabPers === 'operadores' ? 'operador' : 'supervisor'}</button>
+      ` : ''}
+    </div>
+    
+    ${lista.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">${tabPers === 'operadores' ? '👷' : '👔'}</div>
+        <div style="font-weight:700;color:#475569;">Sin ${tabPers === 'operadores' ? 'operadores' : 'supervisores'} registrados</div>
+        <div style="font-size:12px;color:#64748b;margin-top:8px;">Agrégalos por grupo (A, B, C, D)</div>
+      </div>
+    ` : TURNOS.concat([{codigo:'sin',nombre:'Sin grupo asignado',color:'#94a3b8'}]).filter(g => porGrupo[g.codigo].length > 0).map(g => `
+      <div style="margin-bottom:18px;">
+        <div style="padding:8px 14px;background:${g.color}15;border-left:4px solid ${g.color};border-radius:6px 6px 0 0;font-weight:800;color:${g.color};">
+          ${g.codigo === 'sin' ? '⚠' : '👥'} ${g.nombre} <span style="font-weight:400;color:#64748b;font-size:12px;">(${porGrupo[g.codigo].length} persona${porGrupo[g.codigo].length>1?'s':''})</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:10px;padding:12px;background:#fff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;">
+          ${porGrupo[g.codigo].map(p => renderTarjetaPersonal(p, tabPers, puedeEditar)).join('')}
+        </div>
+      </div>
+    `).join('')}
+  `;
+}
+
+function renderTarjetaPersonal(p, tipo, puedeEditar) {
+  const inactivo = p.activo === false;
+  const grupo = TURNOS.find(t => t.codigo === p.grupo);
+  return `
+    <div style="background:#fff;border:1px solid ${inactivo?'#cbd5e1':'#e2e8f0'};border-radius:10px;padding:12px;${inactivo?'opacity:0.6;':''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:800;font-size:14px;color:#1e293b;">${p.nombre}</div>
+          ${grupo ? `<div style="display:inline-block;margin-top:4px;background:${grupo.color}22;color:${grupo.color};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;">${grupo.codigo}</div>` : ''}
+          ${p.puesto ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">${p.puesto}</div>` : ''}
+        </div>
+        ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
+      </div>
+      ${puedeEditar ? `
+        <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;">
+          <button onclick="abrirModal('editar-personal','${tipo}:${p.id}')" style="flex:1;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
+          <button onclick="togglePersonalActivo('${tipo}','${p.id}')" style="flex:1;padding:5px 8px;background:${inactivo?'#16a34a':'#f59e0b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo ? '✓ Activar' : '⏸ Desactivar'}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+window.togglePersonalActivo = async (tipo, id) => {
+  const arr = tipo === 'operadores' ? state.operadores : state.supervisores;
+  const p = arr.find(x => x.id === id);
+  if (!p) return;
+  try {
+    await updateDoc(doc(db, tipo, id), {
+      activo: !p.activo,
+      updated_at: serverTimestamp()
+    });
+    toast(`${p.nombre} ${!p.activo ? 'activado' : 'desactivado'}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+function modalPersonal(esEdicion) {
+  // state.modalData format: "operadores:id" o "supervisores" (creando)
+  const data = state.modalData || 'operadores';
+  let tipo, id, p;
+  if (esEdicion) {
+    [tipo, id] = data.split(':');
+    p = (tipo === 'operadores' ? state.operadores : state.supervisores).find(x => x.id === id);
+    if (!p) return '';
+  } else {
+    tipo = data;
+  }
+  
+  if (!state.modalForm) {
+    state.modalForm = p ? { ...p } : { nombre: '', grupo: '', puesto: '', activo: true };
+  }
+  const f = state.modalForm;
+  const tituloTipo = tipo === 'operadores' ? 'operador' : 'supervisor';
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '➕ Nuevo'} ${tituloTipo}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="field-label">Nombre completo *</label>
+            <input class="input" id="per-nombre" value="${f.nombre || ''}" placeholder="Juan Pérez García" />
+          </div>
+          <div class="field">
+            <label class="field-label">Grupo (turno rotativo) *</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${TURNOS.map(t => `
+                <button onclick="seleccionarGrupo('${t.codigo}')" style="padding:10px 18px;border:2px solid ${f.grupo === t.codigo ? t.color : '#cbd5e1'};background:${f.grupo === t.codigo ? t.color : '#fff'};color:${f.grupo === t.codigo ? '#fff' : t.color};border-radius:8px;font-weight:800;font-size:14px;cursor:pointer;">
+                  ${t.codigo}
+                </button>
+              `).join('')}
+            </div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:6px;">Los 4 grupos rotan en turnos de día (7AM-7PM) y noche (7PM-7AM)</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Puesto / función <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <input class="input" id="per-puesto" value="${f.puesto || ''}" placeholder="${tipo === 'operadores' ? 'Operador de extrusora, etc.' : 'Supervisor de planta, etc.'}" />
+          </div>
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarPersonal('${tipo}',${esEdicion ? `'${id}'` : 'null'})">${ICONS.check} ${esEdicion ? 'Guardar' : 'Crear'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.seleccionarGrupo = (g) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.grupo = g;
+  render();
+};
+
+window.confirmarPersonal = async (tipo, id) => {
+  const nombre = ($('#per-nombre')?.value || '').trim();
+  const grupo = state.modalForm?.grupo || '';
+  const puesto = ($('#per-puesto')?.value || '').trim();
+  
+  if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
+  if (!grupo) { toast('Selecciona un grupo (A, B, C o D)', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    const data = { nombre, grupo, puesto, updated_at: serverTimestamp() };
+    if (id) {
+      await updateDoc(doc(db, tipo, id), data);
+      toast(`${nombre} actualizado`);
+    } else {
+      data.activo = true;
+      data.created_at = serverTimestamp();
+      await addDoc(collection(db, tipo), data);
+      toast(`✅ ${nombre} agregado al grupo ${grupo}`);
     }
     cerrarModal();
   } catch (e) {
@@ -8590,6 +9288,15 @@ function attachAppEvents() {
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
+  if ($('#filtro-personal')) {
+    $('#filtro-personal').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.personal = e.target.value;
+      render();
+      const inp = $('#filtro-personal');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
   $$('.prod-um-select').forEach(sel => {
     sel.onchange = async (e) => {
       const codigo = sel.dataset.codigo;
@@ -8744,7 +9451,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
@@ -9591,13 +10298,27 @@ window.confirmarProgramarODP = async (odpId) => {
     const odp = state.ordenes_produccion.find(o => o.id === odpId);
     const proc = getProc(ruta[0]);
     const maqProc1 = maquinas[ruta[0]];
-    await addDoc(collection(db, 'notificaciones'), {
-      titulo: 'ODP programada ' + odp.folio,
-      mensaje: `${odp.cliente_nombre} • Inicia en ${proc?.nombre || ruta[0]} (${maqProc1}) • ${fini}`,
-      depto_destino: 'PRO',
-      tipo: 'info', folio_ref: odp.folio,
-      created_at: serverTimestamp()
+    
+    // Notificar a PRO con detalles completos
+    await notificar({
+      a: ['PRO','CEO'],
+      titulo: `📅 ODP ${odp.folio} programada`,
+      mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtCantidadUM(odp.cantidad, odp.um)} · Inicia ${fini} en ${proc?.icono || ''} ${maqProc1}`,
+      tipo: 'info',
+      folio_ref: odp.folio,
+      vista: 'captura_produccion'
     });
+    
+    // Si tiene varios procesos, notificar también a CAL para que estén pendientes
+    if (ruta.length > 1) {
+      await notificar({
+        a: 'CAL',
+        titulo: `📋 ODP ${odp.folio} en agenda`,
+        mensaje: `${odp.cliente_nombre} · ${ruta.length} procesos · Liberación esperada después de ${fini}`,
+        tipo: 'info',
+        folio_ref: odp.folio
+      });
+    }
     
     cerrarModal();
     toast(`✅ ODP programada con ${ruta.length} proceso(s) y máquinas asignadas`);
@@ -10135,16 +10856,47 @@ window.confirmarLiberarCalidad = async (odpId) => {
         mensajePI = ` · PI nuevo generado por ${fmtCantidadUM(faltante, um)} faltante`;
       }
       
-      // Notificar
+      // Notificar a todas las áreas con mensajes específicos
       const batchNotif = writeBatch(db);
-      ['CS', 'CEO', 'KAM', 'ALP', 'PRO'].forEach(depto => {
+      
+      // ALP: recibe las tarimas
+      const refALP = doc(collection(db, 'notificaciones'));
+      batchNotif.set(refALP, {
+        titulo: `📦 ${numTarimas} tarima(s) listas para recibir`,
+        mensaje: `${odp.folio} · ${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtCantidadUM(cantAceptada, um)} · PKL ${codigoPKL}`,
+        depto_destino: 'ALP', tipo: 'success', folio_ref: odp.folio,
+        vista_destino: 'almacen_planta',
+        leida: false, created_at: serverTimestamp()
+      });
+      
+      // CS / KAM: cliente ya tiene producción lista
+      ['CS', 'KAM'].forEach(depto => {
         const ref = doc(collection(db, 'notificaciones'));
         batchNotif.set(ref, {
-          titulo: `${decision === 'liberado' ? '✅' : '⚠️'} Calidad liberó ${odp.folio}`,
-          mensaje: `${odp.cliente_nombre} · ${codigoPKL} · ${numTarimas} tarima(s) con sus lotes individuales · ${fmtCantidadUM(cantAceptada, um)}${mensajePI}`,
+          titulo: `✅ Producción liberada · ${odp.folio}`,
+          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtCantidadUM(cantAceptada, um)} en tarimas${mensajePI}`,
           depto_destino: depto, tipo: 'success', folio_ref: odp.folio,
-          created_at: serverTimestamp()
+          vista_destino: 'seguimiento',
+          leida: false, created_at: serverTimestamp()
         });
+      });
+      
+      // PRO: confirma que su trabajo fue liberado
+      const refPRO = doc(collection(db, 'notificaciones'));
+      batchNotif.set(refPRO, {
+        titulo: `${decision === 'liberado' ? '✅' : '⚠️'} ${odp.folio} aprobada por Calidad`,
+        mensaje: `Liberado ${fmtCantidadUM(cantAceptada, um)} / ${fmtCantidadUM(cantidadOriginal, um)} programado`,
+        depto_destino: 'PRO', tipo: 'success', folio_ref: odp.folio,
+        leida: false, created_at: serverTimestamp()
+      });
+      
+      // CEO: visibilidad general
+      const refCEO = doc(collection(db, 'notificaciones'));
+      batchNotif.set(refCEO, {
+        titulo: `✅ Calidad liberó ${odp.folio}`,
+        mensaje: `${odp.cliente_nombre} · ${numTarimas} tarimas · ${fmtCantidadUM(cantAceptada, um)}${mensajePI}`,
+        depto_destino: 'CEO', tipo: 'info', folio_ref: odp.folio,
+        leida: false, created_at: serverTimestamp()
       });
       await batchNotif.commit();
       
