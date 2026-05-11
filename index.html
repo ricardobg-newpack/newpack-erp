@@ -922,51 +922,98 @@ function renderPedidos() {
 }
 
 function renderFormPedido() {
-  const datos = state.pedidoData || { cliente_codigo: '', cliente_nombre: '', odc_cliente: '', fecha_requerida: '', cedis_asignado: '', observaciones: '', lineas: [] };
+  const datos = state.pedidoData || { cliente_codigo: '', cliente_nombre: '', odc_cliente: '', fecha_requerida: '', cedis_asignado: '', observaciones: '', lineas: [], tipo_pi: 'cliente' };
   state.pedidoData = datos;
+  if (!datos.tipo_pi) datos.tipo_pi = 'cliente';
   
-  const productosCli = datos.cliente_codigo ? window.productosDeCliente(datos.cliente_codigo) : [];
+  const esStockInterno = datos.tipo_pi === 'stock_interno';
+  
+  // Para PI de stock interno: cliente virtual fijo
+  if (esStockInterno) {
+    datos.cliente_codigo = 'STOCK';
+    datos.cliente_nombre = 'STOCK INTERNO NEWPACK';
+    if (!datos.odc_cliente || !datos.odc_cliente.startsWith('STOCK-')) {
+      datos.odc_cliente = `STOCK-${Date.now().toString().slice(-6)}`;
+    }
+  }
+  
+  const productosCli = esStockInterno 
+    ? state.productos_pt 
+    : (datos.cliente_codigo ? window.productosDeCliente(datos.cliente_codigo) : []);
   const busq = (state.busqProd || '').toLowerCase();
-  let prodsFiltrados = busq ? productosCli.filter(p => (p.codigo + ' ' + p.descripcion).toLowerCase().includes(busq)) : productosCli;
+  let prodsFiltrados = busq ? productosCli.filter(p => (p.codigo + ' ' + (p.descripcion||'')).toLowerCase().includes(busq)) : productosCli;
   
   return `
+    <!-- TOGGLE TIPO DE PI -->
+    <div style="background:#fff;border:2px solid ${esStockInterno ? '#3fd34b' : '#3b82f6'};border-radius:14px;padding:14px;margin-bottom:14px;">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <span style="font-weight:800;color:#475569;font-size:13px;">📋 TIPO DE PEDIDO INTERNO:</span>
+        <button onclick="cambiarTipoPI('cliente')" style="padding:10px 18px;background:${!esStockInterno?'#3b82f6':'#fff'};color:${!esStockInterno?'#fff':'#475569'};border:2px solid ${!esStockInterno?'#3b82f6':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
+          👥 Cliente Externo
+        </button>
+        <button onclick="cambiarTipoPI('stock_interno')" style="padding:10px 18px;background:${esStockInterno?'#3fd34b':'#fff'};color:${esStockInterno?'#fff':'#475569'};border:2px solid ${esStockInterno?'#3fd34b':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
+          🏭 Producción para Stock
+        </button>
+        <span style="font-size:11px;color:#64748b;margin-left:auto;">
+          ${esStockInterno 
+            ? '🏭 Las tarimas quedarán disponibles en CEDIS para futuras OVs' 
+            : '👥 Pedido normal con cliente final'}
+        </span>
+      </div>
+    </div>
+    
     <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:20px;align-items:start;">
       <div class="panel">
-        <div class="panel-header">${ICONS.cart} Datos del pedido</div>
+        <div class="panel-header">${esStockInterno ? '🏭 Datos del pedido para STOCK' : ICONS.cart + ' Datos del pedido'}</div>
         <div style="padding:18px;">
+          ${esStockInterno ? `
+            <div style="padding:12px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;margin-bottom:14px;">
+              <div style="font-weight:700;color:#166534;font-size:13px;">🏭 Producción para Stock Interno</div>
+              <div style="font-size:11px;color:#475569;margin-top:4px;">
+                Este PI no tiene cliente final. Las tarimas se producen y quedan disponibles en CEDIS-MTY para futuras OVs de clientes. <strong>NO se generan OVs.</strong>
+              </div>
+            </div>
+          ` : ''}
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field">
-              <label class="field-label">Cliente *</label>
-              <select class="input" id="ped-cliente">
-                <option value="">— Selecciona —</option>
-                ${state.clientes.map(c => `<option value="${c.codigo}" ${datos.cliente_codigo === c.codigo ? 'selected' : ''}>${c.codigo} — ${c.nombre.slice(0,40)}</option>`).join('')}
-              </select>
+              <label class="field-label">${esStockInterno ? 'Tipo' : 'Cliente *'}</label>
+              ${esStockInterno ? `
+                <input class="input" value="🏭 STOCK INTERNO NEWPACK" disabled style="background:#dcfce7;font-weight:700;color:#166534;" />
+              ` : `
+                <select class="input" id="ped-cliente">
+                  <option value="">— Selecciona —</option>
+                  ${state.clientes.map(c => `<option value="${c.codigo}" ${datos.cliente_codigo === c.codigo ? 'selected' : ''}>${c.codigo} — ${c.nombre.slice(0,40)}</option>`).join('')}
+                </select>
+              `}
             </div>
             <div class="field">
-              <label class="field-label">CEDIS *</label>
+              <label class="field-label">CEDIS destino *</label>
               <select class="input" id="ped-cedis">
                 ${state.almacenes.filter(a => a.tipo === 'cedis').map(a => `<option value="${a.codigo}" ${datos.cedis_asignado === a.codigo ? 'selected' : ''}>${a.nombre}</option>`).join('')}
               </select>
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-            <div class="field"><label class="field-label">ODC del cliente</label><input class="input" id="ped-odc" value="${datos.odc_cliente || ''}" /></div>
-            <div class="field"><label class="field-label">Fecha requerida</label><input class="input" id="ped-fecha" type="date" value="${datos.fecha_requerida || ''}" /></div>
+            <div class="field">
+              <label class="field-label">${esStockInterno ? 'Referencia interna' : 'ODC del cliente'}</label>
+              <input class="input" id="ped-odc" value="${datos.odc_cliente || ''}" ${esStockInterno ? 'placeholder="STOCK-XXXXX"' : ''} />
+            </div>
+            <div class="field"><label class="field-label">${esStockInterno ? 'Fecha objetivo' : 'Fecha requerida'}</label><input class="input" id="ped-fecha" type="date" value="${datos.fecha_requerida || ''}" /></div>
           </div>
           
-          ${!datos.cliente_codigo ? `
+          ${(!datos.cliente_codigo && !esStockInterno) ? `
             <div style="padding:30px;text-align:center;color:#94a3b8;background:#f8fafc;border-radius:10px;">
               👈 Selecciona un cliente para ver sus productos
             </div>
           ` : `
             <div class="field" style="margin-top:14px;">
-              <label class="field-label">Buscar producto del cliente</label>
+              <label class="field-label">Buscar producto${esStockInterno ? ' (cualquier producto del catálogo)' : ' del cliente'}</label>
               <input class="input" id="ped-busq" placeholder="Código o descripción..." value="${state.busqProd || ''}" autocomplete="off" />
             </div>
             <div style="max-height:340px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;">
               ${prodsFiltrados.length === 0 ? `
                 <div style="padding:30px;text-align:center;color:#94a3b8;font-size:13px;">
-                  ${productosCli.length === 0 ? 'Cliente sin productos asignados' : 'No se encontraron productos'}
+                  ${productosCli.length === 0 ? (esStockInterno ? 'No hay productos en catálogo' : 'Cliente sin productos asignados') : 'No se encontraron productos'}
                 </div>
               ` : prodsFiltrados.slice(0, 50).map(p => {
                 const yaAgregado = datos.lineas.some(l => l.producto_codigo === p.codigo);
@@ -1067,20 +1114,22 @@ function renderListaPedidos(pedidos, puedeAprobar) {
         const colorEst = { pendiente_aprobacion: '#f59e0b', aprobado: '#16a34a', en_proceso: '#3b82f6', completado: '#94a3b8', cancelado: '#dc2626' }[p.estatus];
         const lblEst = { pendiente_aprobacion: 'Por aprobar', aprobado: 'Aprobado', en_proceso: 'En proceso', completado: 'Completado', cancelado: 'Cancelado' }[p.estatus] || p.estatus;
         const tipoBadge = { stock: { l: '📦 Stock', c: '#16a34a' }, producir: { l: '🏭 Producir', c: '#f59e0b' }, mixto: { l: '🔀 Mixto', c: '#3b82f6' } }[p.tipo] || { l: p.tipo, c: '#64748b' };
+        const esStockInt = p.tipo_pi === 'stock_interno';
         
         return `
-          <div class="panel" style="border:2px solid ${colorEst};">
-            <div style="padding:14px 18px;background:${colorEst}11;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div class="panel" style="border:2px solid ${esStockInt ? '#3fd34b' : colorEst};">
+            <div style="padding:14px 18px;background:${esStockInt ? '#dcfce7' : colorEst+'11'};display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
               <div>
                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                   <span class="text-mono" style="font-weight:800;font-size:16px;">${p.folio}</span>
+                  ${esStockInt ? `<span style="font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;background:#3fd34b;color:#fff;">🏭 PRODUCCIÓN PARA STOCK</span>` : ''}
                   <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${colorEst}22;color:${colorEst};">${lblEst}</span>
-                  <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px;background:${tipoBadge.c}22;color:${tipoBadge.c};">${tipoBadge.l}</span>
+                  ${!esStockInt ? `<span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px;background:${tipoBadge.c}22;color:${tipoBadge.c};">${tipoBadge.l}</span>` : ''}
                 </div>
-                <div style="font-size:13px;font-weight:600;margin-top:4px;">${p.cliente_nombre} <span style="color:#64748b;font-size:11px;">(${p.cliente_codigo})</span></div>
+                <div style="font-size:13px;font-weight:600;margin-top:4px;">${esStockInt ? '🏭 Stock Interno NewPack' : p.cliente_nombre + ' <span style="color:#64748b;font-size:11px;">(' + p.cliente_codigo + ')</span>'}</div>
                 <div style="font-size:11px;color:#64748b;margin-top:2px;">
                   ${fmtFechaHora(p.created_at)} • Por ${p.creado_por_nombre || '—'}
-                  ${p.odc_cliente ? ` • ODC: <span class="text-mono">${p.odc_cliente}</span>` : ''}
+                  ${p.odc_cliente ? ` • ${esStockInt ? 'Ref' : 'ODC'}: <span class="text-mono">${p.odc_cliente}</span>` : ''}
                 </div>
               </div>
               <div style="text-align:right;">
@@ -4459,162 +4508,167 @@ window.imprimirEtiquetasTarimasPDF = (odpId) => {
   const { jsPDF } = window.jspdf;
   const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
   
-  // 4 etiquetas por hoja: 2 columnas × 2 filas
+  // 2 etiquetas por hoja A4 vertical (más grandes y legibles)
   // Hoja A4: 210mm × 297mm
-  // Margen: 10mm cada lado
-  // Cada etiqueta: 95mm × 138mm
-  const margenX = 10, margenY = 10, etiqW = 95, etiqH = 138, gap = 10;
+  // Margen: 15mm cada lado
+  // Cada etiqueta: 180mm × 130mm
+  const margenX = 15, margenY = 15, etiqW = 180, etiqH = 130, gap = 8;
   
   tarimas.forEach((t, idx) => {
-    const posInHoja = idx % 4;
+    const posInHoja = idx % 2;
     if (idx > 0 && posInHoja === 0) {
       docPDF.addPage();
     }
     
-    const col = posInHoja % 2;
-    const row = Math.floor(posInHoja / 2);
-    const x = margenX + col * (etiqW + gap);
-    const y = margenY + row * (etiqH + gap);
+    const x = margenX;
+    const y = margenY + posInHoja * (etiqH + gap);
     
     // ===== MARCO PRINCIPAL =====
-    // Cuerpo blanco con borde gris
     docPDF.setFillColor(255, 255, 255);
     docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.setLineWidth(0.5);
     docPDF.roundedRect(x, y, etiqW, etiqH, 3, 3, 'FD');
     
-    // ===== HEADER VERDE =====
+    // ===== HEADER VERDE (banda de 26mm) =====
     docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-    docPDF.rect(x, y, etiqW, 22, 'F');
+    docPDF.rect(x, y, etiqW, 26, 'F');
     
-    // Logo (en blanco, dentro del header verde)
+    // Logo (en caja blanca a la izquierda)
     if (DATOS_EMPRESA.logo_url) {
       try {
-        // Mini caja blanca de fondo para el logo
         docPDF.setFillColor(255, 255, 255);
-        docPDF.roundedRect(x + 3, y + 3, 26, 16, 1, 1, 'F');
-        docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', x + 4, y + 4, 24, 14);
+        docPDF.roundedRect(x + 4, y + 4, 38, 18, 2, 2, 'F');
+        docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', x + 5, y + 5, 36, 16);
       } catch(e) {}
     }
     
-    // Datos empresa en blanco a la derecha (en orden lógico)
-    docPDF.setFontSize(7.5);
+    // Datos empresa en blanco a la derecha
+    docPDF.setFontSize(12);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(255, 255, 255);
-    docPDF.text('NEWPACK', x + 32, y + 8);
-    docPDF.setFontSize(6);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.text('ABASTECEDORA DE EMPAQUES S.A. DE C.V.', x + 32, y + 12);
-    docPDF.setFont('helvetica', 'normal');
-    docPDF.text(`RFC: ${DATOS_EMPRESA.rfc}`, x + 32, y + 16);
-    docPDF.text(`Tel: ${DATOS_EMPRESA.telefono}`, x + 32, y + 20);
-    
-    // ===== NÚMERO DE TARIMA GIGANTE (banner azul) =====
-    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-    docPDF.rect(x, y + 22, etiqW, 18, 'F');
-    
-    docPDF.setFontSize(24);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.setTextColor(255, 255, 255);
-    docPDF.text(`TARIMA ${String(t.numero_tarima || '').padStart(2, '0')}`, x + etiqW/2, y + 35, { align: 'center' });
-    
-    // Indicador de progreso (T 1 de N)
+    docPDF.text('NEWPACK', x + 48, y + 10);
     docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('ABASTECEDORA DE EMPAQUES S.A. DE C.V.', x + 48, y + 14);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(`RFC: ${DATOS_EMPRESA.rfc}   ·   Tel: ${DATOS_EMPRESA.telefono}`, x + 48, y + 18.5);
+    docPDF.text(`${DATOS_EMPRESA.email}`, x + 48, y + 22.5);
+    
+    // ===== NÚMERO DE TARIMA GIGANTE (banner azul oscuro) =====
+    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.rect(x, y + 26, etiqW, 22, 'F');
+    
+    docPDF.setFontSize(28);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.text(`TARIMA ${String(t.numero_tarima || '').padStart(2, '0')}`, x + etiqW/2, y + 42, { align: 'center' });
+    
+    // Indicador de progreso
+    docPDF.setFontSize(9);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(255, 255, 255);
-    docPDF.text(`Tarima ${idx+1} de ${tarimas.length}`, x + etiqW/2, y + 39.5, { align: 'center' });
+    docPDF.text(`Tarima ${idx+1} de ${tarimas.length}`, x + etiqW/2, y + 46.5, { align: 'center' });
     
-    // ===== CONTENIDO =====
-    let yi = y + 44;
+    // ===== ZONA CONTENIDO: distribución horizontal =====
+    let yi = y + 53;
     
-    // Cliente con destacado
+    // CLIENTE - mitad izquierda
     docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
-    docPDF.rect(x + 3, yi, etiqW - 6, 13, 'F');
+    docPDF.roundedRect(x + 4, yi, (etiqW - 12) / 2, 18, 2, 2, 'F');
     docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-    docPDF.rect(x + 3, yi, 2, 13, 'F');
+    docPDF.rect(x + 4, yi, 3, 18, 'F');
     
-    docPDF.setFontSize(6);
+    docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    docPDF.text('CLIENTE', x + 7, yi + 4);
-    docPDF.setFontSize(10);
+    docPDF.text('CLIENTE', x + 10, yi + 5);
+    
+    docPDF.setFontSize(12);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
     const cliNom = pi?.cliente_nombre || odp.cliente_nombre || '—';
-    docPDF.text(cliNom.length > 32 ? cliNom.substring(0,30)+'...' : cliNom, x + 7, yi + 9);
-    docPDF.setFontSize(6.5);
+    docPDF.text(cliNom.length > 26 ? cliNom.substring(0,24)+'...' : cliNom, x + 10, yi + 11);
+    
+    docPDF.setFontSize(8);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    docPDF.text(`Código: ${pi?.cliente_codigo || odp.cliente_codigo || '—'}`, x + etiqW - 7, yi + 9, { align: 'right' });
+    docPDF.text(`Código: ${pi?.cliente_codigo || odp.cliente_codigo || '—'}`, x + 10, yi + 15.5);
     
-    yi += 17;
-    
-    // Producto - SOLO CÓDIGO (la descripción es interna, no se muestra al cliente)
+    // PRODUCTO - mitad derecha
+    const colDx = x + (etiqW / 2) + 2;
     docPDF.setFillColor(239, 246, 255);
-    docPDF.rect(x + 3, yi, etiqW - 6, 13, 'F');
+    docPDF.roundedRect(colDx, yi, (etiqW - 12) / 2, 18, 2, 2, 'F');
     docPDF.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
-    docPDF.rect(x + 3, yi, 2, 13, 'F');
-    
-    docPDF.setFontSize(6);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-    docPDF.text('PRODUCTO', x + 7, yi + 4);
-    docPDF.setFontSize(9);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.setTextColor(0, 0, 0);
-    const prodCod = odp.producto_codigo || '—';
-    docPDF.text(prodCod.length > 35 ? prodCod.substring(0,32)+'...' : prodCod, x + 7, yi + 10);
-    
-    yi += 17;
-    
-    // ===== DATOS CLAVE EN GRID 2x3 =====
-    const dataW = (etiqW - 8) / 2;
-    const dataH = 9;
-    const datos = [
-      ['LOTE', t.lote_codigo || '—', _COL_AZUL_OSCURO],
-      ['ODP', odp.folio || '—', _COL_AZUL],
-      ['CANTIDAD', `${fmtNum(t.cantidad || 0)} ${(t.um || '').toUpperCase()}`, _COL_VERDE],
-      ['PESO NETO', `${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg`, _COL_VERDE],
-      ['PI', odp.pedido_folio || '—', _COL_AZUL],
-      ['FECHA', t.created_at?.seconds 
-        ? new Date(t.created_at.seconds*1000).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })
-        : '—', _COL_GRIS_TEXTO]
-    ];
-    datos.forEach((d, i) => {
-      const colIdx = i % 2;
-      const rowIdx = Math.floor(i / 2);
-      const xd = x + 4 + (colIdx * dataW);
-      const yd = yi + (rowIdx * (dataH + 1));
-      
-      // Borde con color
-      docPDF.setFillColor(d[2][0], d[2][1], d[2][2]);
-      docPDF.rect(xd, yd, 1.5, dataH, 'F');
-      
-      // Label
-      docPDF.setFontSize(5.5);
-      docPDF.setFont('helvetica', 'bold');
-      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-      docPDF.text(d[0], xd + 3, yd + 3);
-      
-      // Valor
-      docPDF.setFontSize(8);
-      docPDF.setFont('helvetica', 'bold');
-      docPDF.setTextColor(0, 0, 0);
-      const valStr = d[1].length > 18 ? d[1].substring(0,16)+'...' : d[1];
-      docPDF.text(valStr, xd + 3, yd + 7.5);
-    });
-    
-    yi += Math.ceil(datos.length / 2) * (dataH + 1) + 3;
-    
-    // ===== FOOTER =====
-    // Banner verde para calidad
-    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-    docPDF.rect(x + 3, yi, etiqW - 6, 7, 'F');
+    docPDF.rect(colDx, yi, 3, 18, 'F');
     
     docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('PRODUCTO', colDx + 6, yi + 5);
+    
+    docPDF.setFontSize(11);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    const prodCod = odp.producto_codigo || '—';
+    docPDF.text(prodCod.length > 26 ? prodCod.substring(0,24)+'...' : prodCod, colDx + 6, yi + 12.5);
+    
+    yi += 22;
+    
+    // ===== DATOS CLAVE EN GRID 3 columnas × 2 filas =====
+    const colsDatos = 3;
+    const dataW2 = (etiqW - 12) / colsDatos;
+    const dataH2 = 14;
+    const datos = [
+      ['LOTE', t.lote_codigo || '—', _COL_AZUL_OSCURO],
+      ['CANTIDAD', `${fmtNum(t.cantidad || 0)} ${(t.um || '').toUpperCase()}`, _COL_VERDE],
+      ['PESO NETO', `${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg`, _COL_VERDE],
+      ['ODP', odp.folio || '—', _COL_AZUL],
+      ['PI', odp.pedido_folio || '—', _COL_AZUL],
+      ['FECHA', t.created_at?.seconds 
+        ? new Date(t.created_at.seconds*1000).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' })
+        : new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }),
+        _COL_GRIS_TEXTO]
+    ];
+    datos.forEach((d, i) => {
+      const colIdx = i % colsDatos;
+      const rowIdx = Math.floor(i / colsDatos);
+      const xd = x + 4 + (colIdx * (dataW2 + 1));
+      const yd = yi + (rowIdx * (dataH2 + 2));
+      
+      // Caja con fondo claro
+      docPDF.setFillColor(248, 250, 252);
+      docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.setLineWidth(0.2);
+      docPDF.roundedRect(xd, yd, dataW2, dataH2, 1.5, 1.5, 'FD');
+      
+      // Barra de color izquierda
+      docPDF.setFillColor(d[2][0], d[2][1], d[2][2]);
+      docPDF.rect(xd, yd, 2.5, dataH2, 'F');
+      
+      // Label
+      docPDF.setFontSize(7);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.text(d[0], xd + 5, yd + 5);
+      
+      // Valor
+      docPDF.setFontSize(11);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(0, 0, 0);
+      const valStr = d[1].length > 22 ? d[1].substring(0,20)+'...' : d[1];
+      docPDF.text(valStr, xd + 5, yd + 11);
+    });
+    
+    yi += 2 * (dataH2 + 2) + 2;
+    
+    // ===== FOOTER GRANDE: CALIDAD LIBERADO =====
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.roundedRect(x + 4, yi, etiqW - 8, 10, 2, 2, 'F');
+    
+    docPDF.setFontSize(12);
+    docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(255, 255, 255);
-    docPDF.text('CALIDAD: LIBERADO', x + etiqW/2, yi + 4.5, { align: 'center' });
+    docPDF.text('CALIDAD: LIBERADO', x + etiqW/2, yi + 7, { align: 'center' });
   });
   
   const filename = `Etiquetas_${odp.folio}_${odp.cliente_codigo || ''}.pdf`;
@@ -4907,14 +4961,15 @@ window.autoSincronizarOVsEsperando = async () => {
   
   const ovsActivables = [];
   ovsEsperando.forEach(ov => {
-    // Búsqueda más flexible: por pedido_id O pedido_folio O por producto+cliente
+    // Búsqueda más flexible: por pedido_id O pedido_folio O por producto+cliente O pool STOCK
     const tarimasDelPI = (state.tarimas || []).filter(t => {
       const mismoProducto = t.producto_codigo === ov.producto_codigo;
       const mismoPI = t.pedido_id === ov.pedido_id || t.pedido_folio === ov.pedido_folio;
       const mismoCliente = t.cliente_codigo === ov.cliente_codigo;
+      const esStockGeneral = t.cliente_codigo === 'STOCK';
       const enAlmacen = ['en_almacen_planta','en_cedis_mty','en_cedis_mex','en_transito_cedis_mty','en_transito_cedis_mex'].includes(t.estatus);
       const sinOV = !t.ov_id && !t.ov_folio;
-      return mismoProducto && (mismoPI || mismoCliente) && enAlmacen && sinOV;
+      return mismoProducto && (mismoPI || mismoCliente || esStockGeneral) && enAlmacen && sinOV;
     });
     if (tarimasDelPI.length > 0) {
       ovsActivables.push({ ov, tarimasDisponibles: tarimasDelPI.length });
@@ -5637,8 +5692,8 @@ function modalAsignarTarimasOV() {
     if (!['en_cedis_mty','en_cedis_mex','en_almacen_planta'].includes(t.estatus)) return false;
     
     if (esTipoStock) {
-      // STOCK: mismo cliente (sin importar PI)
-      return t.cliente_codigo === ov.cliente_codigo;
+      // STOCK: tarimas del mismo cliente O tarimas del pool STOCK INTERNO
+      return t.cliente_codigo === ov.cliente_codigo || t.cliente_codigo === 'STOCK';
     } else {
       // PRODUCIR: del mismo PI específico
       return t.pedido_folio === ov.pedido_folio || t.pedido_id === ov.pedido_id;
@@ -5901,6 +5956,9 @@ function modalDetalleOV() {
           </div>
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+          ${puedeCancelar() && !['enviada','entregada','completada','cancelada'].includes(ov.estatus) ? `
+            <button onclick="cancelarOV('${ov.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;margin-right:auto;">❌ Cancelar OV</button>
+          ` : ''}
           ${(ov.tarimas_ids || []).length > 0 ? `
             <button onclick="imprimirListaCargaPDF('${ov.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;">📋 Lista de Carga</button>
           ` : ''}
@@ -6463,6 +6521,12 @@ function modalTrazabilidadPI() {
         </div>
         
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+          ${puedeCancelar() && p.estatus !== 'cancelado' && (() => {
+            const ovsEntregadas = ovs.filter(o => ['enviada','entregada','completada'].includes(o.estatus));
+            return ovsEntregadas.length === 0;
+          })() ? `
+            <button onclick="cancelarPI('${p.id}','${p.folio}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;margin-right:auto;">❌ Cancelar PI</button>
+          ` : ''}
           <button class="btn-secondary" onclick="abrirModal('comentar-pedido','${p.id}')" style="padding:8px 14px;">💬 Comentar (${comentarios.length})</button>
           <button class="btn-secondary" onclick="abrirModal('detalle-pedido','${p.id}')" style="padding:8px 14px;">${ICONS.list} Detalle PI completo</button>
           <button class="btn-primary" onclick="cerrarModal()" style="padding:8px 14px;">Cerrar</button>
@@ -8423,6 +8487,26 @@ window.quitarLineaPedido = (i) => {
   render();
 };
 
+window.cambiarTipoPI = (tipo) => {
+  state.pedidoData = state.pedidoData || { lineas: [] };
+  state.pedidoData.tipo_pi = tipo;
+  if (tipo === 'stock_interno') {
+    state.pedidoData.cliente_codigo = 'STOCK';
+    state.pedidoData.cliente_nombre = 'STOCK INTERNO NEWPACK';
+    // Forzar todas las líneas a producir (no se puede stock de stock)
+    (state.pedidoData.lineas || []).forEach(l => {
+      l.tipo_origen = 'producir';
+    });
+  } else {
+    if (state.pedidoData.cliente_codigo === 'STOCK') {
+      state.pedidoData.cliente_codigo = '';
+      state.pedidoData.cliente_nombre = '';
+      state.pedidoData.odc_cliente = '';
+    }
+  }
+  render();
+};
+
 window.cancelarPedido = () => {
   if (state.pedidoData?.lineas?.length > 0) {
     if (!confirm('¿Descartar el pedido?')) return;
@@ -8469,6 +8553,7 @@ window.enviarPedido = async () => {
     // Crear pedido
     const pedidoRef = await addDoc(collection(db, 'pedidos'), {
       folio,
+      tipo_pi: d.tipo_pi || 'cliente',
       cliente_codigo: d.cliente_codigo,
       cliente_nombre: d.cliente_nombre,
       odc_cliente: d.odc_cliente || '',
@@ -8528,7 +8613,14 @@ window.enviarPedido = async () => {
 };
 
 window.aprobarPedido = async (pedidoId, folio) => {
-  if (!confirm('¿Aprobar pedido ' + folio + '?\n\nSe generarán automáticamente las OVs y ODPs.')) return;
+  const pedidoCheck = state.pedidos.find(p => p.id === pedidoId);
+  const esStockInterno = pedidoCheck?.tipo_pi === 'stock_interno';
+  
+  const mensaje = esStockInterno 
+    ? '¿Aprobar PI de PRODUCCIÓN PARA STOCK ' + folio + '?\n\nSe generarán solo ODPs (NO se generan OVs).\nLas tarimas quedarán en stock disponible para futuros clientes.'
+    : '¿Aprobar pedido ' + folio + '?\n\nSe generarán automáticamente las OVs y ODPs.';
+  
+  if (!confirm(mensaje)) return;
   
   state.loadingAccion = true; render();
   try {
@@ -8542,10 +8634,13 @@ window.aprobarPedido = async (pedidoId, folio) => {
     
     // Generar folios
     for (const l of lineas) {
-      const cantStock = l.tipo_origen === 'stock' ? Number(l.cantidad_solicitada) : (Number(l.cantidad_stock) || 0);
-      const cantProd = l.tipo_origen === 'producir' ? Number(l.cantidad_solicitada) : (Number(l.cantidad_producir) || 0);
+      const cantStock = (!esStockInterno && l.tipo_origen === 'stock') ? Number(l.cantidad_solicitada) : (!esStockInterno ? (Number(l.cantidad_stock) || 0) : 0);
+      const cantProd = esStockInterno 
+        ? Number(l.cantidad_solicitada)
+        : (l.tipo_origen === 'producir' ? Number(l.cantidad_solicitada) : (Number(l.cantidad_producir) || 0));
       
-      if (cantStock > 0) {
+      // ===== OV de stock (solo si NO es stock interno) =====
+      if (cantStock > 0 && !esStockInterno) {
         const num = await siguienteFolio('ov');
         const folioOV = 'OV-' + String(num).padStart(5, '0');
         await addDoc(collection(db, 'ordenes_venta'), {
@@ -8553,14 +8648,11 @@ window.aprobarPedido = async (pedidoId, folio) => {
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
           cedis: pedido.cedis_asignado || 'CEDIS-MTY',
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
-          // Tracking solicitada/enviada
           cantidad_solicitada: cantStock,
           cantidad_enviada: 0,
-          cantidad: cantStock, // legacy
+          cantidad: cantStock,
           um: l.um,
-          // Tipo origen para saber si esperar producción
           tipo_origen: 'stock',
-          // Estatus pendiente_asignar — CS/KAM debe asignar tarimas
           estatus: 'pendiente_asignar',
           tarimas_ids: [],
           fecha_entrega_solicitada: pedido.fecha_requerida || null,
@@ -8571,6 +8663,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
         ovs.push(folioOV);
       }
       
+      // ===== ODP (siempre que haya cantidad a producir) =====
       if (cantProd > 0) {
         const num = await siguienteFolio('odp');
         const folioODP = 'ODP-' + String(num).padStart(5, '0');
@@ -8588,33 +8681,36 @@ window.aprobarPedido = async (pedidoId, folio) => {
           peso_teorico_pieza: pesoPieza,
           fecha_entrega_programada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
+          // ⭐ Marcar tipo origen para identificar stock interno
+          tipo_origen: esStockInterno ? 'stock_interno' : 'pedido_cliente',
           created_at: serverTimestamp()
         });
         odps.push(folioODP);
         
-        // ADEMÁS de la ODP, generar OV vinculada en estado "esperando_produccion"
-        const numOV = await siguienteFolio('ov');
-        const folioOVprod = 'OV-' + String(numOV).padStart(5, '0');
-        await addDoc(collection(db, 'ordenes_venta'), {
-          folio: folioOVprod, pedido_id: pedidoId, pedido_folio: pedido.folio,
-          cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
-          cedis: pedido.cedis_asignado || 'CEDIS-MTY',
-          producto_codigo: l.producto_codigo, descripcion: l.descripcion,
-          cantidad_solicitada: cantProd,
-          cantidad_enviada: 0,
-          cantidad: cantProd,
-          um: l.um,
-          tipo_origen: 'producir',
-          odp_folio: folioODP,
-          // Esperando que termine producción y lleguen tarimas a CEDIS
-          estatus: 'esperando_produccion',
-          tarimas_ids: [],
-          fecha_entrega_solicitada: pedido.fecha_requerida || null,
-          observaciones: l.observaciones || '',
-          created_at: serverTimestamp(),
-          updated_at: serverTimestamp()
-        });
-        ovs.push(folioOVprod);
+        // ===== OV de producir (SOLO si NO es stock interno) =====
+        if (!esStockInterno) {
+          const numOV = await siguienteFolio('ov');
+          const folioOVprod = 'OV-' + String(numOV).padStart(5, '0');
+          await addDoc(collection(db, 'ordenes_venta'), {
+            folio: folioOVprod, pedido_id: pedidoId, pedido_folio: pedido.folio,
+            cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
+            cedis: pedido.cedis_asignado || 'CEDIS-MTY',
+            producto_codigo: l.producto_codigo, descripcion: l.descripcion,
+            cantidad_solicitada: cantProd,
+            cantidad_enviada: 0,
+            cantidad: cantProd,
+            um: l.um,
+            tipo_origen: 'producir',
+            odp_folio: folioODP,
+            estatus: 'esperando_produccion',
+            tarimas_ids: [],
+            fecha_entrega_solicitada: pedido.fecha_requerida || null,
+            observaciones: l.observaciones || '',
+            created_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          });
+          ovs.push(folioOVprod);
+        }
       }
     }
     
@@ -8640,8 +8736,8 @@ window.aprobarPedido = async (pedidoId, folio) => {
     }
     if (odps.length > 0) {
       batch.set(doc(collection(db, 'notificaciones')), {
-        titulo: 'ODPs generadas',
-        mensaje: odps.join(', ') + ' • ' + pedido.cliente_nombre,
+        titulo: esStockInterno ? '🏭 ODPs internas de STOCK generadas' : 'ODPs generadas',
+        mensaje: odps.join(', ') + ' • ' + (esStockInterno ? 'Para STOCK' : pedido.cliente_nombre),
         depto_destino: 'PLN',
         tipo: 'info', folio_ref: pedido.folio,
         created_at: serverTimestamp()
@@ -8649,11 +8745,184 @@ window.aprobarPedido = async (pedidoId, folio) => {
     }
     await batch.commit();
     
-    let msg = '✅ Pedido aprobado';
+    let msg = esStockInterno ? '🏭 PI STOCK aprobado' : '✅ Pedido aprobado';
     if (ovs.length) msg += ' • OVs: ' + ovs.join(', ');
     if (odps.length) msg += ' • ODPs: ' + odps.join(', ');
     toast(msg);
   } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// CANCELAR PI / OV (solo CS, PLN, ADMIN, CEO)
+// ============================================================
+window.puedeCancelar = () => {
+  const u = state.user || {};
+  return ['CS', 'KAM', 'PLN', 'CEO'].includes(u.depto) || u.rol === 'admin';
+};
+
+window.cancelarPI = async (pedidoId, folio) => {
+  if (!window.puedeCancelar()) { toast('No tienes permisos para cancelar', 'error'); return; }
+  
+  const pedido = state.pedidos.find(p => p.id === pedidoId);
+  if (!pedido) { toast('PI no encontrado', 'error'); return; }
+  if (pedido.estatus === 'cancelado') { toast('El PI ya está cancelado', 'info'); return; }
+  
+  // Verificar si tiene OVs ya entregadas o en proceso avanzado
+  const ovs = (state.ordenes_venta || []).filter(o => o.pedido_id === pedidoId);
+  const ovsEntregadas = ovs.filter(o => ['enviada','entregada','completada'].includes(o.estatus));
+  if (ovsEntregadas.length > 0) {
+    toast(`No se puede cancelar: ${ovsEntregadas.length} OV(s) ya fueron enviadas/entregadas. Solo se pueden cancelar PIs sin entregas.`, 'error');
+    return;
+  }
+  
+  const motivo = prompt(`¿Cancelar PI ${folio}?\n\nIngresa el MOTIVO de cancelación (obligatorio):`);
+  if (!motivo || motivo.trim().length < 5) {
+    toast('Debes ingresar un motivo válido (mínimo 5 caracteres)', 'error');
+    return;
+  }
+  
+  if (!confirm(`¿Confirmar cancelación de PI ${folio}?\n\nMotivo: ${motivo}\n\nEsto:\n• Marcará el PI como CANCELADO\n• Cancelará todas las OVs pendientes\n• Cancelará las ODPs no iniciadas\n• Liberará las tarimas asignadas`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    
+    // 1. Cancelar el PI
+    batch.update(doc(db, 'pedidos', pedidoId), {
+      estatus: 'cancelado',
+      cancelado_at: serverTimestamp(),
+      cancelado_por: state.user.id,
+      cancelado_por_nombre: state.user.nombre || state.user.email,
+      motivo_cancelacion: motivo,
+      updated_at: serverTimestamp()
+    });
+    
+    // 2. Cancelar OVs no entregadas
+    ovs.forEach(ov => {
+      if (!['enviada','entregada','completada'].includes(ov.estatus)) {
+        batch.update(doc(db, 'ordenes_venta', ov.id), {
+          estatus: 'cancelada',
+          cancelado_at: serverTimestamp(),
+          cancelado_por: state.user.id,
+          motivo_cancelacion: `PI cancelado: ${motivo}`,
+          updated_at: serverTimestamp()
+        });
+      }
+    });
+    
+    // 3. Cancelar ODPs no iniciadas (en programada)
+    const odps = (state.ordenes_produccion || []).filter(o => o.pedido_id === pedidoId);
+    odps.forEach(odp => {
+      if (['programada','esperando_programacion'].includes(odp.estatus)) {
+        batch.update(doc(db, 'ordenes_produccion', odp.id), {
+          estatus: 'cancelada',
+          cancelado_at: serverTimestamp(),
+          cancelado_por: state.user.id,
+          motivo_cancelacion: `PI cancelado: ${motivo}`,
+          updated_at: serverTimestamp()
+        });
+      }
+    });
+    
+    // 4. Liberar tarimas asignadas a las OVs canceladas
+    (state.tarimas || []).forEach(t => {
+      const ovAsignada = ovs.find(o => o.id === t.ov_id);
+      if (ovAsignada && !['enviada','entregada','completada'].includes(ovAsignada.estatus)) {
+        batch.update(doc(db, 'tarimas', t.id), {
+          ov_id: null,
+          ov_folio: null,
+          liberada_de_ov_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+      }
+    });
+    
+    // 5. Notificación
+    ['CS','KAM','PLN','PRO','CEO','ADMIN'].forEach(depto => {
+      const ref = doc(collection(db, 'notificaciones'));
+      batch.set(ref, {
+        titulo: `❌ ${folio} cancelado`,
+        mensaje: `${pedido.cliente_nombre} · Motivo: ${motivo} · Por ${state.user.nombre || state.user.email}`,
+        depto_destino: depto, tipo: 'warning', folio_ref: folio,
+        created_at: serverTimestamp()
+      });
+    });
+    
+    await batch.commit();
+    toast(`❌ PI ${folio} cancelado correctamente`, 'success');
+    cerrarModal();
+  } catch (e) {
+    console.error('Error cancelando PI:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.cancelarOV = async (ovId) => {
+  if (!window.puedeCancelar()) { toast('No tienes permisos para cancelar', 'error'); return; }
+  
+  const ov = state.ordenes_venta.find(o => o.id === ovId);
+  if (!ov) { toast('OV no encontrada', 'error'); return; }
+  if (ov.estatus === 'cancelada') { toast('La OV ya está cancelada', 'info'); return; }
+  if (['enviada','entregada','completada'].includes(ov.estatus)) {
+    toast('No se puede cancelar una OV ya enviada/entregada', 'error');
+    return;
+  }
+  
+  const motivo = prompt(`¿Cancelar OV ${ov.folio}?\n\nIngresa el MOTIVO (obligatorio):`);
+  if (!motivo || motivo.trim().length < 5) {
+    toast('Debes ingresar un motivo válido (mínimo 5 caracteres)', 'error');
+    return;
+  }
+  
+  if (!confirm(`¿Confirmar cancelación de OV ${ov.folio}?\n\nMotivo: ${motivo}\n\nLas tarimas asignadas se liberarán.`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    
+    // 1. Cancelar OV
+    batch.update(doc(db, 'ordenes_venta', ovId), {
+      estatus: 'cancelada',
+      cancelado_at: serverTimestamp(),
+      cancelado_por: state.user.id,
+      cancelado_por_nombre: state.user.nombre || state.user.email,
+      motivo_cancelacion: motivo,
+      updated_at: serverTimestamp()
+    });
+    
+    // 2. Liberar tarimas asignadas
+    const tarimasAsignadas = (state.tarimas || []).filter(t => t.ov_id === ovId);
+    tarimasAsignadas.forEach(t => {
+      batch.update(doc(db, 'tarimas', t.id), {
+        ov_id: null,
+        ov_folio: null,
+        liberada_de_ov_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    
+    // 3. Notificación
+    ['CS','KAM','PLN','CEDMTY','CEDMEX','CEO','ADMIN'].forEach(depto => {
+      const ref = doc(collection(db, 'notificaciones'));
+      batch.set(ref, {
+        titulo: `❌ ${ov.folio} cancelada`,
+        mensaje: `${ov.cliente_nombre} · Motivo: ${motivo} · ${tarimasAsignadas.length} tarima(s) liberadas`,
+        depto_destino: depto, tipo: 'warning', folio_ref: ov.folio,
+        created_at: serverTimestamp()
+      });
+    });
+    
+    await batch.commit();
+    toast(`❌ OV ${ov.folio} cancelada · ${tarimasAsignadas.length} tarima(s) liberadas`, 'success');
+    cerrarModal();
+  } catch (e) {
+    console.error('Error cancelando OV:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
