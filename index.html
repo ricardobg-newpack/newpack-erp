@@ -5009,15 +5009,45 @@ window.crearUsuarioNuevo = async () => {
     } catch (e) { console.warn('signOut secundaria:', e); }
     
     // 4. Enviar email de "reset password" — el usuario lo usará para crear su contraseña
+    let emailEnviado = false;
+    let errorEmail = '';
     try {
       await sendPasswordResetEmail(auth, email);
+      emailEnviado = true;
     } catch (resetError) {
-      console.warn('Error enviar email:', resetError);
-      // No bloquea: el admin puede reenviar después con el botón 🔑 Reset
+      console.error('Error enviar email:', resetError);
+      errorEmail = resetError.message || resetError.code;
     }
     
-    toast(`✅ Usuario ${nombre} creado · Email enviado a ${email}`, 'success');
     cerrarModal();
+    
+    // Mostrar instrucciones detalladas al admin
+    setTimeout(() => {
+      alert(
+        `✅ USUARIO CREADO CORRECTAMENTE\n\n` +
+        `👤 ${nombre}\n` +
+        `📧 ${email}\n` +
+        `📍 ${depto} · ${ubicacion}\n\n` +
+        `${emailEnviado 
+          ? `✉️ EMAIL DE ACTIVACIÓN ENVIADO\n\n` +
+            `Pídele al usuario que:\n` +
+            `1. Revise su correo (también SPAM/No deseado)\n` +
+            `2. Click en "Restablecer contraseña"\n` +
+            `3. Cree su nueva contraseña\n` +
+            `4. Inicie sesión en NewPack ERP con su correo\n\n` +
+            `Si NO llega el correo en 5 minutos:\n` +
+            `• Revisa carpeta SPAM\n` +
+            `• Click "🔑 Reenviar" en su tarjeta\n` +
+            `• Verifica plantillas en Firebase Console`
+          : `⚠️ EMAIL NO SE PUDO ENVIAR\n\n` +
+            `Error: ${errorEmail}\n\n` +
+            `OPCIONES:\n` +
+            `1. Click "🔑 Reenviar" en su tarjeta para intentar de nuevo\n` +
+            `2. Avisa al usuario que use "Olvidé mi contraseña" en login\n` +
+            `3. Verifica en Firebase Console que la plantilla de email esté activa`
+        }`
+      );
+    }, 100);
     
   } catch (e) {
     console.error('Error crear usuario:', e);
@@ -5072,13 +5102,33 @@ window.toggleUsuarioActivo = async (id) => {
 };
 
 window.resetPasswordUsuario = async (email) => {
-  if (!confirm(`¿Enviar email de recuperación de contraseña a:\n\n${email}\n\nEl usuario recibirá un link para crear nueva contraseña.`)) return;
+  if (!confirm(`¿Enviar email de recuperación de contraseña a:\n\n${email}\n\nEl usuario recibirá un link para crear nueva contraseña.\n\nIMPORTANTE: dile que revise también la carpeta SPAM/Correo no deseado.`)) return;
   
   try {
     await sendPasswordResetEmail(auth, email);
-    toast(`✉️ Email de recuperación enviado a ${email}`);
+    setTimeout(() => {
+      alert(
+        `✉️ EMAIL ENVIADO A ${email}\n\n` +
+        `Pídele al usuario que:\n\n` +
+        `1️⃣ Revise su bandeja de entrada\n` +
+        `2️⃣ También revise SPAM / Correo no deseado\n` +
+        `3️⃣ El correo viene desde:\n` +
+        `   noreply@newpack-erp.firebaseapp.com\n` +
+        `4️⃣ Click en "Restablecer contraseña"\n` +
+        `5️⃣ Cree su nueva contraseña\n\n` +
+        `Si NO llega en 10 minutos:\n` +
+        `• Verifica plantillas en Firebase Console\n` +
+        `• Authentication → Templates → Reset password\n` +
+        `• Asegúrate que esté ACTIVADA`
+      );
+    }, 100);
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    console.error('Error reset:', e);
+    let msg = e.message;
+    if (e.code === 'auth/user-not-found') msg = 'Este correo no está registrado en Firebase Auth';
+    if (e.code === 'auth/invalid-email') msg = 'Correo inválido';
+    if (e.code === 'auth/too-many-requests') msg = 'Demasiados intentos. Espera unos minutos.';
+    toast('Error: ' + msg, 'error');
   }
 };
 
