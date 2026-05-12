@@ -166,6 +166,7 @@ const state = {
   operadores: [],
   supervisores: [],
   usuarios_sistema: [],
+  materias_primas: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -567,6 +568,10 @@ async function cargarTodo() {
       onSnapshot(collection(db, 'usuarios'), (snap) => {
         state.usuarios_sistema = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'materias_primas'), (snap) => {
+        state.materias_primas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
       })
     );
   } catch (err) {
@@ -749,6 +754,7 @@ function renderApp() {
         ${esPLN || esCEO || u.rol === 'admin' ? `
           <button class="nav-item ${state.vista === 'maquinas' ? 'active' : ''}" data-vista="maquinas">🛠️ Máquinas</button>
           <button class="nav-item ${state.vista === 'personal' ? 'active' : ''}" data-vista="personal">👷 Personal</button>
+          <button class="nav-item ${state.vista === 'materias_primas' ? 'active' : ''}" data-vista="materias_primas">🧪 Materias Primas</button>
         ` : ''}
         ${u.rol === 'admin' || esCEO ? `
           <button class="nav-item ${state.vista === 'usuarios' ? 'active' : ''}" data-vista="usuarios">⚙️ Usuarios del sistema</button>
@@ -794,6 +800,7 @@ function tituloVista() {
     stock_producto: '📊 Inventario CEDIS-MTY',
     maquinas: '🛠️ Máquinas de Producción',
     personal: '👷 Operadores y Supervisores',
+    materias_primas: '🧪 Materias Primas, Aditivos y Pigmentos',
     usuarios: '⚙️ Usuarios del Sistema'
   })[state.vista] || '';
 }
@@ -815,6 +822,7 @@ function renderVista() {
   if (v === 'stock_producto') return renderStockProducto();
   if (v === 'maquinas') return renderMaquinas();
   if (v === 'personal') return renderPersonal();
+  if (v === 'materias_primas') return renderMateriasPrimas();
   if (v === 'usuarios') return renderUsuariosSistema();
   return '';
 }
@@ -2461,6 +2469,8 @@ function renderModal() {
   if (m === 'editar-usuario') return modalUsuario(true);
   if (m === 'compartir-credenciales') return modalCompartirCredenciales();
   if (m === 'cambiar-password-usuario') return modalCambiarPasswordUsuario();
+  if (m === 'crear-mp') return modalMateriaPrima(false);
+  if (m === 'editar-mp') return modalMateriaPrima(true);
   return '';
 }
 
@@ -5465,6 +5475,380 @@ window.eliminarUsuario = async (id, email, nombre) => {
     
   } catch (e) {
     console.error('Error eliminar:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// MATERIAS PRIMAS, ADITIVOS Y PIGMENTOS
+// ============================================================
+const TIPOS_MP = [
+  { codigo: 'resina',    nombre: 'Resina',          icono: '🧪', color: '#3b82f6' },
+  { codigo: 'aditivo',   nombre: 'Aditivo',         icono: '⚗️', color: '#7c3aed' },
+  { codigo: 'pigmento',  nombre: 'Pigmento',        icono: '🎨', color: '#dc2626' },
+  { codigo: 'bobina',    nombre: 'Bobina/Embalaje', icono: '📦', color: '#f59e0b' },
+  { codigo: 'reciclado', nombre: 'Reciclado (PCR)', icono: '♻️',  color: '#16a34a' },
+  { codigo: 'otro',      nombre: 'Otro insumo',     icono: '📋', color: '#64748b' }
+];
+window.TIPOS_MP = TIPOS_MP;
+
+// Catálogo inicial de proveedores (del Excel)
+const PROVEEDORES_INICIALES = [
+  'Braskem', 'Polymat (Tricon)', 'Prime Resinas', 'Poly Resinas',
+  'Insumos Internacionales', 'Muehlstein', 'Plastikrom', 'Tecnipol',
+  'Navitek', 'Pesa', 'Burbutek'
+];
+
+function renderMateriasPrimas() {
+  const u = state.user || {};
+  const esCompras = ['COMP','ADMIN','CEO','PLN','ALP'].includes(u.depto) || u.rol === 'admin';
+  const puedeEditar = ['COMP','ADMIN','CEO'].includes(u.depto) || u.rol === 'admin';
+  
+  const filtro = (state.filtros.materias_primas || '').toLowerCase();
+  const filtroTipo = state.filtros.mp_tipo || '';
+  const sinCargar = (state.materias_primas || []).length === 0;
+  
+  let arr = state.materias_primas || [];
+  if (filtro) arr = arr.filter(mp => 
+    ((mp.codigo || '') + ' ' + (mp.descripcion || '') + ' ' + (mp.proveedor || '')).toLowerCase().includes(filtro)
+  );
+  if (filtroTipo) arr = arr.filter(mp => mp.tipo === filtroTipo);
+  
+  // Agrupar por tipo
+  const porTipo = {};
+  TIPOS_MP.forEach(t => { porTipo[t.codigo] = []; });
+  porTipo['_otro'] = [];
+  arr.forEach(mp => {
+    const t = mp.tipo || '_otro';
+    if (porTipo[t]) porTipo[t].push(mp);
+    else porTipo['_otro'].push(mp);
+  });
+  
+  return `
+    ${sinCargar && puedeEditar ? `
+      <div style="padding:18px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+        <div style="font-weight:700;color:#92400e;font-size:14px;">⚡ Carga rápida del catálogo NewPack</div>
+        <div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.6;">
+          Click "⚡ Cargar 60+ Materias Primas" para importar automáticamente el catálogo completo desde tu Excel:<br>
+          🧪 <strong>Resinas (15):</strong> LDPE, HDPE, FRAC, LINE-BU/HX/OC, META, EVA, PLAS, ELAS<br>
+          ⚗️ <strong>Aditivos (11):</strong> AB, DL, AD, VCI, AE, BI, UV, OX, AO, AP, PU<br>
+          🎨 <strong>Pigmentos (13):</strong> AC, AM, AR, BL, GR, NG, NB, NJ, RS, RJ, VC, VI, VO<br>
+          📦 <strong>Bobinas (5):</strong> Cartón y plástico, nuevas y usadas<br>
+          ♻️ <strong>Reciclados (3):</strong> Transparente, negro, fraccional
+        </div>
+        <button onclick="cargarMateriasPrimasIniciales()" style="margin-top:12px;padding:10px 18px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;">⚡ Cargar 60+ Materias Primas</button>
+      </div>
+    ` : ''}
+    
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:10px;margin-bottom:14px;">
+      ${TIPOS_MP.map(t => {
+        const cnt = (state.materias_primas || []).filter(mp => mp.tipo === t.codigo).length;
+        return `
+          <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid ${t.color};">
+            <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">${t.icono} ${t.nombre.toUpperCase()}</div>
+            <div style="font-size:22px;font-weight:800;color:${t.color};">${cnt}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+    
+    <!-- TOOLBAR -->
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-materias-primas" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar código, descripción, proveedor..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-mp-tipo" style="max-width:220px;">
+        <option value="">Todos los tipos</option>
+        ${TIPOS_MP.map(t => `<option value="${t.codigo}" ${filtroTipo === t.codigo ? 'selected' : ''}>${t.icono} ${t.nombre}</option>`).join('')}
+      </select>
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} insumo(s)</span>
+      ${puedeEditar ? `
+        <button class="btn-primary" onclick="abrirModal('crear-mp')" style="margin-left:auto;">${ICONS.plus} Nuevo insumo</button>
+      ` : ''}
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">🧪</div>
+        <div style="font-weight:700;color:#475569;">${sinCargar ? 'Sin materias primas cargadas' : 'No hay insumos que coincidan'}</div>
+      </div>
+    ` : TIPOS_MP.filter(t => porTipo[t.codigo]?.length > 0).map(t => `
+      <div style="margin-bottom:18px;">
+        <div style="padding:10px 16px;background:${t.color}15;border-left:4px solid ${t.color};border-radius:6px 6px 0 0;font-weight:800;color:${t.color};display:flex;justify-content:space-between;align-items:center;">
+          <span>${t.icono} ${t.nombre.toUpperCase()}</span>
+          <span style="font-weight:400;color:#64748b;font-size:12px;">${porTipo[t.codigo].length} insumo${porTipo[t.codigo].length>1?'s':''}</span>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
+                <th style="padding:8px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
+                <th style="padding:8px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
+                <th style="padding:8px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">UM</th>
+                <th style="padding:8px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Proveedor</th>
+                <th style="padding:8px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock mín</th>
+                <th style="padding:8px 12px;text-align:center;font-weight:700;color:#475569;font-size:11px;">Estado</th>
+                ${puedeEditar ? `<th style="padding:8px 12px;text-align:center;font-weight:700;color:#475569;font-size:11px;">Acciones</th>` : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${porTipo[t.codigo].map(mp => {
+                const inactivo = mp.activo === false;
+                return `
+                  <tr style="border-bottom:1px solid #f1f5f9;${inactivo?'opacity:0.5;':''}">
+                    <td style="padding:8px 12px;" class="text-mono"><strong>${mp.codigo}</strong></td>
+                    <td style="padding:8px 12px;">${mp.descripcion || '—'}</td>
+                    <td style="padding:8px 12px;font-size:11px;color:#64748b;">${mp.um || 'Kg'}</td>
+                    <td style="padding:8px 12px;font-size:11px;color:#475569;">${mp.proveedor || '—'}</td>
+                    <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${mp.stock_minimo ? fmtNum(mp.stock_minimo) : '—'}</td>
+                    <td style="padding:8px 12px;text-align:center;">
+                      ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
+                    </td>
+                    ${puedeEditar ? `
+                      <td style="padding:6px 12px;text-align:center;">
+                        <button onclick="abrirModal('editar-mp','${mp.id}')" style="padding:4px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;margin-right:4px;">${ICONS.edit}</button>
+                        <button onclick="toggleMPActiva('${mp.id}')" style="padding:4px 8px;background:${inactivo?'#16a34a':'#f59e0b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓':'⏸'}</button>
+                      </td>
+                    ` : ''}
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `).join('')}
+  `;
+}
+
+// CRUD Materias Primas
+function modalMateriaPrima(esEdicion) {
+  const id = state.modalData;
+  const mp = esEdicion ? (state.materias_primas || []).find(x => x.id === id) : null;
+  if (esEdicion && !mp) return '';
+  
+  if (!state.modalForm) {
+    state.modalForm = mp ? { ...mp } : {
+      codigo: '',
+      descripcion: '',
+      tipo: 'resina',
+      um: 'Kg',
+      proveedor: '',
+      stock_minimo: 0,
+      observaciones: ''
+    };
+  }
+  const f = state.modalForm;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:620px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '➕ Nuevo'} insumo</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Código *</label>
+              <input class="input" id="mp-codigo" value="${f.codigo || ''}" placeholder="LDPE-2-CON" ${esEdicion ? 'disabled style="background:#f1f5f9;"' : ''} />
+            </div>
+            <div class="field">
+              <label class="field-label">Descripción *</label>
+              <input class="input" id="mp-desc" value="${f.descripcion || ''}" placeholder="Baja densidad 2 CON ADITIVOS" />
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Tipo *</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${TIPOS_MP.map(t => `
+                <button onclick="window.modalFormSet('tipo','${t.codigo}')" style="flex:1;min-width:110px;padding:12px;border:2px solid ${f.tipo === t.codigo ? t.color : '#cbd5e1'};background:${f.tipo === t.codigo ? t.color : '#fff'};color:${f.tipo === t.codigo ? '#fff' : t.color};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  ${t.icono} ${t.nombre}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Unidad de medida *</label>
+              <select class="input" id="mp-um" onchange="window.modalFormSet('um', this.value)">
+                <option value="Kg" ${f.um === 'Kg' ? 'selected' : ''}>Kilogramo (Kg)</option>
+                <option value="Pza" ${f.um === 'Pza' ? 'selected' : ''}>Pieza (Pza)</option>
+                <option value="Lts" ${f.um === 'Lts' ? 'selected' : ''}>Litro (Lts)</option>
+                <option value="Mill" ${f.um === 'Mill' ? 'selected' : ''}>Millar (Mill)</option>
+                <option value="Rll" ${f.um === 'Rll' ? 'selected' : ''}>Rollo (Rll)</option>
+                <option value="Cja" ${f.um === 'Cja' ? 'selected' : ''}>Caja (Cja)</option>
+                <option value="Mts" ${f.um === 'Mts' ? 'selected' : ''}>Metros (Mts)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Proveedor preferente</label>
+              <input class="input" id="mp-prov" value="${f.proveedor || ''}" list="lista-proveedores" placeholder="Braskem, Prime Resinas..." />
+              <datalist id="lista-proveedores">
+                ${PROVEEDORES_INICIALES.map(p => `<option value="${p}">`).join('')}
+              </datalist>
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Stock mínimo (alerta) <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <input class="input" id="mp-stock-min" type="number" min="0" step="0.01" value="${f.stock_minimo || ''}" placeholder="Ej: 500" />
+            <div style="font-size:10px;color:#64748b;margin-top:4px;">Cuando el stock baje de este valor, el sistema alertará</div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Observaciones <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <textarea class="input" id="mp-obs" style="min-height:50px;" placeholder="Notas, especificaciones técnicas, etc.">${f.observaciones || ''}</textarea>
+          </div>
+          
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarMP(${esEdicion ? `'${id}'` : 'null'})">${ICONS.check} ${esEdicion ? 'Guardar' : 'Crear'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.confirmarMP = async (id) => {
+  const codigo = ($('#mp-codigo')?.value || '').trim().toUpperCase();
+  const descripcion = ($('#mp-desc')?.value || '').trim();
+  const tipo = state.modalForm?.tipo || '';
+  const um = state.modalForm?.um || 'Kg';
+  const proveedor = ($('#mp-prov')?.value || '').trim();
+  const stock_minimo = Number($('#mp-stock-min')?.value) || 0;
+  const observaciones = ($('#mp-obs')?.value || '').trim();
+  
+  if (!codigo) { toast('Código obligatorio', 'error'); return; }
+  if (!descripcion) { toast('Descripción obligatoria', 'error'); return; }
+  if (!tipo) { toast('Selecciona tipo', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    const data = { codigo, descripcion, tipo, um, proveedor, stock_minimo, observaciones, updated_at: serverTimestamp() };
+    if (id) {
+      await updateDoc(doc(db, 'materias_primas', id), data);
+      toast(`${codigo} actualizado`);
+    } else {
+      // Verificar código único
+      const existe = (state.materias_primas || []).find(mp => mp.codigo === codigo);
+      if (existe) { toast(`El código ${codigo} ya existe`, 'error'); state.loadingAccion = false; render(); return; }
+      data.activo = true;
+      data.stock_actual = 0;
+      data.created_at = serverTimestamp();
+      await addDoc(collection(db, 'materias_primas'), data);
+      toast(`✅ ${codigo} agregado`);
+    }
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.toggleMPActiva = async (id) => {
+  const mp = (state.materias_primas || []).find(x => x.id === id);
+  if (!mp) return;
+  try {
+    await updateDoc(doc(db, 'materias_primas', id), {
+      activo: mp.activo === false,
+      updated_at: serverTimestamp()
+    });
+    toast(`${mp.codigo} ${mp.activo === false ? 'activado' : 'desactivado'}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+// Carga inicial del catálogo del Excel
+window.cargarMateriasPrimasIniciales = async () => {
+  if (!confirm('¿Cargar las 60+ materias primas del catálogo NewPack?\n\nIncluye:\n• 15 Resinas\n• 11 Aditivos\n• 13 Pigmentos\n• 5 Bobinas/Embalajes\n• 3 Reciclados (PCR)\n\nFuente: NPA-RC-FR-00.xlsx')) return;
+  
+  const MP_INICIALES = [
+    // RESINAS
+    { codigo: 'LDPE-2-CON', descripcion: 'Baja densidad 2 CON ADITIVOS', tipo: 'resina', um: 'Kg', proveedor: 'Braskem' },
+    { codigo: 'LDPE-2-SIN', descripcion: 'Baja densidad 2 sin aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Polymat (Tricon)' },
+    { codigo: 'FRAC-0.25', descripcion: 'Fraccional 0.25', tipo: 'resina', um: 'Kg', proveedor: 'Prime Resinas' },
+    { codigo: 'FRAC-0.75', descripcion: 'Fraccional 0.75', tipo: 'resina', um: 'Kg', proveedor: 'Poly Resinas' },
+    { codigo: 'HDPE-0.04', descripcion: 'Alta Densidad 0.04', tipo: 'resina', um: 'Kg', proveedor: 'Insumos Internacionales' },
+    { codigo: 'LINE-BU-2-CON', descripcion: 'Lineal Buteno 2 Con aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Muehlstein' },
+    { codigo: 'LINE-BU-2-SIN', descripcion: 'Lineal Buteno 2 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Plastikrom' },
+    { codigo: 'LINE-HX-1-CON', descripcion: 'Lineal Hexeno 1 Con aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Tecnipol' },
+    { codigo: 'LINE-HX-1-SIN', descripcion: 'Lineal Hexeno 1 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Navitek' },
+    { codigo: 'LINE-OC-1-CON', descripcion: 'Lineal Octeno 1 Con aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Pesa' },
+    { codigo: 'LINE-OC-1-SIN', descripcion: 'Lineal Octeno 1 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: 'Burbutek' },
+    { codigo: 'META-1-SIN', descripcion: 'Metaloceno 1 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: '' },
+    { codigo: 'META-1-CON', descripcion: 'Metaloceno 1 Con aditivos', tipo: 'resina', um: 'Kg', proveedor: '' },
+    { codigo: 'EVA-28-SIN', descripcion: 'Eva 28 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: '' },
+    { codigo: 'EVA-18-SIN', descripcion: 'Eva 18 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: '' },
+    { codigo: 'PLAS-1.1-SIN', descripcion: 'Plastomero 1.1 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: '' },
+    { codigo: 'ELAS-1-SIN', descripcion: 'Elastomero 1.4 Sin aditivos', tipo: 'resina', um: 'Kg', proveedor: '' },
+    
+    // ADITIVOS
+    { codigo: 'ADI-AB', descripcion: 'Aditivo Antiblock', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-DL', descripcion: 'Aditivo Deslizante', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-AD', descripcion: 'Aditivo Antiblock con Deslizante', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-VCI', descripcion: 'Aditivo VCI', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-AE', descripcion: 'Aditivo Antiestático', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-BI', descripcion: 'Aditivo Biodegradable', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-UV', descripcion: 'Aditivo UV', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-OX', descripcion: 'Aditivo Oxo Biodegradable', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-AO', descripcion: 'Aditivo Antioxidante', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-AP', descripcion: 'Aditivo Ayuda de Proceso', tipo: 'aditivo', um: 'Kg' },
+    { codigo: 'ADI-PU', descripcion: 'Aditivo Purga', tipo: 'aditivo', um: 'Kg' },
+    
+    // PIGMENTOS
+    { codigo: 'PIG-AC', descripcion: 'Pigmento Azul Celeste', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-AM', descripcion: 'Pigmento Azul Metálico', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-AR', descripcion: 'Pigmento Amarillo', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-BL', descripcion: 'Pigmento Blanco', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-GR', descripcion: 'Pigmento Gris', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-NG', descripcion: 'Pigmento Negro', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-NB', descripcion: 'Pigmento Negro para Basura', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-NJ', descripcion: 'Pigmento Naranja', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-RS', descripcion: 'Pigmento Rosa', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-RJ', descripcion: 'Pigmento Rojo', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-VC', descripcion: 'Pigmento Verde Claro', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-VI', descripcion: 'Pigmento Verde IMSS', tipo: 'pigmento', um: 'Kg' },
+    { codigo: 'PIG-VO', descripcion: 'Pigmento Verde Oscuro', tipo: 'pigmento', um: 'Kg' },
+    
+    // BOBINAS / EMBALAJES
+    { codigo: 'BOB-C-3-N', descripcion: 'Bobina cartón 3" nueva', tipo: 'bobina', um: 'Pza' },
+    { codigo: 'BOB-C-1.5-N', descripcion: 'Bobina cartón 1.5" nueva', tipo: 'bobina', um: 'Pza' },
+    { codigo: 'BOB-C-3-U', descripcion: 'Bobina cartón 3" usada', tipo: 'bobina', um: 'Kg' },
+    { codigo: 'BOB-P-3-N', descripcion: 'Bobina plástico 3" nueva', tipo: 'bobina', um: 'Pza' },
+    { codigo: 'BOB-P-1.5-N', descripcion: 'Bobina plástico 1.5" nueva', tipo: 'bobina', um: 'Pza' },
+    
+    // RECICLADOS
+    { codigo: 'LDPE-TPTE-PCR', descripcion: 'Baja densidad transparente reciclado', tipo: 'reciclado', um: 'Kg' },
+    { codigo: 'LDPE-NG-PCR', descripcion: 'Baja densidad negro reciclado', tipo: 'reciclado', um: 'Kg' },
+    { codigo: 'FRAC-TPTE-PCR', descripcion: 'Fraccional transparente reciclado', tipo: 'reciclado', um: 'Kg' }
+  ];
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    MP_INICIALES.forEach(mp => {
+      const ref = doc(collection(db, 'materias_primas'));
+      batch.set(ref, {
+        ...mp,
+        activo: true,
+        stock_actual: 0,
+        stock_minimo: 0,
+        observaciones: '',
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${MP_INICIALES.length} materias primas cargadas correctamente`);
+  } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
@@ -10134,6 +10518,18 @@ function attachAppEvents() {
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
+  if ($('#filtro-materias-primas')) {
+    $('#filtro-materias-primas').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.materias_primas = e.target.value;
+      render();
+      const inp = $('#filtro-materias-primas');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-mp-tipo')) {
+    $('#filtro-mp-tipo').onchange = (e) => { state.filtros.mp_tipo = e.target.value; render(); };
+  }
   if ($('#filtro-usuarios')) {
     $('#filtro-usuarios').oninput = (e) => {
       const pos = e.target.selectionStart;
@@ -10300,7 +10696,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
