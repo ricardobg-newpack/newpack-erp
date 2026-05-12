@@ -6877,13 +6877,18 @@ function modalRecibirOC() {
   
   if (!state.modalForm) {
     state.modalForm = {
-      factura: '',
-      remision: '',
+      tipo_documento: 'factura', // 'factura' o 'remision'
+      numero_documento: '',
       fecha_recepcion: new Date().toISOString().split('T')[0],
       notas: '',
       lineas: (oc.lineas || []).map(l => ({
         ...l,
-        cantidad_recibida_ahora: Number(l.cantidad) - (Number(l.cantidad_recibida) || 0) // pendiente por defecto
+        cantidad_recibida_ahora: Number(l.cantidad) - (Number(l.cantidad_recibida) || 0),
+        lote_proveedor: '',
+        certificado_numero: '',
+        certificado_fecha: '',
+        cumple_calidad: 'si',
+        observaciones_calidad: ''
       }))
     };
   }
@@ -6891,7 +6896,7 @@ function modalRecibirOC() {
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:880px;max-height:90vh;display:flex;flex-direction:column;">
+      <div class="modal" style="max-width:980px;max-height:92vh;display:flex;flex-direction:column;">
         <div class="modal-header" style="background:#16a34a11;border-bottom:2px solid #16a34a;">
           <div>
             <h2 style="font-size:18px;font-weight:800;">📥 Capturar recepción de materiales</h2>
@@ -6901,71 +6906,117 @@ function modalRecibirOC() {
         </div>
         <div class="modal-body" style="overflow-y:auto;flex:1;">
           
-          <!-- DATOS DE LA RECEPCIÓN -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
-            <div class="field" style="margin:0;">
+          <!-- DATOS GENERALES -->
+          <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#166534;font-size:13px;margin-bottom:10px;">📋 Datos de la recepción</div>
+            
+            <div class="field" style="margin-bottom:10px;">
               <label class="field-label">📅 Fecha de recepción *</label>
-              <input class="input" id="rec-fecha" type="date" value="${f.fecha_recepcion}" onchange="window.modalFormSetSilent('fecha_recepcion', this.value)" />
+              <input class="input" id="rec-fecha" type="date" value="${f.fecha_recepcion}" onchange="window.modalFormSetSilent('fecha_recepcion', this.value)" style="max-width:200px;" />
             </div>
-            <div class="field" style="margin:0;">
-              <label class="field-label">📄 Factura *</label>
-              <input class="input" id="rec-factura" value="${f.factura || ''}" placeholder="Número factura" oninput="window.modalFormSetSilent('factura', this.value)" />
-            </div>
-            <div class="field" style="margin:0;">
-              <label class="field-label">📋 Remisión</label>
-              <input class="input" id="rec-remision" value="${f.remision || ''}" placeholder="Número remisión" oninput="window.modalFormSetSilent('remision', this.value)" />
+            
+            <div class="field" style="margin-bottom:10px;">
+              <label class="field-label">📄 Documento del proveedor *</label>
+              <div style="display:flex;gap:8px;margin-bottom:8px;">
+                <button onclick="window.modalFormSet('tipo_documento','factura')" type="button" style="flex:1;padding:10px;border:2px solid ${f.tipo_documento === 'factura' ? '#16a34a' : '#cbd5e1'};background:${f.tipo_documento === 'factura' ? '#16a34a' : '#fff'};color:${f.tipo_documento === 'factura' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  📄 Factura
+                </button>
+                <button onclick="window.modalFormSet('tipo_documento','remision')" type="button" style="flex:1;padding:10px;border:2px solid ${f.tipo_documento === 'remision' ? '#16a34a' : '#cbd5e1'};background:${f.tipo_documento === 'remision' ? '#16a34a' : '#fff'};color:${f.tipo_documento === 'remision' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  📋 Remisión
+                </button>
+              </div>
+              <input class="input" id="rec-numero-doc" value="${f.numero_documento || ''}" placeholder="${f.tipo_documento === 'factura' ? 'Número de factura' : 'Número de remisión'}" oninput="window.modalFormSetSilent('numero_documento', this.value)" />
+              <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Captura uno de los dos (factura O remisión, según envíe el proveedor)</div>
             </div>
           </div>
           
           <!-- LÍNEAS A RECIBIR -->
           <div style="margin-bottom:14px;">
-            <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:8px;">📦 Cantidades recibidas físicamente</div>
-            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
-              <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                <thead>
-                  <tr style="background:#f1f5f9;">
-                    <th style="padding:8px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
-                    <th style="padding:8px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
-                    <th style="padding:8px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Pedido</th>
-                    <th style="padding:8px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Ya recibido</th>
-                    <th style="padding:8px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Recibo hoy *</th>
-                    <th style="padding:8px;text-align:left;font-weight:700;color:#475569;font-size:11px;">UM</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${(f.lineas || []).map((l, idx) => {
-                    const yaRecibido = Number(l.cantidad_recibida) || 0;
-                    const pendiente = Number(l.cantidad) - yaRecibido;
-                    return `
-                      <tr style="border-bottom:1px solid #f1f5f9;">
-                        <td style="padding:8px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
-                        <td style="padding:8px;font-size:11px;">${l.descripcion}</td>
-                        <td style="padding:8px;text-align:right;">${fmtNum(l.cantidad)}</td>
-                        <td style="padding:8px;text-align:right;color:#64748b;">${fmtNum(yaRecibido)}</td>
-                        <td style="padding:8px;text-align:right;">
-                          <input class="input" type="number" min="0" max="${pendiente}" step="0.01" value="${l.cantidad_recibida_ahora || ''}" oninput="window.actualizarRecepcionLinea(${idx}, this.value)" style="width:100px;text-align:right;font-weight:700;padding:4px 6px;" />
-                        </td>
-                        <td style="padding:8px;font-size:11px;color:#64748b;">${l.um}</td>
-                      </tr>
-                    `;
-                  }).join('')}
-                </tbody>
-              </table>
-            </div>
+            <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:8px;">📦 Material recibido por insumo</div>
+            
+            ${(f.lineas || []).map((l, idx) => {
+              const yaRecibido = Number(l.cantidad_recibida) || 0;
+              const pendiente = Number(l.cantidad) - yaRecibido;
+              return `
+                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:10px;">
+                  <!-- ENCABEZADO INSUMO -->
+                  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;border-bottom:1px solid #f1f5f9;padding-bottom:8px;">
+                    <div>
+                      <div class="text-mono" style="font-weight:800;font-size:14px;color:#1e293b;">${l.mp_codigo}</div>
+                      <div style="font-size:11px;color:#64748b;margin-top:2px;">${l.descripcion}</div>
+                      ${l.codigo_proveedor ? `<div style="font-size:10px;color:#7c3aed;margin-top:2px;">↔ Cód. proveedor: <strong>${l.codigo_proveedor}</strong></div>` : ''}
+                    </div>
+                    <div style="text-align:right;font-size:11px;">
+                      <div style="color:#64748b;">Pedido: <strong>${fmtNum(l.cantidad)} ${l.um}</strong></div>
+                      ${yaRecibido > 0 ? `<div style="color:#64748b;">Ya recibido: ${fmtNum(yaRecibido)} ${l.um}</div>` : ''}
+                      <div style="color:#dc2626;font-weight:700;">Pendiente: ${fmtNum(pendiente)} ${l.um}</div>
+                    </div>
+                  </div>
+                  
+                  <!-- CAMPOS -->
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                    <div class="field" style="margin:0;">
+                      <label class="field-label">📦 Cantidad recibida hoy *</label>
+                      <input class="input" type="number" min="0" max="${pendiente}" step="0.01" value="${l.cantidad_recibida_ahora || ''}" oninput="window.actualizarRecepcionLinea(${idx},'cantidad_recibida_ahora',this.value)" placeholder="0" style="font-weight:700;" />
+                    </div>
+                    <div class="field" style="margin:0;">
+                      <label class="field-label">🏷️ Lote del proveedor *</label>
+                      <input class="input" type="text" value="${l.lote_proveedor || ''}" oninput="window.actualizarRecepcionLinea(${idx},'lote_proveedor',this.value)" placeholder="Ej: BSK-LD2-2026-04-29" style="font-family:monospace;" />
+                    </div>
+                  </div>
+                  
+                  <!-- CALIDAD -->
+                  <div style="margin-top:10px;padding:10px;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;">
+                    <div style="font-weight:800;color:#92400e;font-size:11px;margin-bottom:6px;">🔬 CERTIFICADO DE CALIDAD</div>
+                    
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:11px;">N° certificado *</label>
+                        <input class="input" type="text" value="${l.certificado_numero || ''}" oninput="window.actualizarRecepcionLinea(${idx},'certificado_numero',this.value)" placeholder="Ej: CERT-BSK-12345" />
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:11px;">Fecha emisión</label>
+                        <input class="input" type="date" value="${l.certificado_fecha || ''}" oninput="window.actualizarRecepcionLinea(${idx},'certificado_fecha',this.value)" />
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:11px;">¿Cumple?</label>
+                        <div style="display:flex;gap:6px;">
+                          <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','si');render()" type="button" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'si' ? '#16a34a' : '#cbd5e1'};background:${l.cumple_calidad === 'si' ? '#16a34a' : '#fff'};color:${l.cumple_calidad === 'si' ? '#fff' : '#16a34a'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">✓ Sí</button>
+                          <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','no');render()" type="button" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'no' ? '#dc2626' : '#cbd5e1'};background:${l.cumple_calidad === 'no' ? '#dc2626' : '#fff'};color:${l.cumple_calidad === 'no' ? '#fff' : '#dc2626'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">✗ No</button>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    ${l.cumple_calidad === 'no' ? `
+                      <div class="field" style="margin-top:8px;margin-bottom:0;">
+                        <label class="field-label" style="font-size:11px;color:#dc2626;">⚠ Observaciones de calidad *</label>
+                        <input class="input" type="text" value="${l.observaciones_calidad || ''}" oninput="window.actualizarRecepcionLinea(${idx},'observaciones_calidad',this.value)" placeholder="Indica el problema detectado" style="border-color:#dc2626;" />
+                      </div>
+                    ` : `
+                      <div class="field" style="margin-top:8px;margin-bottom:0;">
+                        <label class="field-label" style="font-size:11px;">Observaciones (opcional)</label>
+                        <input class="input" type="text" value="${l.observaciones_calidad || ''}" oninput="window.actualizarRecepcionLinea(${idx},'observaciones_calidad',this.value)" placeholder="Notas adicionales del certificado..." />
+                      </div>
+                    `}
+                  </div>
+                </div>
+              `;
+            }).join('')}
           </div>
           
-          <!-- NOTAS -->
+          <!-- NOTAS GENERALES -->
           <div class="field">
-            <label class="field-label">📝 Notas del almacenista</label>
-            <textarea class="input" id="rec-notas" style="min-height:50px;" placeholder="Estado del material, daños, observaciones..." oninput="window.modalFormSetSilent('notas', this.value)">${f.notas || ''}</textarea>
+            <label class="field-label">📝 Notas generales del almacenista</label>
+            <textarea class="input" id="rec-notas" style="min-height:50px;" placeholder="Estado general del material, condiciones de entrega, transportista..." oninput="window.modalFormSetSilent('notas', this.value)">${f.notas || ''}</textarea>
           </div>
           
           <!-- INFO -->
-          <div style="padding:12px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:11px;color:#475569;">
+          <div style="padding:12px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:4px;font-size:11px;color:#475569;">
             <strong>📌 Importante:</strong><br>
-            • Cada insumo recibido se registrará como un <strong>lote separado</strong> con su factura y costo<br>
-            • El stock se actualizará automáticamente en el Almacén MP<br>
-            • Se generará movimiento de <strong>entrada</strong> en el kardex de cada insumo
+            • Cada insumo recibido se registra como un <strong>lote separado</strong> con su lote del proveedor y certificado<br>
+            • El stock se actualiza automáticamente en el Almacén MP<br>
+            • Se genera movimiento de <strong>entrada</strong> en el kardex<br>
+            • Material que no cumple calidad NO se sumará al stock disponible para producción
           </div>
           
         </div>
@@ -6980,9 +7031,13 @@ function modalRecibirOC() {
   `;
 }
 
-window.actualizarRecepcionLinea = (idx, valor) => {
+window.actualizarRecepcionLinea = (idx, campo, valor) => {
   if (!state.modalForm?.lineas?.[idx]) return;
-  state.modalForm.lineas[idx].cantidad_recibida_ahora = Number(valor) || 0;
+  if (campo === 'cantidad_recibida_ahora') {
+    state.modalForm.lineas[idx][campo] = Number(valor) || 0;
+  } else {
+    state.modalForm.lineas[idx][campo] = valor;
+  }
 };
 
 window.confirmarRecepcionOC = async (ocId) => {
@@ -6990,13 +7045,16 @@ window.confirmarRecepcionOC = async (ocId) => {
   if (!oc) { toast('OC no encontrada', 'error'); return; }
   
   const f = state.modalForm;
-  const factura = ($('#rec-factura')?.value || f.factura || '').trim();
-  const remision = ($('#rec-remision')?.value || f.remision || '').trim();
+  const tipoDoc = f.tipo_documento || 'factura';
+  const numeroDoc = ($('#rec-numero-doc')?.value || f.numero_documento || '').trim();
   const fechaRec = ($('#rec-fecha')?.value || f.fecha_recepcion || '').trim();
   const notas = ($('#rec-notas')?.value || f.notas || '').trim();
   
-  // Validar
-  if (!factura) { toast('Factura obligatoria', 'error'); return; }
+  // Validar documento
+  if (!numeroDoc) { 
+    toast(`${tipoDoc === 'factura' ? 'Factura' : 'Remisión'} obligatoria`, 'error'); 
+    return; 
+  }
   if (!fechaRec) { toast('Fecha obligatoria', 'error'); return; }
   
   const lineasARecibir = (f.lineas || []).filter(l => Number(l.cantidad_recibida_ahora) > 0);
@@ -7005,13 +7063,38 @@ window.confirmarRecepcionOC = async (ocId) => {
     return;
   }
   
+  // Validar lote del proveedor por línea
+  const sinLote = lineasARecibir.filter(l => !l.lote_proveedor || !l.lote_proveedor.trim());
+  if (sinLote.length > 0) {
+    toast(`Lote del proveedor obligatorio para: ${sinLote.map(l => l.mp_codigo).join(', ')}`, 'error');
+    return;
+  }
+  
+  // Validar número de certificado por línea
+  const sinCert = lineasARecibir.filter(l => !l.certificado_numero || !l.certificado_numero.trim());
+  if (sinCert.length > 0) {
+    toast(`Número de certificado obligatorio para: ${sinCert.map(l => l.mp_codigo).join(', ')}`, 'error');
+    return;
+  }
+  
+  // Validar observaciones si no cumple calidad
+  const sinObsNoOk = lineasARecibir.filter(l => l.cumple_calidad === 'no' && (!l.observaciones_calidad || !l.observaciones_calidad.trim()));
+  if (sinObsNoOk.length > 0) {
+    toast(`Observaciones de calidad obligatorias para: ${sinObsNoOk.map(l => l.mp_codigo).join(', ')}`, 'error');
+    return;
+  }
+  
+  // Compatibilidad: campos factura y remision por separado
+  const factura = tipoDoc === 'factura' ? numeroDoc : '';
+  const remision = tipoDoc === 'remision' ? numeroDoc : '';
+  
   if (!confirm(
     `¿Confirmar recepción?\n\n` +
     `OC: ${oc.folio}\n` +
     `Proveedor: ${oc.proveedor}\n` +
-    `Factura: ${factura}\n` +
+    `${tipoDoc === 'factura' ? 'Factura' : 'Remisión'}: ${numeroDoc}\n` +
     `Insumos a recibir: ${lineasARecibir.length}\n\n` +
-    `Se crearán ${lineasARecibir.length} lote(s) en el almacén MP.`
+    `Se crearán ${lineasARecibir.length} lote(s) en el almacén MP con lote del proveedor y certificado.`
   )) return;
   
   state.loadingAccion = true; render();
@@ -7024,9 +7107,13 @@ window.confirmarRecepcionOC = async (ocId) => {
       const cantRecibida = Number(l.cantidad_recibida_ahora) || 0;
       const costoUnit = Number(l.costo_unitario) || 0;
       
-      // Folio de lote: Año-Consecutivo (ej: 26-0001)
+      // Folio de lote: AA-NUM_DOC-MP (truncado)
       const año2dig = String(new Date().getFullYear()).slice(-2);
-      const loteFolio = `${año2dig}-${factura.slice(-4)}-${l.mp_codigo}`;
+      const docCorto = numeroDoc.slice(-6).replace(/[^A-Za-z0-9]/g,'');
+      const loteFolio = `${año2dig}-${docCorto}-${l.mp_codigo}`;
+      
+      // Si NO cumple calidad: estatus diferente y NO suma al stock
+      const noPasaCalidad = l.cumple_calidad === 'no';
       
       const loteData = {
         lote_folio: loteFolio,
@@ -7034,21 +7121,34 @@ window.confirmarRecepcionOC = async (ocId) => {
         mp_descripcion: l.descripcion || '',
         proveedor: oc.proveedor || '',
         codigo_proveedor: l.codigo_proveedor || '',
+        // Lote y certificado del proveedor
+        lote_proveedor: (l.lote_proveedor || '').trim(),
+        certificado_numero: (l.certificado_numero || '').trim(),
+        certificado_fecha: l.certificado_fecha || '',
+        cumple_calidad: l.cumple_calidad || 'si',
+        observaciones_calidad: (l.observaciones_calidad || '').trim(),
+        // Documento
+        tipo_documento: tipoDoc,
+        numero_documento: numeroDoc,
+        factura: factura,
+        remision: remision,
+        // OC y RC
         oc_folio: oc.folio || '',
         oc_id: ocId || '',
         rc_folio: oc.rc_folio || '',
+        // Cantidades
         cantidad_inicial: cantRecibida,
-        stock_actual: cantRecibida,
+        stock_actual: noPasaCalidad ? 0 : cantRecibida, // si no cumple, no entra a stock
         um: l.um || 'Kg',
         costo_unitario: costoUnit,
         costo_total: cantRecibida * costoUnit,
-        factura: factura,
-        remision: remision,
+        // Recepción
         fecha_recepcion: fechaRec,
         notas: notas,
         recibido_por_id: state.user.id || '',
         recibido_por_nombre: state.user.nombre || state.user.email || 'Usuario',
-        estatus: 'activo',
+        // Estatus
+        estatus: noPasaCalidad ? 'rechazado_calidad' : 'activo',
         created_at: serverTimestamp(),
         updated_at: serverTimestamp()
       };
@@ -7059,35 +7159,39 @@ window.confirmarRecepcionOC = async (ocId) => {
       const loteRef = doc(collection(db, 'lotes_mp'));
       batch.set(loteRef, loteData);
       
-      // 2. Crear movimiento de entrada en kardex
-      const movData = {
-        tipo: 'entrada',
-        mp_codigo: l.mp_codigo || '',
-        mp_descripcion: l.descripcion || '',
-        lote_folio: loteFolio,
-        cantidad: cantRecibida,
-        um: l.um || 'Kg',
-        costo_unitario: costoUnit,
-        origen: 'recepcion_oc',
-        oc_folio: oc.folio || '',
-        proveedor: oc.proveedor || '',
-        factura: factura,
-        fecha: fechaRec,
-        usuario_id: state.user.id || '',
-        usuario_nombre: state.user.nombre || state.user.email || 'Usuario',
-        notas: notas,
-        created_at: serverTimestamp()
-      };
-      Object.keys(movData).forEach(k => { if (movData[k] === undefined) movData[k] = ''; });
-      
-      const movRef = doc(collection(db, 'movimientos_mp'));
-      batch.set(movRef, movData);
+      // 2. Crear movimiento de entrada en kardex (solo si pasa calidad)
+      if (!noPasaCalidad) {
+        const movData = {
+          tipo: 'entrada',
+          mp_codigo: l.mp_codigo || '',
+          mp_descripcion: l.descripcion || '',
+          lote_folio: loteFolio,
+          lote_proveedor: (l.lote_proveedor || '').trim(),
+          cantidad: cantRecibida,
+          um: l.um || 'Kg',
+          costo_unitario: costoUnit,
+          origen: 'recepcion_oc',
+          oc_folio: oc.folio || '',
+          proveedor: oc.proveedor || '',
+          tipo_documento: tipoDoc,
+          numero_documento: numeroDoc,
+          fecha: fechaRec,
+          usuario_id: state.user.id || '',
+          usuario_nombre: state.user.nombre || state.user.email || 'Usuario',
+          notas: notas,
+          created_at: serverTimestamp()
+        };
+        Object.keys(movData).forEach(k => { if (movData[k] === undefined) movData[k] = ''; });
+        
+        const movRef = doc(collection(db, 'movimientos_mp'));
+        batch.set(movRef, movData);
+      }
     }
     
     // 3. Actualizar OC con cantidades recibidas
     const lineasActualizadas = (oc.lineas || []).map(lOC => {
       const recibida = (f.lineas || []).find(l => l.mp_codigo === lOC.mp_codigo);
-      if (recibida) {
+      if (recibida && Number(recibida.cantidad_recibida_ahora) > 0) {
         return {
           ...lOC,
           cantidad_recibida: (Number(lOC.cantidad_recibida) || 0) + (Number(recibida.cantidad_recibida_ahora) || 0)
@@ -7099,9 +7203,14 @@ window.confirmarRecepcionOC = async (ocId) => {
     // Determinar si la OC está completa
     const todaCompleta = lineasActualizadas.every(l => (Number(l.cantidad_recibida) || 0) >= Number(l.cantidad));
     
+    // Hay líneas rechazadas?
+    const hayRechazo = lineasARecibir.some(l => l.cumple_calidad === 'no');
+    
     batch.update(doc(db, 'ordenes_compra', ocId), {
       lineas: lineasActualizadas,
       estatus: todaCompleta ? 'recibida' : 'recepcion_parcial',
+      tipo_documento: tipoDoc,
+      numero_documento: numeroDoc,
       factura: factura,
       remision: remision,
       ultima_recepcion_at: serverTimestamp(),
@@ -7122,15 +7231,29 @@ window.confirmarRecepcionOC = async (ocId) => {
     ['COMP', 'CEO'].forEach(depto => {
       batch.set(doc(collection(db, 'notificaciones')), {
         titulo: `📦 Recepción registrada · ${oc.folio}`,
-        mensaje: `${oc.proveedor} · ${lineasARecibir.length} lote(s) creado(s) · Factura ${factura}${todaCompleta ? ' · OC COMPLETA' : ' · Parcial'}`,
+        mensaje: `${oc.proveedor} · ${lineasARecibir.length} lote(s)${hayRechazo ? ' · ⚠ ALGUNOS RECHAZADOS POR CALIDAD' : ''}${todaCompleta ? ' · OC COMPLETA' : ' · Parcial'}`,
         depto_destino: depto,
-        tipo: 'success',
+        tipo: hayRechazo ? 'warning' : 'success',
         folio_ref: oc.folio,
         vista_destino: 'almacen_mp',
         leida: false,
         created_at: serverTimestamp()
       });
     });
+    
+    // Si hay rechazo, también notificar a CAL
+    if (hayRechazo) {
+      batch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `⚠ Material rechazado por calidad · ${oc.folio}`,
+        mensaje: `${oc.proveedor} · ${lineasARecibir.filter(l => l.cumple_calidad === 'no').map(l => l.mp_codigo).join(', ')}`,
+        depto_destino: 'CAL',
+        tipo: 'error',
+        folio_ref: oc.folio,
+        vista_destino: 'almacen_mp',
+        leida: false,
+        created_at: serverTimestamp()
+      });
+    }
     
     // Notificar al solicitante
     if (oc.depto_solicitante) {
@@ -7149,7 +7272,7 @@ window.confirmarRecepcionOC = async (ocId) => {
     await batch.commit();
     
     cerrarModal();
-    toast(`✅ ${lineasARecibir.length} lote(s) creado(s) · OC ${todaCompleta ? 'COMPLETA' : 'parcial'}`);
+    toast(`✅ ${lineasARecibir.length} lote(s) creado(s) · OC ${todaCompleta ? 'COMPLETA' : 'parcial'}${hayRechazo ? ' · Hay rechazo de calidad' : ''}`);
   } catch (e) {
     console.error('Error recepción:', e);
     toast('Error: ' + e.message, 'error');
@@ -14131,3 +14254,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
