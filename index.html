@@ -108,7 +108,7 @@ tr:hover td { background: #f8fafc; }
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword, signInWithCredential, EmailAuthProvider } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
 import { 
-  getFirestore, collection, doc, setDoc, addDoc, updateDoc, getDoc, getDocs, 
+  getFirestore, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, getDoc, getDocs, 
   query, where, orderBy, limit, onSnapshot, serverTimestamp, runTransaction, writeBatch, increment
 } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js';
@@ -138,7 +138,7 @@ const fbAppSecundaria = initializeApp(firebaseConfig, 'secundaria');
 const authSecundaria = getAuth(fbAppSecundaria);
 
 // Hacer disponible globalmente para acciones de UI
-window.fb = { auth, db, functions, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword, authSecundaria, doc, setDoc, addDoc, updateDoc, getDoc, getDocs, collection, query, where, orderBy, limit, onSnapshot, runTransaction, writeBatch, increment, serverTimestamp };
+window.fb = { auth, db, functions, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword, authSecundaria, doc, setDoc, addDoc, updateDoc, deleteDoc, getDoc, getDocs, collection, query, where, orderBy, limit, onSnapshot, runTransaction, writeBatch, increment, serverTimestamp };
 window.firebaseFunctions = { httpsCallable: (name) => httpsCallable(functions, name) };
 
 // ============================================================
@@ -4810,11 +4810,12 @@ function renderTarjetaUsuario(usr) {
         </div>
         ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
       </div>
-      <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;">
-        <button onclick="abrirModal('editar-usuario','${usr.id}')" style="flex:1;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
-        <button onclick="abrirCambiarPasswordUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="Asignar nueva contraseña al usuario">🔑 Nueva contraseña</button>
+      <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;flex-wrap:wrap;">
+        <button onclick="abrirModal('editar-usuario','${usr.id}')" style="flex:1;min-width:80px;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
+        <button onclick="abrirCambiarPasswordUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;min-width:80px;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="Asignar nueva contraseña al usuario">🔑 Password</button>
         ${!esYo ? `
-          <button onclick="toggleUsuarioActivo('${usr.id}')" style="flex:1;padding:5px 8px;background:${inactivo?'#16a34a':'#dc2626'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓ Activar':'⏸ Desactivar'}</button>
+          <button onclick="toggleUsuarioActivo('${usr.id}')" style="flex:1;min-width:80px;padding:5px 8px;background:${inactivo?'#16a34a':'#f59e0b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓ Activar':'⏸ Desactivar'}</button>
+          <button onclick="eliminarUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;min-width:80px;padding:5px 8px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="Eliminar usuario del sistema">🗑️ Eliminar</button>
         ` : ''}
       </div>
     </div>
@@ -5394,6 +5395,79 @@ window.toggleUsuarioActivo = async (id) => {
     toast(`${usr.nombre} ${usr.activo === false ? 'activado' : 'desactivado'}`);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.eliminarUsuario = async (id, email, nombre) => {
+  if (id === state.user?.id) { toast('No puedes eliminar tu propia cuenta', 'error'); return; }
+  
+  // Doble confirmación por seguridad
+  const conf1 = confirm(
+    `⚠ ELIMINAR USUARIO\n\n` +
+    `Vas a eliminar a:\n` +
+    `👤 ${nombre}\n` +
+    `📧 ${email}\n\n` +
+    `Esto eliminará:\n` +
+    `• Su perfil de Firestore\n` +
+    `• Acceso a la aplicación\n\n` +
+    `NO se puede deshacer.\n\n` +
+    `¿Continuar?`
+  );
+  if (!conf1) return;
+  
+  const conf2 = prompt(
+    `Confirmación final:\n\n` +
+    `Para eliminar a ${nombre}, escribe la palabra ELIMINAR (en mayúsculas):`
+  );
+  if (conf2 !== 'ELIMINAR') {
+    toast('Eliminación cancelada', 'info');
+    return;
+  }
+  
+  state.loadingAccion = true; render();
+  
+  try {
+    // 1. Eliminar perfil de Firestore
+    await deleteDoc(doc(db, 'usuarios', id));
+    
+    // 2. Registrar en log de auditoría (opcional)
+    try {
+      await addDoc(collection(db, 'notificaciones'), {
+        titulo: `🗑️ Usuario eliminado del sistema`,
+        mensaje: `${nombre} (${email}) fue eliminado por ${state.user.nombre}. Pendiente: borrar cuenta Auth en Firebase Console.`,
+        depto_destino: 'ADMIN',
+        tipo: 'warning',
+        leida: false,
+        created_at: serverTimestamp()
+      });
+    } catch (e) { console.warn('Notif:', e); }
+    
+    toast(`✅ ${nombre} eliminado de Firestore`, 'success');
+    
+    // 3. Mostrar instrucciones para borrar la cuenta Auth
+    setTimeout(() => {
+      const continuar = confirm(
+        `✅ PERFIL ELIMINADO DE FIRESTORE\n\n` +
+        `👤 ${nombre}\n` +
+        `📧 ${email}\n\n` +
+        `⚠ IMPORTANTE: Para que el correo ${email} pueda volver a usarse, también debes eliminar la cuenta Auth.\n\n` +
+        `PASOS:\n` +
+        `1. Click "OK" para abrir Firebase Console\n` +
+        `2. Busca: ${email}\n` +
+        `3. Click los 3 puntos (⋮) → "Eliminar cuenta"\n\n` +
+        `Si prefieres hacerlo después, click "Cancelar".\n\n` +
+        `¿Abrir Firebase Console ahora?`
+      );
+      if (continuar) {
+        window.open('https://console.firebase.google.com/project/newpack-erp/authentication/users', '_blank');
+      }
+    }, 200);
+    
+  } catch (e) {
+    console.error('Error eliminar:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
   }
 };
 
