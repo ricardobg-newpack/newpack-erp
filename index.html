@@ -477,6 +477,28 @@ async function cargarPerfil(uid) {
   }
   state.user = { id: uid, ...docSnap.data() };
   
+  // ⚡ AUTO-FIX: Si el perfil no tiene email (común en usuarios creados manualmente en Firebase Console),
+  // lo tomamos del Auth y lo guardamos en Firestore para evitar errores futuros
+  const emailAuth = auth.currentUser?.email;
+  if (!state.user.email && emailAuth) {
+    try {
+      await updateDoc(doc(db, 'usuarios', uid), {
+        email: emailAuth,
+        updated_at: serverTimestamp()
+      });
+      state.user.email = emailAuth;
+      console.log('Email auto-completado:', emailAuth);
+    } catch (e) {
+      console.warn('No se pudo guardar email:', e);
+      state.user.email = emailAuth; // al menos en memoria
+    }
+  }
+  
+  // Si no hay nombre, usar el email como fallback temporal
+  if (!state.user.nombre && state.user.email) {
+    state.user.nombre = state.user.email.split('@')[0];
+  }
+  
   // Si está marcado como pendiente_activacion, marcar como activado (ya se autenticó exitosamente)
   if (state.user.pendiente_activacion === true) {
     try {
@@ -6132,10 +6154,10 @@ function modalRC(esEdicion) {
           <!-- INFO DEL SOLICITANTE -->
           <div style="padding:12px;background:#eff6ff;border-radius:10px;margin-bottom:14px;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;color:#475569;">
-              <div><strong>👤 Solicitante:</strong> ${state.user.nombre}</div>
+              <div><strong>👤 Solicitante:</strong> ${state.user.nombre || state.user.email || '—'}</div>
               <div><strong>📍 Depto:</strong> ${state.user.depto || '—'}</div>
               <div><strong>📅 Fecha:</strong> ${new Date().toISOString().split('T')[0]}</div>
-              <div><strong>📧 Correo:</strong> ${state.user.email}</div>
+              <div><strong>📧 Correo:</strong> ${state.user.email || auth.currentUser?.email || '—'}</div>
             </div>
           </div>
           
@@ -6307,12 +6329,16 @@ window.guardarRC = async (enviarAprobacion, idEdicion) => {
       
       const folio = `RC-${año}-${String(contador).padStart(4, '0')}`;
       
+      // Obtener email del usuario actual (con múltiples fallbacks)
+      const emailUsuario = state.user.email || auth.currentUser?.email || '';
+      const nombreUsuario = state.user.nombre || state.user.email || auth.currentUser?.email || 'Usuario';
+      
       await addDoc(collection(db, 'requisiciones_compras'), {
         folio,
         fecha_solicitud: new Date().toISOString().split('T')[0],
         solicitante_id: state.user.id,
-        solicitante_nombre: state.user.nombre,
-        solicitante_email: state.user.email,
+        solicitante_nombre: nombreUsuario,
+        solicitante_email: emailUsuario,
         depto: state.user.depto || '',
         prioridad: f.prioridad,
         fecha_requerida: f.fecha_requerida,
@@ -13506,3 +13532,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
