@@ -167,6 +167,10 @@ const state = {
   supervisores: [],
   usuarios_sistema: [],
   materias_primas: [],
+  requisiciones_compras: [],
+  ordenes_compra: [],
+  lotes_mp: [],
+  movimientos_mp: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -572,6 +576,22 @@ async function cargarTodo() {
       onSnapshot(collection(db, 'materias_primas'), (snap) => {
         state.materias_primas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'requisiciones_compras'), (snap) => {
+        state.requisiciones_compras = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'ordenes_compra'), (snap) => {
+        state.ordenes_compra = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'lotes_mp'), (snap) => {
+        state.lotes_mp = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'movimientos_mp'), (snap) => {
+        state.movimientos_mp = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
       })
     );
   } catch (err) {
@@ -702,6 +722,8 @@ function renderApp() {
   const esALP = u.depto === 'ALP' || esCEO;
   const esCEDMTY = u.depto === 'CEDMTY' || esCEO;
   const esCEDMEX = u.depto === 'CEDMEX' || esCEO;
+  const esCOMP = u.depto === 'COMP' || esCEO;
+  const esVerCompras = esCOMP || esPLN || esALP || esCEO; // Quien puede VER compras
   
   return `
     <div class="app">
@@ -747,6 +769,18 @@ function renderApp() {
         ` : ''}
         ${esCS || esCEDMTY || esCEDMEX ? `
           <button class="nav-item ${state.vista === 'embarques' ? 'active' : ''}" data-vista="embarques">🚚 Embarques (OV)</button>
+        ` : ''}
+        
+        ${esVerCompras ? `
+          <div class="sidebar-section">Compras y MP</div>
+          <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Requisiciones (RC)</button>
+          ${esCOMP || esCEO ? `
+            <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes Compra (OC)</button>
+          ` : ''}
+          ${esALP || esCEO ? `
+            <button class="nav-item ${state.vista === 'recepciones_mp' ? 'active' : ''}" data-vista="recepciones_mp">📥 Recepciones MP</button>
+          ` : ''}
+          <button class="nav-item ${state.vista === 'almacen_mp' ? 'active' : ''}" data-vista="almacen_mp">📦 Almacén MP</button>
         ` : ''}
         
         <div class="sidebar-section">Catálogos</div>
@@ -801,6 +835,10 @@ function tituloVista() {
     maquinas: '🛠️ Máquinas de Producción',
     personal: '👷 Operadores y Supervisores',
     materias_primas: '🧪 Materias Primas, Aditivos y Pigmentos',
+    requisiciones: '📋 Requisiciones de Compra (RC)',
+    ordenes_compra: '📑 Órdenes de Compra (OC)',
+    recepciones_mp: '📥 Recepciones de Materias Primas',
+    almacen_mp: '📦 Almacén de Materias Primas',
     usuarios: '⚙️ Usuarios del Sistema'
   })[state.vista] || '';
 }
@@ -823,6 +861,10 @@ function renderVista() {
   if (v === 'maquinas') return renderMaquinas();
   if (v === 'personal') return renderPersonal();
   if (v === 'materias_primas') return renderMateriasPrimas();
+  if (v === 'requisiciones') return renderRequisiciones();
+  if (v === 'ordenes_compra') return renderOrdenesCompra();
+  if (v === 'recepciones_mp') return renderRecepcionesMP();
+  if (v === 'almacen_mp') return renderAlmacenMP();
   if (v === 'usuarios') return renderUsuariosSistema();
   return '';
 }
@@ -2471,6 +2513,9 @@ function renderModal() {
   if (m === 'cambiar-password-usuario') return modalCambiarPasswordUsuario();
   if (m === 'crear-mp') return modalMateriaPrima(false);
   if (m === 'editar-mp') return modalMateriaPrima(true);
+  if (m === 'crear-rc') return modalRC(false);
+  if (m === 'editar-rc') return modalRC(true);
+  if (m === 'detalle-rc') return modalDetalleRC();
   return '';
 }
 
@@ -5854,6 +5899,809 @@ window.cargarMateriasPrimasIniciales = async () => {
     state.loadingAccion = false; render();
   }
 };
+
+// ============================================================
+// MÓDULO COMPRAS Y ALMACÉN MP
+// ============================================================
+const ESTATUS_RC = [
+  { codigo: 'borrador',  nombre: 'Borrador',         color: '#94a3b8', icono: '📝' },
+  { codigo: 'pendiente', nombre: 'Pendiente aprobar', color: '#f59e0b', icono: '⏳' },
+  { codigo: 'aprobada',  nombre: 'Aprobada',         color: '#3b82f6', icono: '✅' },
+  { codigo: 'oc_generada', nombre: 'OC Generada',    color: '#7c3aed', icono: '📑' },
+  { codigo: 'recibida',  nombre: 'Recibida',         color: '#16a34a', icono: '📦' },
+  { codigo: 'cancelada', nombre: 'Cancelada',        color: '#dc2626', icono: '❌' }
+];
+const PRIORIDADES_RC = [
+  { codigo: 'normal',    nombre: 'Normal (Planificada)',  color: '#16a34a', icono: '🟢' },
+  { codigo: 'urgente',   nombre: 'Urgente (Falta stock)', color: '#f59e0b', icono: '🟡' },
+  { codigo: 'emergencia', nombre: 'Emergencia (Paro)',    color: '#dc2626', icono: '🔴' }
+];
+window.ESTATUS_RC = ESTATUS_RC;
+window.PRIORIDADES_RC = PRIORIDADES_RC;
+
+// ============================================================
+// VISTA: REQUISICIONES DE COMPRA (RC)
+// ============================================================
+function renderRequisiciones() {
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esCOMP = u.depto === 'COMP' || esCEO;
+  const puedeCrear = ['PLN','PRO','CAL','ALP','CS','COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const puedeAprobar = esCEO || esCOMP;
+  
+  const filtro = (state.filtros.requisiciones || '').toLowerCase();
+  const tab = state.tabs.requisiciones || 'activas';
+  
+  let arr = state.requisiciones_compras || [];
+  
+  // Filtrar por tab
+  if (tab === 'activas') arr = arr.filter(r => !['recibida','cancelada'].includes(r.estatus));
+  else if (tab === 'recibidas') arr = arr.filter(r => r.estatus === 'recibida');
+  else if (tab === 'canceladas') arr = arr.filter(r => r.estatus === 'cancelada');
+  else if (tab === 'mias') arr = arr.filter(r => r.solicitante_id === u.id);
+  
+  if (filtro) arr = arr.filter(r => 
+    ((r.folio || '') + ' ' + (r.solicitante_nombre || '') + ' ' + (r.depto || '') + ' ' + 
+     (r.lineas || []).map(l => `${l.mp_codigo} ${l.descripcion}`).join(' ')
+    ).toLowerCase().includes(filtro)
+  );
+  
+  // Ordenar por fecha desc
+  arr.sort((a, b) => {
+    const ta = a.created_at?.seconds || 0;
+    const tb = b.created_at?.seconds || 0;
+    return tb - ta;
+  });
+  
+  // KPIs
+  const todas = state.requisiciones_compras || [];
+  const pendientesAprobar = todas.filter(r => r.estatus === 'pendiente').length;
+  const aprobadas = todas.filter(r => r.estatus === 'aprobada').length;
+  const enOC = todas.filter(r => r.estatus === 'oc_generada').length;
+  const emergencias = todas.filter(r => r.prioridad === 'emergencia' && !['recibida','cancelada'].includes(r.estatus)).length;
+  
+  return `
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #f59e0b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⏳ PENDIENTE APROBAR</div>
+        <div style="font-size:22px;font-weight:800;color:#f59e0b;">${pendientesAprobar}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">✅ APROBADAS</div>
+        <div style="font-size:22px;font-weight:800;color:#3b82f6;">${aprobadas}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📑 EN OC</div>
+        <div style="font-size:22px;font-weight:800;color:#7c3aed;">${enOC}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #dc2626;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">🔴 EMERGENCIAS</div>
+        <div style="font-size:22px;font-weight:800;color:#dc2626;">${emergencias}</div>
+      </div>
+    </div>
+    
+    <!-- TABS -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
+      <button class="tab-btn ${tab === 'activas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','activas')">📋 Activas (${todas.filter(r => !['recibida','cancelada'].includes(r.estatus)).length})</button>
+      <button class="tab-btn ${tab === 'mias' ? 'active' : ''}" onclick="cambiarTab('requisiciones','mias')">👤 Mis RCs (${todas.filter(r => r.solicitante_id === u.id).length})</button>
+      <button class="tab-btn ${tab === 'recibidas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','recibidas')">📦 Recibidas (${todas.filter(r => r.estatus === 'recibida').length})</button>
+      <button class="tab-btn ${tab === 'canceladas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','canceladas')">❌ Canceladas (${todas.filter(r => r.estatus === 'cancelada').length})</button>
+    </div>
+    
+    <!-- TOOLBAR -->
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-requisiciones" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, solicitante, código, descripción..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} RC(s)</span>
+      ${puedeCrear ? `
+        <button class="btn-primary" onclick="abrirModal('crear-rc')" style="margin-left:auto;">${ICONS.plus} Nueva RC</button>
+      ` : ''}
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📋</div>
+        <div style="font-weight:700;color:#475569;">Sin RCs en este filtro</div>
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${arr.map(rc => renderTarjetaRC(rc, puedeAprobar)).join('')}
+      </div>
+    `}
+  `;
+}
+
+function renderTarjetaRC(rc, puedeAprobar) {
+  const estat = ESTATUS_RC.find(e => e.codigo === rc.estatus) || ESTATUS_RC[0];
+  const prio = PRIORIDADES_RC.find(p => p.codigo === rc.prioridad) || PRIORIDADES_RC[0];
+  const lineas = rc.lineas || [];
+  const totalLineas = lineas.length;
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${estat.color};">
+      <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:280px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+            <span class="text-mono" style="font-weight:800;font-size:15px;">${rc.folio}</span>
+            <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${estat.color}22;color:${estat.color};">${estat.icono} ${estat.nombre}</span>
+            <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${prio.color}22;color:${prio.color};">${prio.icono} ${prio.nombre.split(' ')[0]}</span>
+          </div>
+          <div style="font-size:12px;color:#475569;">
+            <strong>${rc.solicitante_nombre}</strong> · ${rc.depto || ''} · 📅 ${rc.fecha_solicitud || ''}
+          </div>
+          ${rc.fecha_requerida ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">🎯 Requerida para: ${rc.fecha_requerida}</div>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:#64748b;">${totalLineas} línea${totalLineas>1?'s':''}</div>
+          ${rc.oc_folio ? `<div style="font-size:11px;font-weight:700;color:#7c3aed;margin-top:2px;">📑 ${rc.oc_folio}</div>` : ''}
+        </div>
+      </div>
+      
+      <!-- LÍNEAS -->
+      <div style="padding:8px 18px 12px;">
+        <div style="background:#f8fafc;border-radius:8px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="background:#e2e8f0;">
+                <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">Código</th>
+                <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">Descripción</th>
+                <th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Cant.</th>
+                <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">UM</th>
+                ${rc.estatus === 'recibida' ? `<th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Recibido</th>` : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${lineas.map(l => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:5px 8px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
+                  <td style="padding:5px 8px;">${l.descripcion}</td>
+                  <td style="padding:5px 8px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
+                  <td style="padding:5px 8px;font-size:10px;color:#64748b;">${l.um || 'Kg'}</td>
+                  ${rc.estatus === 'recibida' ? `<td style="padding:5px 8px;text-align:right;color:${l.cantidad_recibida >= l.cantidad ? '#16a34a' : '#f59e0b'};font-weight:700;">${fmtNum(l.cantidad_recibida || 0)}</td>` : ''}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      ${rc.observaciones ? `<div style="padding:0 18px 8px;font-size:11px;color:#64748b;font-style:italic;">📝 ${rc.observaciones}</div>` : ''}
+      ${rc.proveedor_asignado ? `<div style="padding:0 18px 8px;font-size:11px;color:#475569;">🏭 Proveedor: <strong>${rc.proveedor_asignado}</strong></div>` : ''}
+      
+      <!-- BOTONES -->
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-secondary" onclick="abrirModal('detalle-rc','${rc.id}')" style="padding:8px 14px;">${ICONS.list} Detalle</button>
+        
+        ${rc.estatus === 'borrador' && rc.solicitante_id === state.user.id ? `
+          <button onclick="enviarRC('${rc.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📤 Enviar a aprobación</button>
+          <button onclick="abrirModal('editar-rc','${rc.id}')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">${ICONS.edit} Editar</button>
+        ` : ''}
+        
+        ${rc.estatus === 'pendiente' && puedeAprobar ? `
+          <button onclick="aprobarRC('${rc.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✅ Aprobar</button>
+          <button onclick="rechazarRC('${rc.id}')" style="padding:8px 14px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">❌ Rechazar</button>
+        ` : ''}
+        
+        ${rc.estatus === 'aprobada' && puedeAprobar ? `
+          <button onclick="abrirModal('generar-oc','${rc.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📑 Generar OC</button>
+        ` : ''}
+        
+        ${!['recibida','cancelada'].includes(rc.estatus) && (rc.solicitante_id === state.user.id || puedeAprobar) ? `
+          <button onclick="cancelarRC('${rc.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;margin-left:auto;">❌ Cancelar RC</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: Crear/Editar RC
+// ============================================================
+function modalRC(esEdicion) {
+  const id = state.modalData;
+  const rc = esEdicion ? (state.requisiciones_compras || []).find(x => x.id === id) : null;
+  if (esEdicion && !rc) return '';
+  
+  if (!state.modalForm) {
+    state.modalForm = rc ? {
+      prioridad: rc.prioridad || 'normal',
+      fecha_requerida: rc.fecha_requerida || '',
+      observaciones: rc.observaciones || '',
+      lineas: [...(rc.lineas || [])]
+    } : {
+      prioridad: 'normal',
+      fecha_requerida: '',
+      observaciones: '',
+      lineas: []
+    };
+  }
+  const f = state.modalForm;
+  
+  // MP disponibles para selección
+  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:880px;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '➕ Nueva'} Requisición de Compra</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;">
+          
+          <!-- INFO DEL SOLICITANTE -->
+          <div style="padding:12px;background:#eff6ff;border-radius:10px;margin-bottom:14px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;color:#475569;">
+              <div><strong>👤 Solicitante:</strong> ${state.user.nombre}</div>
+              <div><strong>📍 Depto:</strong> ${state.user.depto || '—'}</div>
+              <div><strong>📅 Fecha:</strong> ${new Date().toISOString().split('T')[0]}</div>
+              <div><strong>📧 Correo:</strong> ${state.user.email}</div>
+            </div>
+          </div>
+          
+          <!-- PRIORIDAD Y FECHA -->
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:14px;">
+            <div class="field" style="margin:0;">
+              <label class="field-label">Prioridad *</label>
+              <div style="display:flex;gap:6px;">
+                ${PRIORIDADES_RC.map(p => `
+                  <button onclick="window.modalFormSet('prioridad','${p.codigo}')" style="flex:1;padding:10px;border:2px solid ${f.prioridad === p.codigo ? p.color : '#cbd5e1'};background:${f.prioridad === p.codigo ? p.color : '#fff'};color:${f.prioridad === p.codigo ? '#fff' : p.color};border-radius:8px;font-weight:800;font-size:11px;cursor:pointer;">
+                    ${p.icono} ${p.nombre}
+                  </button>
+                `).join('')}
+              </div>
+            </div>
+            <div class="field" style="margin:0;">
+              <label class="field-label">Fecha requerida *</label>
+              <input class="input" id="rc-fecha-req" type="date" value="${f.fecha_requerida || ''}" onchange="window.modalFormSetSilent('fecha_requerida', this.value)" />
+            </div>
+          </div>
+          
+          <!-- AGREGAR LÍNEA -->
+          <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:12px;">
+            <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Agregar insumo</div>
+            <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:8px;">
+              <select class="input" id="rc-mp-select">
+                <option value="">— Selecciona materia prima —</option>
+                ${mps.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `
+                  <option value="${mp.codigo}" data-desc="${mp.descripcion}" data-um="${mp.um || 'Kg'}">${mp.codigo} — ${mp.descripcion}</option>
+                `).join('')}
+              </select>
+              <input class="input" id="rc-cant" type="number" min="0" step="0.01" placeholder="Cantidad" />
+              <button onclick="agregarLineaRC()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Agregar</button>
+            </div>
+          </div>
+          
+          <!-- LÍNEAS AGREGADAS -->
+          ${(f.lineas || []).length > 0 ? `
+            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:14px;">
+              <div style="padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:800;font-size:12px;color:#475569;">
+                📋 Insumos solicitados (${f.lineas.length})
+              </div>
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead>
+                  <tr style="background:#f1f5f9;">
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
+                    <th style="padding:6px 10px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Cantidad</th>
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">UM</th>
+                    <th style="padding:6px 10px;text-align:center;font-weight:700;color:#475569;font-size:11px;">×</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${f.lineas.map((l, idx) => `
+                    <tr style="border-bottom:1px solid #f1f5f9;">
+                      <td style="padding:6px 10px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
+                      <td style="padding:6px 10px;">${l.descripcion}</td>
+                      <td style="padding:6px 10px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
+                      <td style="padding:6px 10px;font-size:11px;color:#64748b;">${l.um || 'Kg'}</td>
+                      <td style="padding:6px 10px;text-align:center;">
+                        <button onclick="quitarLineaRC(${idx})" style="padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">✕</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : `
+            <div style="padding:20px;text-align:center;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;color:#92400e;font-size:12px;margin-bottom:14px;">
+              ⚠ Agrega al menos un insumo a la RC
+            </div>
+          `}
+          
+          <!-- OBSERVACIONES -->
+          <div class="field">
+            <label class="field-label">Observaciones / Comentarios</label>
+            <textarea class="input" id="rc-obs" style="min-height:60px;" placeholder="Notas sobre la requisición, instrucciones especiales, etc." oninput="window.modalFormSetSilent('observaciones', this.value)">${f.observaciones || ''}</textarea>
+          </div>
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;background:#fff;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          ${!esEdicion ? `
+            <button onclick="guardarRC(false)" style="padding:10px 18px;background:#94a3b8;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">📝 Guardar borrador</button>
+          ` : ''}
+          <button onclick="guardarRC(true,'${esEdicion ? id : ''}')" class="btn-primary" style="background:#16a34a;">
+            ${ICONS.check} ${esEdicion ? 'Guardar' : 'Enviar a aprobación'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.agregarLineaRC = () => {
+  const sel = $('#rc-mp-select');
+  const cantInp = $('#rc-cant');
+  if (!sel || !cantInp) return;
+  const mp_codigo = sel.value;
+  const cantidad = Number(cantInp.value) || 0;
+  if (!mp_codigo) { toast('Selecciona una materia prima', 'error'); return; }
+  if (cantidad <= 0) { toast('Cantidad debe ser mayor a 0', 'error'); return; }
+  
+  const opt = sel.selectedOptions[0];
+  const descripcion = opt?.dataset.desc || '';
+  const um = opt?.dataset.um || 'Kg';
+  
+  if (!state.modalForm) state.modalForm = { lineas: [] };
+  if (!state.modalForm.lineas) state.modalForm.lineas = [];
+  
+  // Si ya existe ese MP, sumar cantidad
+  const existe = state.modalForm.lineas.find(l => l.mp_codigo === mp_codigo);
+  if (existe) {
+    if (!confirm(`Ya hay una línea con ${mp_codigo} (${fmtNum(existe.cantidad)} ${um}). ¿Sumar ${fmtNum(cantidad)} más?\n\nNueva cantidad total: ${fmtNum(existe.cantidad + cantidad)} ${um}`)) return;
+    existe.cantidad += cantidad;
+  } else {
+    state.modalForm.lineas.push({ mp_codigo, descripcion, cantidad, um });
+  }
+  
+  sel.value = '';
+  cantInp.value = '';
+  render();
+};
+
+window.quitarLineaRC = (idx) => {
+  if (!state.modalForm?.lineas) return;
+  state.modalForm.lineas.splice(idx, 1);
+  render();
+};
+
+window.guardarRC = async (enviarAprobacion, idEdicion) => {
+  const f = state.modalForm;
+  if (!f) return;
+  
+  const obsDom = ($('#rc-obs')?.value || '').trim();
+  const fechaDom = ($('#rc-fecha-req')?.value || '').trim();
+  if (obsDom) f.observaciones = obsDom;
+  if (fechaDom) f.fecha_requerida = fechaDom;
+  
+  // Validar
+  if (!f.lineas || f.lineas.length === 0) { toast('Agrega al menos un insumo', 'error'); return; }
+  if (!f.prioridad) { toast('Selecciona prioridad', 'error'); return; }
+  if (!f.fecha_requerida) { toast('Fecha requerida obligatoria', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    if (idEdicion) {
+      // Editar existente
+      await updateDoc(doc(db, 'requisiciones_compras', idEdicion), {
+        prioridad: f.prioridad,
+        fecha_requerida: f.fecha_requerida,
+        observaciones: f.observaciones || '',
+        lineas: f.lineas,
+        estatus: enviarAprobacion ? 'pendiente' : 'borrador',
+        updated_at: serverTimestamp()
+      });
+      toast(`✅ RC actualizada`);
+    } else {
+      // Crear nuevo: generar folio RC-2026-XXXX
+      const año = new Date().getFullYear();
+      const contador = await runTransaction(db, async (transaction) => {
+        const counterRef = doc(db, 'contadores', `rc_${año}`);
+        const counterDoc = await transaction.get(counterRef);
+        const current = counterDoc.exists() ? (counterDoc.data().valor || 0) : 0;
+        const nuevo = current + 1;
+        transaction.set(counterRef, { valor: nuevo, year: año });
+        return nuevo;
+      });
+      
+      const folio = `RC-${año}-${String(contador).padStart(4, '0')}`;
+      
+      await addDoc(collection(db, 'requisiciones_compras'), {
+        folio,
+        fecha_solicitud: new Date().toISOString().split('T')[0],
+        solicitante_id: state.user.id,
+        solicitante_nombre: state.user.nombre,
+        solicitante_email: state.user.email,
+        depto: state.user.depto || '',
+        prioridad: f.prioridad,
+        fecha_requerida: f.fecha_requerida,
+        observaciones: f.observaciones || '',
+        lineas: f.lineas,
+        estatus: enviarAprobacion ? 'pendiente' : 'borrador',
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      
+      // Si se envía a aprobación, notificar a COMP/CEO
+      if (enviarAprobacion) {
+        const batchNotif = writeBatch(db);
+        ['COMP','CEO'].forEach(depto => {
+          batchNotif.set(doc(collection(db, 'notificaciones')), {
+            titulo: `📋 Nueva RC ${folio} pendiente de aprobación`,
+            mensaje: `${state.user.nombre} (${state.user.depto}) solicita ${f.lineas.length} insumo(s) · ${f.prioridad.toUpperCase()}`,
+            depto_destino: depto, tipo: f.prioridad === 'emergencia' ? 'error' : 'warning',
+            folio_ref: folio,
+            vista_destino: 'requisiciones',
+            leida: false, created_at: serverTimestamp()
+          });
+        });
+        await batchNotif.commit();
+      }
+      
+      toast(`✅ RC ${folio} ${enviarAprobacion ? 'enviada a aprobación' : 'guardada como borrador'}`);
+    }
+    cerrarModal();
+  } catch (e) {
+    console.error('Error RC:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.enviarRC = async (rcId) => {
+  const rc = state.requisiciones_compras.find(r => r.id === rcId);
+  if (!rc) return;
+  if (!confirm(`¿Enviar RC ${rc.folio} a aprobación?`)) return;
+  
+  try {
+    await updateDoc(doc(db, 'requisiciones_compras', rcId), {
+      estatus: 'pendiente',
+      updated_at: serverTimestamp()
+    });
+    
+    const batchNotif = writeBatch(db);
+    ['COMP','CEO'].forEach(depto => {
+      batchNotif.set(doc(collection(db, 'notificaciones')), {
+        titulo: `📋 RC ${rc.folio} pendiente de aprobación`,
+        mensaje: `${rc.solicitante_nombre} · ${rc.lineas.length} insumo(s)`,
+        depto_destino: depto, tipo: 'warning',
+        folio_ref: rc.folio,
+        vista_destino: 'requisiciones',
+        leida: false, created_at: serverTimestamp()
+      });
+    });
+    await batchNotif.commit();
+    
+    toast(`✅ RC ${rc.folio} enviada a aprobación`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.aprobarRC = async (rcId) => {
+  const rc = state.requisiciones_compras.find(r => r.id === rcId);
+  if (!rc) return;
+  if (!confirm(`¿Aprobar RC ${rc.folio}?\n\nDespués podrás generar la Orden de Compra.`)) return;
+  
+  try {
+    await updateDoc(doc(db, 'requisiciones_compras', rcId), {
+      estatus: 'aprobada',
+      aprobada_por_id: state.user.id,
+      aprobada_por_nombre: state.user.nombre,
+      aprobada_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    await addDoc(collection(db, 'notificaciones'), {
+      titulo: `✅ Tu RC ${rc.folio} fue aprobada`,
+      mensaje: `Aprobada por ${state.user.nombre}. Pronto se generará la Orden de Compra.`,
+      depto_destino: rc.depto, tipo: 'success',
+      folio_ref: rc.folio,
+      vista_destino: 'requisiciones',
+      leida: false, created_at: serverTimestamp()
+    });
+    
+    toast(`✅ RC ${rc.folio} aprobada`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.rechazarRC = async (rcId) => {
+  const rc = state.requisiciones_compras.find(r => r.id === rcId);
+  if (!rc) return;
+  const motivo = prompt(`Motivo del rechazo de RC ${rc.folio}:`);
+  if (!motivo || motivo.trim().length < 3) { toast('Motivo obligatorio (mínimo 3 caracteres)', 'error'); return; }
+  
+  try {
+    await updateDoc(doc(db, 'requisiciones_compras', rcId), {
+      estatus: 'cancelada',
+      cancelada_por_id: state.user.id,
+      cancelada_por_nombre: state.user.nombre,
+      motivo_cancelacion: motivo.trim(),
+      cancelada_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    await addDoc(collection(db, 'notificaciones'), {
+      titulo: `❌ RC ${rc.folio} fue rechazada`,
+      mensaje: `Por ${state.user.nombre}. Motivo: ${motivo.trim()}`,
+      depto_destino: rc.depto, tipo: 'error',
+      folio_ref: rc.folio,
+      vista_destino: 'requisiciones',
+      leida: false, created_at: serverTimestamp()
+    });
+    
+    toast(`❌ RC ${rc.folio} rechazada`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.cancelarRC = async (rcId) => {
+  const rc = state.requisiciones_compras.find(r => r.id === rcId);
+  if (!rc) return;
+  if (rc.oc_folio) { toast('No puedes cancelar una RC que ya tiene OC generada', 'error'); return; }
+  const motivo = prompt(`Motivo de cancelación de RC ${rc.folio}:`);
+  if (!motivo || motivo.trim().length < 3) { toast('Motivo obligatorio', 'error'); return; }
+  
+  try {
+    await updateDoc(doc(db, 'requisiciones_compras', rcId), {
+      estatus: 'cancelada',
+      motivo_cancelacion: motivo.trim(),
+      cancelada_por_id: state.user.id,
+      cancelada_por_nombre: state.user.nombre,
+      cancelada_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    toast(`❌ RC ${rc.folio} cancelada`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+// Detalle RC
+function modalDetalleRC() {
+  const rc = state.requisiciones_compras.find(r => r.id === state.modalData);
+  if (!rc) return '';
+  const estat = ESTATUS_RC.find(e => e.codigo === rc.estatus) || ESTATUS_RC[0];
+  const prio = PRIORIDADES_RC.find(p => p.codigo === rc.prioridad) || PRIORIDADES_RC[0];
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:720px;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="modal-header" style="background:${estat.color}11;border-bottom:2px solid ${estat.color};">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">${rc.folio}</h2>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">${estat.icono} ${estat.nombre} · ${prio.icono} ${prio.nombre}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;">
+          
+          <div style="padding:14px;background:#f8fafc;border-radius:10px;margin-bottom:14px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;color:#475569;">
+              <div><strong>👤 Solicitante:</strong> ${rc.solicitante_nombre}</div>
+              <div><strong>📍 Depto:</strong> ${rc.depto || '—'}</div>
+              <div><strong>📅 Solicitada:</strong> ${rc.fecha_solicitud || '—'}</div>
+              <div><strong>🎯 Requerida:</strong> ${rc.fecha_requerida || '—'}</div>
+              ${rc.aprobada_por_nombre ? `<div><strong>✅ Aprobada por:</strong> ${rc.aprobada_por_nombre}</div>` : ''}
+              ${rc.proveedor_asignado ? `<div><strong>🏭 Proveedor:</strong> ${rc.proveedor_asignado}</div>` : ''}
+              ${rc.oc_folio ? `<div><strong>📑 OC:</strong> <span class="text-mono">${rc.oc_folio}</span></div>` : ''}
+              ${rc.motivo_cancelacion ? `<div style="grid-column:1/-1;"><strong>❌ Motivo cancelación:</strong> ${rc.motivo_cancelacion}</div>` : ''}
+            </div>
+          </div>
+          
+          <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:8px;">📋 Insumos solicitados (${rc.lineas?.length || 0})</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+            <thead>
+              <tr style="background:#f1f5f9;">
+                <th style="padding:8px 10px;text-align:left;font-weight:700;color:#475569;">Código</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:700;color:#475569;">Descripción</th>
+                <th style="padding:8px 10px;text-align:right;font-weight:700;color:#475569;">Solicitado</th>
+                <th style="padding:8px 10px;text-align:right;font-weight:700;color:#475569;">Recibido</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:700;color:#475569;">UM</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(rc.lineas || []).map(l => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:6px 10px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
+                  <td style="padding:6px 10px;">${l.descripcion}</td>
+                  <td style="padding:6px 10px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
+                  <td style="padding:6px 10px;text-align:right;font-weight:700;color:${(l.cantidad_recibida||0) >= l.cantidad ? '#16a34a' : '#f59e0b'};">${fmtNum(l.cantidad_recibida || 0)}</td>
+                  <td style="padding:6px 10px;font-size:11px;color:#64748b;">${l.um || 'Kg'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          
+          ${rc.observaciones ? `
+            <div style="margin-top:14px;padding:10px;background:#fffbeb;border-left:3px solid #f59e0b;border-radius:4px;font-size:12px;color:#475569;">
+              <strong>📝 Observaciones:</strong> ${rc.observaciones}
+            </div>
+          ` : ''}
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;background:#fff;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// VISTAS PLACEHOLDER (próximas etapas)
+// ============================================================
+function renderOrdenesCompra() {
+  const ocs = (state.ordenes_compra || []).slice().sort((a,b) => (b.created_at?.seconds||0) - (a.created_at?.seconds||0));
+  return `
+    <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
+      <div style="font-weight:800;color:#1e40af;font-size:13px;">📑 Órdenes de Compra (OC)</div>
+      <div style="font-size:11px;color:#475569;margin-top:4px;">
+        Las OC se generan desde las RCs aprobadas (botón <strong>📑 Generar OC</strong>). Próxima etapa: generación de PDF de OC.
+      </div>
+    </div>
+    
+    ${ocs.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📑</div>
+        <div style="font-weight:700;color:#475569;">Sin Órdenes de Compra todavía</div>
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${ocs.map(oc => `
+          <div class="panel" style="border-left:4px solid #7c3aed;padding:14px 18px;">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+              <div>
+                <div class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</div>
+                <div style="font-size:12px;color:#475569;margin-top:4px;">
+                  <strong>🏭 ${oc.proveedor || '—'}</strong> · 📋 RC: ${oc.rc_folio || '—'}
+                </div>
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">
+                  📅 Generada: ${oc.fecha_oc || '—'} · 🎯 Promesa: ${oc.fecha_promesa || '—'}
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <span style="padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;background:${oc.estatus === 'recibida' ? '#dcfce7' : '#fef3c7'};color:${oc.estatus === 'recibida' ? '#16a34a' : '#92400e'};">${oc.estatus === 'recibida' ? '✅ RECIBIDA' : '⏳ EN TRÁNSITO'}</span>
+                <div style="font-size:11px;color:#64748b;margin-top:4px;">${(oc.lineas||[]).length} línea(s)</div>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `}
+  `;
+}
+
+function renderRecepcionesMP() {
+  const ocsEnTransito = (state.ordenes_compra || []).filter(oc => oc.estatus !== 'recibida' && oc.estatus !== 'cancelada');
+  return `
+    <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
+      <div style="font-weight:800;color:#1e40af;font-size:13px;">📥 Recepciones de Materias Primas</div>
+      <div style="font-size:11px;color:#475569;margin-top:4px;">
+        Cuando llegue material físicamente, ALP captura aquí cantidad recibida, factura/remisión y se crea automáticamente el lote con kardex.
+      </div>
+    </div>
+    
+    ${ocsEnTransito.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📥</div>
+        <div style="font-weight:700;color:#475569;">No hay OCs pendientes de recibir</div>
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${ocsEnTransito.map(oc => `
+          <div class="panel" style="border-left:4px solid #f59e0b;padding:14px 18px;">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+              <div>
+                <div class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</div>
+                <div style="font-size:12px;color:#475569;margin-top:4px;"><strong>🏭 ${oc.proveedor || '—'}</strong></div>
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">🎯 Promesa: ${oc.fecha_promesa || '—'}</div>
+              </div>
+              <button onclick="abrirModal('recibir-oc','${oc.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📥 Capturar recepción</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `}
+  `;
+}
+
+function renderAlmacenMP() {
+  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+  const filtro = (state.filtros.almacen_mp || '').toLowerCase();
+  let arr = mps;
+  if (filtro) arr = arr.filter(mp => ((mp.codigo||'')+' '+(mp.descripcion||'')).toLowerCase().includes(filtro));
+  
+  // Calcular stock total por MP sumando lotes activos
+  const stockPorMP = {};
+  (state.lotes_mp || []).forEach(l => {
+    if (l.estatus !== 'agotado' && (l.stock_actual || 0) > 0) {
+      if (!stockPorMP[l.mp_codigo]) stockPorMP[l.mp_codigo] = { total: 0, lotes: 0 };
+      stockPorMP[l.mp_codigo].total += Number(l.stock_actual) || 0;
+      stockPorMP[l.mp_codigo].lotes++;
+    }
+  });
+  
+  const totalKgEnAlmacen = Object.values(stockPorMP).reduce((s, v) => s + v.total, 0);
+  const insumosConStock = Object.keys(stockPorMP).length;
+  const conAlerta = arr.filter(mp => {
+    const stock = stockPorMP[mp.codigo]?.total || 0;
+    return mp.stock_minimo > 0 && stock < mp.stock_minimo;
+  }).length;
+  
+  return `
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📦 STOCK TOTAL</div>
+        <div style="font-size:22px;font-weight:800;color:#16a34a;">${fmtNum(totalKgEnAlmacen)} kg</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">🧪 INSUMOS CON STOCK</div>
+        <div style="font-size:22px;font-weight:800;color:#3b82f6;">${insumosConStock}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #dc2626;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⚠ STOCK BAJO MÍNIMO</div>
+        <div style="font-size:22px;font-weight:800;color:#dc2626;">${conAlerta}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📜 LOTES ACTIVOS</div>
+        <div style="font-size:22px;font-weight:800;color:#7c3aed;">${(state.lotes_mp || []).filter(l => l.estatus !== 'agotado').length}</div>
+      </div>
+    </div>
+    
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-almacen-mp" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar insumo..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} insumo(s)</span>
+    </div>
+    
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Tipo</th>
+            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock actual</th>
+            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock mín</th>
+            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Lotes</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">UM</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${arr.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => {
+            const datos = stockPorMP[mp.codigo] || { total: 0, lotes: 0 };
+            const stock = datos.total;
+            const lotes = datos.lotes;
+            const alerta = mp.stock_minimo > 0 && stock < mp.stock_minimo;
+            const tipoInfo = TIPOS_MP.find(t => t.codigo === mp.tipo) || TIPOS_MP[0];
+            return `
+              <tr style="border-bottom:1px solid #f1f5f9;${alerta?'background:#fef2f2;':''}">
+                <td style="padding:8px 12px;" class="text-mono"><strong>${mp.codigo}</strong></td>
+                <td style="padding:8px 12px;">${mp.descripcion}</td>
+                <td style="padding:8px 12px;"><span style="background:${tipoInfo.color}22;color:${tipoInfo.color};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">${tipoInfo.icono} ${tipoInfo.nombre}</span></td>
+                <td style="padding:8px 12px;text-align:right;font-weight:800;color:${alerta ? '#dc2626' : (stock > 0 ? '#16a34a' : '#94a3b8')};">${fmtNum(stock)}</td>
+                <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${mp.stock_minimo ? fmtNum(mp.stock_minimo) : '—'}</td>
+                <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${lotes}</td>
+                <td style="padding:8px 12px;font-size:11px;color:#64748b;">${mp.um || 'Kg'}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    
+    <div style="margin-top:14px;padding:12px;background:#eff6ff;border-radius:8px;font-size:11px;color:#475569;">
+      💡 <strong>Próxima etapa:</strong> Click en cada insumo para ver kardex detallado (entradas/salidas) y lotes activos.
+    </div>
+  `;
+}
+
 
 window.resetPasswordUsuario = async (email) => {
   if (!confirm(`¿Enviar email de recuperación de contraseña a:\n\n${email}\n\nEl usuario recibirá un link para crear nueva contraseña.\n\nIMPORTANTE: dile que revise también la carpeta SPAM/Correo no deseado.`)) return;
@@ -10530,6 +11378,24 @@ function attachAppEvents() {
   if ($('#filtro-mp-tipo')) {
     $('#filtro-mp-tipo').onchange = (e) => { state.filtros.mp_tipo = e.target.value; render(); };
   }
+  if ($('#filtro-requisiciones')) {
+    $('#filtro-requisiciones').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.requisiciones = e.target.value;
+      render();
+      const inp = $('#filtro-requisiciones');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-almacen-mp')) {
+    $('#filtro-almacen-mp').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.almacen_mp = e.target.value;
+      render();
+      const inp = $('#filtro-almacen-mp');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
   if ($('#filtro-usuarios')) {
     $('#filtro-usuarios').oninput = (e) => {
       const pos = e.target.selectionStart;
@@ -10696,7 +11562,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
