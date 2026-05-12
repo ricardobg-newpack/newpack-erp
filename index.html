@@ -106,11 +106,12 @@ tr:hover td { background: #f8fafc; }
 <!-- Firebase desde CDN (no necesitas instalar nada) -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword, signInWithCredential, EmailAuthProvider } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
 import { 
   getFirestore, collection, doc, setDoc, addDoc, updateDoc, getDoc, getDocs, 
   query, where, orderBy, limit, onSnapshot, serverTimestamp, runTransaction, writeBatch, increment
 } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js';
 
 // ============================================================
 // CONFIGURACIÓN — REEMPLAZA CON LA TUYA
@@ -128,9 +129,17 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const auth = getAuth(fbApp);
 const db = getFirestore(fbApp);
+const functions = getFunctions(fbApp);
+
+// 🔧 App secundaria para CREAR usuarios sin desconectar al admin actual
+// Truco clásico: registramos al nuevo usuario usando esta app separada,
+// así la sesión principal del admin no se altera.
+const fbAppSecundaria = initializeApp(firebaseConfig, 'secundaria');
+const authSecundaria = getAuth(fbAppSecundaria);
 
 // Hacer disponible globalmente para acciones de UI
-window.fb = { auth, db, signInWithEmailAndPassword, signOut, doc, setDoc, addDoc, updateDoc, getDoc, getDocs, collection, query, where, orderBy, limit, onSnapshot, runTransaction, writeBatch, increment, serverTimestamp };
+window.fb = { auth, db, functions, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword, authSecundaria, doc, setDoc, addDoc, updateDoc, getDoc, getDocs, collection, query, where, orderBy, limit, onSnapshot, runTransaction, writeBatch, increment, serverTimestamp };
+window.firebaseFunctions = { httpsCallable: (name) => httpsCallable(functions, name) };
 
 // ============================================================
 // ESTADO GLOBAL
@@ -156,6 +165,7 @@ const state = {
   maquinas: [],
   operadores: [],
   supervisores: [],
+  usuarios_sistema: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -461,6 +471,27 @@ async function cargarPerfil(uid) {
     throw new Error('Tu usuario no tiene perfil. Pídele al admin que lo cree.');
   }
   state.user = { id: uid, ...docSnap.data() };
+  
+  // Si está marcado como pendiente_activacion, marcar como activado (ya se autenticó exitosamente)
+  if (state.user.pendiente_activacion === true) {
+    try {
+      await updateDoc(doc(db, 'usuarios', uid), {
+        pendiente_activacion: false,
+        activado_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      state.user.pendiente_activacion = false;
+    } catch (e) {
+      console.warn('No se pudo marcar como activado:', e);
+    }
+  }
+  
+  // Verificar si el usuario está desactivado
+  if (state.user.activo === false) {
+    await signOut(auth);
+    throw new Error('Tu cuenta está desactivada. Contacta al administrador.');
+  }
+  
   return state.user;
 }
 
@@ -531,6 +562,10 @@ async function cargarTodo() {
       }),
       onSnapshot(collection(db, 'supervisores'), (snap) => {
         state.supervisores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'usuarios'), (snap) => {
+        state.usuarios_sistema = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       })
     );
@@ -715,6 +750,9 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'maquinas' ? 'active' : ''}" data-vista="maquinas">🛠️ Máquinas</button>
           <button class="nav-item ${state.vista === 'personal' ? 'active' : ''}" data-vista="personal">👷 Personal</button>
         ` : ''}
+        ${u.rol === 'admin' || esCEO ? `
+          <button class="nav-item ${state.vista === 'usuarios' ? 'active' : ''}" data-vista="usuarios">⚙️ Usuarios del sistema</button>
+        ` : ''}
       </aside>
       
       <main class="main">
@@ -755,7 +793,8 @@ function tituloVista() {
     embarques: '🚚 Embarques (Órdenes de Venta)',
     stock_producto: '📊 Inventario CEDIS-MTY',
     maquinas: '🛠️ Máquinas de Producción',
-    personal: '👷 Operadores y Supervisores'
+    personal: '👷 Operadores y Supervisores',
+    usuarios: '⚙️ Usuarios del Sistema'
   })[state.vista] || '';
 }
 
@@ -776,6 +815,7 @@ function renderVista() {
   if (v === 'stock_producto') return renderStockProducto();
   if (v === 'maquinas') return renderMaquinas();
   if (v === 'personal') return renderPersonal();
+  if (v === 'usuarios') return renderUsuariosSistema();
   return '';
 }
 
@@ -2417,6 +2457,8 @@ function renderModal() {
   if (m === 'crear-personal') return modalPersonal(false);
   if (m === 'editar-personal') return modalPersonal(true);
   if (m === 'capturar-turno') return modalCapturarTurno();
+  if (m === 'crear-usuario') return modalUsuario(false);
+  if (m === 'editar-usuario') return modalUsuario(true);
   return '';
 }
 
@@ -4622,6 +4664,421 @@ window.confirmarPersonal = async (tipo, id) => {
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// USUARIOS DEL SISTEMA: gestión completa desde la app
+// ============================================================
+const DEPARTAMENTOS = [
+  { codigo: 'CEO',     nombre: 'Dirección General',         color: '#7c3aed' },
+  { codigo: 'ADMIN',   nombre: 'Administración',            color: '#1e293b' },
+  { codigo: 'CS',      nombre: 'Customer Service',          color: '#3b82f6' },
+  { codigo: 'KAM',     nombre: 'Key Account Manager',       color: '#0891b2' },
+  { codigo: 'COMP',    nombre: 'Compras',                   color: '#7c2d12' },
+  { codigo: 'PLN',     nombre: 'Planeación',                color: '#f59e0b' },
+  { codigo: 'PRO',     nombre: 'Producción',                color: '#dc2626' },
+  { codigo: 'CAL',     nombre: 'Calidad',                   color: '#16a34a' },
+  { codigo: 'MTTO',    nombre: 'Mantenimiento',             color: '#64748b' },
+  { codigo: 'ALP',     nombre: 'Almacén Planta',            color: '#0d9488' },
+  { codigo: 'CEDMTY',  nombre: 'CEDIS Monterrey',           color: '#9333ea' },
+  { codigo: 'CEDMEX',  nombre: 'CEDIS México',              color: '#c026d3' },
+  { codigo: 'CPH',     nombre: 'Coordinador Planta/Hub',    color: '#0284c7' },
+  { codigo: 'FAC',     nombre: 'Facturación',               color: '#65a30d' },
+  { codigo: 'CYC',     nombre: 'Cobranza y Crédito',        color: '#a16207' }
+];
+window.DEPARTAMENTOS = DEPARTAMENTOS;
+
+const UBICACIONES = [
+  { codigo: 'PLANTA-MTY', nombre: 'Planta Monterrey',    icono: '🏭' },
+  { codigo: 'CEDIS-MTY',  nombre: 'CEDIS Monterrey',     icono: '📦' },
+  { codigo: 'CEDIS-MEX',  nombre: 'CEDIS México',        icono: '📦' }
+];
+window.UBICACIONES = UBICACIONES;
+
+function renderUsuariosSistema() {
+  const u = state.user || {};
+  const esAdmin = u.rol === 'admin' || u.depto === 'CEO' || u.depto === 'ADMIN';
+  if (!esAdmin) {
+    return `<div style="padding:60px;text-align:center;color:#94a3b8;">⛔ Solo admins/CEO pueden gestionar usuarios del sistema</div>`;
+  }
+  
+  const filtro = (state.filtros.usuarios || '').toLowerCase();
+  const filtroDepto = state.filtros.usuarios_depto || '';
+  
+  let arr = state.usuarios_sistema || [];
+  if (filtro) arr = arr.filter(usr => 
+    ((usr.nombre || '') + ' ' + (usr.email || '') + ' ' + (usr.depto || '') + ' ' + (usr.telefono || ''))
+    .toLowerCase().includes(filtro)
+  );
+  if (filtroDepto) arr = arr.filter(usr => usr.depto === filtroDepto);
+  
+  // Agrupar por departamento
+  const porDepto = {};
+  arr.forEach(usr => {
+    const d = usr.depto || 'sin_depto';
+    if (!porDepto[d]) porDepto[d] = [];
+    porDepto[d].push(usr);
+  });
+  
+  const totalActivos = (state.usuarios_sistema || []).filter(usr => usr.activo !== false).length;
+  const totalInactivos = (state.usuarios_sistema || []).filter(usr => usr.activo === false).length;
+  
+  return `
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">TOTAL USUARIOS</div>
+        <div style="font-size:24px;font-weight:800;color:#1e293b;">${(state.usuarios_sistema || []).length}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">ACTIVOS</div>
+        <div style="font-size:24px;font-weight:800;color:#16a34a;">${totalActivos}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #f59e0b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">INACTIVOS</div>
+        <div style="font-size:24px;font-weight:800;color:#f59e0b;">${totalInactivos}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">DEPARTAMENTOS</div>
+        <div style="font-size:24px;font-weight:800;color:#7c3aed;">${new Set((state.usuarios_sistema || []).map(usr => usr.depto)).size}</div>
+      </div>
+    </div>
+    
+    <!-- INFO IMPORTANTE -->
+    <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
+      <div style="font-weight:800;color:#1e40af;font-size:13px;margin-bottom:6px;">📧 Sistema de invitación por correo</div>
+      <div style="font-size:12px;color:#475569;line-height:1.5;">
+        Al crear un nuevo usuario, el sistema le enviará automáticamente un <strong>correo de invitación</strong> con un link para crear su contraseña personal. 
+        Hasta que active su cuenta, aparecerá marcado como <strong>"⏳ Pendiente activación"</strong>.
+      </div>
+    </div>
+    
+    <!-- TOOLBAR -->
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-usuarios" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar nombre, correo, teléfono..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-usuarios-depto" style="max-width:240px;">
+        <option value="">Todos los departamentos</option>
+        ${DEPARTAMENTOS.map(d => `<option value="${d.codigo}" ${filtroDepto === d.codigo ? 'selected' : ''}>${d.codigo} — ${d.nombre}</option>`).join('')}
+      </select>
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} usuario(s)</span>
+      <button class="btn-primary" onclick="abrirModal('crear-usuario')" style="margin-left:auto;">${ICONS.plus} Nuevo usuario</button>
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">⚙️</div>
+        <div style="font-weight:700;color:#475569;">${(state.usuarios_sistema || []).length === 0 ? 'Sin usuarios cargados todavía' : 'No hay usuarios que coincidan'}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:8px;">Click "Nuevo usuario" para empezar</div>
+      </div>
+    ` : DEPARTAMENTOS.filter(d => porDepto[d.codigo]?.length > 0).concat([{codigo:'sin_depto',nombre:'Sin departamento',color:'#94a3b8'}].filter(d => porDepto[d.codigo]?.length > 0)).map(d => `
+      <div style="margin-bottom:18px;">
+        <div style="padding:8px 14px;background:${d.color}15;border-left:4px solid ${d.color};border-radius:6px 6px 0 0;font-weight:800;color:${d.color};display:flex;justify-content:space-between;align-items:center;">
+          <span>${d.codigo} — ${d.nombre}</span>
+          <span style="font-weight:400;color:#64748b;font-size:12px;">${porDepto[d.codigo].length} usuario${porDepto[d.codigo].length>1?'s':''}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:10px;padding:12px;background:#fff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;">
+          ${porDepto[d.codigo].map(usr => renderTarjetaUsuario(usr)).join('')}
+        </div>
+      </div>
+    `).join('')}
+  `;
+}
+
+function renderTarjetaUsuario(usr) {
+  const inactivo = usr.activo === false;
+  const pendienteActivacion = usr.pendiente_activacion === true;
+  const ubic = UBICACIONES.find(u => u.codigo === usr.ubicacion);
+  const esYo = usr.id === state.user?.id;
+  
+  return `
+    <div style="background:#fff;border:1px solid ${inactivo?'#cbd5e1':esYo?'#3b82f6':pendienteActivacion?'#f59e0b':'#e2e8f0'};border-radius:10px;padding:12px;${inactivo?'opacity:0.6;':''}${esYo?'box-shadow:0 0 0 2px #3b82f622;':''}${pendienteActivacion?'background:#fffbeb;':''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <div style="font-weight:800;font-size:14px;color:#1e293b;">${usr.nombre || '—'}</div>
+            ${esYo ? '<span style="background:#3b82f6;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">TÚ</span>' : ''}
+            ${usr.rol === 'admin' ? '<span style="background:#7c3aed;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">ADMIN</span>' : ''}
+            ${pendienteActivacion ? '<span style="background:#f59e0b;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">⏳ PENDIENTE</span>' : ''}
+          </div>
+          <div style="font-size:11px;color:#475569;margin-top:3px;">📧 ${usr.email || ''}</div>
+          ${usr.telefono ? `<div style="font-size:11px;color:#475569;margin-top:2px;">📞 ${usr.telefono}</div>` : ''}
+          ${ubic ? `<div style="font-size:11px;color:#64748b;margin-top:3px;">${ubic.icono} ${ubic.nombre}</div>` : ''}
+          ${pendienteActivacion ? '<div style="font-size:10px;color:#92400e;margin-top:4px;font-weight:600;">Esperando que el usuario active su cuenta vía email</div>' : ''}
+        </div>
+        ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;">
+        <button onclick="abrirModal('editar-usuario','${usr.id}')" style="flex:1;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
+        <button onclick="resetPasswordUsuario('${usr.email}')" style="flex:1;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="${pendienteActivacion ? 'Reenviar email de activación' : 'Enviar email para resetear contraseña'}">🔑 ${pendienteActivacion ? 'Reenviar' : 'Reset'}</button>
+        ${!esYo ? `
+          <button onclick="toggleUsuarioActivo('${usr.id}')" style="flex:1;padding:5px 8px;background:${inactivo?'#16a34a':'#dc2626'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓ Activar':'⏸ Desactivar'}</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: Crear/Editar usuario
+// ============================================================
+function modalUsuario(esEdicion) {
+  const id = state.modalData;
+  const usr = esEdicion ? (state.usuarios_sistema || []).find(u => u.id === id) : null;
+  if (esEdicion && !usr) return '';
+  
+  if (!state.modalForm) {
+    state.modalForm = usr ? {
+      nombre: usr.nombre || '',
+      email: usr.email || '',
+      telefono: usr.telefono || '',
+      depto: usr.depto || '',
+      ubicacion: usr.ubicacion || '',
+      rol: usr.rol || 'usuario'
+    } : {
+      nombre: '',
+      email: '',
+      password: '',
+      telefono: '',
+      depto: '',
+      ubicacion: '',
+      rol: 'usuario'
+    };
+  }
+  const f = state.modalForm;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar usuario' : '➕ Nuevo usuario'}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Nombre completo *</label>
+              <input class="input" id="usr-nombre" value="${f.nombre || ''}" placeholder="Juan Pérez García" />
+            </div>
+            <div class="field">
+              <label class="field-label">Teléfono</label>
+              <input class="input" id="usr-tel" value="${f.telefono || ''}" placeholder="+52 81 1234 5678" />
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Correo electrónico * <span style="font-weight:400;color:#94a3b8;">(será su usuario para iniciar sesión)</span></label>
+            <input class="input" id="usr-email" type="email" value="${f.email || ''}" placeholder="usuario@newpackempaques.com" ${esEdicion ? 'disabled style="background:#f1f5f9;cursor:not-allowed;"' : ''} />
+            ${esEdicion ? '<div style="font-size:10px;color:#94a3b8;margin-top:4px;">El correo no se puede modificar (es la identidad del usuario)</div>' : ''}
+          </div>
+          
+          ${!esEdicion ? `
+            <div style="padding:12px;background:#eff6ff;border:1px solid #3b82f6;border-radius:8px;margin-bottom:12px;">
+              <div style="font-weight:800;color:#1e40af;font-size:12px;margin-bottom:4px;">📧 Cómo funciona la creación</div>
+              <div style="font-size:11px;color:#475569;line-height:1.5;">
+                1. La cuenta se crea con una contraseña temporal aleatoria<br>
+                2. Se envía un correo a <strong>${f.email || 'tu_email'}</strong> con instrucciones<br>
+                3. El usuario hace click y crea <strong>su propia contraseña</strong><br>
+                4. Ya puede iniciar sesión en NewPack ERP
+              </div>
+            </div>
+          ` : ''}
+          
+          <div class="field">
+            <label class="field-label">Departamento *</label>
+            <select class="input" id="usr-depto" onchange="window.modalFormSet('depto', this.value)">
+              <option value="">— Selecciona —</option>
+              ${DEPARTAMENTOS.map(d => `<option value="${d.codigo}" ${f.depto === d.codigo ? 'selected' : ''}>${d.codigo} — ${d.nombre}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Ubicación física *</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${UBICACIONES.map(u => `
+                <button onclick="window.modalFormSet('ubicacion','${u.codigo}')" style="flex:1;min-width:140px;padding:14px;border:2px solid ${f.ubicacion === u.codigo ? '#3b82f6' : '#cbd5e1'};background:${f.ubicacion === u.codigo ? '#3b82f6' : '#fff'};color:${f.ubicacion === u.codigo ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  ${u.icono} ${u.nombre}<br><span style="font-size:10px;font-weight:400;">${u.codigo}</span>
+                </button>
+              `).join('')}
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Rol del sistema *</label>
+            <div style="display:flex;gap:8px;">
+              <button onclick="window.modalFormSet('rol','usuario')" style="flex:1;padding:14px;border:2px solid ${f.rol === 'usuario' ? '#16a34a' : '#cbd5e1'};background:${f.rol === 'usuario' ? '#16a34a' : '#fff'};color:${f.rol === 'usuario' ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:13px;cursor:pointer;">
+                👤 USUARIO<br><span style="font-size:10px;font-weight:400;">Acceso según depto</span>
+              </button>
+              <button onclick="window.modalFormSet('rol','admin')" style="flex:1;padding:14px;border:2px solid ${f.rol === 'admin' ? '#7c3aed' : '#cbd5e1'};background:${f.rol === 'admin' ? '#7c3aed' : '#fff'};color:${f.rol === 'admin' ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:13px;cursor:pointer;">
+                👑 ADMIN<br><span style="font-size:10px;font-weight:400;">Acceso completo</span>
+              </button>
+            </div>
+          </div>
+          
+        </div>
+        <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="${esEdicion ? `actualizarUsuario('${id}')` : 'crearUsuarioNuevo()'}" style="background:#16a34a;">
+            ${ICONS.check} ${esEdicion ? 'Guardar cambios' : 'Crear usuario'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.crearUsuarioNuevo = async () => {
+  const nombre = ($('#usr-nombre')?.value || '').trim();
+  const email = ($('#usr-email')?.value || '').trim().toLowerCase();
+  const telefono = ($('#usr-tel')?.value || '').trim();
+  const depto = state.modalForm?.depto || '';
+  const ubicacion = state.modalForm?.ubicacion || '';
+  const rol = state.modalForm?.rol || 'usuario';
+  
+  // Validaciones
+  if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
+  if (!email || !email.includes('@')) { toast('Correo válido obligatorio', 'error'); return; }
+  if (!depto) { toast('Selecciona departamento', 'error'); return; }
+  if (!ubicacion) { toast('Selecciona ubicación', 'error'); return; }
+  
+  // Confirmar acción
+  const confirma = confirm(
+    `¿Crear cuenta para ${nombre}?\n\n` +
+    `📧 Email: ${email}\n` +
+    `📍 ${depto} · ${ubicacion}\n` +
+    `🔑 Rol: ${rol === 'admin' ? '👑 ADMIN' : '👤 Usuario'}\n\n` +
+    `Se le enviará un correo a ${email} con instrucciones para crear su contraseña e iniciar sesión.`
+  );
+  if (!confirma) return;
+  
+  state.loadingAccion = true; render();
+  
+  try {
+    // Generar contraseña temporal aleatoria (el usuario nunca la usará, recibirá email para crear la propia)
+    const passwordTemporal = 'Temp' + Math.random().toString(36).slice(2, 10) + '!' + Math.floor(Math.random() * 1000);
+    
+    // 1. Crear cuenta en Firebase Auth usando la app SECUNDARIA
+    // (esto NO desconecta al admin actual)
+    const { authSecundaria, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut } = window.fb;
+    
+    let userCredential;
+    try {
+      userCredential = await createUserWithEmailAndPassword(authSecundaria, email, passwordTemporal);
+    } catch (authError) {
+      console.error('Error Auth:', authError);
+      if (authError.code === 'auth/email-already-in-use') {
+        toast('❌ Este correo ya tiene una cuenta registrada', 'error');
+      } else if (authError.code === 'auth/invalid-email') {
+        toast('❌ Correo inválido', 'error');
+      } else {
+        toast('Error creando cuenta: ' + authError.message, 'error');
+      }
+      state.loadingAccion = false; render();
+      return;
+    }
+    
+    const nuevoUid = userCredential.user.uid;
+    
+    // 2. Crear perfil en Firestore con el MISMO UID que Auth
+    try {
+      await setDoc(doc(db, 'usuarios', nuevoUid), {
+        email: email,
+        nombre: nombre,
+        telefono: telefono,
+        depto: depto,
+        ubicacion: ubicacion,
+        rol: rol,
+        activo: true,
+        pendiente_activacion: true, // hasta que cree su propia contraseña
+        creado_por: state.user.id,
+        creado_por_nombre: state.user.nombre || state.user.email,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    } catch (fsError) {
+      console.error('Error Firestore:', fsError);
+      toast('Error guardando perfil: ' + fsError.message, 'error');
+      state.loadingAccion = false; render();
+      return;
+    }
+    
+    // 3. Cerrar sesión de la app secundaria (importante para limpiar)
+    try {
+      await signOut(authSecundaria);
+    } catch (e) { console.warn('signOut secundaria:', e); }
+    
+    // 4. Enviar email de "reset password" — el usuario lo usará para crear su contraseña
+    try {
+      await sendPasswordResetEmail(auth, email);
+    } catch (resetError) {
+      console.warn('Error enviar email:', resetError);
+      // No bloquea: el admin puede reenviar después con el botón 🔑 Reset
+    }
+    
+    toast(`✅ Usuario ${nombre} creado · Email enviado a ${email}`, 'success');
+    cerrarModal();
+    
+  } catch (e) {
+    console.error('Error crear usuario:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.actualizarUsuario = async (id) => {
+  const nombre = ($('#usr-nombre')?.value || '').trim();
+  const telefono = ($('#usr-tel')?.value || '').trim();
+  const depto = state.modalForm?.depto || '';
+  const ubicacion = state.modalForm?.ubicacion || '';
+  const rol = state.modalForm?.rol || 'usuario';
+  
+  if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
+  if (!depto) { toast('Selecciona departamento', 'error'); return; }
+  if (!ubicacion) { toast('Selecciona ubicación', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'usuarios', id), {
+      nombre, telefono, depto, ubicacion, rol,
+      updated_at: serverTimestamp()
+    });
+    toast(`✅ Usuario actualizado`);
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.toggleUsuarioActivo = async (id) => {
+  const usr = (state.usuarios_sistema || []).find(u => u.id === id);
+  if (!usr) return;
+  if (usr.id === state.user?.id) { toast('No puedes desactivar tu propia cuenta', 'error'); return; }
+  
+  if (!confirm(`¿${usr.activo === false ? 'Activar' : 'Desactivar'} a ${usr.nombre}?${usr.activo !== false ? '\n\n⚠️ El usuario ya no podrá iniciar sesión.' : ''}`)) return;
+  
+  try {
+    await updateDoc(doc(db, 'usuarios', id), {
+      activo: usr.activo === false,
+      updated_at: serverTimestamp()
+    });
+    toast(`${usr.nombre} ${usr.activo === false ? 'activado' : 'desactivado'}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.resetPasswordUsuario = async (email) => {
+  if (!confirm(`¿Enviar email de recuperación de contraseña a:\n\n${email}\n\nEl usuario recibirá un link para crear nueva contraseña.`)) return;
+  
+  try {
+    await sendPasswordResetEmail(auth, email);
+    toast(`✉️ Email de recuperación enviado a ${email}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
   }
 };
 
@@ -9257,6 +9714,18 @@ function attachAppEvents() {
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
+  if ($('#filtro-usuarios')) {
+    $('#filtro-usuarios').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.usuarios = e.target.value;
+      render();
+      const inp = $('#filtro-usuarios');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-usuarios-depto')) {
+    $('#filtro-usuarios-depto').onchange = (e) => { state.filtros.usuarios_depto = e.target.value; render(); };
+  }
   $$('.prod-um-select').forEach(sel => {
     sel.onchange = async (e) => {
       const codigo = sel.dataset.codigo;
@@ -9411,7 +9880,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
