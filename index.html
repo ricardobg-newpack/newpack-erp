@@ -6329,25 +6329,42 @@ window.guardarRC = async (enviarAprobacion, idEdicion) => {
       
       const folio = `RC-${año}-${String(contador).padStart(4, '0')}`;
       
-      // Obtener email del usuario actual (con múltiples fallbacks)
-      const emailUsuario = state.user.email || auth.currentUser?.email || '';
-      const nombreUsuario = state.user.nombre || state.user.email || auth.currentUser?.email || 'Usuario';
-      
-      await addDoc(collection(db, 'requisiciones_compras'), {
-        folio,
+      // Construir objeto y LIMPIAR cualquier undefined (Firebase no acepta undefined)
+      const dataRC = {
+        folio: folio,
         fecha_solicitud: new Date().toISOString().split('T')[0],
-        solicitante_id: state.user.id,
-        solicitante_nombre: nombreUsuario,
-        solicitante_email: emailUsuario,
+        solicitante_id: state.user.id || auth.currentUser?.uid || 'unknown',
+        solicitante_nombre: state.user.nombre || state.user.email || auth.currentUser?.email || 'Usuario',
+        solicitante_email: state.user.email || auth.currentUser?.email || '',
         depto: state.user.depto || '',
-        prioridad: f.prioridad,
-        fecha_requerida: f.fecha_requerida,
+        prioridad: f.prioridad || 'normal',
+        fecha_requerida: f.fecha_requerida || '',
         observaciones: f.observaciones || '',
-        lineas: f.lineas,
+        lineas: f.lineas || [],
         estatus: enviarAprobacion ? 'pendiente' : 'borrador',
         created_at: serverTimestamp(),
         updated_at: serverTimestamp()
+      };
+      
+      // Limpieza profunda: convertir cualquier undefined a null o string vacío
+      Object.keys(dataRC).forEach(key => {
+        if (dataRC[key] === undefined) {
+          console.warn(`Campo ${key} era undefined, se convirtió a ''`);
+          dataRC[key] = '';
+        }
       });
+      
+      // Limpiar también las líneas
+      dataRC.lineas = dataRC.lineas.map(l => ({
+        mp_codigo: l.mp_codigo || '',
+        descripcion: l.descripcion || '',
+        cantidad: Number(l.cantidad) || 0,
+        um: l.um || 'Kg',
+        cantidad_recibida: Number(l.cantidad_recibida) || 0
+      }));
+      
+      console.log('Guardando RC:', dataRC);
+      await addDoc(collection(db, 'requisiciones_compras'), dataRC);
       
       // Si se envía a aprobación, notificar a COMP/CEO
       if (enviarAprobacion) {
@@ -6355,11 +6372,13 @@ window.guardarRC = async (enviarAprobacion, idEdicion) => {
         ['COMP','CEO'].forEach(depto => {
           batchNotif.set(doc(collection(db, 'notificaciones')), {
             titulo: `📋 Nueva RC ${folio} pendiente de aprobación`,
-            mensaje: `${state.user.nombre} (${state.user.depto}) solicita ${f.lineas.length} insumo(s) · ${f.prioridad.toUpperCase()}`,
-            depto_destino: depto, tipo: f.prioridad === 'emergencia' ? 'error' : 'warning',
+            mensaje: `${dataRC.solicitante_nombre} (${dataRC.depto || 'sin depto'}) solicita ${f.lineas.length} insumo(s) · ${(f.prioridad || 'normal').toUpperCase()}`,
+            depto_destino: depto, 
+            tipo: f.prioridad === 'emergencia' ? 'error' : 'warning',
             folio_ref: folio,
             vista_destino: 'requisiciones',
-            leida: false, created_at: serverTimestamp()
+            leida: false, 
+            created_at: serverTimestamp()
           });
         });
         await batchNotif.commit();
@@ -13532,4 +13551,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
