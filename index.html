@@ -2459,6 +2459,8 @@ function renderModal() {
   if (m === 'capturar-turno') return modalCapturarTurno();
   if (m === 'crear-usuario') return modalUsuario(false);
   if (m === 'editar-usuario') return modalUsuario(true);
+  if (m === 'compartir-credenciales') return modalCompartirCredenciales();
+  if (m === 'cambiar-password-usuario') return modalCambiarPasswordUsuario();
   return '';
 }
 
@@ -4810,7 +4812,7 @@ function renderTarjetaUsuario(usr) {
       </div>
       <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;">
         <button onclick="abrirModal('editar-usuario','${usr.id}')" style="flex:1;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
-        <button onclick="resetPasswordUsuario('${usr.email}')" style="flex:1;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="${pendienteActivacion ? 'Reenviar email de activación' : 'Enviar email para resetear contraseña'}">🔑 ${pendienteActivacion ? 'Reenviar' : 'Reset'}</button>
+        <button onclick="abrirCambiarPasswordUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="Asignar nueva contraseña al usuario">🔑 Nueva contraseña</button>
         ${!esYo ? `
           <button onclick="toggleUsuarioActivo('${usr.id}')" style="flex:1;padding:5px 8px;background:${inactivo?'#16a34a':'#dc2626'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓ Activar':'⏸ Desactivar'}</button>
         ` : ''}
@@ -4874,13 +4876,14 @@ function modalUsuario(esEdicion) {
           </div>
           
           ${!esEdicion ? `
-            <div style="padding:12px;background:#eff6ff;border:1px solid #3b82f6;border-radius:8px;margin-bottom:12px;">
-              <div style="font-weight:800;color:#1e40af;font-size:12px;margin-bottom:4px;">📧 Cómo funciona la creación</div>
-              <div style="font-size:11px;color:#475569;line-height:1.5;">
-                1. La cuenta se crea con una contraseña temporal aleatoria<br>
-                2. Se envía un correo a <strong>${f.email || 'tu_email'}</strong> con instrucciones<br>
-                3. El usuario hace click y crea <strong>su propia contraseña</strong><br>
-                4. Ya puede iniciar sesión en NewPack ERP
+            <div class="field">
+              <label class="field-label">Contraseña inicial * <span style="font-weight:400;color:#94a3b8;">(mín 6 caracteres)</span></label>
+              <div style="display:flex;gap:8px;align-items:stretch;">
+                <input class="input" id="usr-password" type="text" value="${f.password || ''}" placeholder="Ej: NewPack2026" oninput="window.modalFormSetSilent('password', this.value)" style="flex:1;font-family:monospace;font-weight:700;" />
+                <button onclick="window.generarPasswordAleatorio()" type="button" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🎲 Generar</button>
+              </div>
+              <div style="font-size:10px;color:#64748b;margin-top:6px;line-height:1.4;">
+                💡 Esta es la contraseña inicial que compartirás con el usuario por WhatsApp/personal. Él puede cambiarla después desde su perfil.
               </div>
             </div>
           ` : ''}
@@ -4928,9 +4931,330 @@ function modalUsuario(esEdicion) {
   `;
 }
 
+function modalCompartirCredenciales() {
+  const cred = state.credencialesCompartir;
+  if (!cred) return '';
+  
+  const urlApp = window.location.origin + window.location.pathname;
+  
+  const mensajeTexto = `¡Hola ${cred.nombre}! 👋
+
+Tu cuenta en NewPack ERP ya está lista.
+
+🔐 *Tus credenciales de acceso:*
+📧 Usuario: ${cred.email}
+🔑 Contraseña: ${cred.password}
+
+📍 Departamento: ${cred.depto} · ${cred.ubicacion}
+
+🌐 Ingresa aquí:
+${urlApp}
+
+⚠️ Te recomendamos cambiar tu contraseña en tu primer ingreso.
+
+¡Bienvenido(a) a NewPack! 🚀`;
+
+  const mensajeWhatsApp = encodeURIComponent(mensajeTexto);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarCompartir()">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header" style="background:#dcfce7;border-bottom:2px solid #16a34a;">
+          <h2 style="font-size:18px;font-weight:800;color:#166534;">✅ Usuario creado correctamente</h2>
+          <button class="icon-btn" onclick="cerrarCompartir()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="padding:14px;background:#f0fdf4;border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#166534;font-size:14px;margin-bottom:8px;">👤 ${cred.nombre}</div>
+            <div style="font-size:12px;color:#475569;">📍 ${cred.depto} · ${cred.ubicacion}</div>
+          </div>
+          
+          <!-- CREDENCIALES DESTACADAS -->
+          <div style="padding:16px;background:#fffbeb;border:2px solid #f59e0b;border-radius:12px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#92400e;font-size:13px;margin-bottom:10px;">🔐 Credenciales de acceso</div>
+            
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;margin-bottom:8px;border:1px solid #fcd34d;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:0.05em;">📧 USUARIO</div>
+              <div class="text-mono" style="font-size:14px;font-weight:800;color:#1e293b;word-break:break-all;">${cred.email}</div>
+            </div>
+            
+            <div style="background:#fff;padding:10px 14px;border-radius:8px;border:1px solid #fcd34d;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:0.05em;">🔑 CONTRASEÑA</div>
+              <div class="text-mono" style="font-size:18px;font-weight:800;color:#1e293b;letter-spacing:0.05em;">${cred.password}</div>
+            </div>
+          </div>
+          
+          <!-- INSTRUCCIONES -->
+          <div style="padding:12px;background:#eff6ff;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af;">
+            <strong>📌 Comparte estas credenciales con el usuario por WhatsApp o personal.</strong><br>
+            <span style="color:#475569;font-size:11px;">Recomienda que cambie su contraseña al iniciar sesión por seguridad.</span>
+          </div>
+          
+          <!-- BOTONES DE COMPARTIR -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <button onclick="copiarCredenciales(${JSON.stringify(JSON.stringify(mensajeTexto))})" style="padding:12px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">
+              📋 Copiar todo
+            </button>
+            <a href="https://wa.me/?text=${mensajeWhatsApp}" target="_blank" style="padding:12px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;text-align:center;text-decoration:none;display:block;">
+              💬 Enviar por WhatsApp
+            </a>
+          </div>
+          
+          <button onclick="copiarSoloContrasena('${cred.password}')" style="margin-top:8px;width:100%;padding:10px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+            🔑 Copiar solo contraseña
+          </button>
+          
+          ${cred.telefono ? `
+            <a href="https://wa.me/${(cred.telefono || '').replace(/[^0-9]/g,'')}?text=${mensajeWhatsApp}" target="_blank" style="margin-top:8px;display:block;text-align:center;padding:10px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;text-decoration:none;">
+              💬 Enviar a ${cred.telefono} (si tiene WhatsApp)
+            </a>
+          ` : ''}
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarCompartir()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.cerrarCompartir = () => {
+  state.modalActivo = null;
+  state.credencialesCompartir = null;
+  render();
+};
+
+function modalCambiarPasswordUsuario() {
+  const data = state.cambiarPasswordData;
+  if (!data) return '';
+  const f = state.modalForm || {};
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarCambiarPassword()">
+      <div class="modal" style="max-width:540px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">🔑 Asignar nueva contraseña</h2>
+          <button class="icon-btn" onclick="cerrarCambiarPassword()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div style="padding:14px;background:#f0fdf4;border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#166534;font-size:14px;">👤 ${data.nombre}</div>
+            <div style="font-size:12px;color:#475569;margin-top:2px;">📧 ${data.email}</div>
+          </div>
+          
+          <div style="padding:14px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#92400e;font-size:12px;margin-bottom:6px;">⚠ Información importante</div>
+            <div style="font-size:11px;color:#475569;line-height:1.5;">
+              Firebase no permite que un admin cambie la contraseña de otro usuario directamente desde la app (por seguridad).
+              <br><br>
+              <strong>Opciones disponibles:</strong><br>
+              1. <strong>Enviar email de recuperación</strong> (puede llegar a SPAM)<br>
+              2. <strong>Eliminar y recrear</strong> al usuario con nueva contraseña (recomendado si email no llega)
+            </div>
+          </div>
+          
+          <!-- OPCIÓN 1: Email -->
+          <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:10px;">
+            <div style="font-weight:800;color:#1e40af;font-size:13px;margin-bottom:6px;">📧 Opción 1: Email de recuperación</div>
+            <div style="font-size:11px;color:#475569;margin-bottom:10px;">Envía un correo a ${data.email} con link para que él mismo cree su contraseña.</div>
+            <button onclick="enviarResetEmailUsuario('${data.email}')" style="width:100%;padding:10px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+              ✉️ Enviar email de recuperación
+            </button>
+          </div>
+          
+          <!-- OPCIÓN 2: Recrear -->
+          <div style="padding:14px;background:#fef2f2;border:1px solid #dc2626;border-radius:10px;">
+            <div style="font-weight:800;color:#991b1b;font-size:13px;margin-bottom:6px;">🔄 Opción 2: Recrear cuenta con nueva contraseña</div>
+            <div style="font-size:11px;color:#475569;margin-bottom:10px;">
+              Elimina la cuenta actual y crea una nueva con la contraseña que asignes. <strong>El historial del usuario se conserva.</strong>
+            </div>
+            <div class="field">
+              <label class="field-label">Nueva contraseña *</label>
+              <div style="display:flex;gap:8px;">
+                <input class="input" id="cp-password" type="text" value="${f.nueva_password || ''}" placeholder="Ej: NewPack2026" oninput="window.modalFormSetSilent('nueva_password', this.value)" style="flex:1;font-family:monospace;font-weight:700;" />
+                <button onclick="window.generarPasswordParaCambio()" type="button" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🎲 Generar</button>
+              </div>
+            </div>
+            <button onclick="recrearCuentaConPassword('${data.usrId}','${data.email}','${(data.nombre||'').replace(/'/g,"\\'")}')" style="margin-top:8px;width:100%;padding:10px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+              🔄 Recrear cuenta con nueva contraseña
+            </button>
+          </div>
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarCambiarPassword()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.generarPasswordParaCambio = () => {
+  const palabras = ['Empaque', 'NewPack', 'Cliente', 'Planta', 'Cedis', 'Bolsa', 'Producto', 'Calidad'];
+  const palabra = palabras[Math.floor(Math.random() * palabras.length)];
+  const num = Math.floor(Math.random() * 9000) + 1000;
+  const password = palabra + num + '!';
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.nueva_password = password;
+  const inp = $('#cp-password');
+  if (inp) inp.value = password;
+  toast(`🎲 Contraseña generada: ${password}`, 'info');
+};
+
+window.enviarResetEmailUsuario = async (email) => {
+  try {
+    await sendPasswordResetEmail(auth, email);
+    alert(
+      `✉️ EMAIL ENVIADO A ${email}\n\n` +
+      `Pídele al usuario que:\n` +
+      `1. Revise bandeja de entrada\n` +
+      `2. ⚠️ TAMBIÉN revise SPAM / Correo no deseado\n` +
+      `3. Espere hasta 10 minutos\n\n` +
+      `Si NO llega, usa la Opción 2: Recrear cuenta con nueva contraseña.`
+    );
+    cerrarCambiarPassword();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+window.recrearCuentaConPassword = async (usrId, email, nombre) => {
+  const password = (state.modalForm?.nueva_password || '').trim();
+  if (!password || password.length < 6) {
+    toast('Contraseña obligatoria (mínimo 6 caracteres)', 'error');
+    return;
+  }
+  
+  if (!confirm(
+    `⚠ RECREAR CUENTA\n\n` +
+    `Esto eliminará la cuenta Auth de ${email} y creará una nueva con la contraseña:\n\n` +
+    `${password}\n\n` +
+    `El perfil en Firestore se conserva (datos, historial, permisos).\n\n` +
+    `¿Continuar?`
+  )) return;
+  
+  state.loadingAccion = true; render();
+  
+  try {
+    // Obtener perfil actual del usuario
+    const usrDoc = await getDoc(doc(db, 'usuarios', usrId));
+    if (!usrDoc.exists()) {
+      toast('Usuario no encontrado', 'error');
+      return;
+    }
+    const perfilActual = usrDoc.data();
+    
+    // 1. Eliminar perfil viejo de Firestore
+    await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js').then(async (mod) => {
+      await mod.deleteDoc(doc(db, 'usuarios', usrId));
+    });
+    
+    // 2. Crear nueva cuenta Auth con la contraseña
+    const { authSecundaria, createUserWithEmailAndPassword, signOut } = window.fb;
+    
+    let userCredential;
+    try {
+      userCredential = await createUserWithEmailAndPassword(authSecundaria, email, password);
+    } catch (authError) {
+      // Si email ya existe (siempre será este caso), necesitamos otro enfoque
+      if (authError.code === 'auth/email-already-in-use') {
+        // Restaurar perfil
+        await setDoc(doc(db, 'usuarios', usrId), perfilActual);
+        toast('❌ No se puede recrear: el email ya tiene cuenta en Auth. Usa "Eliminar usuario" desde Firebase Console primero.', 'error');
+        state.loadingAccion = false; render();
+        return;
+      }
+      throw authError;
+    }
+    
+    const nuevoUid = userCredential.user.uid;
+    
+    // 3. Crear nuevo perfil con el UID nuevo (datos del antiguo)
+    await setDoc(doc(db, 'usuarios', nuevoUid), {
+      ...perfilActual,
+      pendiente_activacion: false,
+      recreado_at: serverTimestamp(),
+      recreado_por: state.user.id,
+      recreado_por_nombre: state.user.nombre,
+      updated_at: serverTimestamp()
+    });
+    
+    // 4. Cerrar sesión secundaria
+    try { await signOut(authSecundaria); } catch (e) {}
+    
+    cerrarCambiarPassword();
+    
+    // 5. Abrir modal con credenciales para compartir
+    state.credencialesCompartir = {
+      nombre: perfilActual.nombre,
+      email: email,
+      password: password,
+      depto: perfilActual.depto,
+      ubicacion: perfilActual.ubicacion,
+      telefono: perfilActual.telefono
+    };
+    state.modalActivo = 'compartir-credenciales';
+    render();
+    
+  } catch (e) {
+    console.error('Error recrear:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.abrirCambiarPasswordUsuario = (usrId, email, nombre) => {
+  state.cambiarPasswordData = { usrId, email, nombre };
+  state.modalActivo = 'cambiar-password-usuario';
+  state.modalForm = { nueva_password: '' };
+  render();
+};
+
+window.cerrarCambiarPassword = () => {
+  state.modalActivo = null;
+  state.cambiarPasswordData = null;
+  state.modalForm = null;
+  render();
+};
+
+window.copiarCredenciales = (mensajeJson) => {
+  const mensaje = JSON.parse(mensajeJson);
+  navigator.clipboard.writeText(mensaje).then(() => {
+    toast('📋 Mensaje completo copiado al portapapeles');
+  }).catch(() => {
+    // Fallback para navegadores que no permiten clipboard
+    const ta = document.createElement('textarea');
+    ta.value = mensaje;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast('📋 Mensaje copiado');
+  });
+};
+
+window.copiarSoloContrasena = (password) => {
+  navigator.clipboard.writeText(password).then(() => {
+    toast(`🔑 Contraseña copiada: ${password}`);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = password;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast(`🔑 Contraseña copiada: ${password}`);
+  });
+};
+
 window.crearUsuarioNuevo = async () => {
   const nombre = ($('#usr-nombre')?.value || '').trim();
   const email = ($('#usr-email')?.value || '').trim().toLowerCase();
+  const password = ($('#usr-password')?.value || state.modalForm?.password || '').trim();
   const telefono = ($('#usr-tel')?.value || '').trim();
   const depto = state.modalForm?.depto || '';
   const ubicacion = state.modalForm?.ubicacion || '';
@@ -4939,38 +5263,28 @@ window.crearUsuarioNuevo = async () => {
   // Validaciones
   if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
   if (!email || !email.includes('@')) { toast('Correo válido obligatorio', 'error'); return; }
+  if (!password || password.length < 6) { toast('Contraseña obligatoria (mínimo 6 caracteres)', 'error'); return; }
   if (!depto) { toast('Selecciona departamento', 'error'); return; }
   if (!ubicacion) { toast('Selecciona ubicación', 'error'); return; }
-  
-  // Confirmar acción
-  const confirma = confirm(
-    `¿Crear cuenta para ${nombre}?\n\n` +
-    `📧 Email: ${email}\n` +
-    `📍 ${depto} · ${ubicacion}\n` +
-    `🔑 Rol: ${rol === 'admin' ? '👑 ADMIN' : '👤 Usuario'}\n\n` +
-    `Se le enviará un correo a ${email} con instrucciones para crear su contraseña e iniciar sesión.`
-  );
-  if (!confirma) return;
   
   state.loadingAccion = true; render();
   
   try {
-    // Generar contraseña temporal aleatoria (el usuario nunca la usará, recibirá email para crear la propia)
-    const passwordTemporal = 'Temp' + Math.random().toString(36).slice(2, 10) + '!' + Math.floor(Math.random() * 1000);
-    
     // 1. Crear cuenta en Firebase Auth usando la app SECUNDARIA
     // (esto NO desconecta al admin actual)
-    const { authSecundaria, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut } = window.fb;
+    const { authSecundaria, createUserWithEmailAndPassword, signOut } = window.fb;
     
     let userCredential;
     try {
-      userCredential = await createUserWithEmailAndPassword(authSecundaria, email, passwordTemporal);
+      userCredential = await createUserWithEmailAndPassword(authSecundaria, email, password);
     } catch (authError) {
       console.error('Error Auth:', authError);
       if (authError.code === 'auth/email-already-in-use') {
         toast('❌ Este correo ya tiene una cuenta registrada', 'error');
       } else if (authError.code === 'auth/invalid-email') {
         toast('❌ Correo inválido', 'error');
+      } else if (authError.code === 'auth/weak-password') {
+        toast('❌ Contraseña muy débil. Usa al menos 6 caracteres', 'error');
       } else {
         toast('Error creando cuenta: ' + authError.message, 'error');
       }
@@ -4990,7 +5304,6 @@ window.crearUsuarioNuevo = async () => {
         ubicacion: ubicacion,
         rol: rol,
         activo: true,
-        pendiente_activacion: true, // hasta que cree su propia contraseña
         creado_por: state.user.id,
         creado_por_nombre: state.user.nombre || state.user.email,
         created_at: serverTimestamp(),
@@ -5003,51 +5316,17 @@ window.crearUsuarioNuevo = async () => {
       return;
     }
     
-    // 3. Cerrar sesión de la app secundaria (importante para limpiar)
+    // 3. Cerrar sesión de la app secundaria
     try {
       await signOut(authSecundaria);
     } catch (e) { console.warn('signOut secundaria:', e); }
     
-    // 4. Enviar email de "reset password" — el usuario lo usará para crear su contraseña
-    let emailEnviado = false;
-    let errorEmail = '';
-    try {
-      await sendPasswordResetEmail(auth, email);
-      emailEnviado = true;
-    } catch (resetError) {
-      console.error('Error enviar email:', resetError);
-      errorEmail = resetError.message || resetError.code;
-    }
-    
     cerrarModal();
     
-    // Mostrar instrucciones detalladas al admin
-    setTimeout(() => {
-      alert(
-        `✅ USUARIO CREADO CORRECTAMENTE\n\n` +
-        `👤 ${nombre}\n` +
-        `📧 ${email}\n` +
-        `📍 ${depto} · ${ubicacion}\n\n` +
-        `${emailEnviado 
-          ? `✉️ EMAIL DE ACTIVACIÓN ENVIADO\n\n` +
-            `Pídele al usuario que:\n` +
-            `1. Revise su correo (también SPAM/No deseado)\n` +
-            `2. Click en "Restablecer contraseña"\n` +
-            `3. Cree su nueva contraseña\n` +
-            `4. Inicie sesión en NewPack ERP con su correo\n\n` +
-            `Si NO llega el correo en 5 minutos:\n` +
-            `• Revisa carpeta SPAM\n` +
-            `• Click "🔑 Reenviar" en su tarjeta\n` +
-            `• Verifica plantillas en Firebase Console`
-          : `⚠️ EMAIL NO SE PUDO ENVIAR\n\n` +
-            `Error: ${errorEmail}\n\n` +
-            `OPCIONES:\n` +
-            `1. Click "🔑 Reenviar" en su tarjeta para intentar de nuevo\n` +
-            `2. Avisa al usuario que use "Olvidé mi contraseña" en login\n` +
-            `3. Verifica en Firebase Console que la plantilla de email esté activa`
-        }`
-      );
-    }, 100);
+    // 4. Abrir modal de credenciales listas para compartir
+    state.credencialesCompartir = { nombre, email, password, depto, ubicacion };
+    state.modalActivo = 'compartir-credenciales';
+    render();
     
   } catch (e) {
     console.error('Error crear usuario:', e);
@@ -5055,6 +5334,23 @@ window.crearUsuarioNuevo = async () => {
   } finally {
     state.loadingAccion = false; render();
   }
+};
+
+// Generar contraseña aleatoria fácil de comunicar
+window.generarPasswordAleatorio = () => {
+  // Palabras + número para que sea fácil compartir verbalmente
+  const palabras = ['Empaque', 'NewPack', 'Cliente', 'Planta', 'Cedis', 'Bolsa', 'Producto', 'Calidad', 'Almacen'];
+  const palabra = palabras[Math.floor(Math.random() * palabras.length)];
+  const num = Math.floor(Math.random() * 9000) + 1000; // 1000-9999
+  const password = palabra + num + '!';
+  
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.password = password;
+  
+  // Actualizar el input visualmente
+  const inp = $('#usr-password');
+  if (inp) inp.value = password;
+  toast(`🎲 Contraseña generada: ${password}`, 'info');
 };
 
 window.actualizarUsuario = async (id) => {
