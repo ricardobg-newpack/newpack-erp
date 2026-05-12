@@ -171,6 +171,7 @@ const state = {
   ordenes_compra: [],
   lotes_mp: [],
   movimientos_mp: [],
+  proveedores: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -614,6 +615,10 @@ async function cargarTodo() {
       onSnapshot(collection(db, 'movimientos_mp'), (snap) => {
         state.movimientos_mp = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'proveedores'), (snap) => {
+        state.proveedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
       })
     );
   } catch (err) {
@@ -798,6 +803,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Requisiciones (RC)</button>
           ${esCOMP || esCEO ? `
             <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes Compra (OC)</button>
+            <button class="nav-item ${state.vista === 'proveedores' ? 'active' : ''}" data-vista="proveedores">🏭 Proveedores</button>
           ` : ''}
           ${esALP || esCEO ? `
             <button class="nav-item ${state.vista === 'recepciones_mp' ? 'active' : ''}" data-vista="recepciones_mp">📥 Recepciones MP</button>
@@ -861,6 +867,7 @@ function tituloVista() {
     ordenes_compra: '📑 Órdenes de Compra (OC)',
     recepciones_mp: '📥 Recepciones de Materias Primas',
     almacen_mp: '📦 Almacén de Materias Primas',
+    proveedores: '🏭 Proveedores y Códigos Vinculados',
     usuarios: '⚙️ Usuarios del Sistema'
   })[state.vista] || '';
 }
@@ -887,6 +894,7 @@ function renderVista() {
   if (v === 'ordenes_compra') return renderOrdenesCompra();
   if (v === 'recepciones_mp') return renderRecepcionesMP();
   if (v === 'almacen_mp') return renderAlmacenMP();
+  if (v === 'proveedores') return renderProveedores();
   if (v === 'usuarios') return renderUsuariosSistema();
   return '';
 }
@@ -2540,6 +2548,9 @@ function renderModal() {
   if (m === 'detalle-rc') return modalDetalleRC();
   if (m === 'generar-oc') return modalGenerarOC();
   if (m === 'recibir-oc') return modalRecibirOC();
+  if (m === 'crear-proveedor') return modalProveedor(false);
+  if (m === 'editar-proveedor') return modalProveedor(true);
+  if (m === 'codigos-proveedor') return modalCodigosProveedor();
   return '';
 }
 
@@ -6590,6 +6601,7 @@ function modalGenerarOC() {
   if (!state.modalForm) {
     // Inicializar con datos default
     state.modalForm = {
+      proveedor_id: '',
       proveedor: '',
       codigo_proveedor: '',
       fecha_promesa: '',
@@ -6628,26 +6640,24 @@ function modalGenerarOC() {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
               <div class="field" style="margin:0;">
                 <label class="field-label">Proveedor *</label>
-                <input class="input" id="oc-prov" value="${f.proveedor || ''}" list="lista-proveedores-oc" placeholder="Ej: Braskem" oninput="window.modalFormSetSilent('proveedor', this.value)" />
-                <datalist id="lista-proveedores-oc">
-                  <option value="Braskem">
-                  <option value="Polymat (Tricon)">
-                  <option value="Prime Resinas">
-                  <option value="Poly Resinas">
-                  <option value="Insumos Internacionales">
-                  <option value="Muehlstein">
-                  <option value="Plastikrom">
-                  <option value="Tecnipol">
-                  <option value="Navitek">
-                  <option value="Pesa">
-                  <option value="Burbutek">
-                </datalist>
+                <select class="input" id="oc-prov" onchange="window.seleccionarProveedorOC(this.value)">
+                  <option value="">— Selecciona proveedor —</option>
+                  ${(state.proveedores || []).filter(p => p.activo !== false).sort((a,b) => (a.razon_social||'').localeCompare(b.razon_social||'')).map(p => `
+                    <option value="${p.id}" data-nombre="${p.razon_social}" ${f.proveedor_id === p.id ? 'selected' : ''}>${p.razon_social}</option>
+                  `).join('')}
+                </select>
+                <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Si no aparece, créalo primero en <strong>🏭 Proveedores</strong></div>
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label">Fecha promesa entrega *</label>
                 <input class="input" id="oc-fecha-prom" type="date" value="${f.fecha_promesa || ''}" onchange="window.modalFormSetSilent('fecha_promesa', this.value)" />
               </div>
             </div>
+            ${f.proveedor ? `
+              <div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;font-size:11px;color:#475569;">
+                ✓ Proveedor seleccionado: <strong>${f.proveedor}</strong>
+              </div>
+            ` : ''}
           </div>
           
           <!-- LÍNEAS CON COSTOS -->
@@ -6717,6 +6727,45 @@ function modalGenerarOC() {
   `;
 }
 
+window.seleccionarProveedorOC = (provId) => {
+  if (!state.modalForm) return;
+  
+  if (!provId) {
+    state.modalForm.proveedor_id = '';
+    state.modalForm.proveedor = '';
+    render();
+    return;
+  }
+  
+  const prov = (state.proveedores || []).find(p => p.id === provId);
+  if (!prov) return;
+  
+  state.modalForm.proveedor_id = prov.id;
+  state.modalForm.proveedor = prov.razon_social;
+  
+  // Auto-completar códigos del proveedor y costos de referencia en las líneas
+  if (prov.codigos && prov.codigos.length > 0 && state.modalForm.lineas) {
+    let autoCompletadas = 0;
+    state.modalForm.lineas.forEach(linea => {
+      const codigoPro = prov.codigos.find(c => c.mp_codigo === linea.mp_codigo);
+      if (codigoPro) {
+        if (!linea.codigo_proveedor) {
+          linea.codigo_proveedor = codigoPro.codigo_proveedor || '';
+          autoCompletadas++;
+        }
+        if (!linea.costo_unitario && codigoPro.costo_referencia) {
+          linea.costo_unitario = Number(codigoPro.costo_referencia) || 0;
+        }
+      }
+    });
+    if (autoCompletadas > 0) {
+      toast(`✨ ${autoCompletadas} código(s) de proveedor auto-completado(s)`, 'info');
+    }
+  }
+  
+  render();
+};
+
 window.actualizarLineaOC = (idx, campo, valor) => {
   if (!state.modalForm?.lineas?.[idx]) return;
   state.modalForm.lineas[idx][campo] = valor;
@@ -6729,12 +6778,13 @@ window.confirmarGenerarOC = async (rcId) => {
   if (!rc) { toast('RC no encontrada', 'error'); return; }
   
   const f = state.modalForm;
-  const proveedor = ($('#oc-prov')?.value || f.proveedor || '').trim();
+  const proveedor = (f.proveedor || '').trim();
+  const proveedorId = (f.proveedor_id || '').trim();
   const fechaPromesa = ($('#oc-fecha-prom')?.value || f.fecha_promesa || '').trim();
   const observaciones = ($('#oc-obs')?.value || f.observaciones || '').trim();
   
   // Validaciones
-  if (!proveedor) { toast('Especifica el proveedor', 'error'); return; }
+  if (!proveedor || !proveedorId) { toast('Selecciona un proveedor', 'error'); return; }
   if (!fechaPromesa) { toast('Fecha de promesa obligatoria', 'error'); return; }
   
   // Calcular total
@@ -6785,6 +6835,7 @@ window.confirmarGenerarOC = async (rcId) => {
       folio: folioOC,
       rc_id: rcId,
       rc_folio: rc.folio,
+      proveedor_id: proveedorId,
       proveedor: proveedor,
       fecha_oc: new Date().toISOString().split('T')[0],
       fecha_promesa: fechaPromesa,
@@ -7275,6 +7326,523 @@ window.confirmarRecepcionOC = async (ocId) => {
     toast(`✅ ${lineasARecibir.length} lote(s) creado(s) · OC ${todaCompleta ? 'COMPLETA' : 'parcial'}${hayRechazo ? ' · Hay rechazo de calidad' : ''}`);
   } catch (e) {
     console.error('Error recepción:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// VISTA: PROVEEDORES
+// ============================================================
+function renderProveedores() {
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esCOMP = u.depto === 'COMP' || esCEO;
+  const puedeEditar = esCOMP;
+  
+  const filtro = (state.filtros.proveedores || '').toLowerCase();
+  let arr = state.proveedores || [];
+  if (filtro) arr = arr.filter(p => 
+    ((p.razon_social || '') + ' ' + (p.rfc || '') + ' ' + (p.contacto_nombre || '') + ' ' +
+     (p.codigos || []).map(c => `${c.mp_codigo} ${c.codigo_proveedor}`).join(' ')
+    ).toLowerCase().includes(filtro)
+  );
+  
+  arr.sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || ''));
+  
+  const totalCodigos = (state.proveedores || []).reduce((s, p) => s + (p.codigos || []).length, 0);
+  
+  return `
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">🏭 PROVEEDORES ACTIVOS</div>
+        <div style="font-size:22px;font-weight:800;color:#16a34a;">${(state.proveedores || []).filter(p => p.activo !== false).length}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">🔗 CÓDIGOS VINCULADOS</div>
+        <div style="font-size:22px;font-weight:800;color:#3b82f6;">${totalCodigos}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">🧪 MP CON PROVEEDOR</div>
+        <div style="font-size:22px;font-weight:800;color:#7c3aed;">${new Set((state.proveedores || []).flatMap(p => (p.codigos || []).map(c => c.mp_codigo))).size}</div>
+      </div>
+    </div>
+    
+    ${(state.proveedores || []).length === 0 && puedeEditar ? `
+      <div style="padding:18px;background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+        <div style="font-weight:700;color:#92400e;font-size:14px;">⚡ Carga rápida de proveedores</div>
+        <div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.6;">
+          Click para cargar los 11 proveedores conocidos de NewPack: Braskem, Polymat (Tricon), Prime Resinas, Poly Resinas, Insumos Internacionales, Muehlstein, Plastikrom, Tecnipol, Navitek, Pesa, Burbutek.
+        </div>
+        <button onclick="cargarProveedoresIniciales()" style="margin-top:10px;padding:10px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;">⚡ Cargar 11 proveedores</button>
+      </div>
+    ` : ''}
+    
+    <!-- TOOLBAR -->
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-proveedores" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar razón social, RFC, contacto, código..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} proveedor(es)</span>
+      ${puedeEditar ? `
+        <button class="btn-primary" onclick="abrirModal('crear-proveedor')" style="margin-left:auto;">${ICONS.plus} Nuevo proveedor</button>
+      ` : ''}
+    </div>
+    
+    ${arr.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">🏭</div>
+        <div style="font-weight:700;color:#475569;">No hay proveedores registrados</div>
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        ${arr.map(p => renderTarjetaProveedor(p, puedeEditar)).join('')}
+      </div>
+    `}
+  `;
+}
+
+function renderTarjetaProveedor(p, puedeEditar) {
+  const inactivo = p.activo === false;
+  const codigos = p.codigos || [];
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${inactivo ? '#94a3b8' : '#16a34a'};${inactivo ? 'opacity:0.6;' : ''}">
+      <div style="padding:14px 18px 10px;">
+        <!-- ENCABEZADO -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:280px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3 style="font-size:15px;font-weight:800;color:#1e293b;margin:0;">🏭 ${p.razon_social || '—'}</h3>
+              ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-top:4px;">
+              ${p.rfc ? `<strong>RFC:</strong> ${p.rfc}` : ''}
+              ${p.rfc && p.terminos_pago ? ' · ' : ''}
+              ${p.terminos_pago ? `<strong>💳 ${p.terminos_pago}</strong>` : ''}
+            </div>
+            ${p.direccion ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">📍 ${p.direccion}</div>` : ''}
+            ${(p.contacto_nombre || p.telefono || p.email) ? `
+              <div style="font-size:11px;color:#475569;margin-top:4px;">
+                ${p.contacto_nombre ? `👤 ${p.contacto_nombre}` : ''}
+                ${p.contacto_nombre && p.telefono ? ' · ' : ''}
+                ${p.telefono ? `📞 ${p.telefono}` : ''}
+                ${(p.contacto_nombre || p.telefono) && p.email ? ' · ' : ''}
+                ${p.email ? `📧 ${p.email}` : ''}
+              </div>
+            ` : ''}
+          </div>
+          ${puedeEditar ? `
+            <div style="display:flex;gap:6px;">
+              <button onclick="abrirModal('editar-proveedor','${p.id}')" style="padding:5px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
+              <button onclick="abrirModal('codigos-proveedor','${p.id}')" style="padding:5px 10px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">🔗 Códigos</button>
+              <button onclick="toggleProveedorActivo('${p.id}')" style="padding:5px 10px;background:${inactivo?'#16a34a':'#f59e0b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓':'⏸'}</button>
+            </div>
+          ` : ''}
+        </div>
+        
+        <!-- TABLA CÓDIGOS VINCULADOS -->
+        ${codigos.length > 0 ? `
+          <div style="margin-top:10px;background:#f8fafc;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;">
+            <div style="padding:6px 10px;background:#e2e8f0;font-size:10px;font-weight:800;color:#475569;letter-spacing:0.05em;">🔗 CÓDIGOS APROBADOS (${codigos.length})</div>
+            <table style="width:100%;border-collapse:collapse;font-size:11px;">
+              <thead>
+                <tr style="background:#f1f5f9;">
+                  <th style="padding:5px 10px;text-align:left;font-weight:700;color:#475569;">Cód. NewPack</th>
+                  <th style="padding:5px 10px;text-align:left;font-weight:700;color:#475569;">↔</th>
+                  <th style="padding:5px 10px;text-align:left;font-weight:700;color:#475569;">Cód. ${p.razon_social ? p.razon_social.split(' ')[0] : 'Proveedor'}</th>
+                  <th style="padding:5px 10px;text-align:left;font-weight:700;color:#475569;">Descripción</th>
+                  <th style="padding:5px 10px;text-align:right;font-weight:700;color:#475569;">$ ref</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${codigos.map(c => `
+                  <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:4px 10px;" class="text-mono"><strong>${c.mp_codigo}</strong></td>
+                    <td style="padding:4px 10px;color:#94a3b8;">↔</td>
+                    <td style="padding:4px 10px;" class="text-mono" style="color:#7c3aed;">${c.codigo_proveedor || '—'}</td>
+                    <td style="padding:4px 10px;font-size:10px;color:#64748b;">${c.descripcion || ''}</td>
+                    <td style="padding:4px 10px;text-align:right;font-size:10px;color:#64748b;">${c.costo_referencia ? '$' + fmtNum(c.costo_referencia) : '—'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : `
+          <div style="margin-top:10px;padding:10px;background:#fef3c7;border:1px dashed #f59e0b;border-radius:8px;text-align:center;font-size:11px;color:#92400e;">
+            ⚠ Aún no hay códigos vinculados. Click en <strong>🔗 Códigos</strong> para agregar.
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// MODAL: Crear/Editar Proveedor
+// ============================================================
+function modalProveedor(esEdicion) {
+  const id = state.modalData;
+  const prov = esEdicion ? (state.proveedores || []).find(x => x.id === id) : null;
+  if (esEdicion && !prov) return '';
+  
+  if (!state.modalForm) {
+    state.modalForm = prov ? { ...prov } : {
+      razon_social: '',
+      rfc: '',
+      direccion: '',
+      contacto_nombre: '',
+      telefono: '',
+      email: '',
+      terminos_pago: '',
+      notas: ''
+    };
+  }
+  const f = state.modalForm;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:680px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '🏭 Nuevo'} proveedor</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          
+          <div class="field">
+            <label class="field-label">Razón Social *</label>
+            <input class="input" id="prov-razon" value="${f.razon_social || ''}" placeholder="BRASKEM IDESA SA DE CV" oninput="window.modalFormSetSilent('razon_social', this.value)" />
+          </div>
+          
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">RFC</label>
+              <input class="input" id="prov-rfc" value="${f.rfc || ''}" placeholder="BSK9105021K7" maxlength="13" oninput="window.modalFormSetSilent('rfc', this.value.toUpperCase())" style="font-family:monospace;text-transform:uppercase;" />
+            </div>
+            <div class="field">
+              <label class="field-label">Dirección</label>
+              <input class="input" id="prov-dir" value="${f.direccion || ''}" placeholder="Calle, Colonia, Ciudad, Estado, CP" oninput="window.modalFormSetSilent('direccion', this.value)" />
+            </div>
+          </div>
+          
+          <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">👤 Contacto principal</div>
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Nombre del contacto</label>
+              <input class="input" id="prov-cont" value="${f.contacto_nombre || ''}" placeholder="Juan Pérez" oninput="window.modalFormSetSilent('contacto_nombre', this.value)" />
+            </div>
+            <div class="field">
+              <label class="field-label">Teléfono</label>
+              <input class="input" id="prov-tel" value="${f.telefono || ''}" placeholder="55-1234-5678" oninput="window.modalFormSetSilent('telefono', this.value)" />
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input class="input" id="prov-email" type="email" value="${f.email || ''}" placeholder="ventas@proveedor.com" oninput="window.modalFormSetSilent('email', this.value)" />
+          </div>
+          
+          <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">💳 Condiciones comerciales</div>
+          
+          <div class="field">
+            <label class="field-label">Términos de pago</label>
+            <input class="input" id="prov-pago" value="${f.terminos_pago || ''}" list="lista-terminos" placeholder="Ej: 30 días, Contado, 50% anticipo + 50% entrega" oninput="window.modalFormSetSilent('terminos_pago', this.value)" />
+            <datalist id="lista-terminos">
+              <option value="Contado">
+              <option value="15 días">
+              <option value="30 días">
+              <option value="45 días">
+              <option value="60 días">
+              <option value="50% anticipo + 50% entrega">
+            </datalist>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Notas adicionales</label>
+            <textarea class="input" id="prov-notas" style="min-height:50px;" placeholder="Información complementaria, acuerdos, etc." oninput="window.modalFormSetSilent('notas', this.value)">${f.notas || ''}</textarea>
+          </div>
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="confirmarProveedor(${esEdicion ? `'${id}'` : 'null'})">${ICONS.check} ${esEdicion ? 'Guardar' : 'Crear'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.confirmarProveedor = async (id) => {
+  const f = state.modalForm;
+  const razon = ($('#prov-razon')?.value || f.razon_social || '').trim();
+  const rfc = ($('#prov-rfc')?.value || f.rfc || '').trim().toUpperCase();
+  const direccion = ($('#prov-dir')?.value || f.direccion || '').trim();
+  const contacto = ($('#prov-cont')?.value || f.contacto_nombre || '').trim();
+  const telefono = ($('#prov-tel')?.value || f.telefono || '').trim();
+  const email = ($('#prov-email')?.value || f.email || '').trim();
+  const terminos = ($('#prov-pago')?.value || f.terminos_pago || '').trim();
+  const notas = ($('#prov-notas')?.value || f.notas || '').trim();
+  
+  if (!razon) { toast('Razón social obligatoria', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    const data = {
+      razon_social: razon,
+      rfc: rfc,
+      direccion: direccion,
+      contacto_nombre: contacto,
+      telefono: telefono,
+      email: email,
+      terminos_pago: terminos,
+      notas: notas,
+      updated_at: serverTimestamp()
+    };
+    Object.keys(data).forEach(k => { if (data[k] === undefined) data[k] = ''; });
+    
+    if (id) {
+      await updateDoc(doc(db, 'proveedores', id), data);
+      toast(`✅ ${razon} actualizado`);
+    } else {
+      data.activo = true;
+      data.codigos = [];
+      data.created_at = serverTimestamp();
+      await addDoc(collection(db, 'proveedores'), data);
+      toast(`✅ ${razon} agregado`);
+    }
+    cerrarModal();
+  } catch (e) {
+    console.error('Error guardar proveedor:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+window.toggleProveedorActivo = async (id) => {
+  const p = (state.proveedores || []).find(x => x.id === id);
+  if (!p) return;
+  try {
+    await updateDoc(doc(db, 'proveedores', id), {
+      activo: p.activo === false,
+      updated_at: serverTimestamp()
+    });
+    toast(`${p.razon_social} ${p.activo === false ? 'activado' : 'desactivado'}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// MODAL: Códigos vinculados al proveedor
+// ============================================================
+function modalCodigosProveedor() {
+  const prov = (state.proveedores || []).find(p => p.id === state.modalData);
+  if (!prov) return '';
+  
+  if (!state.modalForm) {
+    state.modalForm = {
+      codigos: [...(prov.codigos || [])],
+      nuevoCodigo: { mp_codigo: '', codigo_proveedor: '', costo_referencia: '' }
+    };
+  }
+  const f = state.modalForm;
+  
+  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+  const codigosYaVinculados = new Set((f.codigos || []).map(c => c.mp_codigo));
+  const mpsDisponibles = mps.filter(mp => !codigosYaVinculados.has(mp.codigo));
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:820px;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="modal-header" style="background:#7c3aed11;border-bottom:2px solid #7c3aed;">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">🔗 Códigos vinculados</h2>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${prov.razon_social}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;">
+          
+          <!-- AGREGAR NUEVO -->
+          <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Vincular nuevo código</div>
+            <div style="display:grid;grid-template-columns:3fr 2fr 1fr 1fr;gap:8px;">
+              <select class="input" id="cv-mp">
+                <option value="">— Materia prima NewPack —</option>
+                ${mpsDisponibles.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `
+                  <option value="${mp.codigo}" data-desc="${mp.descripcion}">${mp.codigo} — ${mp.descripcion}</option>
+                `).join('')}
+              </select>
+              <input class="input" id="cv-codprov" placeholder="Cód. del proveedor" style="font-family:monospace;" />
+              <input class="input" id="cv-costo" type="number" min="0" step="0.01" placeholder="$ ref" />
+              <button onclick="agregarCodigoProveedor()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Vincular</button>
+            </div>
+            <div style="font-size:10px;color:#64748b;margin-top:6px;">💡 El costo de referencia es opcional, ayuda para sugerir precios al generar OCs</div>
+          </div>
+          
+          ${(f.codigos || []).length === 0 ? `
+            <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:10px;border:1px dashed #cbd5e1;">
+              <div style="font-size:40px;margin-bottom:8px;">🔗</div>
+              <div style="font-size:13px;font-weight:700;color:#475569;">Sin códigos vinculados aún</div>
+              <div style="font-size:11px;margin-top:4px;">Agrega arriba los materiales que este proveedor te surte</div>
+            </div>
+          ` : `
+            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+              <div style="padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-weight:800;font-size:12px;color:#475569;">
+                🔗 ${f.codigos.length} código(s) vinculado(s)
+              </div>
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead>
+                  <tr style="background:#f1f5f9;">
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Cód. NewPack</th>
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Cód. Proveedor</th>
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
+                    <th style="padding:6px 10px;text-align:right;font-weight:700;color:#475569;font-size:11px;">$ Ref</th>
+                    <th style="padding:6px 10px;text-align:center;font-weight:700;color:#475569;font-size:11px;">×</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${f.codigos.map((c, idx) => `
+                    <tr style="border-bottom:1px solid #f1f5f9;">
+                      <td style="padding:5px 10px;" class="text-mono"><strong>${c.mp_codigo}</strong></td>
+                      <td style="padding:5px 10px;" class="text-mono" style="color:#7c3aed;">${c.codigo_proveedor || '—'}</td>
+                      <td style="padding:5px 10px;font-size:11px;color:#64748b;">${c.descripcion || ''}</td>
+                      <td style="padding:5px 10px;text-align:right;font-size:11px;color:#64748b;">${c.costo_referencia ? '$' + fmtNum(c.costo_referencia) : '—'}</td>
+                      <td style="padding:5px 10px;text-align:center;">
+                        <button onclick="quitarCodigoProveedor(${idx})" style="padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">✕</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `}
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;background:#fff;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="guardarCodigosProveedor('${prov.id}')" style="background:#7c3aed;">${ICONS.check} Guardar cambios</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.agregarCodigoProveedor = () => {
+  const sel = $('#cv-mp');
+  const codProv = $('#cv-codprov');
+  const costo = $('#cv-costo');
+  if (!sel || !codProv) return;
+  
+  const mp_codigo = sel.value;
+  const codigo_proveedor = (codProv.value || '').trim();
+  const costo_referencia = Number(costo.value) || 0;
+  
+  if (!mp_codigo) { toast('Selecciona la materia prima', 'error'); return; }
+  if (!codigo_proveedor) { toast('Captura el código del proveedor', 'error'); return; }
+  
+  const opt = sel.selectedOptions[0];
+  const descripcion = opt?.dataset.desc || '';
+  
+  if (!state.modalForm.codigos) state.modalForm.codigos = [];
+  
+  // Validar duplicado
+  if (state.modalForm.codigos.find(c => c.mp_codigo === mp_codigo)) {
+    toast(`${mp_codigo} ya está vinculado`, 'error');
+    return;
+  }
+  
+  state.modalForm.codigos.push({
+    mp_codigo,
+    descripcion,
+    codigo_proveedor,
+    costo_referencia
+  });
+  
+  sel.value = '';
+  codProv.value = '';
+  costo.value = '';
+  render();
+};
+
+window.quitarCodigoProveedor = (idx) => {
+  if (!state.modalForm?.codigos) return;
+  state.modalForm.codigos.splice(idx, 1);
+  render();
+};
+
+window.guardarCodigosProveedor = async (provId) => {
+  const f = state.modalForm;
+  if (!f) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    // Limpiar undefineds
+    const codigosLimpios = (f.codigos || []).map(c => ({
+      mp_codigo: c.mp_codigo || '',
+      descripcion: c.descripcion || '',
+      codigo_proveedor: c.codigo_proveedor || '',
+      costo_referencia: Number(c.costo_referencia) || 0
+    }));
+    
+    await updateDoc(doc(db, 'proveedores', provId), {
+      codigos: codigosLimpios,
+      updated_at: serverTimestamp()
+    });
+    
+    toast(`✅ ${codigosLimpios.length} código(s) guardado(s)`);
+    cerrarModal();
+  } catch (e) {
+    console.error('Error guardar códigos:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Carga inicial de proveedores conocidos
+window.cargarProveedoresIniciales = async () => {
+  if (!confirm('¿Cargar los 11 proveedores conocidos de NewPack?\n\nDespués podrás editar cada uno con sus datos completos (RFC, dirección, contacto, etc.) y vincular sus códigos.')) return;
+  
+  const PROV_INICIALES = [
+    { razon_social: 'BRASKEM IDESA SA DE CV', notas: 'Resinas LDPE/HDPE - Coatzacoalcos' },
+    { razon_social: 'POLYMAT (TRICON)', notas: 'Resinas y aditivos' },
+    { razon_social: 'PRIME RESINAS', notas: 'Resinas fraccionales' },
+    { razon_social: 'POLY RESINAS', notas: 'Resinas variadas' },
+    { razon_social: 'INSUMOS INTERNACIONALES', notas: 'Resinas HDPE' },
+    { razon_social: 'MUEHLSTEIN', notas: 'Resinas lineales' },
+    { razon_social: 'PLASTIKROM', notas: 'Resinas lineales' },
+    { razon_social: 'TECNIPOL', notas: 'Resinas lineales' },
+    { razon_social: 'NAVITEK', notas: 'Resinas lineales' },
+    { razon_social: 'PESA', notas: 'Resinas octeno' },
+    { razon_social: 'BURBUTEK', notas: 'Resinas octeno' }
+  ];
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    PROV_INICIALES.forEach(p => {
+      const ref = doc(collection(db, 'proveedores'));
+      batch.set(ref, {
+        razon_social: p.razon_social,
+        rfc: '',
+        direccion: '',
+        contacto_nombre: '',
+        telefono: '',
+        email: '',
+        terminos_pago: '',
+        notas: p.notas || '',
+        activo: true,
+        codigos: [],
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${PROV_INICIALES.length} proveedores cargados`);
+  } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
@@ -12144,6 +12712,15 @@ function attachAppEvents() {
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
+  if ($('#filtro-proveedores')) {
+    $('#filtro-proveedores').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.proveedores = e.target.value;
+      render();
+      const inp = $('#filtro-proveedores');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
   if ($('#filtro-usuarios')) {
     $('#filtro-usuarios').oninput = (e) => {
       const pos = e.target.selectionStart;
@@ -12310,7 +12887,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','recibir-oc'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
