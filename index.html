@@ -8454,6 +8454,11 @@ function renderRecepcionesMP() {
 }
 
 function renderAlmacenMP() {
+  // Si hay un kardex seleccionado, mostrar vista detallada
+  if (state.kardex_mp_codigo) {
+    return renderKardexMP(state.kardex_mp_codigo);
+  }
+  
   const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
   const filtro = (state.filtros.almacen_mp || '').toLowerCase();
   let arr = mps;
@@ -8513,6 +8518,7 @@ function renderAlmacenMP() {
             <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock mín</th>
             <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Lotes</th>
             <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">UM</th>
+            <th style="padding:10px 12px;text-align:center;font-weight:700;color:#475569;font-size:11px;">Kardex</th>
           </tr>
         </thead>
         <tbody>
@@ -8523,14 +8529,17 @@ function renderAlmacenMP() {
             const alerta = mp.stock_minimo > 0 && stock < mp.stock_minimo;
             const tipoInfo = TIPOS_MP.find(t => t.codigo === mp.tipo) || TIPOS_MP[0];
             return `
-              <tr style="border-bottom:1px solid #f1f5f9;${alerta?'background:#fef2f2;':''}">
-                <td style="padding:8px 12px;" class="text-mono"><strong>${mp.codigo}</strong></td>
+              <tr style="border-bottom:1px solid #f1f5f9;${alerta?'background:#fef2f2;':''}cursor:pointer;" onclick="abrirKardexMP('${mp.codigo}')" onmouseover="this.style.background='#f1f5f9';" onmouseout="this.style.background='${alerta?'#fef2f2':'transparent'}';">
+                <td style="padding:8px 12px;" class="text-mono"><strong style="color:#3b82f6;">${mp.codigo}</strong></td>
                 <td style="padding:8px 12px;">${mp.descripcion}</td>
                 <td style="padding:8px 12px;"><span style="background:${tipoInfo.color}22;color:${tipoInfo.color};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">${tipoInfo.icono} ${tipoInfo.nombre}</span></td>
                 <td style="padding:8px 12px;text-align:right;font-weight:800;color:${alerta ? '#dc2626' : (stock > 0 ? '#16a34a' : '#94a3b8')};">${fmtNum(stock)}</td>
                 <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${mp.stock_minimo ? fmtNum(mp.stock_minimo) : '—'}</td>
                 <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${lotes}</td>
                 <td style="padding:8px 12px;font-size:11px;color:#64748b;">${mp.um || 'Kg'}</td>
+                <td style="padding:8px 12px;text-align:center;">
+                  <button onclick="event.stopPropagation();abrirKardexMP('${mp.codigo}')" style="padding:4px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">📜 Ver</button>
+                </td>
               </tr>
             `;
           }).join('')}
@@ -8539,7 +8548,309 @@ function renderAlmacenMP() {
     </div>
     
     <div style="margin-top:14px;padding:12px;background:#eff6ff;border-radius:8px;font-size:11px;color:#475569;">
-      💡 <strong>Próxima etapa:</strong> Click en cada insumo para ver kardex detallado (entradas/salidas) y lotes activos.
+      💡 <strong>Tip:</strong> Click en cualquier insumo para ver su kardex completo (entradas, salidas, saldos) y los lotes activos con su trazabilidad.
+    </div>
+  `;
+}
+
+// ============================================================
+// VISTA: Kardex detallado de un insumo
+// ============================================================
+window.abrirKardexMP = (mpCodigo) => {
+  state.kardex_mp_codigo = mpCodigo;
+  state.tabs.kardex_mp = state.tabs.kardex_mp || 'lotes';
+  render();
+};
+
+window.cerrarKardexMP = () => {
+  state.kardex_mp_codigo = null;
+  render();
+};
+
+function renderKardexMP(mpCodigo) {
+  const mp = (state.materias_primas || []).find(m => m.codigo === mpCodigo);
+  if (!mp) {
+    setTimeout(() => { state.kardex_mp_codigo = null; render(); }, 0);
+    return `<div style="padding:40px;text-align:center;color:#dc2626;">Insumo no encontrado</div>`;
+  }
+  
+  // Lotes de este MP
+  const lotes = (state.lotes_mp || []).filter(l => l.mp_codigo === mpCodigo);
+  const lotesActivos = lotes.filter(l => l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0);
+  const lotesAgotados = lotes.filter(l => l.estatus === 'agotado' || (Number(l.stock_actual) || 0) === 0 && l.estatus !== 'rechazado_calidad');
+  const lotesRechazados = lotes.filter(l => l.estatus === 'rechazado_calidad');
+  
+  // Movimientos de este MP
+  const movimientos = (state.movimientos_mp || []).filter(m => m.mp_codigo === mpCodigo);
+  movimientos.sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0));
+  
+  // Calcular saldos acumulados
+  let saldoAcum = 0;
+  const movimientosConSaldo = movimientos.map(m => {
+    const cant = Number(m.cantidad) || 0;
+    if (m.tipo === 'entrada') saldoAcum += cant;
+    else if (m.tipo === 'salida') saldoAcum -= cant;
+    else if (m.tipo === 'ajuste') saldoAcum += cant; // ajustes pueden ser + o -
+    return { ...m, saldo: saldoAcum };
+  });
+  
+  // Para mostrar más recientes primero
+  const movimientosMostrar = [...movimientosConSaldo].reverse();
+  
+  // KPIs
+  const stockTotal = lotesActivos.reduce((s, l) => s + (Number(l.stock_actual) || 0), 0);
+  const totalEntradas = movimientos.filter(m => m.tipo === 'entrada').reduce((s, m) => s + (Number(m.cantidad) || 0), 0);
+  const totalSalidas = movimientos.filter(m => m.tipo === 'salida').reduce((s, m) => s + (Number(m.cantidad) || 0), 0);
+  const stockRechazado = lotesRechazados.reduce((s, l) => s + (Number(l.cantidad_inicial) || 0), 0);
+  
+  const tipoInfo = TIPOS_MP.find(t => t.codigo === mp.tipo) || TIPOS_MP[0];
+  const alerta = mp.stock_minimo > 0 && stockTotal < mp.stock_minimo;
+  
+  const tab = state.tabs.kardex_mp || 'lotes';
+  
+  return `
+    <!-- ENCABEZADO -->
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+      <button onclick="cerrarKardexMP()" style="padding:8px 14px;background:#fff;color:#475569;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">⬅ Volver al Almacén</button>
+      <div style="flex:1;min-width:280px;background:#fff;border:1px solid ${tipoInfo.color};border-left:6px solid ${tipoInfo.color};border-radius:10px;padding:12px 16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="text-mono" style="font-weight:800;font-size:18px;color:#1e293b;">${mp.codigo}</span>
+              <span style="background:${tipoInfo.color}22;color:${tipoInfo.color};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;">${tipoInfo.icono} ${tipoInfo.nombre}</span>
+            </div>
+            <div style="font-size:13px;color:#475569;margin-top:4px;">${mp.descripcion}</div>
+            ${mp.observaciones ? `<div style="font-size:11px;color:#64748b;margin-top:4px;font-style:italic;">${mp.observaciones}</div>` : ''}
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:10px;color:#64748b;font-weight:700;">STOCK ACTUAL</div>
+            <div style="font-size:28px;font-weight:800;color:${alerta ? '#dc2626' : (stockTotal > 0 ? '#16a34a' : '#94a3b8')};">${fmtNum(stockTotal)} <span style="font-size:14px;color:#94a3b8;">${mp.um || 'Kg'}</span></div>
+            ${alerta ? `<div style="font-size:11px;color:#dc2626;font-weight:700;">⚠ Bajo el mínimo (${fmtNum(mp.stock_minimo)})</div>` : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📦 LOTES ACTIVOS</div>
+        <div style="font-size:22px;font-weight:800;color:#16a34a;">${lotesActivos.length}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📥 TOTAL ENTRADAS</div>
+        <div style="font-size:18px;font-weight:800;color:#3b82f6;">${fmtNum(totalEntradas)} ${mp.um || 'Kg'}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #f59e0b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📤 TOTAL SALIDAS</div>
+        <div style="font-size:18px;font-weight:800;color:#f59e0b;">${fmtNum(totalSalidas)} ${mp.um || 'Kg'}</div>
+      </div>
+      ${stockRechazado > 0 ? `
+        <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #dc2626;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⚠ RECHAZADO CALIDAD</div>
+          <div style="font-size:18px;font-weight:800;color:#dc2626;">${fmtNum(stockRechazado)} ${mp.um || 'Kg'}</div>
+        </div>
+      ` : ''}
+    </div>
+    
+    <!-- TABS -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
+      <button class="tab-btn ${tab === 'lotes' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','lotes')">📦 Lotes activos (${lotesActivos.length})</button>
+      <button class="tab-btn ${tab === 'movimientos' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','movimientos')">📜 Movimientos (${movimientos.length})</button>
+      <button class="tab-btn ${tab === 'agotados' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','agotados')">🔴 Agotados (${lotesAgotados.length})</button>
+      ${lotesRechazados.length > 0 ? `
+        <button class="tab-btn ${tab === 'rechazados' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','rechazados')">⚠ Rechazados (${lotesRechazados.length})</button>
+      ` : ''}
+    </div>
+    
+    ${tab === 'lotes' ? renderLotesKardex(lotesActivos, mp, false) :
+      tab === 'movimientos' ? renderMovimientosKardex(movimientosMostrar, mp) :
+      tab === 'agotados' ? renderLotesKardex(lotesAgotados, mp, true) :
+      tab === 'rechazados' ? renderLotesKardex(lotesRechazados, mp, false, true) : ''}
+  `;
+}
+
+function renderLotesKardex(lotes, mp, agotados, rechazados) {
+  if (lotes.length === 0) {
+    return `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">${rechazados ? '⚠' : agotados ? '🔴' : '📦'}</div>
+        <div style="font-weight:700;color:#475569;">${rechazados ? 'No hay lotes rechazados' : agotados ? 'No hay lotes agotados' : 'No hay lotes activos'}</div>
+        ${!agotados && !rechazados ? `<div style="font-size:11px;margin-top:6px;">Los lotes aparecen aquí cuando ALP captura una recepción de OC</div>` : ''}
+      </div>
+    `;
+  }
+  
+  // Ordenar lotes activos por fecha asc (FIFO), agotados/rechazados por fecha desc
+  const ordenados = [...lotes].sort((a, b) => {
+    const ta = a.fecha_recepcion || '';
+    const tb = b.fecha_recepcion || '';
+    return agotados || rechazados ? tb.localeCompare(ta) : ta.localeCompare(tb);
+  });
+  
+  return `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      ${ordenados.map((l, idx) => {
+        const consumido = (Number(l.cantidad_inicial) || 0) - (Number(l.stock_actual) || 0);
+        const pctConsumido = l.cantidad_inicial > 0 ? (consumido / l.cantidad_inicial) * 100 : 0;
+        const rechazadoLote = l.estatus === 'rechazado_calidad';
+        const colorPrincipal = rechazadoLote ? '#dc2626' : agotados ? '#94a3b8' : '#16a34a';
+        const colorBg = rechazadoLote ? '#fef2f2' : agotados ? '#f8fafc' : '#f0fdf4';
+        
+        return `
+          <div class="panel" style="border-left:4px solid ${colorPrincipal};${rechazadoLote ? 'opacity:0.85;' : ''}">
+            <div style="padding:14px 18px;">
+              <!-- ENCABEZADO LOTE -->
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                <div>
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    ${!agotados && !rechazados ? `<span style="background:${idx === 0 ? '#16a34a' : '#94a3b8'};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:800;">${idx === 0 ? 'FIFO #1 (próximo a usar)' : 'FIFO #' + (idx + 1)}</span>` : ''}
+                    <span class="text-mono" style="font-weight:800;font-size:14px;color:#1e293b;">${l.lote_folio}</span>
+                    ${rechazadoLote ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">⚠ RECHAZADO</span>' : agotados ? '<span style="background:#e2e8f0;color:#475569;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">AGOTADO</span>' : '<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">ACTIVO</span>'}
+                  </div>
+                  <div style="font-size:12px;color:#475569;margin-top:6px;">
+                    <strong>🏭 ${l.proveedor || '—'}</strong>
+                    ${l.codigo_proveedor ? ` · Cód: <span class="text-mono">${l.codigo_proveedor}</span>` : ''}
+                  </div>
+                  ${l.lote_proveedor ? `<div style="font-size:11px;color:#7c3aed;margin-top:4px;font-weight:700;">🏷️ Lote del proveedor: <span class="text-mono">${l.lote_proveedor}</span></div>` : ''}
+                </div>
+                <div style="text-align:right;">
+                  <div style="font-size:10px;color:#64748b;font-weight:700;">STOCK DEL LOTE</div>
+                  <div style="font-size:20px;font-weight:800;color:${colorPrincipal};">${fmtNum(l.stock_actual || 0)} ${l.um || mp.um || 'Kg'}</div>
+                  <div style="font-size:10px;color:#64748b;margin-top:2px;">de ${fmtNum(l.cantidad_inicial || 0)} recibidos</div>
+                </div>
+              </div>
+              
+              <!-- BARRA DE CONSUMO -->
+              ${!rechazados ? `
+                <div style="margin-bottom:10px;">
+                  <div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;">
+                    <div style="height:100%;width:${pctConsumido}%;background:${pctConsumido > 80 ? '#dc2626' : pctConsumido > 50 ? '#f59e0b' : '#16a34a'};transition:width 0.3s;"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:#64748b;">
+                    <span>${fmtNum(consumido)} consumidos (${pctConsumido.toFixed(1)}%)</span>
+                    <span>${fmtNum(l.stock_actual || 0)} disponibles (${(100 - pctConsumido).toFixed(1)}%)</span>
+                  </div>
+                </div>
+              ` : ''}
+              
+              <!-- DETALLES EN GRID -->
+              <div style="background:${colorBg};border-radius:8px;padding:10px;display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:8px;font-size:11px;">
+                <div>
+                  <div style="color:#64748b;font-weight:700;font-size:10px;">📅 RECEPCIÓN</div>
+                  <div style="color:#1e293b;font-weight:700;">${l.fecha_recepcion || '—'}</div>
+                </div>
+                <div>
+                  <div style="color:#64748b;font-weight:700;font-size:10px;">📄 ${l.tipo_documento === 'factura' ? 'FACTURA' : 'REMISIÓN'}</div>
+                  <div style="color:#1e293b;font-weight:700;">${l.numero_documento || l.factura || l.remision || '—'}</div>
+                </div>
+                <div>
+                  <div style="color:#64748b;font-weight:700;font-size:10px;">📑 OC</div>
+                  <div class="text-mono" style="color:#7c3aed;font-weight:700;">${l.oc_folio || '—'}</div>
+                </div>
+                <div>
+                  <div style="color:#64748b;font-weight:700;font-size:10px;">📋 RC</div>
+                  <div class="text-mono" style="color:#475569;font-weight:700;">${l.rc_folio || '—'}</div>
+                </div>
+                ${l.costo_unitario ? `
+                  <div>
+                    <div style="color:#64748b;font-weight:700;font-size:10px;">💰 COSTO UNIT.</div>
+                    <div style="color:#1e293b;font-weight:700;">$${fmtNum((l.costo_unitario || 0).toFixed(2))}</div>
+                  </div>
+                  <div>
+                    <div style="color:#64748b;font-weight:700;font-size:10px;">💰 COSTO TOTAL</div>
+                    <div style="color:#1e293b;font-weight:700;">$${fmtNum((l.costo_total || 0).toFixed(2))}</div>
+                  </div>
+                ` : ''}
+                <div>
+                  <div style="color:#64748b;font-weight:700;font-size:10px;">👤 RECIBIDO POR</div>
+                  <div style="color:#1e293b;font-weight:700;">${l.recibido_por_nombre || '—'}</div>
+                </div>
+              </div>
+              
+              <!-- CERTIFICADO DE CALIDAD -->
+              ${l.certificado_numero || l.certificado_fecha || l.observaciones_calidad ? `
+                <div style="margin-top:10px;padding:10px;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;font-size:11px;">
+                  <div style="font-weight:800;color:#92400e;font-size:11px;margin-bottom:6px;">🔬 CERTIFICADO DE CALIDAD</div>
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:8px;color:#475569;">
+                    ${l.certificado_numero ? `<div><strong>N° cert.:</strong> ${l.certificado_numero}</div>` : ''}
+                    ${l.certificado_fecha ? `<div><strong>Fecha emisión:</strong> ${l.certificado_fecha}</div>` : ''}
+                    <div><strong>Estado:</strong> ${l.cumple_calidad === 'no' ? '<span style="color:#dc2626;font-weight:700;">✗ NO CUMPLE</span>' : '<span style="color:#16a34a;font-weight:700;">✓ CUMPLE</span>'}</div>
+                  </div>
+                  ${l.observaciones_calidad ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #fcd34d;font-style:italic;color:${rechazadoLote ? '#dc2626' : '#475569'};">${rechazadoLote ? '⚠' : '📝'} ${l.observaciones_calidad}</div>` : ''}
+                </div>
+              ` : ''}
+              
+              ${l.notas ? `
+                <div style="margin-top:8px;padding:8px;background:#f1f5f9;border-radius:6px;font-size:11px;color:#475569;">
+                  📝 <strong>Notas almacenista:</strong> ${l.notas}
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderMovimientosKardex(movimientos, mp) {
+  if (movimientos.length === 0) {
+    return `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📜</div>
+        <div style="font-weight:700;color:#475569;">Sin movimientos registrados todavía</div>
+        <div style="font-size:11px;margin-top:6px;">Los movimientos se generan automáticamente al recibir MP o al consumir en producción</div>
+      </div>
+    `;
+  }
+  
+  return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Fecha</th>
+            <th style="padding:10px 12px;text-align:center;font-weight:700;color:#475569;font-size:11px;">Tipo</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Lote NewPack</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Lote Prov.</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Origen / Destino</th>
+            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Cantidad</th>
+            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Saldo</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Usuario</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${movimientos.map(m => {
+            const esEntrada = m.tipo === 'entrada';
+            const esSalida = m.tipo === 'salida';
+            const colorTipo = esEntrada ? '#16a34a' : esSalida ? '#dc2626' : '#7c3aed';
+            const tipoLabel = esEntrada ? '📥 ENTRADA' : esSalida ? '📤 SALIDA' : '🔄 AJUSTE';
+            const origen = esEntrada ? (m.oc_folio || m.proveedor || 'Recepción OC') : 
+                           esSalida ? (m.odp_folio || m.destino || 'Consumo') : 
+                           'Ajuste manual';
+            
+            return `
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:8px 12px;font-size:11px;color:#475569;">${m.fecha || '—'}</td>
+                <td style="padding:8px 12px;text-align:center;">
+                  <span style="background:${colorTipo}22;color:${colorTipo};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:800;">${tipoLabel}</span>
+                </td>
+                <td style="padding:8px 12px;" class="text-mono" style="font-size:10px;">${m.lote_folio || '—'}</td>
+                <td style="padding:8px 12px;" class="text-mono" style="font-size:10px;color:#7c3aed;">${m.lote_proveedor || '—'}</td>
+                <td style="padding:8px 12px;font-size:11px;">${origen}</td>
+                <td style="padding:8px 12px;text-align:right;font-weight:800;color:${colorTipo};">${esSalida ? '-' : '+'}${fmtNum(m.cantidad || 0)} ${m.um || mp.um || 'Kg'}</td>
+                <td style="padding:8px 12px;text-align:right;font-weight:700;color:#1e293b;">${fmtNum(m.saldo || 0)}</td>
+                <td style="padding:8px 12px;font-size:10px;color:#64748b;">${m.usuario_nombre || '—'}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    
+    <div style="margin-top:14px;padding:12px;background:#eff6ff;border-radius:8px;font-size:11px;color:#475569;">
+      💡 <strong>Tip:</strong> Los movimientos se ordenan del más reciente al más antiguo. El saldo se calcula acumulativamente.
     </div>
   `;
 }
@@ -13220,6 +13531,7 @@ function attachAppEvents() {
     btn.onclick = () => {
       state.vista = btn.dataset.vista;
       state.filtros = {};
+      state.kardex_mp_codigo = null; // limpiar vista kardex
       render();
     };
   });
