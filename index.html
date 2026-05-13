@@ -6607,6 +6607,7 @@ function modalGenerarOC() {
       fecha_promesa: '',
       moneda: 'MXN',
       tipo_cambio: '',
+      con_iva: true, // default IVA 16% (MXN típico)
       costo_total: 0,
       observaciones: '',
       lineas: (rc.lineas || []).map(l => ({
@@ -6664,7 +6665,7 @@ function modalGenerarOC() {
           
           <!-- MONEDA Y TIPO DE CAMBIO -->
           <div style="padding:12px;background:#fffbeb;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
-            <div style="font-weight:800;color:#92400e;font-size:12px;margin-bottom:8px;">💱 Moneda</div>
+            <div style="font-weight:800;color:#92400e;font-size:12px;margin-bottom:8px;">💱 Moneda e impuestos</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;">
               <div class="field" style="margin:0;">
                 <label class="field-label">Moneda *</label>
@@ -6673,13 +6674,20 @@ function modalGenerarOC() {
                   <button onclick="window.modalFormSet('moneda','USD')" type="button" style="flex:1;padding:10px;border:2px solid ${f.moneda === 'USD' ? '#16a34a' : '#cbd5e1'};background:${f.moneda === 'USD' ? '#16a34a' : '#fff'};color:${f.moneda === 'USD' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">🇺🇸 USD (Dólares)</button>
                 </div>
               </div>
-              ${f.moneda === 'USD' ? `
-                <div class="field" style="margin:0;">
-                  <label class="field-label">Tipo de cambio referencia (MXN/USD)</label>
-                  <input class="input" id="oc-tc" type="number" min="0" step="0.01" value="${f.tipo_cambio || ''}" placeholder="Ej: 18.50" oninput="window.modalFormSetSilent('tipo_cambio', this.value)" />
+              <div class="field" style="margin:0;">
+                <label class="field-label">IVA 16%</label>
+                <div style="display:flex;gap:6px;">
+                  <button onclick="window.modalFormSet('con_iva',true)" type="button" style="flex:1;padding:10px;border:2px solid ${f.con_iva ? '#16a34a' : '#cbd5e1'};background:${f.con_iva ? '#16a34a' : '#fff'};color:${f.con_iva ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">✓ Con IVA</button>
+                  <button onclick="window.modalFormSet('con_iva',false)" type="button" style="flex:1;padding:10px;border:2px solid ${!f.con_iva ? '#dc2626' : '#cbd5e1'};background:${!f.con_iva ? '#dc2626' : '#fff'};color:${!f.con_iva ? '#fff' : '#dc2626'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">✗ Sin IVA</button>
                 </div>
-              ` : ''}
+              </div>
             </div>
+            ${f.moneda === 'USD' ? `
+              <div class="field" style="margin-top:10px;margin-bottom:0;">
+                <label class="field-label">Tipo de cambio referencia (MXN/USD)</label>
+                <input class="input" id="oc-tc" type="number" min="0" step="0.01" value="${f.tipo_cambio || ''}" placeholder="Ej: 18.50" oninput="window.modalFormSetSilent('tipo_cambio', this.value)" style="max-width:200px;" />
+              </div>
+            ` : ''}
           </div>
           
           <!-- LÍNEAS CON COSTOS -->
@@ -6719,21 +6727,31 @@ function modalGenerarOC() {
                   }).join('')}
                 </tbody>
                 <tfoot>
+                  <tr style="background:#f8fafc;">
+                    <td colspan="6" style="padding:8px 10px;text-align:right;font-weight:700;color:#475569;font-size:12px;">SUBTOTAL:</td>
+                    <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:12px;color:#475569;">$${fmtNum(totalCalc.toFixed(2))} <span style="font-size:10px;color:#94a3b8;">${f.moneda || 'MXN'}</span></td>
+                  </tr>
+                  ${f.con_iva ? `
+                    <tr style="background:#f8fafc;">
+                      <td colspan="6" style="padding:8px 10px;text-align:right;font-weight:700;color:#475569;font-size:12px;">IVA 16%:</td>
+                      <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:12px;color:#f59e0b;">$${fmtNum((totalCalc * 0.16).toFixed(2))} <span style="font-size:10px;color:#94a3b8;">${f.moneda || 'MXN'}</span></td>
+                    </tr>
+                  ` : ''}
                   <tr style="background:#f8fafc;border-top:2px solid #7c3aed;">
-                    <td colspan="6" style="padding:10px;text-align:right;font-weight:800;color:#475569;">TOTAL OC:</td>
-                    <td style="padding:10px;text-align:right;font-weight:800;font-size:14px;color:#7c3aed;">$${fmtNum(totalCalc.toFixed(2))} <span style="font-size:11px;color:#64748b;">${f.moneda || 'MXN'}</span></td>
+                    <td colspan="6" style="padding:10px;text-align:right;font-weight:800;color:#1e293b;font-size:13px;">TOTAL OC:</td>
+                    <td style="padding:10px;text-align:right;font-weight:800;font-size:15px;color:#7c3aed;">$${fmtNum((totalCalc * (f.con_iva ? 1.16 : 1)).toFixed(2))} <span style="font-size:11px;color:#64748b;">${f.moneda || 'MXN'}</span></td>
                   </tr>
                   ${f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? `
                     <tr style="background:#f0fdf4;">
                       <td colspan="6" style="padding:6px 10px;text-align:right;font-size:10px;color:#166534;font-style:italic;">Equivalente en MXN (TC ${fmtNum(Number(f.tipo_cambio).toFixed(2))}):</td>
-                      <td style="padding:6px 10px;text-align:right;font-weight:700;font-size:12px;color:#16a34a;">$${fmtNum((totalCalc * Number(f.tipo_cambio)).toFixed(2))} <span style="font-size:10px;">MXN</span></td>
+                      <td style="padding:6px 10px;text-align:right;font-weight:700;font-size:12px;color:#16a34a;">$${fmtNum((totalCalc * (f.con_iva ? 1.16 : 1) * Number(f.tipo_cambio)).toFixed(2))} <span style="font-size:10px;">MXN</span></td>
                     </tr>
                   ` : ''}
                 </tfoot>
               </table>
             </div>
             <div style="font-size:10px;color:#64748b;margin-top:6px;font-style:italic;">
-              💡 Los costos se capturan en la moneda seleccionada (${f.moneda || 'MXN'}). Los códigos de proveedor son opcionales pero recomendados.
+              💡 Los costos se capturan en ${f.moneda || 'MXN'} ${f.con_iva ? 'sin IVA · El IVA se calcula automáticamente al total' : '· Esta OC es SIN IVA'}.
             </div>
           </div>
           
@@ -6771,14 +6789,21 @@ window.seleccionarProveedorOC = (provId) => {
   state.modalForm.proveedor_id = prov.id;
   state.modalForm.proveedor = prov.razon_social;
   
-  // Auto-seleccionar moneda del proveedor
-  if (prov.moneda) {
-    state.modalForm.moneda = prov.moneda;
+  // Auto-seleccionar moneda del proveedor (forzar siempre)
+  const monedaProv = prov.moneda || 'MXN';
+  state.modalForm.moneda = monedaProv;
+  
+  // Auto-seleccionar manejo de IVA del proveedor
+  if (prov.maneja_iva !== undefined) {
+    state.modalForm.con_iva = prov.maneja_iva;
+  } else {
+    // Default: USD sin IVA, MXN con IVA
+    state.modalForm.con_iva = monedaProv === 'MXN';
   }
   
   // Auto-completar códigos del proveedor y costos de referencia en las líneas
+  let autoCompletadas = 0;
   if (prov.codigos && prov.codigos.length > 0 && state.modalForm.lineas) {
-    let autoCompletadas = 0;
     state.modalForm.lineas.forEach(linea => {
       const codigoPro = prov.codigos.find(c => c.mp_codigo === linea.mp_codigo);
       if (codigoPro) {
@@ -6791,12 +6816,13 @@ window.seleccionarProveedorOC = (provId) => {
         }
       }
     });
-    if (autoCompletadas > 0) {
-      toast(`✨ ${autoCompletadas} código(s) auto-completado(s) · Moneda: ${prov.moneda || 'MXN'}`, 'info');
-    } else if (prov.moneda) {
-      toast(`💱 Moneda: ${prov.moneda}`, 'info');
-    }
   }
+  
+  // Toast siempre, indicando moneda y códigos
+  const msgs = [`💱 ${monedaProv}`];
+  if (autoCompletadas > 0) msgs.push(`${autoCompletadas} código(s) auto`);
+  if (state.modalForm.con_iva) msgs.push('IVA 16%');
+  toast(`✨ ${prov.razon_social.substring(0,30)}: ${msgs.join(' · ')}`, 'info');
   
   render();
 };
@@ -6823,7 +6849,10 @@ window.confirmarGenerarOC = async (rcId) => {
   if (!fechaPromesa) { toast('Fecha de promesa obligatoria', 'error'); return; }
   
   // Calcular total
-  const totalCalc = (f.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0), 0);
+  const subtotalCalc = (f.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0), 0);
+  const conIVA = f.con_iva === true;
+  const ivaCalc = conIVA ? subtotalCalc * 0.16 : 0;
+  const totalCalc = subtotalCalc + ivaCalc;
   
   // Confirmar
   if (!confirm(
@@ -6832,7 +6861,9 @@ window.confirmarGenerarOC = async (rcId) => {
     `🏭 Proveedor: ${proveedor}\n` +
     `🎯 Fecha promesa: ${fechaPromesa}\n` +
     `💱 Moneda: ${f.moneda || 'MXN'}\n` +
-    `💰 Total: $${fmtNum(totalCalc.toFixed(2))} ${f.moneda || 'MXN'}\n` +
+    `\nSubtotal: $${fmtNum(subtotalCalc.toFixed(2))} ${f.moneda || 'MXN'}\n` +
+    (conIVA ? `IVA 16%: $${fmtNum(ivaCalc.toFixed(2))} ${f.moneda || 'MXN'}\n` : 'SIN IVA\n') +
+    `💰 TOTAL: $${fmtNum(totalCalc.toFixed(2))} ${f.moneda || 'MXN'}\n` +
     (f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? `   Equivalente: $${fmtNum((totalCalc * Number(f.tipo_cambio)).toFixed(2))} MXN (TC ${f.tipo_cambio})\n` : '') +
     `\nDespués de generar:\n` +
     `• La RC pasa a estatus "OC Generada"\n` +
@@ -6878,6 +6909,9 @@ window.confirmarGenerarOC = async (rcId) => {
       fecha_promesa: fechaPromesa,
       moneda: f.moneda || 'MXN',
       tipo_cambio: Number(f.tipo_cambio) || 0,
+      con_iva: conIVA,
+      subtotal: subtotalCalc,
+      iva: ivaCalc,
       lineas: lineasLimpias,
       costo_total: totalCalc,
       costo_total_mxn: f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? totalCalc * Number(f.tipo_cambio) : totalCalc,
@@ -7462,6 +7496,8 @@ function renderTarjetaProveedor(p, puedeEditar) {
               ${p.terminos_pago ? `<strong>💳 ${p.terminos_pago}</strong>` : ''}
               ${(p.rfc || p.terminos_pago) && p.moneda ? ' · ' : ''}
               ${p.moneda ? `<strong style="color:${p.moneda === 'USD' ? '#16a34a' : '#7c3aed'};">${p.moneda === 'USD' ? '🇺🇸 USD' : '🇲🇽 MXN'}</strong>` : ''}
+              ${p.moneda && p.maneja_iva !== undefined ? ' · ' : ''}
+              ${p.maneja_iva !== undefined ? `<span style="color:${p.maneja_iva ? '#16a34a' : '#dc2626'};font-weight:700;">${p.maneja_iva ? 'IVA 16%' : 'Sin IVA'}</span>` : ''}
             </div>
             ${p.direccion ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">📍 ${p.direccion}</div>` : ''}
             ${(p.contacto_nombre || p.telefono || p.email) ? `
@@ -7529,7 +7565,11 @@ function modalProveedor(esEdicion) {
   if (esEdicion && !prov) return '';
   
   if (!state.modalForm) {
-    state.modalForm = prov ? { ...prov, moneda: prov.moneda || 'MXN' } : {
+    state.modalForm = prov ? { 
+      ...prov, 
+      moneda: prov.moneda || 'MXN',
+      maneja_iva: prov.maneja_iva !== undefined ? prov.maneja_iva : (prov.moneda === 'USD' ? false : true)
+    } : {
       razon_social: '',
       rfc: '',
       direccion: '',
@@ -7538,6 +7578,7 @@ function modalProveedor(esEdicion) {
       email: '',
       terminos_pago: '',
       moneda: 'MXN',
+      maneja_iva: true,
       notas: ''
     };
   }
@@ -7611,6 +7652,15 @@ function modalProveedor(esEdicion) {
           </div>
           
           <div class="field">
+            <label class="field-label">¿Maneja IVA?</label>
+            <div style="display:flex;gap:6px;max-width:300px;">
+              <button onclick="window.modalFormSet('maneja_iva',true)" type="button" style="flex:1;padding:10px;border:2px solid ${f.maneja_iva ? '#16a34a' : '#cbd5e1'};background:${f.maneja_iva ? '#16a34a' : '#fff'};color:${f.maneja_iva ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">✓ Con IVA 16%</button>
+              <button onclick="window.modalFormSet('maneja_iva',false)" type="button" style="flex:1;padding:10px;border:2px solid ${!f.maneja_iva ? '#dc2626' : '#cbd5e1'};background:${!f.maneja_iva ? '#dc2626' : '#fff'};color:${!f.maneja_iva ? '#fff' : '#dc2626'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">✗ Sin IVA</button>
+            </div>
+            <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Algunos proveedores extranjeros facturan sin IVA. Se aplica automáticamente al generar la OC.</div>
+          </div>
+          
+          <div class="field">
             <label class="field-label">Notas adicionales</label>
             <textarea class="input" id="prov-notas" style="min-height:50px;" placeholder="Información complementaria, acuerdos, etc." oninput="window.modalFormSetSilent('notas', this.value)">${f.notas || ''}</textarea>
           </div>
@@ -7635,6 +7685,7 @@ window.confirmarProveedor = async (id) => {
   const email = ($('#prov-email')?.value || f.email || '').trim();
   const terminos = ($('#prov-pago')?.value || f.terminos_pago || '').trim();
   const moneda = f.moneda || 'MXN';
+  const maneja_iva = f.maneja_iva !== false; // por default true
   const notas = ($('#prov-notas')?.value || f.notas || '').trim();
   
   if (!razon) { toast('Razón social obligatoria', 'error'); return; }
@@ -7650,6 +7701,7 @@ window.confirmarProveedor = async (id) => {
       email: email,
       terminos_pago: terminos,
       moneda: moneda,
+      maneja_iva: maneja_iva,
       notas: notas,
       updated_at: serverTimestamp()
     };
@@ -8020,6 +8072,7 @@ function renderTarjetaOC(oc, esCOMP) {
           <div style="text-align:right;">
             ${oc.costo_total ? `
               <div style="font-size:16px;font-weight:800;color:#7c3aed;">$${fmtNum((oc.costo_total||0).toFixed(2))} <span style="font-size:11px;color:#64748b;">${oc.moneda || 'MXN'}</span></div>
+              <div style="font-size:10px;color:${oc.con_iva ? '#16a34a' : '#dc2626'};margin-top:1px;font-weight:700;">${oc.con_iva ? '✓ Con IVA 16%' : '✗ Sin IVA'}</div>
               ${oc.moneda === 'USD' && Number(oc.tipo_cambio) > 0 ? `<div style="font-size:10px;color:#16a34a;margin-top:1px;">≈ $${fmtNum(((oc.costo_total||0) * Number(oc.tipo_cambio)).toFixed(2))} MXN</div>` : ''}
             ` : ''}
             <div style="font-size:11px;color:#64748b;margin-top:2px;">${lineas.length} línea(s)</div>
@@ -9692,18 +9745,51 @@ window.imprimirOCPDF = (ocId) => {
       y += 7;
     });
     
-    // Total
+    // Totales
     y += 2;
     const monedaOC = oc.moneda || 'MXN';
     const tcOC = Number(oc.tipo_cambio) || 0;
+    const conIvaOC = oc.con_iva === true;
+    const ivaOC = conIvaOC ? subtotalTotal * 0.16 : 0;
+    const totalConIva = subtotalTotal + ivaOC;
     
+    // Subtotal
+    docPDF.setFillColor(248, 250, 252);
+    docPDF.rect(120, y, 76, 7, 'F');
+    docPDF.setTextColor(71, 85, 105);
+    docPDF.setFontSize(9);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text(`Subtotal:`, 124, y + 5);
+    docPDF.text('$' + fmtNum(subtotalTotal.toFixed(2)) + ' ' + monedaOC, 192, y + 5, { align: 'right' });
+    y += 7;
+    
+    // IVA si aplica
+    if (conIvaOC) {
+      docPDF.setFillColor(254, 243, 199);
+      docPDF.rect(120, y, 76, 7, 'F');
+      docPDF.setTextColor(146, 64, 14);
+      docPDF.setFontSize(9);
+      docPDF.text(`IVA 16%:`, 124, y + 5);
+      docPDF.text('$' + fmtNum(ivaOC.toFixed(2)) + ' ' + monedaOC, 192, y + 5, { align: 'right' });
+      y += 7;
+    } else {
+      docPDF.setFillColor(254, 226, 226);
+      docPDF.rect(120, y, 76, 7, 'F');
+      docPDF.setTextColor(153, 27, 27);
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'italic');
+      docPDF.text(`SIN IVA`, 124, y + 5);
+      y += 7;
+    }
+    
+    // Total
     docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
     docPDF.rect(120, y, 76, 10, 'F');
     docPDF.setTextColor(255, 255, 255);
-    docPDF.setFontSize(10);
+    docPDF.setFontSize(11);
     docPDF.setFont('helvetica', 'bold');
-    docPDF.text(`TOTAL ${monedaOC}:`, 124, y + 6.5);
-    docPDF.text('$' + fmtNum(subtotalTotal.toFixed(2)), 192, y + 6.5, { align: 'right' });
+    docPDF.text(`TOTAL ${monedaOC}:`, 124, y + 6.8);
+    docPDF.text('$' + fmtNum(totalConIva.toFixed(2)), 192, y + 6.8, { align: 'right' });
     y += 12;
     
     // Si es USD, mostrar equivalente en MXN
@@ -9715,7 +9801,7 @@ window.imprimirOCPDF = (ocId) => {
       docPDF.setFont('helvetica', 'italic');
       docPDF.text(`Equiv. MXN (TC ${fmtNum(tcOC.toFixed(2))}):`, 124, y + 4.5);
       docPDF.setFont('helvetica', 'bold');
-      docPDF.text('$' + fmtNum((subtotalTotal * tcOC).toFixed(2)), 192, y + 4.5, { align: 'right' });
+      docPDF.text('$' + fmtNum((totalConIva * tcOC).toFixed(2)), 192, y + 4.5, { align: 'right' });
       y += 9;
     } else {
       y += 2;
