@@ -671,6 +671,30 @@ window.siguienteFolio = siguienteFolio;
 // RENDER
 // ============================================================
 function render() {
+  // Si el usuario está escribiendo en un input, posponer el render
+  // (esto evita perder foco cuando Firestore actualiza datos en background)
+  const activoTag = document.activeElement?.tagName;
+  if ((activoTag === 'INPUT' || activoTag === 'TEXTAREA') && state._renderProgrammatic !== true && state._forzarRender !== true) {
+    // Diferir el render 500ms; si el usuario sigue escribiendo, se reinicia
+    if (state._renderTimer) clearTimeout(state._renderTimer);
+    state._renderTimer = setTimeout(() => {
+      state._renderProgrammatic = true;
+      _doRender();
+      state._renderProgrammatic = false;
+    }, 500);
+    return;
+  }
+  state._forzarRender = false;
+  _doRender();
+}
+
+// Para forzar un re-render inmediato (botones, toggles, etc.)
+window.forzarRender = () => {
+  state._forzarRender = true;
+  render();
+};
+
+function _doRender() {
   const root = $('#app');
   if (!state.user) {
     root.innerHTML = renderLogin();
@@ -682,7 +706,17 @@ function render() {
     return;
   }
   
-  // Preservar scroll del modal body o vista principal antes del render
+  // Preservar foco y scroll antes del render
+  const activo = document.activeElement;
+  const idActivo = activo?.id || null;
+  const nombreActivo = activo?.name || null;
+  const tagActivo = activo?.tagName;
+  const esInput = tagActivo === 'INPUT' || tagActivo === 'TEXTAREA' || tagActivo === 'SELECT';
+  const posSel = (esInput && activo?.selectionStart != null) ? activo.selectionStart : null;
+  const posSelEnd = (esInput && activo?.selectionEnd != null) ? activo.selectionEnd : null;
+  const valorActivo = esInput ? activo.value : null;
+  
+  // Preservar scroll del modal body o vista principal
   const modalBodyOld = document.querySelector('.modal-body');
   const scrollModal = modalBodyOld ? modalBodyOld.scrollTop : null;
   const scrollMain = window.scrollY;
@@ -690,13 +724,28 @@ function render() {
   root.innerHTML = renderApp();
   attachAppEvents();
   
-  // Restaurar scroll después del render
+  // Restaurar scroll
   if (scrollModal != null) {
     const modalBodyNew = document.querySelector('.modal-body');
     if (modalBodyNew) modalBodyNew.scrollTop = scrollModal;
   }
   if (scrollMain > 0) {
     window.scrollTo(0, scrollMain);
+  }
+  
+  // Restaurar foco si el elemento existe
+  if (esInput && idActivo) {
+    const nuevo = document.getElementById(idActivo);
+    if (nuevo) {
+      // Si el valor cambió por re-render (típico de inputs sincronizados), respetar el del DOM
+      // Pero si tenemos posición, restaurarla
+      try {
+        nuevo.focus();
+        if (posSel != null && nuevo.setSelectionRange) {
+          nuevo.setSelectionRange(posSel, posSelEnd != null ? posSelEnd : posSel);
+        }
+      } catch(e) {}
+    }
   }
 }
 window.render = render;
@@ -2323,15 +2372,22 @@ function calcularFasePI(p) {
     ['preparando','lista_embarcar','por_cargar','pendiente_asignar'].includes(o.estatus)
   ).length;
   
+  // Tarimas del PI (para validar embarque por tarima si OVs no se cerraron)
+  const tarimasPItmp = state.tarimas.filter(t => t.pedido_folio === p.folio || t.pedido_id === p.id);
+  const tarimasEmbarcadasTmp = tarimasPItmp.filter(t => ['embarcada','entregada'].includes(t.estatus)).length;
+  const todasTarimasEmbarcadas = tarimasPItmp.length > 0 && tarimasEmbarcadasTmp === tarimasPItmp.length;
+  
   if (ovsTotales > 0 && ovsCompletadas === ovsTotales) {
     fases[5].completada = true;
-  } else if (ovsEnProgreso > 0 || ovsCompletadas > 0) {
+  } else if (todasTarimasEmbarcadas) {
+    // Si todas las tarimas físicamente ya están entregadas, considerar embarque completo
+    fases[5].completada = true;
+  } else if (ovsEnProgreso > 0 || ovsCompletadas > 0 || tarimasEmbarcadasTmp > 0) {
     fases[5].en_curso = true;
   }
   
-  // ===== Si las OVs están completadas, marcar todo lo anterior como completado también =====
-  // Porque significa que el material se entregó al cliente (todo el flujo se cumplió)
-  const todoEntregado = ovsTotales > 0 && ovsCompletadas === ovsTotales;
+  // ===== Si las OVs están completadas O todas las tarimas embarcadas, marcar todo lo anterior =====
+  const todoEntregado = (ovsTotales > 0 && ovsCompletadas === ovsTotales) || todasTarimasEmbarcadas;
   
   // Producción
   if (todoEntregado) {
@@ -3062,6 +3118,10 @@ window.modalFormSetSilent = (key, val) => {
 window.modalFormSet = (key, val) => {
   if (!state.modalForm) state.modalForm = {};
   state.modalForm[key] = val;
+  // Si está en un input, blur antes de forzar (evita pelearnos por el foco)
+  const a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) a.blur();
+  state._forzarRender = true;
   render();
 };
 
@@ -11645,6 +11705,25 @@ window.marcarOVEntregada = async (ovId) => {
         created_at: serverTimestamp()
       });
     });
+    
+    // ⭐ Verificar si TODAS las OVs del PI están entregadas → cerrar PI
+    const pedidoFolio = ov.pedido_folio;
+    if (pedidoFolio) {
+      const pedido = state.pedidos.find(p => p.folio === pedidoFolio);
+      if (pedido && pedido.estatus !== 'completado') {
+        const ovsDelPedido = state.ordenes_venta.filter(o => o.pedido_folio === pedidoFolio);
+        const otrasEntregadas = ovsDelPedido.filter(o => o.id !== ov.id && ['entregada','enviada','completada'].includes(o.estatus));
+        // Si esta OV + las otras entregadas = total OVs, cerrar PI
+        if (otrasEntregadas.length + 1 === ovsDelPedido.length) {
+          batch.update(doc(db, 'pedidos', pedido.id), {
+            estatus: 'completado',
+            completado_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          });
+        }
+      }
+    }
+    
     await batch.commit();
     toast(`🏁 ${ov.folio} ENTREGADA`);
   } catch (e) {
@@ -18207,4 +18286,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
