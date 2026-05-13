@@ -4345,6 +4345,11 @@ function renderTarjetaMaquina(m, puedeEditar) {
         ${inactiva ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVA</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVA</span>`}
       </div>
       ${m.capacidad_kg_hr ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">⚡ Capacidad: <strong>${fmtNum(m.capacidad_kg_hr)} kg/hr</strong></div>` : ''}
+      ${m.proceso_codigo === 'P1-EXT' && m.coex_capas ? `
+        <div style="font-size:11px;color:${m.coex_capas === 1 ? '#16a34a' : m.coex_capas === 2 ? '#3b82f6' : '#7c3aed'};margin-top:4px;font-weight:700;">
+          ⚙️ Coex ${m.coex_capas} · ${m.coex_capas === 1 ? 'Mono-capa (A)' : m.coex_capas === 2 ? 'Bi-capa (A+B)' : 'Tri-capa (A+B+C)'}
+        </div>
+      ` : ''}
       ${m.observaciones && !m.observaciones.startsWith('Código anterior') ? `<div style="font-size:11px;color:#64748b;margin-top:4px;font-style:italic;">${m.observaciones}</div>` : ''}
       ${puedeEditar ? `
         <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;">
@@ -4479,13 +4484,15 @@ function modalMaquina(esEdicion) {
   if (esEdicion && !m) return '';
   
   if (!state.modalForm) {
-    state.modalForm = m ? { ...m } : { codigo: '', nombre: '', proceso_codigo: '', capacidad_kg_hr: '', activa: true, observaciones: '' };
+    state.modalForm = m ? { ...m, coex_capas: m.coex_capas || 1 } : { codigo: '', nombre: '', proceso_codigo: '', capacidad_kg_hr: '', coex_capas: 1, activa: true, observaciones: '' };
   }
   const f = state.modalForm;
   
+  const esExtrusion = f.proceso_codigo === 'P1-EXT';
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:520px;">
+      <div class="modal" style="max-width:560px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '➕ Nueva'} máquina</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
@@ -4502,11 +4509,33 @@ function modalMaquina(esEdicion) {
           </div>
           <div class="field">
             <label class="field-label">Proceso al que pertenece *</label>
-            <select class="input" id="maq-proceso">
+            <select class="input" id="maq-proceso" onchange="window.modalFormSet('proceso_codigo', this.value)">
               <option value="">— Selecciona proceso —</option>
               ${PROCESOS.map(p => `<option value="${p.codigo}" ${f.proceso_codigo === p.codigo ? 'selected' : ''}>${p.icono} ${p.codigo} — ${p.nombre}</option>`).join('')}
             </select>
           </div>
+          
+          ${esExtrusion ? `
+            <div class="field">
+              <label class="field-label">⚙️ Configuración de coextrusión *</label>
+              <div style="display:flex;gap:6px;">
+                <button onclick="window.modalFormSet('coex_capas',1)" type="button" style="flex:1;padding:10px 6px;border:2px solid ${f.coex_capas === 1 ? '#16a34a' : '#cbd5e1'};background:${f.coex_capas === 1 ? '#16a34a' : '#fff'};color:${f.coex_capas === 1 ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;text-align:center;">
+                  <div style="font-size:14px;">Coex 1</div>
+                  <div style="font-size:9px;font-weight:600;opacity:0.85;">Mono-capa · 1 cañón (A)</div>
+                </button>
+                <button onclick="window.modalFormSet('coex_capas',2)" type="button" style="flex:1;padding:10px 6px;border:2px solid ${f.coex_capas === 2 ? '#3b82f6' : '#cbd5e1'};background:${f.coex_capas === 2 ? '#3b82f6' : '#fff'};color:${f.coex_capas === 2 ? '#fff' : '#3b82f6'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;text-align:center;">
+                  <div style="font-size:14px;">Coex 2</div>
+                  <div style="font-size:9px;font-weight:600;opacity:0.85;">Bi-capa · 2 cañones (A+B)</div>
+                </button>
+                <button onclick="window.modalFormSet('coex_capas',3)" type="button" style="flex:1;padding:10px 6px;border:2px solid ${f.coex_capas === 3 ? '#7c3aed' : '#cbd5e1'};background:${f.coex_capas === 3 ? '#7c3aed' : '#fff'};color:${f.coex_capas === 3 ? '#fff' : '#7c3aed'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;text-align:center;">
+                  <div style="font-size:14px;">Coex 3</div>
+                  <div style="font-size:9px;font-weight:600;opacity:0.85;">Tri-capa · 3 cañones (A+B+C)</div>
+                </button>
+              </div>
+              <div style="font-size:10px;color:#64748b;margin-top:6px;line-height:1.4;">💡 Define cuántos cañones tiene la máquina. Los <strong>% de espesor de cada capa</strong> y la <strong>receta de cada cañón</strong> se configuran en cada producto PT.</div>
+            </div>
+          ` : ''}
+          
           <div class="field">
             <label class="field-label">Capacidad (kg/hr) <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
             <input class="input" id="maq-cap" type="number" min="0" step="0.1" value="${f.capacidad_kg_hr || ''}" placeholder="0" />
@@ -4548,6 +4577,7 @@ window.confirmarMaquina = async (id) => {
       nombre,
       proceso_codigo: proceso,
       capacidad_kg_hr: cap,
+      coex_capas: proceso === 'P1-EXT' ? (Number(state.modalForm?.coex_capas) || 1) : 0,
       observaciones: obs,
       updated_at: serverTimestamp()
     };
@@ -8568,6 +8598,9 @@ window.cerrarKardexMP = () => {
 };
 
 function renderKardexMP(mpCodigo) {
+  const u = state.user || {};
+  const puedeVerCostos = ['PLN', 'COMP', 'CEO', 'ADMIN'].includes(u.depto) || u.rol === 'admin';
+  
   const mp = (state.materias_primas || []).find(m => m.codigo === mpCodigo);
   if (!mp) {
     setTimeout(() => { state.kardex_mp_codigo = null; render(); }, 0);
@@ -8663,14 +8696,14 @@ function renderKardexMP(mpCodigo) {
       ` : ''}
     </div>
     
-    ${tab === 'lotes' ? renderLotesKardex(lotesActivos, mp, false) :
-      tab === 'movimientos' ? renderMovimientosKardex(movimientosMostrar, mp) :
-      tab === 'agotados' ? renderLotesKardex(lotesAgotados, mp, true) :
-      tab === 'rechazados' ? renderLotesKardex(lotesRechazados, mp, false, true) : ''}
+    ${tab === 'lotes' ? renderLotesKardex(lotesActivos, mp, false, false, puedeVerCostos) :
+      tab === 'movimientos' ? renderMovimientosKardex(movimientosMostrar, mp, puedeVerCostos) :
+      tab === 'agotados' ? renderLotesKardex(lotesAgotados, mp, true, false, puedeVerCostos) :
+      tab === 'rechazados' ? renderLotesKardex(lotesRechazados, mp, false, true, puedeVerCostos) : ''}
   `;
 }
 
-function renderLotesKardex(lotes, mp, agotados, rechazados) {
+function renderLotesKardex(lotes, mp, agotados, rechazados, puedeVerCostos) {
   if (lotes.length === 0) {
     return `
       <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
@@ -8752,7 +8785,7 @@ function renderLotesKardex(lotes, mp, agotados, rechazados) {
                   <div style="color:#64748b;font-weight:700;font-size:10px;">📋 RC</div>
                   <div class="text-mono" style="color:#475569;font-weight:700;">${l.rc_folio || '—'}</div>
                 </div>
-                ${l.costo_unitario ? `
+                ${l.costo_unitario && puedeVerCostos ? `
                   <div>
                     <div style="color:#64748b;font-weight:700;font-size:10px;">💰 COSTO UNIT.</div>
                     <div style="color:#1e293b;font-weight:700;">$${fmtNum((l.costo_unitario || 0).toFixed(2))}</div>
@@ -8794,7 +8827,7 @@ function renderLotesKardex(lotes, mp, agotados, rechazados) {
   `;
 }
 
-function renderMovimientosKardex(movimientos, mp) {
+function renderMovimientosKardex(movimientos, mp, puedeVerCostos) {
   if (movimientos.length === 0) {
     return `
       <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
@@ -13253,6 +13286,21 @@ function modalEditarProductoPT() {
       };
     });
     
+    // Migrar formulación antigua a capas si es necesario
+    let capasInicial = p.capas;
+    let numCapasInicial = p.num_capas || 1;
+    if (!capasInicial && p.formulacion && p.formulacion.length > 0) {
+      numCapasInicial = 1;
+      capasInicial = [{
+        letra: 'A',
+        porcentaje_capa: 100,
+        ingredientes: p.formulacion.map(r => ({ ...r }))
+      }];
+    } else if (!capasInicial) {
+      numCapasInicial = 1;
+      capasInicial = [{ letra: 'A', porcentaje_capa: 100, ingredientes: [] }];
+    }
+    
     state.modalForm = {
       descripcion: p.descripcion || '',
       um: (p.um || 'kg').toLowerCase(),
@@ -13261,7 +13309,9 @@ function modalEditarProductoPT() {
       um_empaque: p.um_empaque || '',
       busqClientes: '',
       clientesAsignados: relacionesExistentes,
-      relacionesOriginales: { ...relacionesExistentes } // para detectar cambios
+      relacionesOriginales: { ...relacionesExistentes },
+      num_capas: numCapasInicial,
+      capas: JSON.parse(JSON.stringify(capasInicial))
     };
   }
   const f = state.modalForm;
@@ -13347,6 +13397,9 @@ function modalEditarProductoPT() {
             </div>
           </div>
           
+          <!-- FORMULACIÓN / RECETA -->
+          ${renderBloqueFormulacion(f)}
+          
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
           <button class="btn-secondary" onclick="if(confirm('¿Desactivar este producto? Ya no aparecerá en las búsquedas.'))desactivarProductoPT('${p.codigo}')" style="background:#fee2e2;color:#dc2626;">${ICONS.trash} Desactivar</button>
@@ -13357,6 +13410,262 @@ function modalEditarProductoPT() {
     </div>
   `;
 }
+
+function renderBloqueFormulacion(f) {
+  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false && ['resina', 'aditivo', 'pigmento', 'reciclado'].includes(mp.tipo));
+  
+  // Estructura nueva: capas
+  // f.num_capas = 1, 2 o 3
+  // f.capas = [
+  //   { letra: 'A', porcentaje_capa: 100, ingredientes: [{mp_codigo, descripcion, porcentaje}] },
+  //   ...
+  // ]
+  
+  // Migración: si existe formulación antigua (plano sin capas), convertirla
+  if (!f.capas) {
+    if (f.formulacion && f.formulacion.length > 0) {
+      // migrar formato antiguo
+      f.num_capas = 1;
+      f.capas = [{
+        letra: 'A',
+        porcentaje_capa: 100,
+        ingredientes: f.formulacion.map(r => ({ ...r }))
+      }];
+    } else {
+      f.num_capas = 1;
+      f.capas = [{ letra: 'A', porcentaje_capa: 100, ingredientes: [] }];
+    }
+  }
+  
+  if (!f.num_capas) f.num_capas = f.capas.length || 1;
+  
+  // Total % de capas (siempre debe sumar 100)
+  const totalCapasPct = (f.capas || []).reduce((s, c) => s + (Number(c.porcentaje_capa) || 0), 0);
+  const capasOk = Math.abs(totalCapasPct - 100) < 0.01;
+  
+  return `
+    <div style="margin-top:18px;padding:14px;background:#fffbeb;border:2px solid #f59e0b;border-radius:10px;">
+      <div style="font-weight:800;color:#92400e;font-size:14px;margin-bottom:8px;">
+        🧪 Formulación / Receta del producto
+      </div>
+      
+      <!-- SELECTOR DE COEXTRUSIÓN -->
+      <div style="background:#fff;border:1px solid #fcd34d;border-radius:8px;padding:10px;margin-bottom:10px;">
+        <div style="font-weight:700;font-size:11px;color:#92400e;margin-bottom:6px;">⚙️ Tipo de coextrusión</div>
+        <div style="display:flex;gap:6px;">
+          <button onclick="window.cambiarNumCapas(1)" type="button" style="flex:1;padding:8px;border:2px solid ${f.num_capas === 1 ? '#16a34a' : '#cbd5e1'};background:${f.num_capas === 1 ? '#16a34a' : '#fff'};color:${f.num_capas === 1 ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:11px;cursor:pointer;">Coex 1 (A)</button>
+          <button onclick="window.cambiarNumCapas(2)" type="button" style="flex:1;padding:8px;border:2px solid ${f.num_capas === 2 ? '#3b82f6' : '#cbd5e1'};background:${f.num_capas === 2 ? '#3b82f6' : '#fff'};color:${f.num_capas === 2 ? '#fff' : '#3b82f6'};border-radius:8px;font-weight:800;font-size:11px;cursor:pointer;">Coex 2 (A+B)</button>
+          <button onclick="window.cambiarNumCapas(3)" type="button" style="flex:1;padding:8px;border:2px solid ${f.num_capas === 3 ? '#7c3aed' : '#cbd5e1'};background:${f.num_capas === 3 ? '#7c3aed' : '#fff'};color:${f.num_capas === 3 ? '#fff' : '#7c3aed'};border-radius:8px;font-weight:800;font-size:11px;cursor:pointer;">Coex 3 (A+B+C)</button>
+        </div>
+      </div>
+      
+      <!-- INDICADOR DE TOTAL CAPAS -->
+      <div style="background:${capasOk ? '#dcfce7' : '#fee2e2'};padding:8px 12px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:11px;font-weight:700;color:${capasOk ? '#166534' : '#991b1b'};">📊 Suma de espesores de capas:</span>
+        <span style="font-size:13px;font-weight:800;color:${capasOk ? '#16a34a' : '#dc2626'};">${totalCapasPct.toFixed(2)}% ${capasOk ? '✓' : totalCapasPct > 100 ? '⚠ excede 100%' : `⏳ faltan ${(100 - totalCapasPct).toFixed(2)}%`}</span>
+      </div>
+      
+      <!-- CAPAS -->
+      ${(f.capas || []).map((capa, capaIdx) => renderCapaFormulacion(capa, capaIdx, mps)).join('')}
+      
+      <div style="margin-top:10px;font-size:10px;color:#64748b;line-height:1.4;">
+        💡 <strong>% capa</strong>: qué porcentaje del producto representa esta capa (espesor).<br>
+        💡 <strong>% ingrediente</strong>: porcentaje dentro del cañón de esa capa (debe sumar 100% en cada cañón).<br>
+        💡 Al cerrar Extrusión, el sistema descontará cada MP automáticamente con FIFO.
+      </div>
+    </div>
+  `;
+}
+
+function renderCapaFormulacion(capa, capaIdx, mps) {
+  const letra = capa.letra || ['A','B','C'][capaIdx];
+  const color = ['#16a34a', '#3b82f6', '#7c3aed'][capaIdx];
+  const colorBg = ['#f0fdf4', '#eff6ff', '#faf5ff'][capaIdx];
+  
+  const ingredientes = capa.ingredientes || [];
+  const totalIngrPct = ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
+  const ingrOk = Math.abs(totalIngrPct - 100) < 0.01;
+  
+  // MPs disponibles (sin las ya agregadas a esta capa)
+  const yaUsados = new Set(ingredientes.map(r => r.mp_codigo));
+  const disponibles = mps.filter(mp => !yaUsados.has(mp.codigo));
+  
+  return `
+    <div style="background:${colorBg};border:2px solid ${color};border-radius:10px;padding:12px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:36px;height:36px;background:${color};color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;">${letra}</div>
+          <div>
+            <div style="font-weight:800;color:${color};font-size:13px;">CAPA / CAÑÓN ${letra}</div>
+            <div style="font-size:10px;color:#64748b;">${ingredientes.length} ingrediente(s)</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <label style="font-size:11px;color:#475569;font-weight:700;">% espesor:</label>
+          <input class="input" type="number" min="0" max="100" step="0.01" value="${capa.porcentaje_capa || ''}" oninput="window.actualizarPorcentajeCapa(${capaIdx}, this.value)" style="width:80px;text-align:right;font-weight:800;padding:4px 8px;font-size:13px;" />
+          <span style="font-size:12px;color:#475569;font-weight:700;">%</span>
+        </div>
+      </div>
+      
+      <!-- AGREGAR INGREDIENTE A ESTA CAPA -->
+      <div style="background:#fff;border:1px solid ${color}55;border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:6px;">
+          <select class="input" id="capa-mp-${capaIdx}" style="font-size:11px;padding:6px;">
+            <option value="">— Materia prima —</option>
+            ${disponibles.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `
+              <option value="${mp.codigo}" data-desc="${mp.descripcion}">${mp.codigo} — ${mp.descripcion}</option>
+            `).join('')}
+          </select>
+          <input class="input" id="capa-pct-${capaIdx}" type="number" min="0" max="100" step="0.01" placeholder="%" style="font-size:11px;padding:6px;" />
+          <button onclick="window.agregarIngredienteCapa(${capaIdx})" style="padding:6px;background:${color};color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">➕ Agregar</button>
+        </div>
+      </div>
+      
+      ${ingredientes.length === 0 ? `
+        <div style="padding:12px;text-align:center;color:#94a3b8;background:#fff;border-radius:6px;border:1px dashed #cbd5e1;font-size:11px;">
+          🧪 Sin ingredientes en esta capa. Agrégalos arriba.
+        </div>
+      ` : `
+        <div style="background:#fff;border-radius:6px;overflow:hidden;border:1px solid ${color}55;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="background:${color}22;">
+                <th style="padding:4px 8px;text-align:left;font-weight:700;color:${color};font-size:10px;">MP</th>
+                <th style="padding:4px 8px;text-align:left;font-weight:700;color:${color};font-size:10px;">Descripción</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:700;color:${color};font-size:10px;">% Cañón</th>
+                <th style="padding:4px 8px;text-align:right;font-weight:700;color:${color};font-size:10px;">% Producto</th>
+                <th style="padding:4px 8px;text-align:center;font-weight:700;color:${color};font-size:10px;">×</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${ingredientes.map((r, ingrIdx) => {
+                const pctReal = (Number(r.porcentaje) || 0) * (Number(capa.porcentaje_capa) || 0) / 100;
+                return `
+                  <tr style="border-bottom:1px solid ${color}22;">
+                    <td style="padding:4px 8px;" class="text-mono"><strong>${r.mp_codigo}</strong></td>
+                    <td style="padding:4px 8px;font-size:10px;color:#475569;">${(r.descripcion||'').substring(0,30)}</td>
+                    <td style="padding:4px 8px;text-align:right;">
+                      <input class="input" type="number" min="0" max="100" step="0.01" value="${r.porcentaje || ''}" oninput="window.actualizarPorcentajeIngredienteCapa(${capaIdx}, ${ingrIdx}, this.value)" style="width:65px;text-align:right;font-weight:800;padding:2px 4px;font-size:11px;" />
+                    </td>
+                    <td style="padding:4px 8px;text-align:right;font-weight:700;color:#475569;">${pctReal.toFixed(2)}%</td>
+                    <td style="padding:4px 8px;text-align:center;">
+                      <button onclick="window.quitarIngredienteCapa(${capaIdx}, ${ingrIdx})" style="padding:2px 6px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;">✕</button>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr style="background:${ingrOk ? '#dcfce7' : totalIngrPct > 100 ? '#fee2e2' : '#fef3c7'};">
+                <td colspan="2" style="padding:5px 8px;text-align:right;font-weight:800;color:#1e293b;font-size:10px;">TOTAL CAÑÓN ${letra}:</td>
+                <td style="padding:5px 8px;text-align:right;font-weight:800;color:${ingrOk ? '#16a34a' : totalIngrPct > 100 ? '#dc2626' : '#92400e'};">${totalIngrPct.toFixed(2)}% ${ingrOk ? '✓' : ''}</td>
+                <td style="padding:5px 8px;text-align:right;font-weight:800;color:${color};">${((Number(capa.porcentaje_capa) || 0)).toFixed(2)}%</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+window.cambiarNumCapas = (n) => {
+  if (!state.modalForm) return;
+  if (!state.modalForm.capas) state.modalForm.capas = [];
+  
+  const letras = ['A','B','C'];
+  
+  if (n < state.modalForm.capas.length) {
+    // Reducir: confirmar
+    if (state.modalForm.capas.slice(n).some(c => (c.ingredientes||[]).length > 0)) {
+      if (!confirm(`Hay ingredientes en la(s) capa(s) ${state.modalForm.capas.slice(n).map(c=>c.letra).join(', ')}. ¿Eliminarlas?`)) return;
+    }
+    state.modalForm.capas = state.modalForm.capas.slice(0, n);
+  } else {
+    // Aumentar: agregar capas vacías
+    while (state.modalForm.capas.length < n) {
+      const i = state.modalForm.capas.length;
+      state.modalForm.capas.push({
+        letra: letras[i],
+        porcentaje_capa: 0,
+        ingredientes: []
+      });
+    }
+  }
+  
+  // Reset a distribución equitativa SOLO si todas están en 0
+  if (state.modalForm.capas.every(c => !c.porcentaje_capa || c.porcentaje_capa === 0)) {
+    if (n === 1) state.modalForm.capas[0].porcentaje_capa = 100;
+    else if (n === 2) {
+      state.modalForm.capas[0].porcentaje_capa = 50;
+      state.modalForm.capas[1].porcentaje_capa = 50;
+    } else if (n === 3) {
+      state.modalForm.capas[0].porcentaje_capa = 25;
+      state.modalForm.capas[1].porcentaje_capa = 50;
+      state.modalForm.capas[2].porcentaje_capa = 25;
+    }
+  }
+  
+  state.modalForm.num_capas = n;
+  render();
+};
+
+window.actualizarPorcentajeCapa = (capaIdx, valor) => {
+  if (!state.modalForm?.capas?.[capaIdx]) return;
+  state.modalForm.capas[capaIdx].porcentaje_capa = Number(valor) || 0;
+  render();
+};
+
+window.agregarIngredienteCapa = (capaIdx) => {
+  const sel = $(`#capa-mp-${capaIdx}`);
+  const pctInp = $(`#capa-pct-${capaIdx}`);
+  if (!sel || !pctInp) return;
+  
+  const mp_codigo = sel.value;
+  const porcentaje = Number(pctInp.value) || 0;
+  
+  if (!mp_codigo) { toast('Selecciona la materia prima', 'error'); return; }
+  if (porcentaje <= 0 || porcentaje > 100) { toast('Porcentaje debe ser entre 0 y 100', 'error'); return; }
+  
+  const opt = sel.selectedOptions[0];
+  const descripcion = opt?.dataset.desc || '';
+  
+  if (!state.modalForm.capas[capaIdx].ingredientes) {
+    state.modalForm.capas[capaIdx].ingredientes = [];
+  }
+  
+  const ingredientes = state.modalForm.capas[capaIdx].ingredientes;
+  
+  if (ingredientes.find(r => r.mp_codigo === mp_codigo)) {
+    toast(`${mp_codigo} ya está en este cañón`, 'error');
+    return;
+  }
+  
+  const totalActual = ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
+  if (totalActual + porcentaje > 100.01) {
+    toast(`Excedes el 100% del cañón (disponible: ${(100 - totalActual).toFixed(2)}%)`, 'error');
+    return;
+  }
+  
+  ingredientes.push({ mp_codigo, descripcion, porcentaje });
+  
+  sel.value = '';
+  pctInp.value = '';
+  render();
+};
+
+window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
+  if (!state.modalForm?.capas?.[capaIdx]?.ingredientes?.[ingrIdx]) return;
+  state.modalForm.capas[capaIdx].ingredientes[ingrIdx].porcentaje = Number(valor) || 0;
+  render();
+};
+
+window.quitarIngredienteCapa = (capaIdx, ingrIdx) => {
+  if (!state.modalForm?.capas?.[capaIdx]?.ingredientes) return;
+  state.modalForm.capas[capaIdx].ingredientes.splice(ingrIdx, 1);
+  render();
+};
 
 function modalCrearProductoPT() {
   // Estado del formulario en state.modalForm para mantenerlo entre renders
@@ -13376,7 +13685,9 @@ function modalCrearProductoPT() {
       cant_empaque: '',
       um_empaque: '',
       busqClientes: '',
-      clientesAsignados: {} // { codigoCliente: { precio, codigo_cliente_interno } }
+      clientesAsignados: {}, // { codigoCliente: { precio, codigo_cliente_interno } }
+      num_capas: 1,
+      capas: [{ letra: 'A', porcentaje_capa: 100, ingredientes: [] }]
     };
   }
   const f = state.modalForm;
@@ -13511,6 +13822,9 @@ function modalCrearProductoPT() {
             </div>
             ${clientesFiltrados.length > 80 ? `<div style="margin-top:6px;font-size:11px;color:#94a3b8;text-align:center;">Mostrando 80 de ${clientesFiltrados.length}, refina la búsqueda</div>` : ''}
           </div>
+          
+          <!-- FORMULACIÓN / RECETA -->
+          ${renderBloqueFormulacion(f)}
           
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
@@ -14439,6 +14753,40 @@ window.crearProductoPT = async () => {
     const umEmp = f.um_empaque || '';
     const presentacion = (tipoEmp && cantEmp) ? `${tipoEmp.toUpperCase()} DE ${cantEmp} ${umEmp}` : 'DE';
     
+    // Validar formulación (capas)
+    const capas = f.capas || [];
+    const tieneIngredientes = capas.some(c => (c.ingredientes || []).length > 0);
+    
+    if (tieneIngredientes) {
+      // Validar % de capas suma 100
+      const totalCapasPct = capas.reduce((s, c) => s + (Number(c.porcentaje_capa) || 0), 0);
+      if (Math.abs(totalCapasPct - 100) > 0.01) {
+        toast(`⚠ El % de capas suma ${totalCapasPct.toFixed(2)}%, debe ser 100%`, 'error');
+        state.loadingAccion = false; render();
+        return;
+      }
+      // Validar que cada cañón con ingredientes sume 100%
+      for (const capa of capas) {
+        if ((capa.ingredientes || []).length === 0) continue;
+        const totalIngrPct = capa.ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
+        if (Math.abs(totalIngrPct - 100) > 0.01) {
+          toast(`⚠ El cañón ${capa.letra} suma ${totalIngrPct.toFixed(2)}%, debe ser 100%`, 'error');
+          state.loadingAccion = false; render();
+          return;
+        }
+      }
+    }
+    
+    const capasLimpias = capas.map(c => ({
+      letra: c.letra || '',
+      porcentaje_capa: Number(c.porcentaje_capa) || 0,
+      ingredientes: (c.ingredientes || []).map(r => ({
+        mp_codigo: r.mp_codigo || '',
+        descripcion: r.descripcion || '',
+        porcentaje: Number(r.porcentaje) || 0
+      }))
+    }));
+    
     const producto = {
       codigo, descripcion: desc,
       material: f.material, tipo: f.tipo,
@@ -14450,6 +14798,8 @@ window.crearProductoPT = async () => {
       um: f.um,
       tipo_empaque: tipoEmp, cant_empaque: cantEmp, um_empaque: umEmp,
       presentacion,
+      num_capas: Number(f.num_capas) || 1,
+      capas: capasLimpias,
       activo: true,
       created_at: serverTimestamp()
     };
@@ -14492,6 +14842,36 @@ window.guardarProductoPT = async (codigo) => {
   const f = state.modalForm;
   if (!f) return;
   
+  // Validar formulación (capas)
+  const capas = f.capas || [];
+  const tieneIngredientes = capas.some(c => (c.ingredientes || []).length > 0);
+  
+  if (tieneIngredientes) {
+    const totalCapasPct = capas.reduce((s, c) => s + (Number(c.porcentaje_capa) || 0), 0);
+    if (Math.abs(totalCapasPct - 100) > 0.01) {
+      toast(`⚠ El % de capas suma ${totalCapasPct.toFixed(2)}%, debe ser 100%`, 'error');
+      return;
+    }
+    for (const capa of capas) {
+      if ((capa.ingredientes || []).length === 0) continue;
+      const totalIngrPct = capa.ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
+      if (Math.abs(totalIngrPct - 100) > 0.01) {
+        toast(`⚠ El cañón ${capa.letra} suma ${totalIngrPct.toFixed(2)}%, debe ser 100%`, 'error');
+        return;
+      }
+    }
+  }
+  
+  const capasLimpias = capas.map(c => ({
+    letra: c.letra || '',
+    porcentaje_capa: Number(c.porcentaje_capa) || 0,
+    ingredientes: (c.ingredientes || []).map(r => ({
+      mp_codigo: r.mp_codigo || '',
+      descripcion: r.descripcion || '',
+      porcentaje: Number(r.porcentaje) || 0
+    }))
+  }));
+  
   state.loadingAccion = true; render();
   try {
     // Actualizar producto
@@ -14501,6 +14881,9 @@ window.guardarProductoPT = async (codigo) => {
       tipo_empaque: f.tipo_empaque,
       cant_empaque: Number(f.cant_empaque) || 0,
       um_empaque: f.um_empaque,
+      num_capas: Number(f.num_capas) || 1,
+      capas: capasLimpias,
+      formulacion: null, // limpiar formato antiguo
       updated_at: serverTimestamp()
     };
     await updateDoc(doc(db, 'productos_pt', codigo), updates);
@@ -15289,8 +15672,184 @@ window.confirmarCompletarProceso = async (odpId) => {
   
   const esUltimo = idx === ruta.length - 1;
   
+  // ====================================================
+  // 🧪 DESCUENTO AUTOMÁTICO DE MP (solo al cerrar Extrusión)
+  // ====================================================
+  let consumosMP = []; // para mostrar en toast y guardar registro
+  let faltantesMP = []; // si alguna MP no alcanza
+  
+  if (esExtrusion && producto) {
+    // Verificar si tiene capas (formato nuevo) o formulación plana (formato antiguo)
+    const capas = producto.capas || [];
+    const tieneCapas = capas.length > 0 && capas.some(c => (c.ingredientes || []).length > 0);
+    
+    // Si no tiene capas pero tiene formulación antigua, convertirla
+    const capasAUsar = tieneCapas ? capas : (
+      producto.formulacion && producto.formulacion.length > 0 ?
+      [{ letra: 'A', porcentaje_capa: 100, ingredientes: producto.formulacion }] :
+      []
+    );
+    
+    if (capasAUsar.length > 0) {
+      // Validar capas suman 100
+      const totalCapasPct = capasAUsar.reduce((s, c) => s + (Number(c.porcentaje_capa) || 0), 0);
+      const capasOk = Math.abs(totalCapasPct - 100) < 0.01;
+      
+      // Validar cada cañón con ingredientes suma 100
+      let canonesOk = true;
+      for (const capa of capasAUsar) {
+        if ((capa.ingredientes || []).length === 0) continue;
+        const totalIngrPct = capa.ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
+        if (Math.abs(totalIngrPct - 100) > 0.01) { canonesOk = false; break; }
+      }
+      
+      if (!capasOk || !canonesOk) {
+        const conf = confirm(`⚠ La formulación del producto ${producto.codigo} tiene errores (capas no suman 100% o algún cañón no suma 100%).\n\n¿Cerrar Extrusión SIN descontar MP del inventario?`);
+        if (!conf) return;
+      } else {
+        // Acumular descuentos necesarios por MP (un mismo MP puede estar en varias capas)
+        const necesariosPorMP = {}; // {mp_codigo: {descripcion, kg_necesarios, detalles_capa: []}}
+        
+        for (const capa of capasAUsar) {
+          const kgCapa = prodKg * ((Number(capa.porcentaje_capa) || 0) / 100);
+          for (const ingr of (capa.ingredientes || [])) {
+            const kgIngr = kgCapa * ((Number(ingr.porcentaje) || 0) / 100);
+            if (kgIngr <= 0) continue;
+            
+            if (!necesariosPorMP[ingr.mp_codigo]) {
+              necesariosPorMP[ingr.mp_codigo] = {
+                mp_codigo: ingr.mp_codigo,
+                descripcion: ingr.descripcion || '',
+                kg_necesarios: 0,
+                detalles_capa: []
+              };
+            }
+            necesariosPorMP[ingr.mp_codigo].kg_necesarios += kgIngr;
+            necesariosPorMP[ingr.mp_codigo].detalles_capa.push({
+              capa: capa.letra,
+              pct_capa: capa.porcentaje_capa,
+              pct_ingr: ingr.porcentaje,
+              kg: kgIngr
+            });
+          }
+        }
+        
+        // Verificar stock
+        for (const desc of Object.values(necesariosPorMP)) {
+          const lotesActivos = (state.lotes_mp || []).filter(l => 
+            l.mp_codigo === desc.mp_codigo && 
+            l.estatus === 'activo' && 
+            (Number(l.stock_actual) || 0) > 0
+          );
+          const stockTotal = lotesActivos.reduce((s, l) => s + (Number(l.stock_actual) || 0), 0);
+          if (stockTotal < desc.kg_necesarios) {
+            faltantesMP.push({
+              mp_codigo: desc.mp_codigo,
+              descripcion: desc.descripcion,
+              necesario: desc.kg_necesarios,
+              disponible: stockTotal,
+              faltante: desc.kg_necesarios - stockTotal
+            });
+          }
+        }
+        
+        if (faltantesMP.length > 0) {
+          const msg = `⚠ STOCK INSUFICIENTE DE MP\n\nFaltantes:\n${faltantesMP.map(fl => `• ${fl.mp_codigo}: faltan ${fmtNum(fl.faltante.toFixed(2))} kg (necesario: ${fmtNum(fl.necesario.toFixed(2))}, disponible: ${fmtNum(fl.disponible.toFixed(2))})`).join('\n')}\n\n¿Cerrar Extrusión de todos modos?\n(Los consumos se registrarán como faltantes y deberás recibir MP urgente)`;
+          if (!confirm(msg)) return;
+        }
+        
+        // Calcular consumos FIFO por MP
+        for (const desc of Object.values(necesariosPorMP)) {
+          const lotesActivos = (state.lotes_mp || [])
+            .filter(l => l.mp_codigo === desc.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0)
+            .sort((a, b) => (a.fecha_recepcion || '').localeCompare(b.fecha_recepcion || ''));
+          
+          let restante = desc.kg_necesarios;
+          const consumosLote = [];
+          
+          for (const lote of lotesActivos) {
+            if (restante <= 0) break;
+            const disponible = Number(lote.stock_actual) || 0;
+            const aDescontar = Math.min(restante, disponible);
+            
+            consumosLote.push({
+              lote_id: lote.id,
+              lote_folio: lote.lote_folio,
+              lote_proveedor: lote.lote_proveedor || '',
+              proveedor: lote.proveedor || '',
+              cantidad: aDescontar,
+              costo_unitario: Number(lote.costo_unitario) || 0
+            });
+            
+            restante -= aDescontar;
+          }
+          
+          consumosMP.push({
+            mp_codigo: desc.mp_codigo,
+            descripcion: desc.descripcion,
+            kg_necesarios: desc.kg_necesarios,
+            kg_consumidos: desc.kg_necesarios - restante,
+            kg_faltantes: restante,
+            detalles_capa: desc.detalles_capa,
+            lotes: consumosLote
+          });
+        }
+      }
+    }
+  }
+  
   state.loadingAccion = true; render();
   try {
+    // ===== APLICAR DESCUENTOS DE MP EN FIRESTORE (FIFO) =====
+    if (consumosMP.length > 0) {
+      const batchMP = writeBatch(db);
+      const fechaHoy = new Date().toISOString().split('T')[0];
+      
+      for (const consumo of consumosMP) {
+        for (const loteConsumido of consumo.lotes) {
+          const loteRef = doc(db, 'lotes_mp', loteConsumido.lote_id);
+          const loteDoc = (state.lotes_mp || []).find(l => l.id === loteConsumido.lote_id);
+          if (!loteDoc) continue;
+          
+          const stockAnterior = Number(loteDoc.stock_actual) || 0;
+          const stockNuevo = Math.max(0, stockAnterior - loteConsumido.cantidad);
+          
+          // Actualizar stock del lote
+          batchMP.update(loteRef, {
+            stock_actual: stockNuevo,
+            estatus: stockNuevo <= 0 ? 'agotado' : 'activo',
+            updated_at: serverTimestamp()
+          });
+          
+          // Crear movimiento de salida
+          const movRef = doc(collection(db, 'movimientos_mp'));
+          batchMP.set(movRef, {
+            tipo: 'salida',
+            mp_codigo: consumo.mp_codigo,
+            mp_descripcion: consumo.descripcion,
+            lote_folio: loteConsumido.lote_folio,
+            lote_proveedor: loteConsumido.lote_proveedor,
+            cantidad: loteConsumido.cantidad,
+            um: 'Kg',
+            costo_unitario: loteConsumido.costo_unitario,
+            origen: 'consumo_extrusion',
+            odp_folio: odp.folio,
+            odp_id: odpId,
+            producto_codigo: odp.producto_codigo,
+            cliente_nombre: odp.cliente_nombre || '',
+            proveedor: loteConsumido.proveedor,
+            fecha: fechaHoy,
+            usuario_id: state.user.id || '',
+            usuario_nombre: state.user.nombre || state.user.email || 'Usuario',
+            notas: `Consumo automático Extrusión${consumo.detalles_capa && consumo.detalles_capa.length > 0 ? ' · Capas: ' + consumo.detalles_capa.map(d => `${d.capa}(${d.pct_ingr}%)`).join('+') : ''}`,
+            created_at: serverTimestamp()
+          });
+        }
+      }
+      
+      await batchMP.commit();
+    }
+    
     // Actualizar procesos_completados con el resumen del proceso
     const procesosCompletados = [...procesosCompletadosPrev, {
       codigo: ruta[idx],
@@ -15306,6 +15865,7 @@ window.confirmarCompletarProceso = async (odpId) => {
       num_turnos: capturasProcActual.length,
       turnos: turnosResumen,
       notas_cierre: notasCierre,
+      consumos_mp: consumosMP.length > 0 ? consumosMP : null, // ⭐ Trazabilidad MP consumida
       completado_at: new Date().toISOString(),
       completado_por: state.user.nombre || state.user.email
     }];
@@ -15345,7 +15905,9 @@ window.confirmarCompletarProceso = async (odpId) => {
       await batch.commit();
       
       cerrarModal();
-      toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas`);
+      const totalMpConsumida2 = consumosMP.reduce((s, c) => s + c.kg_consumidos, 0);
+      const msgMP2 = consumosMP.length > 0 ? ` · 🧪 ${fmtNum(totalMpConsumida2.toFixed(0))} kg de MP descontados` : '';
+      toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas${msgMP2}`);
     } else {
       // Avanzar al siguiente proceso
       const siguienteIdx = idx + 1;
@@ -15369,7 +15931,9 @@ window.confirmarCompletarProceso = async (odpId) => {
       });
       
       cerrarModal();
-      toast(`✅ ${proc.nombre} cerrado · ${fmtNum(prodKg)} kg de ${capturasProcActual.length} turno(s) pasan a ${siguienteProc?.nombre || ''}`);
+      const totalMpConsumida = consumosMP.reduce((s, c) => s + c.kg_consumidos, 0);
+      const msgMP = consumosMP.length > 0 ? ` · 🧪 ${fmtNum(totalMpConsumida.toFixed(0))} kg de MP descontados (FIFO)` : '';
+      toast(`✅ ${proc.nombre} cerrado · ${fmtNum(prodKg)} kg de ${capturasProcActual.length} turno(s) pasan a ${siguienteProc?.nombre || ''}${msgMP}`);
     }
   } catch (e) {
     console.error('Error cerrar proceso:', e);
@@ -16191,3 +16755,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
