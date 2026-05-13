@@ -6605,6 +6605,8 @@ function modalGenerarOC() {
       proveedor: '',
       codigo_proveedor: '',
       fecha_promesa: '',
+      moneda: 'MXN',
+      tipo_cambio: '',
       costo_total: 0,
       observaciones: '',
       lineas: (rc.lineas || []).map(l => ({
@@ -6660,6 +6662,26 @@ function modalGenerarOC() {
             ` : ''}
           </div>
           
+          <!-- MONEDA Y TIPO DE CAMBIO -->
+          <div style="padding:12px;background:#fffbeb;border:1px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:#92400e;font-size:12px;margin-bottom:8px;">💱 Moneda</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;">
+              <div class="field" style="margin:0;">
+                <label class="field-label">Moneda *</label>
+                <div style="display:flex;gap:6px;">
+                  <button onclick="window.modalFormSet('moneda','MXN')" type="button" style="flex:1;padding:10px;border:2px solid ${f.moneda === 'MXN' ? '#16a34a' : '#cbd5e1'};background:${f.moneda === 'MXN' ? '#16a34a' : '#fff'};color:${f.moneda === 'MXN' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">🇲🇽 MXN (Pesos)</button>
+                  <button onclick="window.modalFormSet('moneda','USD')" type="button" style="flex:1;padding:10px;border:2px solid ${f.moneda === 'USD' ? '#16a34a' : '#cbd5e1'};background:${f.moneda === 'USD' ? '#16a34a' : '#fff'};color:${f.moneda === 'USD' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">🇺🇸 USD (Dólares)</button>
+                </div>
+              </div>
+              ${f.moneda === 'USD' ? `
+                <div class="field" style="margin:0;">
+                  <label class="field-label">Tipo de cambio referencia (MXN/USD)</label>
+                  <input class="input" id="oc-tc" type="number" min="0" step="0.01" value="${f.tipo_cambio || ''}" placeholder="Ej: 18.50" oninput="window.modalFormSetSilent('tipo_cambio', this.value)" />
+                </div>
+              ` : ''}
+            </div>
+          </div>
+          
           <!-- LÍNEAS CON COSTOS -->
           <div style="margin-bottom:14px;">
             <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:8px;">📋 Líneas de la OC (${f.lineas?.length || 0})</div>
@@ -6699,13 +6721,19 @@ function modalGenerarOC() {
                 <tfoot>
                   <tr style="background:#f8fafc;border-top:2px solid #7c3aed;">
                     <td colspan="6" style="padding:10px;text-align:right;font-weight:800;color:#475569;">TOTAL OC:</td>
-                    <td style="padding:10px;text-align:right;font-weight:800;font-size:14px;color:#7c3aed;">$${fmtNum(totalCalc.toFixed(2))}</td>
+                    <td style="padding:10px;text-align:right;font-weight:800;font-size:14px;color:#7c3aed;">$${fmtNum(totalCalc.toFixed(2))} <span style="font-size:11px;color:#64748b;">${f.moneda || 'MXN'}</span></td>
                   </tr>
+                  ${f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? `
+                    <tr style="background:#f0fdf4;">
+                      <td colspan="6" style="padding:6px 10px;text-align:right;font-size:10px;color:#166534;font-style:italic;">Equivalente en MXN (TC ${fmtNum(Number(f.tipo_cambio).toFixed(2))}):</td>
+                      <td style="padding:6px 10px;text-align:right;font-weight:700;font-size:12px;color:#16a34a;">$${fmtNum((totalCalc * Number(f.tipo_cambio)).toFixed(2))} <span style="font-size:10px;">MXN</span></td>
+                    </tr>
+                  ` : ''}
                 </tfoot>
               </table>
             </div>
             <div style="font-size:10px;color:#64748b;margin-top:6px;font-style:italic;">
-              💡 Los códigos de proveedor y costos son opcionales pero recomendados para mejor control
+              💡 Los costos se capturan en la moneda seleccionada (${f.moneda || 'MXN'}). Los códigos de proveedor son opcionales pero recomendados.
             </div>
           </div>
           
@@ -6743,6 +6771,11 @@ window.seleccionarProveedorOC = (provId) => {
   state.modalForm.proveedor_id = prov.id;
   state.modalForm.proveedor = prov.razon_social;
   
+  // Auto-seleccionar moneda del proveedor
+  if (prov.moneda) {
+    state.modalForm.moneda = prov.moneda;
+  }
+  
   // Auto-completar códigos del proveedor y costos de referencia en las líneas
   if (prov.codigos && prov.codigos.length > 0 && state.modalForm.lineas) {
     let autoCompletadas = 0;
@@ -6759,7 +6792,9 @@ window.seleccionarProveedorOC = (provId) => {
       }
     });
     if (autoCompletadas > 0) {
-      toast(`✨ ${autoCompletadas} código(s) de proveedor auto-completado(s)`, 'info');
+      toast(`✨ ${autoCompletadas} código(s) auto-completado(s) · Moneda: ${prov.moneda || 'MXN'}`, 'info');
+    } else if (prov.moneda) {
+      toast(`💱 Moneda: ${prov.moneda}`, 'info');
     }
   }
   
@@ -6796,8 +6831,10 @@ window.confirmarGenerarOC = async (rcId) => {
     `RC origen: ${rc.folio}\n` +
     `🏭 Proveedor: ${proveedor}\n` +
     `🎯 Fecha promesa: ${fechaPromesa}\n` +
-    `💰 Total: $${fmtNum(totalCalc.toFixed(2))}\n\n` +
-    `Después de generar:\n` +
+    `💱 Moneda: ${f.moneda || 'MXN'}\n` +
+    `💰 Total: $${fmtNum(totalCalc.toFixed(2))} ${f.moneda || 'MXN'}\n` +
+    (f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? `   Equivalente: $${fmtNum((totalCalc * Number(f.tipo_cambio)).toFixed(2))} MXN (TC ${f.tipo_cambio})\n` : '') +
+    `\nDespués de generar:\n` +
     `• La RC pasa a estatus "OC Generada"\n` +
     `• Quedará pendiente de recepción en ALP`
   )) return;
@@ -6839,8 +6876,11 @@ window.confirmarGenerarOC = async (rcId) => {
       proveedor: proveedor,
       fecha_oc: new Date().toISOString().split('T')[0],
       fecha_promesa: fechaPromesa,
+      moneda: f.moneda || 'MXN',
+      tipo_cambio: Number(f.tipo_cambio) || 0,
       lineas: lineasLimpias,
       costo_total: totalCalc,
+      costo_total_mxn: f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? totalCalc * Number(f.tipo_cambio) : totalCalc,
       observaciones: observaciones,
       estatus: 'en_transito',
       generada_por_id: state.user.id || '',
@@ -6898,7 +6938,7 @@ window.confirmarGenerarOC = async (rcId) => {
     // CEO
     batchNotif.set(doc(collection(db, 'notificaciones')), {
       titulo: `📑 OC ${folioOC} generada`,
-      mensaje: `${proveedor} · Total: $${fmtNum(totalCalc.toFixed(2))} · ${lineasLimpias.length} insumo(s)`,
+      mensaje: `${proveedor} · Total: $${fmtNum(totalCalc.toFixed(2))} ${f.moneda || 'MXN'} · ${lineasLimpias.length} insumo(s)`,
       depto_destino: 'CEO',
       tipo: 'info',
       folio_ref: folioOC,
@@ -7420,6 +7460,8 @@ function renderTarjetaProveedor(p, puedeEditar) {
               ${p.rfc ? `<strong>RFC:</strong> ${p.rfc}` : ''}
               ${p.rfc && p.terminos_pago ? ' · ' : ''}
               ${p.terminos_pago ? `<strong>💳 ${p.terminos_pago}</strong>` : ''}
+              ${(p.rfc || p.terminos_pago) && p.moneda ? ' · ' : ''}
+              ${p.moneda ? `<strong style="color:${p.moneda === 'USD' ? '#16a34a' : '#7c3aed'};">${p.moneda === 'USD' ? '🇺🇸 USD' : '🇲🇽 MXN'}</strong>` : ''}
             </div>
             ${p.direccion ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">📍 ${p.direccion}</div>` : ''}
             ${(p.contacto_nombre || p.telefono || p.email) ? `
@@ -7487,7 +7529,7 @@ function modalProveedor(esEdicion) {
   if (esEdicion && !prov) return '';
   
   if (!state.modalForm) {
-    state.modalForm = prov ? { ...prov } : {
+    state.modalForm = prov ? { ...prov, moneda: prov.moneda || 'MXN' } : {
       razon_social: '',
       rfc: '',
       direccion: '',
@@ -7495,6 +7537,7 @@ function modalProveedor(esEdicion) {
       telefono: '',
       email: '',
       terminos_pago: '',
+      moneda: 'MXN',
       notas: ''
     };
   }
@@ -7545,17 +7588,26 @@ function modalProveedor(esEdicion) {
           
           <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">💳 Condiciones comerciales</div>
           
-          <div class="field">
-            <label class="field-label">Términos de pago</label>
-            <input class="input" id="prov-pago" value="${f.terminos_pago || ''}" list="lista-terminos" placeholder="Ej: 30 días, Contado, 50% anticipo + 50% entrega" oninput="window.modalFormSetSilent('terminos_pago', this.value)" />
-            <datalist id="lista-terminos">
-              <option value="Contado">
-              <option value="15 días">
-              <option value="30 días">
-              <option value="45 días">
-              <option value="60 días">
-              <option value="50% anticipo + 50% entrega">
-            </datalist>
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Términos de pago</label>
+              <input class="input" id="prov-pago" value="${f.terminos_pago || ''}" list="lista-terminos" placeholder="Ej: 30 días, Contado, 50% anticipo + 50% entrega" oninput="window.modalFormSetSilent('terminos_pago', this.value)" />
+              <datalist id="lista-terminos">
+                <option value="Contado">
+                <option value="15 días">
+                <option value="30 días">
+                <option value="45 días">
+                <option value="60 días">
+                <option value="50% anticipo + 50% entrega">
+              </datalist>
+            </div>
+            <div class="field">
+              <label class="field-label">Moneda preferente</label>
+              <div style="display:flex;gap:6px;">
+                <button onclick="window.modalFormSet('moneda','MXN')" type="button" style="flex:1;padding:10px;border:2px solid ${f.moneda === 'MXN' ? '#16a34a' : '#cbd5e1'};background:${f.moneda === 'MXN' ? '#16a34a' : '#fff'};color:${f.moneda === 'MXN' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">🇲🇽 MXN</button>
+                <button onclick="window.modalFormSet('moneda','USD')" type="button" style="flex:1;padding:10px;border:2px solid ${f.moneda === 'USD' ? '#16a34a' : '#cbd5e1'};background:${f.moneda === 'USD' ? '#16a34a' : '#fff'};color:${f.moneda === 'USD' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">🇺🇸 USD</button>
+              </div>
+            </div>
           </div>
           
           <div class="field">
@@ -7582,6 +7634,7 @@ window.confirmarProveedor = async (id) => {
   const telefono = ($('#prov-tel')?.value || f.telefono || '').trim();
   const email = ($('#prov-email')?.value || f.email || '').trim();
   const terminos = ($('#prov-pago')?.value || f.terminos_pago || '').trim();
+  const moneda = f.moneda || 'MXN';
   const notas = ($('#prov-notas')?.value || f.notas || '').trim();
   
   if (!razon) { toast('Razón social obligatoria', 'error'); return; }
@@ -7596,6 +7649,7 @@ window.confirmarProveedor = async (id) => {
       telefono: telefono,
       email: email,
       terminos_pago: terminos,
+      moneda: moneda,
       notas: notas,
       updated_at: serverTimestamp()
     };
@@ -7853,43 +7907,163 @@ window.cargarProveedoresIniciales = async () => {
 // VISTAS PLACEHOLDER (próximas etapas)
 // ============================================================
 function renderOrdenesCompra() {
-  const ocs = (state.ordenes_compra || []).slice().sort((a,b) => (b.created_at?.seconds||0) - (a.created_at?.seconds||0));
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esCOMP = u.depto === 'COMP' || esCEO;
+  
+  const filtro = (state.filtros.ordenes_compra || '').toLowerCase();
+  const tab = state.tabs.ordenes_compra || 'activas';
+  
+  let arr = (state.ordenes_compra || []).slice();
+  
+  // Filtrar por tab
+  if (tab === 'activas') arr = arr.filter(o => !['recibida','cancelada'].includes(o.estatus));
+  else if (tab === 'recibidas') arr = arr.filter(o => o.estatus === 'recibida');
+  else if (tab === 'parciales') arr = arr.filter(o => o.estatus === 'recepcion_parcial');
+  else if (tab === 'canceladas') arr = arr.filter(o => o.estatus === 'cancelada');
+  
+  if (filtro) arr = arr.filter(o => 
+    ((o.folio||'') + ' ' + (o.proveedor||'') + ' ' + (o.rc_folio||'') + ' ' +
+     (o.lineas||[]).map(l => `${l.mp_codigo} ${l.codigo_proveedor||''}`).join(' ')
+    ).toLowerCase().includes(filtro)
+  );
+  
+  arr.sort((a,b) => (b.created_at?.seconds||0) - (a.created_at?.seconds||0));
+  
+  const todas = state.ordenes_compra || [];
+  const enTransito = todas.filter(o => o.estatus === 'en_transito').length;
+  const parciales = todas.filter(o => o.estatus === 'recepcion_parcial').length;
+  const recibidas = todas.filter(o => o.estatus === 'recibida').length;
+  // Total normalizado a MXN (si es USD, multiplica por TC; si no hay TC, lo cuenta tal cual)
+  const totalGastado = todas.filter(o => o.estatus === 'recibida').reduce((s,o) => {
+    const total = Number(o.costo_total) || 0;
+    if (o.moneda === 'USD' && Number(o.tipo_cambio) > 0) {
+      return s + total * Number(o.tipo_cambio);
+    }
+    return s + total;
+  }, 0);
+  
   return `
-    <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
-      <div style="font-weight:800;color:#1e40af;font-size:13px;">📑 Órdenes de Compra (OC)</div>
-      <div style="font-size:11px;color:#475569;margin-top:4px;">
-        Las OC se generan desde las RCs aprobadas (botón <strong>📑 Generar OC</strong>). Próxima etapa: generación de PDF de OC.
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #f59e0b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⏳ EN TRÁNSITO</div>
+        <div style="font-size:22px;font-weight:800;color:#f59e0b;">${enTransito}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📦 RECEPCIÓN PARCIAL</div>
+        <div style="font-size:22px;font-weight:800;color:#3b82f6;">${parciales}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">✅ RECIBIDAS</div>
+        <div style="font-size:22px;font-weight:800;color:#16a34a;">${recibidas}</div>
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">💰 TOTAL COMPRADO (MXN equiv.)</div>
+        <div style="font-size:18px;font-weight:800;color:#7c3aed;">$${fmtNum(totalGastado.toFixed(0))}</div>
       </div>
     </div>
     
-    ${ocs.length === 0 ? `
+    <!-- TABS -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
+      <button class="tab-btn ${tab === 'activas' ? 'active' : ''}" onclick="cambiarTab('ordenes_compra','activas')">⏳ Activas (${todas.filter(o => !['recibida','cancelada'].includes(o.estatus)).length})</button>
+      <button class="tab-btn ${tab === 'parciales' ? 'active' : ''}" onclick="cambiarTab('ordenes_compra','parciales')">📦 Parciales (${parciales})</button>
+      <button class="tab-btn ${tab === 'recibidas' ? 'active' : ''}" onclick="cambiarTab('ordenes_compra','recibidas')">✅ Recibidas (${recibidas})</button>
+      <button class="tab-btn ${tab === 'canceladas' ? 'active' : ''}" onclick="cambiarTab('ordenes_compra','canceladas')">❌ Canceladas (${todas.filter(o => o.estatus === 'cancelada').length})</button>
+    </div>
+    
+    <!-- TOOLBAR -->
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-ordenes-compra" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, proveedor, RC, código..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} OC(s)</span>
+    </div>
+    
+    ${arr.length === 0 ? `
       <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
         <div style="font-size:48px;margin-bottom:12px;">📑</div>
-        <div style="font-weight:700;color:#475569;">Sin Órdenes de Compra todavía</div>
+        <div style="font-weight:700;color:#475569;">Sin Órdenes de Compra en este filtro</div>
       </div>
     ` : `
       <div style="display:flex;flex-direction:column;gap:12px;">
-        ${ocs.map(oc => `
-          <div class="panel" style="border-left:4px solid #7c3aed;padding:14px 18px;">
-            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-              <div>
-                <div class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</div>
-                <div style="font-size:12px;color:#475569;margin-top:4px;">
-                  <strong>🏭 ${oc.proveedor || '—'}</strong> · 📋 RC: ${oc.rc_folio || '—'}
-                </div>
-                <div style="font-size:11px;color:#64748b;margin-top:2px;">
-                  📅 Generada: ${oc.fecha_oc || '—'} · 🎯 Promesa: ${oc.fecha_promesa || '—'}
-                </div>
-              </div>
-              <div style="text-align:right;">
-                <span style="padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;background:${oc.estatus === 'recibida' ? '#dcfce7' : '#fef3c7'};color:${oc.estatus === 'recibida' ? '#16a34a' : '#92400e'};">${oc.estatus === 'recibida' ? '✅ RECIBIDA' : '⏳ EN TRÁNSITO'}</span>
-                <div style="font-size:11px;color:#64748b;margin-top:4px;">${(oc.lineas||[]).length} línea(s)</div>
-              </div>
-            </div>
-          </div>
-        `).join('')}
+        ${arr.map(oc => renderTarjetaOC(oc, esCOMP)).join('')}
       </div>
     `}
+  `;
+}
+
+function renderTarjetaOC(oc, esCOMP) {
+  const estatColor = oc.estatus === 'recibida' ? '#16a34a' : 
+                     oc.estatus === 'recepcion_parcial' ? '#3b82f6' :
+                     oc.estatus === 'cancelada' ? '#dc2626' : '#f59e0b';
+  const estatTexto = oc.estatus === 'recibida' ? '✅ RECIBIDA' : 
+                     oc.estatus === 'recepcion_parcial' ? '📦 PARCIAL' :
+                     oc.estatus === 'cancelada' ? '❌ CANCELADA' : '⏳ EN TRÁNSITO';
+  const lineas = oc.lineas || [];
+  
+  return `
+    <div class="panel" style="border-left:4px solid ${estatColor};">
+      <div style="padding:14px 18px 8px;">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <div style="flex:1;min-width:280px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</span>
+              <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${estatColor}22;color:${estatColor};">${estatTexto}</span>
+            </div>
+            <div style="font-size:12px;color:#475569;margin-top:6px;">
+              <strong>🏭 ${oc.proveedor || '—'}</strong> · 📋 RC: <span class="text-mono">${oc.rc_folio || '—'}</span>
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">
+              📅 Generada: ${oc.fecha_oc || '—'} · 🎯 Promesa: <strong style="color:#475569;">${oc.fecha_promesa || '—'}</strong>
+            </div>
+            ${oc.numero_documento ? `<div style="font-size:11px;color:#16a34a;margin-top:2px;">📄 ${oc.tipo_documento === 'factura' ? 'Factura' : 'Remisión'}: <strong>${oc.numero_documento}</strong></div>` : ''}
+          </div>
+          <div style="text-align:right;">
+            ${oc.costo_total ? `
+              <div style="font-size:16px;font-weight:800;color:#7c3aed;">$${fmtNum((oc.costo_total||0).toFixed(2))} <span style="font-size:11px;color:#64748b;">${oc.moneda || 'MXN'}</span></div>
+              ${oc.moneda === 'USD' && Number(oc.tipo_cambio) > 0 ? `<div style="font-size:10px;color:#16a34a;margin-top:1px;">≈ $${fmtNum(((oc.costo_total||0) * Number(oc.tipo_cambio)).toFixed(2))} MXN</div>` : ''}
+            ` : ''}
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">${lineas.length} línea(s)</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- LÍNEAS -->
+      <div style="padding:4px 18px 10px;">
+        <div style="background:#f8fafc;border-radius:8px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="background:#e2e8f0;">
+                <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">Cód. NewPack</th>
+                <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">Cód. Prov.</th>
+                <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">Descripción</th>
+                <th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Cant.</th>
+                <th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Recibido</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lineas.map(l => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:4px 8px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
+                  <td style="padding:4px 8px;" class="text-mono" style="color:#7c3aed;">${l.codigo_proveedor || '—'}</td>
+                  <td style="padding:4px 8px;font-size:10px;color:#64748b;">${(l.descripcion||'').substring(0,30)}</td>
+                  <td style="padding:4px 8px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)} ${l.um||'Kg'}</td>
+                  <td style="padding:4px 8px;text-align:right;font-weight:700;color:${(l.cantidad_recibida||0) >= l.cantidad ? '#16a34a' : '#f59e0b'};">${fmtNum(l.cantidad_recibida || 0)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      <!-- BOTONES -->
+      <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="imprimirOCPDF('${oc.id}')" style="padding:6px 12px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📄 OC Oficial PDF</button>
+        <button onclick="imprimirPreOrdenPDF('${oc.id}')" style="padding:6px 12px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📋 Pre-orden ALP</button>
+        ${oc.estatus !== 'recibida' && oc.estatus !== 'cancelada' ? `
+          <button onclick="abrirModal('recibir-oc','${oc.id}')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📥 Capturar recepción</button>
+        ` : ''}
+      </div>
+    </div>
   `;
 }
 
@@ -9330,6 +9504,476 @@ window.imprimirEtiquetasTarimasPDF = (odpId) => {
   } catch (e) {
     console.error('Error generando Etiquetas:', e);
     toast('Error generando Etiquetas: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// PDF: ORDEN DE COMPRA OFICIAL (CON PRECIOS) - Para enviar al proveedor
+// ============================================================
+window.imprimirOCPDF = (ocId) => {
+  try {
+    const oc = (state.ordenes_compra || []).find(x => x.id === ocId);
+    if (!oc) { toast('OC no encontrada', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    
+    const prov = (state.proveedores || []).find(p => p.id === oc.proveedor_id);
+    
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    
+    let y = _pdfHeaderEmpresa(docPDF, 'ORDEN COMPRA', oc.folio);
+    
+    // ===== TÍTULO =====
+    docPDF.setFontSize(20);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('ORDEN DE COMPRA', 105, y + 4, { align: 'center' });
+    
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text('Documento oficial de compra', 105, y + 9, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+    y += 16;
+    
+    // ===== SECCIÓN: PROVEEDOR Y DATOS OC =====
+    y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
+    
+    // Bloque proveedor (izquierda)
+    docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+    docPDF.roundedRect(14, y, 91, 44, 2, 2, 'F');
+    // Bloque datos OC (derecha)
+    docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+    docPDF.roundedRect(107, y, 89, 44, 2, 2, 'F');
+    
+    // PROVEEDOR
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('PROVEEDOR', 17, y + 5);
+    
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(30, 41, 59);
+    docPDF.text((oc.proveedor || '—').substring(0, 38), 17, y + 11);
+    
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(71, 85, 105);
+    
+    let py = y + 16;
+    if (prov?.rfc) {
+      docPDF.text(`RFC: ${prov.rfc}`, 17, py); py += 4;
+    }
+    if (prov?.direccion) {
+      const dir = prov.direccion.substring(0, 50);
+      docPDF.text(dir, 17, py); py += 4;
+      if (prov.direccion.length > 50) {
+        docPDF.text(prov.direccion.substring(50, 100), 17, py); py += 4;
+      }
+    }
+    if (prov?.contacto_nombre) {
+      docPDF.text(`Contacto: ${prov.contacto_nombre}`, 17, py); py += 4;
+    }
+    if (prov?.telefono || prov?.email) {
+      const t = [prov.telefono, prov.email].filter(Boolean).join(' · ');
+      docPDF.text(t.substring(0, 50), 17, py);
+    }
+    
+    // DATOS OC
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('DATOS DE LA ORDEN', 110, y + 5);
+    
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(71, 85, 105);
+    
+    let dy = y + 11;
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('Folio:', 110, dy);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(oc.folio || '—', 135, dy);
+    dy += 5;
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('Fecha emisión:', 110, dy);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(oc.fecha_oc || '—', 145, dy);
+    dy += 5;
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('Fecha promesa:', 110, dy);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.text(oc.fecha_promesa || '—', 145, dy);
+    docPDF.setTextColor(71, 85, 105);
+    dy += 5;
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('RC origen:', 110, dy);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(oc.rc_folio || '—', 135, dy);
+    dy += 5;
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('Moneda:', 110, dy);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(oc.moneda === 'USD' ? 22 : 124, oc.moneda === 'USD' ? 163 : 58, oc.moneda === 'USD' ? 74 : 237);
+    docPDF.text(oc.moneda === 'USD' ? '🇺🇸 USD (Dólares)' : '🇲🇽 MXN (Pesos)', 135, dy);
+    docPDF.setTextColor(71, 85, 105);
+    dy += 5;
+    
+    if (oc.moneda === 'USD' && Number(oc.tipo_cambio) > 0) {
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text('T.C. ref:', 110, dy);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.text(`$${fmtNum(Number(oc.tipo_cambio).toFixed(2))} MXN/USD`, 132, dy);
+      dy += 5;
+    }
+    
+    if (prov?.terminos_pago) {
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text('Términos pago:', 110, dy);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.text(prov.terminos_pago, 145, dy);
+    }
+    
+    y += 50;
+    
+    // ===== TABLA DE LÍNEAS =====
+    y = _pdfSeccionTitulo(docPDF, y, 'DETALLE DE LA COMPRA', _COL_VERDE);
+    
+    // Encabezado tabla
+    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.rect(14, y, 182, 8, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('CANT.', 18, y + 5.5);
+    docPDF.text('UM', 32, y + 5.5);
+    docPDF.text('CÓD. PROV.', 42, y + 5.5);
+    docPDF.text('DESCRIPCIÓN', 72, y + 5.5);
+    docPDF.text(`P. UNIT (${oc.moneda || 'MXN'})`, 148, y + 5.5);
+    docPDF.text(`SUBTOTAL`, 178, y + 5.5);
+    y += 8;
+    
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(8);
+    
+    let subtotalTotal = 0;
+    (oc.lineas || []).forEach((l, idx) => {
+      // Alternar fondo
+      if (idx % 2 === 1) {
+        docPDF.setFillColor(248, 250, 252);
+        docPDF.rect(14, y, 182, 7, 'F');
+      }
+      
+      const subtotal = (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0);
+      subtotalTotal += subtotal;
+      
+      docPDF.setTextColor(30, 41, 59);
+      docPDF.text(fmtNum(l.cantidad || 0), 18, y + 5);
+      docPDF.text(l.um || 'Kg', 32, y + 5);
+      
+      docPDF.setFont('courier', 'bold');
+      docPDF.setFontSize(7.5);
+      docPDF.text((l.codigo_proveedor || l.mp_codigo || '').substring(0, 16), 42, y + 5);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(8);
+      
+      const desc = (l.descripcion || '').substring(0, 38);
+      docPDF.text(desc, 72, y + 5);
+      
+      docPDF.text('$' + fmtNum((Number(l.costo_unitario) || 0).toFixed(2)), 148, y + 5);
+      docPDF.text('$' + fmtNum(subtotal.toFixed(2)), 178, y + 5);
+      
+      y += 7;
+    });
+    
+    // Total
+    y += 2;
+    const monedaOC = oc.moneda || 'MXN';
+    const tcOC = Number(oc.tipo_cambio) || 0;
+    
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.rect(120, y, 76, 10, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(10);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text(`TOTAL ${monedaOC}:`, 124, y + 6.5);
+    docPDF.text('$' + fmtNum(subtotalTotal.toFixed(2)), 192, y + 6.5, { align: 'right' });
+    y += 12;
+    
+    // Si es USD, mostrar equivalente en MXN
+    if (monedaOC === 'USD' && tcOC > 0) {
+      docPDF.setFillColor(220, 252, 231);
+      docPDF.rect(120, y, 76, 7, 'F');
+      docPDF.setTextColor(22, 101, 52);
+      docPDF.setFontSize(7);
+      docPDF.setFont('helvetica', 'italic');
+      docPDF.text(`Equiv. MXN (TC ${fmtNum(tcOC.toFixed(2))}):`, 124, y + 4.5);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text('$' + fmtNum((subtotalTotal * tcOC).toFixed(2)), 192, y + 4.5, { align: 'right' });
+      y += 9;
+    } else {
+      y += 2;
+    }
+    
+    // ===== OBSERVACIONES =====
+    if (oc.observaciones) {
+      docPDF.setTextColor(0, 0, 0);
+      y = _pdfSeccionTitulo(docPDF, y, 'OBSERVACIONES Y CONDICIONES', _COL_AZUL);
+      docPDF.setFillColor(255, 251, 235);
+      docPDF.roundedRect(14, y, 182, 18, 2, 2, 'F');
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(71, 85, 105);
+      const obsLines = docPDF.splitTextToSize(oc.observaciones, 178);
+      docPDF.text(obsLines.slice(0, 3), 17, y + 5);
+      y += 22;
+    }
+    
+    // ===== FIRMAS =====
+    if (y > 240) { docPDF.addPage(); y = 20; }
+    y = Math.max(y, 230);
+    
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.line(20, y, 90, y);
+    docPDF.line(120, y, 190, y);
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text('AUTORIZADO POR NEWPACK', 55, y + 4, { align: 'center' });
+    docPDF.text('ACEPTADO POR PROVEEDOR', 155, y + 4, { align: 'center' });
+    docPDF.setFontSize(6);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(`${oc.generada_por_nombre || ''}`, 55, y + 8, { align: 'center' });
+    docPDF.text('Nombre y firma', 155, y + 8, { align: 'center' });
+    
+    // Mostrar en vista previa
+    const pdfBlob = docPDF.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    state.pdfPreview = { url, nombre: `OC_${oc.folio}.pdf`, blob: pdfBlob };
+    state.modal = 'pdf-preview';
+    render();
+  } catch (e) {
+    console.error('Error PDF OC:', e);
+    toast('Error generando PDF: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// PDF: PRE-ORDEN / ORDEN CIEGA (SIN PRECIOS) - Para ALP en recepción
+// ============================================================
+window.imprimirPreOrdenPDF = (ocId) => {
+  try {
+    const oc = (state.ordenes_compra || []).find(x => x.id === ocId);
+    if (!oc) { toast('OC no encontrada', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    
+    const prov = (state.proveedores || []).find(p => p.id === oc.proveedor_id);
+    
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    
+    let y = _pdfHeaderEmpresa(docPDF, 'PRE-ORDEN', oc.folio);
+    
+    // ===== TÍTULO =====
+    docPDF.setFontSize(20);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('VERIFICACIÓN DE RECEPCIÓN', 105, y + 4, { align: 'center' });
+    
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text('Documento de uso interno · Almacén Planta', 105, y + 9, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+    y += 16;
+    
+    // ===== SECCIÓN: REFERENCIA =====
+    y = _pdfSeccionTitulo(docPDF, y, 'REFERENCIA DE LA ORDEN', _COL_AZUL);
+    
+    docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+    docPDF.roundedRect(14, y, 182, 22, 2, 2, 'F');
+    
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('OC #:', 17, y + 6);
+    docPDF.text('PROVEEDOR:', 17, y + 12);
+    docPDF.text('FECHA PROMESA:', 17, y + 18);
+    
+    docPDF.text('RC ORIGEN:', 108, y + 6);
+    docPDF.text('SOLICITANTE:', 108, y + 12);
+    docPDF.text('DEPTO:', 108, y + 18);
+    
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(30, 41, 59);
+    docPDF.setFontSize(9);
+    docPDF.text(oc.folio || '—', 35, y + 6);
+    docPDF.setFontSize(8);
+    docPDF.text((oc.proveedor || '—').substring(0, 38), 47, y + 12);
+    docPDF.text(oc.fecha_promesa || '—', 55, y + 18);
+    
+    docPDF.text(oc.rc_folio || '—', 135, y + 6);
+    docPDF.text((oc.solicitante_nombre || '—').substring(0, 25), 140, y + 12);
+    docPDF.text(oc.depto_solicitante || '—', 122, y + 18);
+    
+    y += 28;
+    
+    // ===== ADVERTENCIA AL ALMACENISTA =====
+    docPDF.setFillColor(254, 243, 199); // amarillo claro
+    docPDF.setDrawColor(245, 158, 11);
+    docPDF.setLineWidth(0.5);
+    docPDF.roundedRect(14, y, 182, 14, 2, 2, 'FD');
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(146, 64, 14);
+    docPDF.text('IMPORTANTE PARA ALMACÉN', 17, y + 5);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(7);
+    docPDF.text('• Verifica que el material recibido coincida con lo solicitado (descripción y cantidad)', 17, y + 9);
+    docPDF.text('• Solicita siempre LOTE DEL PROVEEDOR y CERTIFICADO DE CALIDAD', 17, y + 12);
+    docPDF.setTextColor(0, 0, 0);
+    y += 18;
+    
+    // ===== TABLA DE VERIFICACIÓN =====
+    y = _pdfSeccionTitulo(docPDF, y, 'MATERIAL A RECIBIR', _COL_VERDE);
+    
+    // Encabezado tabla (más columnas para captura manual)
+    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.rect(14, y, 182, 8, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(7.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('CANT. SOL.', 17, y + 5.5);
+    docPDF.text('UM', 34, y + 5.5);
+    docPDF.text('CÓD. PROV.', 42, y + 5.5);
+    docPDF.text('DESCRIPCIÓN', 70, y + 5.5);
+    docPDF.text('CANT. REC.', 128, y + 5.5);
+    docPDF.text('LOTE PROV.', 150, y + 5.5);
+    docPDF.text('CERT. #', 178, y + 5.5);
+    y += 8;
+    
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(7.5);
+    
+    (oc.lineas || []).forEach((l, idx) => {
+      const altoFila = 11;
+      
+      // Alternar fondo
+      if (idx % 2 === 1) {
+        docPDF.setFillColor(248, 250, 252);
+        docPDF.rect(14, y, 182, altoFila, 'F');
+      }
+      
+      // Líneas verticales separadoras
+      docPDF.setDrawColor(220, 220, 220);
+      docPDF.setLineWidth(0.2);
+      docPDF.line(125, y, 125, y + altoFila); // antes cant rec
+      docPDF.line(147, y, 147, y + altoFila); // antes lote
+      docPDF.line(175, y, 175, y + altoFila); // antes cert
+      
+      docPDF.setTextColor(30, 41, 59);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text(fmtNum(l.cantidad || 0), 17, y + 5);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.text(l.um || 'Kg', 34, y + 5);
+      
+      docPDF.setFont('courier', 'bold');
+      docPDF.setFontSize(7);
+      docPDF.text((l.codigo_proveedor || l.mp_codigo || '').substring(0, 14), 42, y + 5);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7);
+      
+      // Descripción puede partir en 2 líneas
+      const desc = (l.descripcion || '');
+      const descLines = docPDF.splitTextToSize(desc, 54);
+      docPDF.text(descLines.slice(0, 2), 70, y + 4);
+      
+      // Espacios para anotar
+      docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.setLineWidth(0.3);
+      docPDF.line(127, y + 7, 145, y + 7); // línea para cantidad recibida
+      docPDF.line(149, y + 7, 173, y + 7); // línea para lote prov
+      docPDF.line(177, y + 7, 194, y + 7); // línea para certificado
+      
+      y += altoFila;
+      
+      // Si nos pasamos del límite, página nueva
+      if (y > 250 && idx < (oc.lineas.length - 1)) {
+        docPDF.addPage();
+        y = 20;
+      }
+    });
+    
+    y += 5;
+    
+    // ===== CAMPOS GENERALES AL FINAL =====
+    if (y > 235) { docPDF.addPage(); y = 20; }
+    
+    y = _pdfSeccionTitulo(docPDF, y, 'DATOS GENERALES DE LA RECEPCIÓN', _COL_AZUL);
+    
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    
+    // Fila 1
+    docPDF.text('Fecha recepción:', 17, y + 4);
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.setLineWidth(0.3);
+    docPDF.line(47, y + 5, 100, y + 5);
+    
+    docPDF.text('Factura / Remisión #:', 110, y + 4);
+    docPDF.line(149, y + 5, 196, y + 5);
+    y += 9;
+    
+    // Fila 2
+    docPDF.text('Transportista:', 17, y + 4);
+    docPDF.line(43, y + 5, 100, y + 5);
+    
+    docPDF.text('Placas vehículo:', 110, y + 4);
+    docPDF.line(140, y + 5, 196, y + 5);
+    y += 9;
+    
+    // Notas
+    docPDF.text('Observaciones:', 17, y + 4);
+    docPDF.line(17, y + 11, 196, y + 11);
+    docPDF.line(17, y + 17, 196, y + 17);
+    y += 22;
+    
+    // ===== FIRMAS =====
+    if (y > 255) { docPDF.addPage(); y = 230; }
+    y = Math.max(y, 250);
+    
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.line(20, y, 80, y);
+    docPDF.line(120, y, 190, y);
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text('ENTREGÓ (TRANSPORTISTA)', 50, y + 4, { align: 'center' });
+    docPDF.text('RECIBIÓ (ALMACÉN NEWPACK)', 155, y + 4, { align: 'center' });
+    docPDF.setFontSize(6);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text('Nombre y firma', 50, y + 8, { align: 'center' });
+    docPDF.text('Nombre y firma', 155, y + 8, { align: 'center' });
+    
+    // Vista previa
+    const pdfBlob = docPDF.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    state.pdfPreview = { url, nombre: `PreOrden_${oc.folio}.pdf`, blob: pdfBlob };
+    state.modal = 'pdf-preview';
+    render();
+  } catch (e) {
+    console.error('Error PDF Pre-orden:', e);
+    toast('Error generando PDF: ' + e.message, 'error');
   }
 };
 
@@ -12721,6 +13365,15 @@ function attachAppEvents() {
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
+  if ($('#filtro-ordenes-compra')) {
+    $('#filtro-ordenes-compra').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.ordenes_compra = e.target.value;
+      render();
+      const inp = $('#filtro-ordenes-compra');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
   if ($('#filtro-usuarios')) {
     $('#filtro-usuarios').oninput = (e) => {
       const pos = e.target.selectionStart;
@@ -14831,4 +15484,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
