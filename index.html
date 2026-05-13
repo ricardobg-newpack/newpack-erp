@@ -676,8 +676,23 @@ function render() {
     root.innerHTML = `<div class="loading-overlay"><div class="loading-content"><div class="spinner"></div><div>Cargando...</div></div></div>`;
     return;
   }
+  
+  // Preservar scroll del modal body o vista principal antes del render
+  const modalBodyOld = document.querySelector('.modal-body');
+  const scrollModal = modalBodyOld ? modalBodyOld.scrollTop : null;
+  const scrollMain = window.scrollY;
+  
   root.innerHTML = renderApp();
   attachAppEvents();
+  
+  // Restaurar scroll después del render
+  if (scrollModal != null) {
+    const modalBodyNew = document.querySelector('.modal-body');
+    if (modalBodyNew) modalBodyNew.scrollTop = scrollModal;
+  }
+  if (scrollMain > 0) {
+    window.scrollTo(0, scrollMain);
+  }
 }
 window.render = render;
 
@@ -6745,12 +6760,12 @@ function modalGenerarOC() {
                         <td style="padding:6px 10px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
                         <td style="padding:6px 10px;font-size:11px;">${l.descripcion}</td>
                         <td style="padding:6px 10px;">
-                          <input class="input" type="text" value="${l.codigo_proveedor || ''}" placeholder="Ej: BRS-7100" oninput="window.actualizarLineaOC(${idx},'codigo_proveedor',this.value)" style="font-size:11px;padding:4px 6px;width:100px;font-family:monospace;" />
+                          <input class="input" id="oc-codprov-${idx}" type="text" value="${l.codigo_proveedor || ''}" placeholder="Ej: BRS-7100" oninput="window.actualizarLineaOC(${idx},'codigo_proveedor',this.value)" style="font-size:11px;padding:4px 6px;width:100px;font-family:monospace;" />
                         </td>
                         <td style="padding:6px 10px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
                         <td style="padding:6px 10px;font-size:11px;color:#64748b;">${l.um}</td>
                         <td style="padding:6px 10px;text-align:right;">
-                          <input class="input" type="number" min="0" step="0.01" value="${l.costo_unitario || ''}" placeholder="0.00" oninput="window.actualizarLineaOC(${idx},'costo_unitario',this.value)" style="font-size:11px;padding:4px 6px;width:90px;text-align:right;" />
+                          <input class="input" id="oc-costo-${idx}" type="number" min="0" step="0.01" value="${l.costo_unitario || ''}" placeholder="0.00" oninput="window.actualizarLineaOC(${idx},'costo_unitario',this.value)" style="font-size:11px;padding:4px 6px;width:90px;text-align:right;" />
                         </td>
                         <td style="padding:6px 10px;text-align:right;font-weight:700;color:${subtotal > 0 ? '#16a34a' : '#94a3b8'};">$${fmtNum(subtotal.toFixed(2))}</td>
                       </tr>
@@ -6861,8 +6876,20 @@ window.seleccionarProveedorOC = (provId) => {
 window.actualizarLineaOC = (idx, campo, valor) => {
   if (!state.modalForm?.lineas?.[idx]) return;
   state.modalForm.lineas[idx][campo] = valor;
-  // Solo render si es costo unitario (para recalcular total visible)
-  if (campo === 'costo_unitario') render();
+  // Re-render diferido solo si afecta el total visible
+  if (campo === 'costo_unitario') {
+    if (state._timerLineaOC) clearTimeout(state._timerLineaOC);
+    state._timerLineaOC = setTimeout(() => {
+      const activo = document.activeElement;
+      const id = activo?.id;
+      const sel = activo?.selectionStart;
+      render();
+      if (id) {
+        const nuevo = document.getElementById(id);
+        if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
+      }
+    }, 400);
+  }
 };
 
 window.confirmarGenerarOC = async (rcId) => {
@@ -7204,11 +7231,11 @@ function modalEditarOC() {
                       <tr style="border-bottom:1px solid #f1f5f9;">
                         <td style="padding:6px 8px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
                         <td style="padding:6px 8px;">
-                          <input class="input" type="text" value="${l.codigo_proveedor || ''}" oninput="window.actualizarLineaEditOC(${idx},'codigo_proveedor',this.value)" style="font-size:11px;padding:4px 6px;width:100px;font-family:monospace;" />
+                          <input class="input" id="edit-oc-codprov-${idx}" type="text" value="${l.codigo_proveedor || ''}" oninput="window.actualizarLineaEditOC(${idx},'codigo_proveedor',this.value)" style="font-size:11px;padding:4px 6px;width:100px;font-family:monospace;" />
                         </td>
                         <td style="padding:6px 8px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)} ${l.um}</td>
                         <td style="padding:6px 8px;text-align:right;">
-                          <input class="input" type="number" min="0" step="0.01" value="${l.costo_unitario || ''}" oninput="window.actualizarLineaEditOC(${idx},'costo_unitario',this.value)" style="font-size:11px;padding:4px 6px;width:90px;text-align:right;" />
+                          <input class="input" id="edit-oc-costo-${idx}" type="number" min="0" step="0.01" value="${l.costo_unitario || ''}" oninput="window.actualizarLineaEditOC(${idx},'costo_unitario',this.value)" style="font-size:11px;padding:4px 6px;width:90px;text-align:right;" />
                         </td>
                         <td style="padding:6px 8px;text-align:right;font-weight:700;color:${subtotal > 0 ? '#16a34a' : '#94a3b8'};">$${fmtNum(subtotal.toFixed(2))}</td>
                       </tr>
@@ -7260,7 +7287,19 @@ function modalEditarOC() {
 window.actualizarLineaEditOC = (idx, campo, valor) => {
   if (!state.modalForm?.lineas?.[idx]) return;
   state.modalForm.lineas[idx][campo] = valor;
-  if (campo === 'costo_unitario') render();
+  if (campo === 'costo_unitario') {
+    if (state._timerLineaEditOC) clearTimeout(state._timerLineaEditOC);
+    state._timerLineaEditOC = setTimeout(() => {
+      const activo = document.activeElement;
+      const id = activo?.id;
+      const sel = activo?.selectionStart;
+      render();
+      if (id) {
+        const nuevo = document.getElementById(id);
+        if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
+      }
+    }, 400);
+  }
 };
 
 window.confirmarEditarOC = async (ocId) => {
@@ -13502,7 +13541,7 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
           <label style="font-size:11px;color:#475569;font-weight:700;">% espesor:</label>
-          <input class="input" type="number" min="0" max="100" step="0.01" value="${capa.porcentaje_capa || ''}" oninput="window.actualizarPorcentajeCapa(${capaIdx}, this.value)" style="width:80px;text-align:right;font-weight:800;padding:4px 8px;font-size:13px;" />
+          <input class="input" id="capa-pctcapa-${capaIdx}" type="number" min="0" max="100" step="0.01" value="${capa.porcentaje_capa || ''}" oninput="window.actualizarPorcentajeCapa(${capaIdx}, this.value)" style="width:80px;text-align:right;font-weight:800;padding:4px 8px;font-size:13px;" />
           <span style="font-size:12px;color:#475569;font-weight:700;">%</span>
         </div>
       </div>
@@ -13545,7 +13584,7 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
                     <td style="padding:4px 8px;" class="text-mono"><strong>${r.mp_codigo}</strong></td>
                     <td style="padding:4px 8px;font-size:10px;color:#475569;">${(r.descripcion||'').substring(0,30)}</td>
                     <td style="padding:4px 8px;text-align:right;">
-                      <input class="input" type="number" min="0" max="100" step="0.01" value="${r.porcentaje || ''}" oninput="window.actualizarPorcentajeIngredienteCapa(${capaIdx}, ${ingrIdx}, this.value)" style="width:65px;text-align:right;font-weight:800;padding:2px 4px;font-size:11px;" />
+                      <input class="input" id="capa-pctingr-${capaIdx}-${ingrIdx}" type="number" min="0" max="100" step="0.01" value="${r.porcentaje || ''}" oninput="window.actualizarPorcentajeIngredienteCapa(${capaIdx}, ${ingrIdx}, this.value)" style="width:65px;text-align:right;font-weight:800;padding:2px 4px;font-size:11px;" />
                     </td>
                     <td style="padding:4px 8px;text-align:right;font-weight:700;color:#475569;">${pctReal.toFixed(2)}%</td>
                     <td style="padding:4px 8px;text-align:center;">
@@ -13614,7 +13653,18 @@ window.cambiarNumCapas = (n) => {
 window.actualizarPorcentajeCapa = (capaIdx, valor) => {
   if (!state.modalForm?.capas?.[capaIdx]) return;
   state.modalForm.capas[capaIdx].porcentaje_capa = Number(valor) || 0;
-  render();
+  // Re-render diferido: actualiza visualmente sin perder foco
+  if (state._timerCapas) clearTimeout(state._timerCapas);
+  state._timerCapas = setTimeout(() => {
+    const activo = document.activeElement;
+    const id = activo?.id;
+    const sel = activo?.selectionStart;
+    render();
+    if (id) {
+      const nuevo = document.getElementById(id);
+      if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
+    }
+  }, 400);
 };
 
 window.agregarIngredienteCapa = (capaIdx) => {
@@ -13658,7 +13708,18 @@ window.agregarIngredienteCapa = (capaIdx) => {
 window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
   if (!state.modalForm?.capas?.[capaIdx]?.ingredientes?.[ingrIdx]) return;
   state.modalForm.capas[capaIdx].ingredientes[ingrIdx].porcentaje = Number(valor) || 0;
-  render();
+  // Re-render diferido
+  if (state._timerIngr) clearTimeout(state._timerIngr);
+  state._timerIngr = setTimeout(() => {
+    const activo = document.activeElement;
+    const id = activo?.id;
+    const sel = activo?.selectionStart;
+    render();
+    if (id) {
+      const nuevo = document.getElementById(id);
+      if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
+    }
+  }, 400);
 };
 
 window.quitarIngredienteCapa = (capaIdx, ingrIdx) => {
