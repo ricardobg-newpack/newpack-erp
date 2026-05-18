@@ -334,6 +334,25 @@ function fmtFechaHora(f) {
 function fmtNum(n) {
   return Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
 }
+
+// HELPER ÚNICO: deriva el almacén físico real de una tarima desde su estatus
+// (el estatus es la única fuente de verdad)
+function almacenDeTarima(t) {
+  if (!t || !t.estatus) return '';
+  switch (t.estatus) {
+    case 'en_almacen_planta': return 'PLANTA-MTY';
+    case 'en_transito_cedis_mty': return 'TRANSITO-MTY';
+    case 'en_cedis_mty': return 'CEDIS-MTY';
+    case 'en_transito_cedis_mex': return 'TRANSITO-MEX';
+    case 'en_cedis_mex': return 'CEDIS-MEX';
+    case 'embarcada': return 'EMBARCADA';
+    case 'entregada': return 'ENTREGADA';
+    case 'pendiente_empaque':
+    case 'pendiente_almacen': return 'EN_PRODUCCION';
+    default: return t.almacen_actual || '';
+  }
+}
+window.almacenDeTarima = almacenDeTarima;
 function fmtCantidadUM(n, um) {
   const umLow = (um || 'kg').toLowerCase();
   const label = UM_LABELS[umLow] || um || 'Kg';
@@ -3417,12 +3436,8 @@ function renderAlmacenPlanta() {
   const pendientes = state.tarimas.filter(t => 
     t.estatus === 'pendiente_empaque' || t.estatus === 'pendiente_almacen'
   );
-  // Tarimas en stock en planta (recibidas pero NO transferidas a otro lado)
-  const enStock = state.tarimas.filter(t => 
-    t.estatus === 'en_almacen_planta' &&
-    t.almacen_actual !== 'CEDIS-MTY' && 
-    t.almacen_actual !== 'CEDIS-MEX'
-  );
+  // Tarimas FÍSICAMENTE en stock planta (excluye traslados y embarques)
+  const enStock = state.tarimas.filter(t => t.estatus === 'en_almacen_planta');
   
   return `
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
@@ -3577,13 +3592,8 @@ window.setSubTabAlmacen = (tab) => { state.subTabAlmacen = tab; render(); };
 function renderOTIPlanta() {
   const subTab = state.subTabOTI || 'crear';
   // Tarimas disponibles para enviar a CEDIS-MTY: están en planta y no en otro lado
-  const disponibles = state.tarimas.filter(t => 
-    t.estatus === 'en_almacen_planta' &&
-    t.almacen_actual !== 'CEDIS-MTY' && 
-    t.almacen_actual !== 'CEDIS-MEX' &&
-    t.estatus !== 'en_transito_cedis_mty' &&
-    t.estatus !== 'en_cedis_mty'
-  );
+  // Tarimas disponibles para crear OTI (solo en planta, sin asignar)
+  const disponibles = state.tarimas.filter(t => t.estatus === 'en_almacen_planta');
   // OTI activos
   const otiTransito = state.oti.filter(o => o.estatus === 'en_transito');
   const otiHistorial = state.oti.filter(o => o.estatus === 'recibido' || o.estatus === 'cancelado').slice(0, 30);
@@ -4068,10 +4078,7 @@ function renderStockProducto() {
   // Aplicar filtros
   if (filtroCli) tarimasStock = tarimasStock.filter(t => t.cliente_codigo === filtroCli);
   if (filtroAlm) {
-    tarimasStock = tarimasStock.filter(t => {
-      const almReal = t.almacen_actual || (t.estatus === 'en_almacen_planta' ? 'PLANTA-MTY' : '');
-      return almReal === filtroAlm;
-    });
+    tarimasStock = tarimasStock.filter(t => almacenDeTarima(t) === filtroAlm);
   }
   
   // Agrupar por producto + cliente (clave única)
@@ -8714,7 +8721,11 @@ function renderKardexMP(mpCodigo) {
   // Lotes de este MP
   const lotes = (state.lotes_mp || []).filter(l => l.mp_codigo === mpCodigo);
   const lotesActivos = lotes.filter(l => l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0);
-  const lotesAgotados = lotes.filter(l => l.estatus === 'agotado' || (Number(l.stock_actual) || 0) === 0 && l.estatus !== 'rechazado_calidad');
+  const lotesAgotados = lotes.filter(l => l.estatus !== 'rechazado_calidad' && (l.estatus === 'agotado' || (Number(l.stock_actual) || 0) === 0) && l.estatus !== 'activo');
+  // Caso especial: activo con stock 0 también es agotado
+  lotes.filter(l => l.estatus === 'activo' && (Number(l.stock_actual) || 0) === 0).forEach(l => {
+    if (!lotesAgotados.includes(l)) lotesAgotados.push(l);
+  });
   const lotesRechazados = lotes.filter(l => l.estatus === 'rechazado_calidad');
   
   // Movimientos de este MP
@@ -11663,6 +11674,27 @@ window.confirmarCargaOV = async (ovId) => {
         created_at: serverTimestamp()
       });
     });
+    
+    // ⭐ Verificar si TODAS las tarimas del PI ya están embarcadas/entregadas → cerrar PI
+    if (ov.pedido_folio) {
+      const pedido = state.pedidos.find(p => p.folio === ov.pedido_folio);
+      if (pedido && pedido.estatus !== 'completado') {
+        const tarimasDelPI = state.tarimas.filter(t => 
+          (t.pedido_folio === ov.pedido_folio || t.pedido_id === ov.pedido_id) && 
+          !(ov.tarimas_ids || []).includes(t.id) // excluir las que vamos a actualizar en este batch
+        );
+        // Las que NO están en este batch deben estar ya embarcada/entregada
+        const restantesOk = tarimasDelPI.every(t => ['embarcada','entregada'].includes(t.estatus));
+        if (restantesOk && tarimasDelPI.length + (ov.tarimas_ids || []).length > 0) {
+          batch.update(doc(db, 'pedidos', pedido.id), {
+            estatus: 'completado',
+            completado_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          });
+        }
+      }
+    }
+    
     await batch.commit();
     toast(`🚚 ${ov.folio} ENVIADA al cliente`);
   } catch (e) {
@@ -16024,7 +16056,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
       batch.set(doc(collection(db, 'notificaciones')), {
         titulo: 'OVs generadas',
         mensaje: ovs.join(', ') + ' • ' + pedido.cliente_nombre,
-        depto_destino: 'ALP-' + pedido.cedis_asignado,
+        depto_destino: 'ALP',
         tipo: 'info', folio_ref: pedido.folio,
         created_at: serverTimestamp()
       });
@@ -18284,3 +18316,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
