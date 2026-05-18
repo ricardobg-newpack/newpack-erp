@@ -2711,6 +2711,7 @@ function renderModal() {
   if (m === 'comentar-pedido') return modalComentarPedido();
   if (m === 'crear-producto-pt') return modalCrearProductoPT();
   if (m === 'editar-producto-pt') return modalEditarProductoPT();
+  if (m === 'selector-cliente-ficha') return modalSelectorClienteFichaTecnica();
   if (m === 'pdf-preview') return modalPdfPreview();
   if (m === 'crear-maquina') return modalMaquina(false);
   if (m === 'editar-maquina') return modalMaquina(true);
@@ -11189,17 +11190,42 @@ window.imprimirEstandarizacionPDF = (productoCodigo) => {
 // ============================================================
 // Documento que se entrega al cliente con especificaciones del producto.
 // Datos calculados automáticamente desde productos_pt + defaults inteligentes.
-window.imprimirFichaTecnicaPDF = (productoCodigo) => {
+// Si se pasa clienteCodigo, el documento se personaliza para ese cliente
+// (usa código interno del cliente y especificaciones-cliente-producto si existen).
+window.imprimirFichaTecnicaPDF = (productoCodigo, clienteCodigo) => {
   try {
     const p = (state.productos_pt || []).find(x => x.codigo === productoCodigo);
     if (!p) { toast('Producto no encontrado', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
 
-    // Cliente: busca relación cliente-producto. Si hay múltiples, toma el primero
-    // (la ficha es por producto, no por cliente; el cliente solo aparece como referencia).
-    const rel = (state.cliente_productos || []).find(cp => cp.producto_codigo === p.codigo);
+    // Relaciones cliente-producto disponibles para este producto
+    const relaciones = (state.cliente_productos || []).filter(cp => cp.producto_codigo === p.codigo);
+
+    // Si NO se especificó cliente pero hay 2+, abrir modal selector
+    if (!clienteCodigo && relaciones.length >= 2) {
+      state.modalData = { productoCodigo, relaciones };
+      state.modal = 'selector-cliente-ficha';
+      render();
+      return;
+    }
+
+    // Determinar relación efectiva:
+    // - Si pidieron un cliente específico, usar esa relación
+    // - Si pidieron '__GENERICA__' explícitamente, no usar ninguna
+    // - Si hay solo 1, usarla
+    // - Si hay 0, generar genérica (sin cliente)
+    let rel = null;
+    if (clienteCodigo && clienteCodigo !== '__GENERICA__') {
+      rel = relaciones.find(r => r.cliente_codigo === clienteCodigo);
+    } else if (!clienteCodigo && relaciones.length === 1) {
+      rel = relaciones[0];
+    }
     const cliente = rel ? (state.clientes || []).find(c => c.codigo === rel.cliente_codigo) : null;
-    const codigoCliente = cliente ? cliente.codigo : (p.cliente_codigo || '—');
+    const codigoCliente = cliente
+      ? (cliente.codigo + (cliente.nombre || cliente.razon_social ? '  ·  ' + (cliente.nombre || cliente.razon_social) : ''))
+      : 'GENÉRICA';
+    // Código interno del cliente para este producto (si existe), se muestra como referencia adicional
+    const codigoInternoCliente = rel ? (rel.codigo_cliente_interno || '') : '';
 
     const tols = calcularTolerancias(p);
     const densidad = calcularDensidad(p);
@@ -11242,11 +11268,11 @@ window.imprimirFichaTecnicaPDF = (productoCodigo) => {
 
     // ====== DATOS DEL CLIENTE / PRODUCTO ======
     const filasHead = [
-      ['CLIENTE:', codigoCliente + (cliente ? '  ·  ' + (cliente.nombre || cliente.razon_social || '') : '')],
+      ['CLIENTE:', codigoCliente],
       ['PRODUCTO:', tipoDesc.toUpperCase()],
       ['MEDIDAS:', `${p.ancho || 0}${(Number(p.fuelle)>0)? ' + '+p.fuelle : ''} X ${p.largo || 0}`],
       ['CALIBRE:', String(p.calibre || '—')],
-      ['CLAVE:', p.codigo],
+      ['CLAVE:', p.codigo + (codigoInternoCliente ? `  (Ref. cliente: ${codigoInternoCliente})` : '')],
     ];
     docPDF.autoTable({
       startY: y,
@@ -11380,10 +11406,11 @@ window.imprimirFichaTecnicaPDF = (productoCodigo) => {
     const url = URL.createObjectURL(pdfBlob);
     state.pdfPreview = {
       blobUrl: url,
-      filename: `FichaTecnica_${p.codigo}.pdf`,
-      titulo: `Ficha Técnica ${p.codigo}`,
+      filename: `FichaTecnica_${p.codigo}${cliente ? '_' + cliente.codigo : ''}.pdf`,
+      titulo: `Ficha Técnica ${p.codigo}${cliente ? ' — ' + cliente.codigo : ''}`,
       blob: pdfBlob
     };
+    state.modalData = null;
     state.modal = 'pdf-preview';
     render();
   } catch (e) {
@@ -14757,6 +14784,70 @@ window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
 window.quitarIngredienteCapa = (capaIdx, ingrIdx) => {
   if (!state.modalForm?.capas?.[capaIdx]?.ingredientes) return;
   state.modalForm.capas[capaIdx].ingredientes.splice(ingrIdx, 1);
+  render();
+};
+
+// ============================================================
+// MODAL: SELECTOR DE CLIENTE PARA FICHA TÉCNICA
+// ============================================================
+// Se abre solo cuando un producto tiene 2+ clientes relacionados.
+// Permite generar ficha personalizada por cliente o una versión genérica.
+function modalSelectorClienteFichaTecnica() {
+  const data = state.modalData || {};
+  const productoCodigo = data.productoCodigo;
+  const relaciones = data.relaciones || [];
+  const p = (state.productos_pt || []).find(x => x.codigo === productoCodigo);
+  if (!p) return '';
+
+  const clientesRel = relaciones.map(rel => {
+    const c = (state.clientes || []).find(cli => cli.codigo === rel.cliente_codigo);
+    return {
+      codigo: rel.cliente_codigo,
+      nombre: c ? (c.nombre || c.razon_social || rel.cliente_codigo) : rel.cliente_codigo,
+      codigo_interno: rel.codigo_cliente_interno || '',
+    };
+  });
+
+  return `
+    <div class="modal-overlay" onclick="if(event.target===this)cerrarModalSelectorCliente()">
+      <div class="modal" style="max-width:520px;">
+        <div style="padding:18px 22px;border-bottom:1px solid #e2e8f0;">
+          <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;">📄 FICHA TÉCNICA</div>
+          <h2 style="font-size:18px;font-weight:800;margin-top:4px;">¿Para qué cliente?</h2>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">Producto <span class="text-mono" style="font-weight:700;">${p.codigo}</span> está asignado a ${clientesRel.length} clientes</div>
+        </div>
+        <div style="padding:18px 22px;display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto;">
+          ${clientesRel.map(c => `
+            <button onclick="window.imprimirFichaTecnicaPDF('${productoCodigo}', '${c.codigo}')"
+              style="text-align:left;padding:14px 16px;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;cursor:pointer;transition:all 0.15s;"
+              onmouseover="this.style.borderColor='#16a34a';this.style.background='#f0fdf4';"
+              onmouseout="this.style.borderColor='#e2e8f0';this.style.background='#f8fafc';">
+              <div style="font-weight:700;font-size:14px;color:#0f172a;">${c.nombre}</div>
+              <div style="font-size:12px;color:#64748b;margin-top:2px;">
+                <span class="text-mono" style="font-weight:600;">${c.codigo}</span>
+                ${c.codigo_interno ? ` · Código interno: <span class="text-mono">${c.codigo_interno}</span>` : ''}
+              </div>
+            </button>
+          `).join('')}
+          <button onclick="window.imprimirFichaTecnicaPDF('${productoCodigo}', '__GENERICA__')"
+            style="text-align:left;padding:14px 16px;background:#fffbeb;border:1.5px dashed #fcd34d;border-radius:10px;cursor:pointer;margin-top:4px;"
+            onmouseover="this.style.background='#fef3c7';"
+            onmouseout="this.style.background='#fffbeb';">
+            <div style="font-weight:700;font-size:14px;color:#92400e;">📋 Ficha genérica (sin cliente)</div>
+            <div style="font-size:12px;color:#a16207;margin-top:2px;">Sin código interno ni datos de cliente</div>
+          </button>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModalSelectorCliente()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.cerrarModalSelectorCliente = () => {
+  state.modal = null;
+  state.modalData = null;
   render();
 };
 
