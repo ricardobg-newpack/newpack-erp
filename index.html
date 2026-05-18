@@ -289,6 +289,91 @@ function calcularPesoPieza(producto) {
 }
 window.calcularPesoPieza = calcularPesoPieza;
 
+// ============================================================
+// FICHA TÉCNICA / CERTIFICADO: HELPERS DE DEFAULTS INTELIGENTES
+// ============================================================
+// Densidad por tipo de material (LD=0.921, HD=0.950)
+// El usuario puede sobreescribir con producto.densidad
+function calcularDensidad(producto) {
+  if (!producto) return 0.921;
+  if (producto.densidad && Number(producto.densidad) > 0) return Number(producto.densidad);
+  const mat = (producto.material || '').toUpperCase();
+  if (mat.includes('HD') || mat.includes('ALTA')) return 0.950;
+  return 0.921;
+}
+window.calcularDensidad = calcularDensidad;
+
+// Etiqueta legible del tipo de resina (para ficha técnica)
+function descripcionResina(producto) {
+  if (!producto) return 'Polietileno de baja densidad';
+  if (producto.tipo_resina_texto) return producto.tipo_resina_texto;
+  const densidad = calcularDensidad(producto);
+  const esAlta = densidad >= 0.940;
+  const base = esAlta ? 'Polietileno de alta densidad' : 'Polietileno de baja densidad';
+  return `${base} 100% virgen para contacto con alimentos grado FDA REF.21 CFR 177.1520 C3.1`;
+}
+window.descripcionResina = descripcionResina;
+
+// Calcula tolerancias por defecto (en cm para dimensiones, % para calibre)
+// Reglas: ancho/fuelle ±1 cm, largo ±1 cm si <200 ó ±2 cm si ≥200, calibre ±10%
+function calcularTolerancias(producto) {
+  if (!producto) return {};
+  const ancho = Number(producto.ancho) || 0;
+  const fuelle = Number(producto.fuelle) || 0;
+  const largo = Number(producto.largo) || 0;
+  const calibre = Number(producto.calibre) || 0;
+  const tolAncho  = Number(producto.tol_ancho)  || 1;
+  const tolFuelle = Number(producto.tol_fuelle) || 1;
+  const tolLargo  = Number(producto.tol_largo)  || (largo >= 200 ? 2 : 1);
+  const tolCalPct = Number(producto.tol_calibre_pct) || 10;
+  return {
+    ancho_max: ancho + tolAncho,
+    ancho_min: ancho - tolAncho,
+    fuelle_max: fuelle + tolFuelle,
+    fuelle_min: fuelle - tolFuelle,
+    largo_max: largo + tolLargo,
+    largo_min: largo - tolLargo,
+    calibre_max: Math.round(calibre * (1 + tolCalPct / 100)),
+    calibre_min: Math.round(calibre * (1 - tolCalPct / 100)),
+    tol_ancho: tolAncho,
+    tol_fuelle: tolFuelle,
+    tol_largo: tolLargo,
+    tol_calibre_pct: tolCalPct,
+  };
+}
+window.calcularTolerancias = calcularTolerancias;
+
+// Detecta tipo de forma del producto para plano mecánico
+// Devuelve: 'rollo' | 'tubular' | 'bolsa_suelta' | 'bolsa_fuelle' | 'bolsa_rollo' | 'hoja' | 'manga'
+function tipoFormaProducto(producto) {
+  if (!producto) return 'bolsa_suelta';
+  const tipo = (producto.tipo || '').toUpperCase();
+  const fuelle = Number(producto.fuelle) || 0;
+  if (tipo.includes('ROLLO') && !tipo.includes('BOLSA')) return 'rollo';
+  if (tipo.includes('BR') || (tipo.includes('BOLSA') && tipo.includes('ROLLO'))) return 'bolsa_rollo';
+  if (tipo.includes('TUBULAR') || tipo.includes('MANGA')) return 'manga';
+  if (tipo.includes('HOJA') || tipo.includes('CORTE')) return 'hoja';
+  if (fuelle > 0) return 'bolsa_fuelle';
+  return 'bolsa_suelta';
+}
+window.tipoFormaProducto = tipoFormaProducto;
+
+// Descripción legible del tipo de producto (para certificado/ficha)
+function descripcionTipoProducto(producto) {
+  const forma = tipoFormaProducto(producto);
+  const map = {
+    rollo: 'Película en Rollo',
+    tubular: 'Película Tubular',
+    manga: 'Manga / Tubular',
+    bolsa_suelta: 'Bolsa Suelta',
+    bolsa_fuelle: 'Bolsa Suelta con Fuelle',
+    bolsa_rollo: 'Bolsa en Rollo',
+    hoja: 'Hoja / Corte',
+  };
+  return map[forma] || 'Producto';
+}
+window.descripcionTipoProducto = descripcionTipoProducto;
+
 // Convierte una cantidad cualquiera a kg dado un producto
 // Devuelve null si no se puede convertir (ej: rollo/metro)
 function convertirAKg(cantidad, um, producto) {
@@ -11100,6 +11185,214 @@ window.imprimirEstandarizacionPDF = (productoCodigo) => {
 };
 
 // ============================================================
+// PDF: FICHA TÉCNICA DE PRODUCTO (NPA-IYD-FR-01)
+// ============================================================
+// Documento que se entrega al cliente con especificaciones del producto.
+// Datos calculados automáticamente desde productos_pt + defaults inteligentes.
+window.imprimirFichaTecnicaPDF = (productoCodigo) => {
+  try {
+    const p = (state.productos_pt || []).find(x => x.codigo === productoCodigo);
+    if (!p) { toast('Producto no encontrado', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+
+    // Cliente: busca relación cliente-producto. Si hay múltiples, toma el primero
+    // (la ficha es por producto, no por cliente; el cliente solo aparece como referencia).
+    const rel = (state.cliente_productos || []).find(cp => cp.producto_codigo === p.codigo);
+    const cliente = rel ? (state.clientes || []).find(c => c.codigo === rel.cliente_codigo) : null;
+    const codigoCliente = cliente ? cliente.codigo : (p.cliente_codigo || '—');
+
+    const tols = calcularTolerancias(p);
+    const densidad = calcularDensidad(p);
+    const resinaDesc = descripcionResina(p);
+    const tipoDesc = descripcionTipoProducto(p);
+    const aditivo = p.aditivo && p.aditivo !== 'NINGUNO' ? p.aditivo : 'N/A';
+    const pigmento = p.pigmento || p.color || 'N/A';
+    const presentacion = p.presentacion || 'Paquetes con 20 pz';
+    const embalaje = p.embalaje || 'Empacado con polietileno grueso con leyenda de identificación';
+    const propiedades = p.propiedades_textura || 'Flexible';
+    const especificacionesCliente = p.especificaciones_cliente || 'N/A';
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+
+    // ====== HEADER NPA-IYD-FR-01 ======
+    // Banda verde superior con logo + título + folio del documento
+    _pdfHeaderEmpresa(docPDF, 'FICHA TÉCNICA', 'NPA-IYD-FR-01');
+
+    let y = 50;
+
+    // ====== TÍTULO PRINCIPAL ======
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.rect(14, y, 182, 9, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(14);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('FICHA TÉCNICA', 105, y + 6, { align: 'center' });
+    y += 12;
+
+    // ====== FECHA DE EMISIÓN ======
+    docPDF.setTextColor(_COL_GRIS_TEXTO[0], _COL_GRIS_TEXTO[1], _COL_GRIS_TEXTO[2]);
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('Fecha de emisión:', 130, y + 4);
+    docPDF.setFont('helvetica', 'normal');
+    const hoy = new Date();
+    docPDF.text(`${hoy.getDate()} de ${['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][hoy.getMonth()]} del ${hoy.getFullYear()}`, 165, y + 4);
+    y += 8;
+
+    // ====== DATOS DEL CLIENTE / PRODUCTO ======
+    const filasHead = [
+      ['CLIENTE:', codigoCliente + (cliente ? '  ·  ' + (cliente.nombre || cliente.razon_social || '') : '')],
+      ['PRODUCTO:', tipoDesc.toUpperCase()],
+      ['MEDIDAS:', `${p.ancho || 0}${(Number(p.fuelle)>0)? ' + '+p.fuelle : ''} X ${p.largo || 0}`],
+      ['CALIBRE:', String(p.calibre || '—')],
+      ['CLAVE:', p.codigo],
+    ];
+    docPDF.autoTable({
+      startY: y,
+      head: [],
+      body: filasHead,
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 45 },
+        1: { halign: 'center' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 3;
+
+    // ====== TABLA DE PROPIEDADES (con tolerancias) ======
+    // Solo incluir filas relevantes según el producto
+    const filasProp = [];
+    if (Number(p.ancho) > 0) filasProp.push(['ANCHO (cm)', String(p.ancho), String(tols.ancho_max), String(tols.ancho_min)]);
+    if (Number(p.fuelle) > 0) filasProp.push(['FUELLE (cm)', String(p.fuelle), String(tols.fuelle_max), String(tols.fuelle_min)]);
+    if (Number(p.largo) > 0) filasProp.push(['LARGO (cm)', String(p.largo), String(tols.largo_max), String(tols.largo_min)]);
+    if (Number(p.calibre) > 0) filasProp.push(['CALIBRE (in")', String(p.calibre), String(tols.calibre_max), String(tols.calibre_min)]);
+
+    docPDF.autoTable({
+      startY: y,
+      head: [
+        [
+          { content: 'PROPIEDADES / UNIDADES', rowSpan: 2, styles: { valign: 'middle' } },
+          { content: 'VALOR NOMINAL', rowSpan: 2, styles: { valign: 'middle' } },
+          { content: 'TOLERANCIAS', colSpan: 2 },
+        ],
+        ['MÁXIMO', 'MÍNIMO']
+      ],
+      body: filasProp,
+      theme: 'grid',
+      headStyles: { fillColor: _COL_VERDE, textColor: [255,255,255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
+      styles: { fontSize: 8.5, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0], halign: 'center' },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], halign: 'left', cellWidth: 45 },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 1;
+
+    // ====== CARACTERÍSTICAS DEL MATERIAL ======
+    const filasMat = [
+      ['TIPO DE RESINA', resinaDesc],
+      ['DENSIDAD DEL MATERIAL', `${densidad.toFixed(3)} g/cm³`],
+      ['ADITIVO', aditivo],
+      ['PIGMENTO', pigmento],
+      ['LIMPIEZA', 'Libre de todo tipo de contaminación'],
+      ['INOCUIDAD', 'Se fabrica exclusivamente con medios fisiológicamente inocuos y exento de sustancias peligrosas y nocivas para la salud.'],
+      ['INTEGRIDAD', p.integridad || 'N/A'],
+      ['PROPIEDADES', propiedades],
+      ['PRESENTACIÓN', presentacion],
+      ['EMBALAJE', embalaje],
+    ];
+    docPDF.autoTable({
+      startY: y,
+      head: [],
+      body: filasMat,
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 1.8, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 55 },
+        1: { halign: 'center' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 2;
+
+    // ====== ESPECIFICACIONES SOLICITADAS POR EL CLIENTE ======
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: 'ESPECIFICACIONES SOLICITADAS POR EL CLIENTE', styles: { halign: 'center' } }]],
+      body: [[{ content: especificacionesCliente, styles: { halign: 'center' } }]],
+      theme: 'grid',
+      headStyles: { fillColor: _COL_VERDE, textColor: [255,255,255], fontStyle: 'bold', fontSize: 8 },
+      styles: { fontSize: 8, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 2;
+
+    // ====== CONDICIONES DE ALMACENAMIENTO ======
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: 'CONDICIONES DE ALMACENAMIENTO', styles: { halign: 'center' } }]],
+      body: [[
+        '1. Almacenar en espacios grandes y ventilados.\n' +
+        '2. Se debe almacenar completamente empacado, el material tiende a oxidarse si se mantiene largo tiempo en contacto con el ambiente, pierde ópticas, pero no afecta su funcionalidad.\n' +
+        '3. Mantener lejos de productos químicos.\n' +
+        '4. Material resistente a condiciones ambientales.\n' +
+        '5. Humedad relativa del ambiente entre 35-50 %.\n' +
+        '6. Mantener alejado de toda llama y fuente de chispas.'
+      ]],
+      theme: 'grid',
+      headStyles: { fillColor: _COL_VERDE, textColor: [255,255,255], fontStyle: 'bold', fontSize: 8 },
+      styles: { fontSize: 7.5, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 2;
+
+    // ====== VIDA EN ANAQUEL Y NOTA ======
+    docPDF.autoTable({
+      startY: y,
+      head: [],
+      body: [
+        ['VIDA ANAQUEL', 'Estos productos son garantizados para larga duración en las condiciones antes mencionadas.'],
+        ['NOTA:', 'El presente documento solo se modificará a petición del cliente por cuestiones de cambio en las especificaciones del producto.'],
+      ],
+      theme: 'grid',
+      styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 30 },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 8;
+
+    // ====== FIRMA ======
+    if (y > 270) { docPDF.addPage(); y = 30; }
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.line(75, y, 135, y);
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text('Control de Calidad', 105, y + 4, { align: 'center' });
+
+    // Vista previa
+    const pdfBlob = docPDF.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    state.pdfPreview = {
+      blobUrl: url,
+      filename: `FichaTecnica_${p.codigo}.pdf`,
+      titulo: `Ficha Técnica ${p.codigo}`,
+      blob: pdfBlob
+    };
+    state.modal = 'pdf-preview';
+    render();
+  } catch (e) {
+    console.error('Error PDF Ficha Técnica:', e);
+    toast('Error generando PDF: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
 // PDF: REPORTE DE PRODUCCIÓN POR ODP
 // ============================================================
 window.imprimirReporteProduccionPDF = (odpId) => {
@@ -13829,6 +14122,7 @@ function modalEditarProductoPT() {
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
           <button class="btn-secondary" onclick="if(confirm('¿Desactivar este producto? Ya no aparecerá en las búsquedas.'))desactivarProductoPT('${p.codigo}')" style="background:#fee2e2;color:#dc2626;">${ICONS.trash} Desactivar</button>
+          <button class="btn-secondary" onclick="window.imprimirFichaTecnicaPDF('${p.codigo}')" style="background:#dbeafe;color:#1e40af;border-color:#bfdbfe;">📄 Ficha Técnica</button>
           <button class="btn-secondary" onclick="cerrarModalPT()" style="margin-left:auto;">Cancelar</button>
           <button class="btn-primary" onclick="guardarProductoPT('${p.codigo}')">${ICONS.check} Guardar cambios</button>
         </div>
@@ -18316,4 +18610,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
