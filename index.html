@@ -2303,6 +2303,7 @@ function renderTarjetaCalidad(o, contexto) {
           <button onclick="imprimirPackingListPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📦 Packing List PDF</button>
           <button onclick="imprimirEtiquetasTarimasPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🏷️ Etiquetas tarimas</button>
           <button onclick="imprimirReporteProduccionPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📊 Reporte producción</button>
+          ${o.liberacion_calidad?.mediciones_calidad ? `<button onclick="imprimirCertificadoCalidadPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📄 Certificado Calidad</button>` : ''}
         ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
@@ -11420,6 +11421,251 @@ window.imprimirFichaTecnicaPDF = (productoCodigo, clienteCodigo) => {
 };
 
 // ============================================================
+// PDF: CERTIFICADO DE CALIDAD (NPA-CAL-FR-02)
+// ============================================================
+// Documento que se entrega al cliente con resultado de mediciones
+// vs especificaciones de la ficha técnica.
+// Genera un PDF con UNA hoja por ODP (agrupando todas sus tarimas).
+// Argumentos:
+//   odpId: ID de la ODP liberada
+//   factura: (opcional) número de factura para anotar en el certificado
+window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
+  try {
+    const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+    if (!odp) { toast('ODP no encontrada', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+
+    const med = odp.liberacion_calidad && odp.liberacion_calidad.mediciones_calidad;
+    if (!med) {
+      toast('Esta ODP no tiene mediciones de calidad capturadas. No se puede generar certificado.', 'error');
+      return;
+    }
+
+    const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
+    const tols = producto ? calcularTolerancias(producto) : {};
+    const tieneFuelle = producto && Number(producto.fuelle) > 0;
+    const cliente = (state.clientes || []).find(c => c.codigo === odp.cliente_codigo);
+    const codigoCliente = cliente ? `${cliente.codigo} - ${cliente.nombre || cliente.razon_social || ''}` : (odp.cliente_codigo || '—');
+    const tipoDesc = producto ? descripcionTipoProducto(producto) : (odp.descripcion || 'Producto');
+    const aditivo = producto && producto.aditivo && producto.aditivo !== 'NINGUNO' ? producto.aditivo : 'N/A';
+    const pigmento = producto && (producto.pigmento || producto.color) ? (producto.pigmento || producto.color) : 'N/A';
+    const resinaDesc = producto ? descripcionResina(producto) : 'Polietileno de baja densidad';
+
+    // Tarimas de esta ODP
+    const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId);
+    const lotes = (state.lotes || []).filter(l => l.odp_id === odpId);
+    const totalPaquetes = tarimas.reduce((s, t) => s + (Number(t.paquetes) || 0), 0);
+    const totalPiezas = totalPaquetes * (Number(med.piezas_por_paq) || 0);
+    // Lote padre (el primer lote, ya que todas las tarimas comparten el padre conceptualmente)
+    const lotePadre = lotes.length > 0 ? lotes[0].codigo : (odp.folio || '');
+    const fechaFab = odp.liberacion_calidad?.liberado_at
+      ? new Date(odp.liberacion_calidad.liberado_at).toLocaleDateString('es-MX')
+      : new Date().toLocaleDateString('es-MX');
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+
+    // ====== HEADER ======
+    _pdfHeaderEmpresa(docPDF, 'CERTIFICADO DE CALIDAD', 'NPA-CAL-FR-02');
+
+    let y = 50;
+
+    // ====== TÍTULO ======
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.rect(14, y, 182, 9, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(14);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('CERTIFICADO DE CALIDAD', 105, y + 6, { align: 'center' });
+    y += 12;
+
+    // ====== DATOS DEL LOTE ======
+    docPDF.autoTable({
+      startY: y,
+      head: [],
+      body: [
+        ['Cliente:', codigoCliente],
+        ['Producto:', tipoDesc],
+        ['Factura:', factura || ''],
+        ['Código:', odp.producto_codigo],
+        ['Lote:', lotePadre],
+        ['Fecha de fabricación:', fechaFab],
+        ['# de paquetes:', String(totalPaquetes)],
+        ['Pz Totales:', `${totalPiezas} pz`],
+      ],
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 45 },
+        1: { halign: 'center' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 3;
+
+    // ====== TABLA DE CARACTERÍSTICAS / RESULTADO ======
+    // Helper: pinta verde si dentro de tolerancia, rojo si fuera
+    const dentroTol = (val, min, max) => {
+      const v = Number(val);
+      if (!val || isNaN(v) || !min) return null;
+      return v >= min && v <= max;
+    };
+
+    // Construir filas dinámicas
+    const filasCar = [];
+
+    // Piezas por paquete (con resultado)
+    const piezasSpec = producto?.piezas_por_paq || med.piezas_por_paq;
+    filasCar.push([
+      'Piezas por paq.',
+      `${piezasSpec || '—'} pz`,
+      { content: `${med.piezas_por_paq} pz`, colSpan: 3, styles: { halign: 'center' } }
+    ]);
+
+    // Ancho (cm)
+    if (producto && Number(producto.ancho) > 0) {
+      const ok = dentroTol(med.ancho, tols.ancho_min, tols.ancho_max);
+      filasCar.push([
+        'Ancho (cm)',
+        `${producto.ancho} cm (+/-) ${tols.tol_ancho * 10} mm`,
+        { content: `${med.ancho} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
+      ]);
+    }
+
+    // Fuelle (cm) — 3 columnas separadas: Derecho/Centro/Izquierdo
+    if (tieneFuelle && Number(producto.fuelle) > 0) {
+      const okD = dentroTol(med.fuelle_derecho, tols.fuelle_min/2, tols.fuelle_max/2);
+      const okI = dentroTol(med.fuelle_izquierdo, tols.fuelle_min/2, tols.fuelle_max/2);
+      filasCar.push([
+        'Fuelle (cm)',
+        `${producto.fuelle} cm ( ${(producto.fuelle/2).toFixed(0)} + ${(producto.fuelle/2).toFixed(0)} ) (+/-) ${tols.tol_fuelle * 10} mm`,
+        { content: med.fuelle_derecho + ' cm', styles: { halign: 'center', textColor: okD === false ? [220,38,38] : [0,0,0], fontStyle: okD === false ? 'bold' : 'normal' } },
+        { content: med.fuelle_centro || 'N/A', styles: { halign: 'center' } },
+        { content: med.fuelle_izquierdo + ' cm', styles: { halign: 'center', textColor: okI === false ? [220,38,38] : [0,0,0], fontStyle: okI === false ? 'bold' : 'normal' } },
+      ]);
+    }
+
+    // Largo (cm)
+    if (producto && Number(producto.largo) > 0) {
+      const ok = dentroTol(med.largo, tols.largo_min, tols.largo_max);
+      filasCar.push([
+        'Largo (cm)',
+        `${producto.largo} (+/-) ${tols.tol_largo * 10} mm`,
+        { content: `${med.largo} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
+      ]);
+    }
+
+    // Calibre (Máx/Moda/Mín)
+    if (producto && Number(producto.calibre) > 0) {
+      const okMax = dentroTol(med.calibre_max, tols.calibre_min, tols.calibre_max);
+      const okModa = dentroTol(med.calibre_moda, tols.calibre_min, tols.calibre_max);
+      const okMin = dentroTol(med.calibre_min, tols.calibre_min, tols.calibre_max);
+      filasCar.push([
+        'Calibre (in")',
+        String(producto.calibre),
+        { content: String(med.calibre_max), styles: { halign: 'center', textColor: okMax === false ? [220,38,38] : [0,0,0], fontStyle: okMax === false ? 'bold' : 'normal' } },
+        { content: String(med.calibre_moda), styles: { halign: 'center', textColor: okModa === false ? [220,38,38] : [0,0,0], fontStyle: okModa === false ? 'bold' : 'normal' } },
+        { content: String(med.calibre_min), styles: { halign: 'center', textColor: okMin === false ? [220,38,38] : [0,0,0], fontStyle: okMin === false ? 'bold' : 'normal' } },
+      ]);
+    }
+
+    // Para hacer cabeceras adecuadas con subcolumnas (Derecho/Centro/Izquierdo y Máximo/Moda/Mínimo)
+    // se usa un head con dos filas
+    docPDF.autoTable({
+      startY: y,
+      head: [
+        [
+          { content: 'Características', rowSpan: 2, styles: { valign: 'middle' } },
+          { content: 'Especificaciones', rowSpan: 2, styles: { valign: 'middle' } },
+          { content: 'Resultado', colSpan: 3 },
+        ],
+        [
+          // Estas etiquetas solo aplican a Fuelle (Derecho/Centro/Izq) y Calibre (Máx/Moda/Mín)
+          // Para otras filas con colSpan: 3 en la columna Resultado, no afectan
+          { content: tieneFuelle ? 'Derecho / Máximo' : 'Máximo', styles: { halign: 'center' } },
+          { content: tieneFuelle ? 'Centro / Moda' : 'Moda', styles: { halign: 'center' } },
+          { content: tieneFuelle ? 'Izquierdo / Mínimo' : 'Mínimo', styles: { halign: 'center' } },
+        ]
+      ],
+      body: filasCar,
+      theme: 'grid',
+      headStyles: { fillColor: _COL_VERDE, textColor: [255,255,255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
+      styles: { fontSize: 8, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 32 },
+        1: { cellWidth: 70 },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 2;
+
+    // ====== TIPO DE RESINA / ADITIVO / PIGMENTO / LIMPIEZA / INOCUIDAD ======
+    docPDF.autoTable({
+      startY: y,
+      head: [],
+      body: [
+        ['Tipo de resina', resinaDesc, med.resultado_resina || 'Cumple con la especificación'],
+        ['Aditivo', aditivo, med.resultado_aditivo || 'N/A'],
+        ['Pigmento', pigmento, med.resultado_pigmento || 'N/A'],
+        ['Limpieza', 'Libre de contaminantes', med.resultado_limpieza || 'Libre'],
+        ['Inocuidad', 'Material fabricado exclusivamente con medios fisiológicamente inocuos y exentos de sustancias peligrosas para la salud.', med.resultado_inocuidad || 'Cumple'],
+      ],
+      theme: 'grid',
+      styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 32 },
+        2: { halign: 'center' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 2;
+
+    // ====== CARACTERÍSTICAS SOLICITADAS POR EL CLIENTE ======
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: 'Características solicitadas por el cliente', styles: { halign: 'center' } }]],
+      body: [[{ content: med.caracteristicas_cliente || 'N/A', styles: { halign: 'center' } }]],
+      theme: 'grid',
+      headStyles: { fillColor: _COL_VERDE, textColor: [255,255,255], fontStyle: 'bold', fontSize: 8 },
+      styles: { fontSize: 8, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 12;
+
+    // ====== FIRMA ======
+    if (y > 275) { docPDF.addPage(); y = 30; }
+    docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.line(75, y, 135, y);
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text('Control de Calidad', 105, y + 4, { align: 'center' });
+    if (odp.liberacion_calidad?.liberado_por_nombre) {
+      docPDF.setFontSize(7);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      docPDF.text(odp.liberacion_calidad.liberado_por_nombre, 105, y + 8, { align: 'center' });
+    }
+
+    // Vista previa
+    const pdfBlob = docPDF.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    state.pdfPreview = {
+      blobUrl: url,
+      filename: `Certificado_${odp.producto_codigo}_${lotePadre}.pdf`,
+      titulo: `Certificado de Calidad · ${odp.folio}`,
+      blob: pdfBlob
+    };
+    state.modalData = null;
+    state.modal = 'pdf-preview';
+    render();
+  } catch (e) {
+    console.error('Error PDF Certificado:', e);
+    toast('Error generando certificado: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
 // PDF: REPORTE DE PRODUCCIÓN POR ODP
 // ============================================================
 window.imprimirReporteProduccionPDF = (odpId) => {
@@ -12845,7 +13091,25 @@ function modalLiberarCalidad() {
       // Lista de tarimas (cada una: paquetes completos + sueltos + pesos)
       tarimas_data: [],
       decision: 'pendiente',
-      notas: ''
+      notas: '',
+      // 📋 MEDICIONES DE CALIDAD (para certificado NPA-CAL-FR-02)
+      mediciones: {
+        ancho: '',
+        fuelle_derecho: '',
+        fuelle_centro: '',
+        fuelle_izquierdo: '',
+        largo: '',
+        calibre_max: '',
+        calibre_moda: '',
+        calibre_min: '',
+        piezas_por_paq: '',
+        resultado_resina: 'Cumple con la especificación',
+        resultado_aditivo: 'Cumple con la especificación',
+        resultado_pigmento: 'N/A',
+        resultado_limpieza: 'Libre',
+        resultado_inocuidad: 'Cumple',
+        caracteristicas_cliente: 'N/A',
+      },
     };
   }
   const f = state.modalForm;
@@ -13121,6 +13385,148 @@ function modalLiberarCalidad() {
             ` : ''}
           </div>
           
+          ${(decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') ? (() => {
+            const productoCal = (state.productos_pt || []).find(pp => pp.codigo === odp.producto_codigo);
+            const tolsCal = productoCal ? calcularTolerancias(productoCal) : {};
+            const tieneFuelle = productoCal && Number(productoCal.fuelle) > 0;
+            const med = f.mediciones || {};
+            // Helpers visuales: pinta el input según tolerancia
+            const checkTol = (val, min, max) => {
+              const v = Number(val);
+              if (!val || isNaN(v) || !min) return '';
+              return (v >= min && v <= max) ? 'border-color:#16a34a;background:#f0fdf4;' : 'border-color:#dc2626;background:#fef2f2;';
+            };
+            const dot = (val, min, max) => {
+              const v = Number(val);
+              if (!val || isNaN(v) || !min) return '';
+              return (v >= min && v <= max)
+                ? '<span style="color:#16a34a;font-weight:700;font-size:11px;">✓ Dentro</span>'
+                : '<span style="color:#dc2626;font-weight:700;font-size:11px;">⚠ Fuera de tolerancia</span>';
+            };
+            return `
+            <div style="padding:14px;background:#f8fafc;border:1.5px solid #cbd5e1;border-radius:10px;margin-bottom:14px;">
+              <div style="font-size:13px;font-weight:800;color:#0f172a;margin-bottom:4px;">📋 Mediciones de Calidad <span style="font-size:10px;font-weight:600;color:#dc2626;">· OBLIGATORIO</span></div>
+              <div style="font-size:11px;color:#64748b;margin-bottom:12px;">Para Certificado de Calidad NPA-CAL-FR-02. Se valida contra ficha técnica del producto.</div>
+              
+              ${productoCal ? `
+                <div style="font-size:10px;color:#475569;background:#fff;padding:6px 10px;border-radius:6px;margin-bottom:10px;border:1px dashed #cbd5e1;">
+                  <strong>Especificaciones:</strong>
+                  Ancho ${productoCal.ancho}±${tolsCal.tol_ancho}cm
+                  ${tieneFuelle ? `· Fuelle ${productoCal.fuelle}±${tolsCal.tol_fuelle}cm` : ''}
+                  · Largo ${productoCal.largo}±${tolsCal.tol_largo}cm
+                  · Calibre ${productoCal.calibre} (±${tolsCal.tol_calibre_pct}%: ${tolsCal.calibre_min}-${tolsCal.calibre_max})
+                </div>
+              ` : `<div style="color:#dc2626;font-size:11px;margin-bottom:8px;">⚠ Producto no encontrado en catálogo. Captura libre.</div>`}
+              
+              <!-- Dimensiones -->
+              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Ancho real (cm) *</label>
+                  <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" style="${checkTol(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}" placeholder="ej. 123.4" />
+                  <div style="margin-top:2px;">${dot(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}</div>
+                </div>
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Largo real (cm) *</label>
+                  <input class="input form-cal" data-field="mediciones.largo" type="number" step="0.1" value="${med.largo}" style="${checkTol(med.largo, tolsCal.largo_min, tolsCal.largo_max)}" placeholder="ej. 223.2" />
+                  <div style="margin-top:2px;">${dot(med.largo, tolsCal.largo_min, tolsCal.largo_max)}</div>
+                </div>
+              </div>
+              
+              ${tieneFuelle ? `
+                <div style="margin-bottom:10px;">
+                  <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Fuelle real (cm) *</div>
+                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                    <div>
+                      <input class="input form-cal" data-field="mediciones.fuelle_derecho" type="number" step="0.1" value="${med.fuelle_derecho}" style="${checkTol(med.fuelle_derecho, tolsCal.fuelle_min/2, tolsCal.fuelle_max/2)}" placeholder="Derecho" />
+                      <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">DERECHO</div>
+                    </div>
+                    <div>
+                      <input class="input form-cal" data-field="mediciones.fuelle_centro" type="number" step="0.1" value="${med.fuelle_centro}" placeholder="Centro (N/A si no aplica)" />
+                      <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">CENTRO</div>
+                    </div>
+                    <div>
+                      <input class="input form-cal" data-field="mediciones.fuelle_izquierdo" type="number" step="0.1" value="${med.fuelle_izquierdo}" style="${checkTol(med.fuelle_izquierdo, tolsCal.fuelle_min/2, tolsCal.fuelle_max/2)}" placeholder="Izquierdo" />
+                      <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">IZQUIERDO</div>
+                    </div>
+                  </div>
+                </div>
+              ` : ''}
+              
+              <!-- Calibre -->
+              <div style="margin-bottom:10px;">
+                <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Calibre real *</div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                  <div>
+                    <input class="input form-cal" data-field="mediciones.calibre_max" type="number" value="${med.calibre_max}" style="${checkTol(med.calibre_max, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Máximo" />
+                    <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MÁXIMO</div>
+                  </div>
+                  <div>
+                    <input class="input form-cal" data-field="mediciones.calibre_moda" type="number" value="${med.calibre_moda}" style="${checkTol(med.calibre_moda, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Moda" />
+                    <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MODA</div>
+                  </div>
+                  <div>
+                    <input class="input form-cal" data-field="mediciones.calibre_min" type="number" value="${med.calibre_min}" style="${checkTol(med.calibre_min, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Mínimo" />
+                    <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MÍNIMO</div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Piezas por paquete -->
+              <div class="field" style="margin-bottom:10px;">
+                <label class="field-label" style="font-size:10px;">Piezas por paquete real *</label>
+                <input class="input form-cal" data-field="mediciones.piezas_por_paq" type="number" value="${med.piezas_por_paq}" placeholder="ej. 20" />
+              </div>
+              
+              <!-- Resultados de cumplimiento -->
+              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px;">
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Tipo de resina</label>
+                  <select class="input form-cal" data-field="mediciones.resultado_resina">
+                    <option ${med.resultado_resina === 'Cumple con la especificación' ? 'selected' : ''}>Cumple con la especificación</option>
+                    <option ${med.resultado_resina === 'No cumple' ? 'selected' : ''}>No cumple</option>
+                    <option ${med.resultado_resina === 'N/A' ? 'selected' : ''}>N/A</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Aditivo</label>
+                  <select class="input form-cal" data-field="mediciones.resultado_aditivo">
+                    <option ${med.resultado_aditivo === 'Cumple con la especificación' ? 'selected' : ''}>Cumple con la especificación</option>
+                    <option ${med.resultado_aditivo === 'No cumple' ? 'selected' : ''}>No cumple</option>
+                    <option ${med.resultado_aditivo === 'N/A' ? 'selected' : ''}>N/A</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Pigmento</label>
+                  <select class="input form-cal" data-field="mediciones.resultado_pigmento">
+                    <option ${med.resultado_pigmento === 'Cumple con la especificación' ? 'selected' : ''}>Cumple con la especificación</option>
+                    <option ${med.resultado_pigmento === 'No cumple' ? 'selected' : ''}>No cumple</option>
+                    <option ${med.resultado_pigmento === 'N/A' ? 'selected' : ''}>N/A</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Limpieza</label>
+                  <select class="input form-cal" data-field="mediciones.resultado_limpieza">
+                    <option ${med.resultado_limpieza === 'Libre' ? 'selected' : ''}>Libre</option>
+                    <option ${med.resultado_limpieza === 'Contaminado' ? 'selected' : ''}>Contaminado</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0;">
+                  <label class="field-label" style="font-size:10px;">Inocuidad</label>
+                  <select class="input form-cal" data-field="mediciones.resultado_inocuidad">
+                    <option ${med.resultado_inocuidad === 'Cumple' ? 'selected' : ''}>Cumple</option>
+                    <option ${med.resultado_inocuidad === 'No cumple' ? 'selected' : ''}>No cumple</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10px;">Características solicitadas por el cliente</label>
+                <input class="input form-cal" data-field="mediciones.caracteristicas_cliente" type="text" value="${med.caracteristicas_cliente}" placeholder="N/A si no aplica" />
+              </div>
+            </div>
+            `;
+          })() : ''}
+          
           <div class="field">
             <label class="field-label">Notas de calidad</label>
             <textarea class="input form-cal" data-field="notas" style="min-height:50px;" placeholder="Pruebas realizadas, observaciones, motivo de rechazo, etc.">${f.notas}</textarea>
@@ -13210,6 +13616,7 @@ function modalDetalleODP() {
             <button onclick="imprimirPackingListPDF('${odp.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">📦 Packing List</button>
             <button onclick="imprimirEtiquetasTarimasPDF('${odp.id}')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">🏷️ Etiquetas</button>
             <button onclick="imprimirReporteProduccionPDF('${odp.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">📊 Reporte</button>
+            ${odp.liberacion_calidad?.mediciones_calidad ? `<button onclick="imprimirCertificadoCalidadPDF('${odp.id}')" style="padding:8px 14px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;">📄 Certificado Calidad</button>` : ''}
           ` : ''}
           <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
         </div>
@@ -15258,8 +15665,18 @@ function attachAppEvents() {
   $$('.form-cal').forEach(el => {
     const handler = () => {
       if (!state.modalForm) return;
-      const oldVal = state.modalForm[el.dataset.field];
-      state.modalForm[el.dataset.field] = el.value;
+      // Soporte para paths anidados tipo "mediciones.ancho"
+      const path = el.dataset.field;
+      let oldVal;
+      if (path.includes('.')) {
+        const [obj, key] = path.split('.');
+        if (!state.modalForm[obj]) state.modalForm[obj] = {};
+        oldVal = state.modalForm[obj][key];
+        state.modalForm[obj][key] = el.value;
+      } else {
+        oldVal = state.modalForm[path];
+        state.modalForm[path] = el.value;
+      }
       // Si cambió num_tarimas, reset tarimas_data y RE-RENDER
       if (el.dataset.field === 'num_tarimas' && Number(oldVal) !== Number(el.value)) {
         state.modalForm.tarimas_data = []; // forzar reinicialización
@@ -15309,6 +15726,12 @@ function attachAppEvents() {
       actualizarPreviewCalidad();
     };
     el.oninput = handler;
+    // Para mediciones: re-render al perder foco para actualizar indicadores ✓/⚠
+    if (el.dataset.field && el.dataset.field.startsWith('mediciones.')) {
+      el.onblur = () => { if (typeof forzarRender === 'function') forzarRender(); else render(); };
+      // Para los <select>, change también dispara render inmediato
+      if (el.tagName === 'SELECT') el.onchange = () => { handler(); };
+    }
   });
   
   // Handlers para inputs de cada tarima (paquetes, sueltos, peso bruto, peso vacío)
@@ -17967,6 +18390,50 @@ window.confirmarLiberarCalidad = async (odpId) => {
     if (Math.abs(sumCant - cantAceptada) > 0.01) {
       if (!confirm(`La suma de las tarimas (${fmtNum(sumCant)} ${UM_LABELS[um]}) no coincide con la cantidad aceptada (${fmtNum(cantAceptada)} ${UM_LABELS[um]}).\n\nDiferencia: ${fmtNum(sumCant - cantAceptada)} ${UM_LABELS[um]}\n\n¿Continuar igualmente?`)) return;
     }
+    
+    // 📋 VALIDAR MEDICIONES DE CALIDAD (obligatorias para certificado NPA-CAL-FR-02)
+    const med = f.mediciones || {};
+    const productoCal = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+    const tieneFuelle = productoCal && Number(productoCal.fuelle) > 0;
+    const camposObligatorios = ['ancho', 'largo', 'calibre_max', 'calibre_moda', 'calibre_min', 'piezas_por_paq'];
+    if (tieneFuelle) camposObligatorios.push('fuelle_derecho', 'fuelle_izquierdo');
+    const faltantes = camposObligatorios.filter(c => !med[c] && med[c] !== 0);
+    if (faltantes.length > 0) {
+      const etiquetas = {
+        ancho: 'Ancho', largo: 'Largo',
+        fuelle_derecho: 'Fuelle Derecho', fuelle_izquierdo: 'Fuelle Izquierdo',
+        calibre_max: 'Calibre Máximo', calibre_moda: 'Calibre Moda', calibre_min: 'Calibre Mínimo',
+        piezas_por_paq: 'Piezas por paquete',
+      };
+      toast(`⚠ Mediciones de calidad faltantes: ${faltantes.map(f => etiquetas[f]).join(', ')}`, 'error');
+      return;
+    }
+    // Validación lógica: max >= moda >= min en calibre
+    const cMax = Number(med.calibre_max), cModa = Number(med.calibre_moda), cMin = Number(med.calibre_min);
+    if (cMax < cModa || cModa < cMin) {
+      toast(`⚠ Calibre inconsistente: Máximo (${cMax}) ≥ Moda (${cModa}) ≥ Mínimo (${cMin})`, 'error');
+      return;
+    }
+    // Aviso si mediciones fuera de tolerancia (no bloquea, solo confirma)
+    if (productoCal) {
+      const tols = calcularTolerancias(productoCal);
+      const fueraTol = [];
+      const chk = (val, min, max, lbl) => {
+        const v = Number(val);
+        if (v < min || v > max) fueraTol.push(`${lbl}: ${v} (esperado ${min}-${max})`);
+      };
+      chk(med.ancho, tols.ancho_min, tols.ancho_max, 'Ancho');
+      chk(med.largo, tols.largo_min, tols.largo_max, 'Largo');
+      chk(med.calibre_max, tols.calibre_min, tols.calibre_max, 'Calibre Máx');
+      chk(med.calibre_min, tols.calibre_min, tols.calibre_max, 'Calibre Mín');
+      if (tieneFuelle) {
+        chk(med.fuelle_derecho, tols.fuelle_min/2, tols.fuelle_max/2, 'Fuelle Der');
+        chk(med.fuelle_izquierdo, tols.fuelle_min/2, tols.fuelle_max/2, 'Fuelle Izq');
+      }
+      if (fueraTol.length > 0) {
+        if (!confirm(`⚠ Algunas mediciones están FUERA de tolerancia:\n\n• ${fueraTol.join('\n• ')}\n\n¿Liberar de todas formas?`)) return;
+      }
+    }
   }
   
   state.loadingAccion = true; render();
@@ -17992,6 +18459,8 @@ window.confirmarLiberarCalidad = async (odpId) => {
       peso_neto_calculado: Number(totalPesoNeto.toFixed(2)),
       peso_teorico_esperado: pesoTeoricoEsperado !== null ? Number(pesoTeoricoEsperado.toFixed(2)) : null,
       diferencia_peso: pesoTeoricoEsperado !== null ? Number((totalPesoNeto - pesoTeoricoEsperado).toFixed(2)) : null,
+      // 📋 Mediciones para Certificado de Calidad NPA-CAL-FR-02
+      mediciones_calidad: f.mediciones || null,
       notas,
       liberado_por: state.user.id,
       liberado_por_nombre: state.user.nombre,
@@ -18194,8 +18663,53 @@ window.confirmarLiberarCalidad = async (odpId) => {
       });
       await batchNotif.commit();
       
+      // Actualizar copia local de la ODP para que imprimirCertificadoCalidadPDF tenga los datos
+      // (el snapshot realtime puede tardar unos ms; aquí garantizamos lectura inmediata)
+      const odpIdx = state.ordenes_produccion.findIndex(o => o.id === odpId);
+      if (odpIdx >= 0) {
+        state.ordenes_produccion[odpIdx] = {
+          ...state.ordenes_produccion[odpIdx],
+          estatus: 'liberada_empaque',
+          liberacion_calidad: liberacionData,
+          packing_list: codigoPKL,
+          lotes_generados: lotesGenerados.map(l => l.codigo_lote),
+          cantidad_liberada: cantAceptada,
+          num_tarimas_generadas: numTarimas,
+        };
+      }
+      // Inyectar tarimas localmente para que el PDF cuente paquetes correctamente
+      // (también vendrán por onSnapshot pero puede haber delay)
+      const tarimasNuevasLocal = lotesGenerados.map((l, i) => {
+        const t = f.tarimas_data[i] || {};
+        return {
+          id: 'tmp-' + l.tarima_codigo,
+          codigo: l.tarima_codigo,
+          lote_codigo: l.codigo_lote,
+          odp_id: odpId,
+          odp_folio: odp.folio,
+          numero_tarima: i + 1,
+          total_tarimas: numTarimas,
+          producto_codigo: odp.producto_codigo,
+          cliente_codigo: odp.cliente_codigo,
+          cantidad: l.cantidad,
+          paquetes: Number(t.paquetes) || 0,
+          sueltos: Number(t.sueltos) || 0,
+          estatus: 'pendiente_empaque',
+        };
+      });
+      tarimasNuevasLocal.forEach(tn => {
+        if (!state.tarimas.find(t => t.codigo === tn.codigo)) {
+          state.tarimas.push(tn);
+        }
+      });
+      
       cerrarModal();
-      toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Usa el botón "📄 Packing List" para imprimirlo`);
+      toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Generando Certificado de Calidad...`);
+      // 📄 Auto-generar Certificado de Calidad (NPA-CAL-FR-02)
+      setTimeout(() => {
+        try { window.imprimirCertificadoCalidadPDF(odpId); }
+        catch(e) { console.error('Error auto-cert:', e); toast('Liberado, pero error generando certificado: ' + e.message, 'warning'); }
+      }, 400);
     } else {
       // RECHAZADO
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
