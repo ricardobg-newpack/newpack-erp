@@ -293,6 +293,20 @@ const UM_MTTO = [
 ];
 window.UM_MTTO = UM_MTTO;
 
+// Tipos de mantenimiento (para clasificar consumos de refacciones)
+const TIPOS_MANTENIMIENTO = [
+  { codigo: 'PREVENTIVO',   nombre: 'Preventivo',         icono: '🛡️', color: '#16a34a' },
+  { codigo: 'CORRECTIVO',   nombre: 'Correctivo',         icono: '🔧', color: '#dc2626' },
+  { codigo: 'MEJORA',       nombre: 'Mejora',             icono: '⬆️', color: '#0ea5e9' },
+  { codigo: 'INSTALACION',  nombre: 'Instalación nueva',  icono: '🆕', color: '#7c3aed' },
+];
+window.TIPOS_MANTENIMIENTO = TIPOS_MANTENIMIENTO;
+
+function getTipoMantenimiento(codigo) {
+  return TIPOS_MANTENIMIENTO.find(t => t.codigo === codigo);
+}
+window.getTipoMantenimiento = getTipoMantenimiento;
+
 // ============================================================
 // 🏷️ CATEGORÍAS DE COMPRA (unifica proveedores + materias primas + MTTO)
 // ============================================================
@@ -1136,6 +1150,7 @@ function renderApp() {
         ${esVerMTTO ? `
           <div class="sidebar-section">Mantenimiento</div>
           <button class="nav-item ${state.vista === 'productos_mtto' ? 'active' : ''}" data-vista="productos_mtto">🔧 Productos MTTO</button>
+          <button class="nav-item ${state.vista === 'inventario_mtto' ? 'active' : ''}" data-vista="inventario_mtto">📊 Inventario MTTO</button>
         ` : ''}
         
         <div class="sidebar-section">Catálogos</div>
@@ -1196,6 +1211,7 @@ function tituloVista() {
     almacen_mp: '📦 Almacén de Materias Primas',
     proveedores: '🏭 Proveedores y Códigos Vinculados',
     productos_mtto: '🔧 Catálogo Productos de Mantenimiento',
+    inventario_mtto: '📊 Inventario de Mantenimiento',
     usuarios: '⚙️ Usuarios del Sistema'
   })[state.vista] || '';
 }
@@ -1224,6 +1240,7 @@ function renderVista() {
   if (v === 'almacen_mp') return renderAlmacenMP();
   if (v === 'proveedores') return renderProveedores();
   if (v === 'productos_mtto') return renderProductosMTTO();
+  if (v === 'inventario_mtto') return renderInventarioMTTO();
   if (v === 'usuarios') return renderUsuariosSistema();
   return '';
 }
@@ -1593,6 +1610,258 @@ function renderProductosMTTO() {
 }
 
 // Handlers de filtros para la vista MTTO se enganchan en setupHandlers (más abajo en el archivo)
+
+// ============================================================
+// 📊 INVENTARIO MTTO — Kardex, stock actual, movimientos
+// ============================================================
+function renderInventarioMTTO() {
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esMTTO = u.depto === 'MTTO' || esCEO;
+  const puedeSalida = esMTTO; // Solo MTTO captura salidas (CEO también porque incluye admin)
+  const puedeAjuste = esCEO; // Solo CEO/ADMIN puede ajustar inventario
+
+  const tab = state.tabs.inventario_mtto || 'stock';
+  const filtro = (state.filtros.inventario_mtto || '').toLowerCase();
+  const filtroFam = state.filtros.inventario_mtto_familia || '';
+
+  const productos = (state.productos_mtto || []).filter(p => p.activo !== false);
+  const movimientos = (state.movimientos_mtto || []).slice()
+    .sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+
+  // KPIs
+  const totalSKUs = productos.length;
+  const bajoMinimo = productos.filter(p => {
+    const stock = Number(p.stock_actual) || 0;
+    const min = Number(p.stock_minimo) || 0;
+    return min > 0 && stock <= min;
+  }).length;
+  const sinStock = productos.filter(p => (Number(p.stock_actual) || 0) <= 0).length;
+  // Valor de inventario (solo PLN/COMP/CEO/ADMIN ven costos)
+  const puedeVerCostos = ['PLN','COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const valorInventario = productos.reduce((s, p) => {
+    return s + ((Number(p.stock_actual) || 0) * (Number(p.costo_promedio) || 0));
+  }, 0);
+
+  // Movimientos de hoy
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const movsHoy = movimientos.filter(m => {
+    const fecha = m.created_at?.seconds ? new Date(m.created_at.seconds * 1000) : null;
+    return fecha && fecha >= hoy;
+  });
+
+  // Filtrar para listas
+  let listProd = productos;
+  if (filtro) listProd = listProd.filter(p =>
+    (p.codigo + ' ' + (p.descripcion||'') + ' ' + (p.marca||'') + ' ' + (p.modelo||'')).toLowerCase().includes(filtro)
+  );
+  if (filtroFam) listProd = listProd.filter(p => p.familia === filtroFam);
+
+  let listMovs = movimientos;
+  if (filtro) listMovs = listMovs.filter(m =>
+    ((m.producto_codigo||'') + ' ' + (m.producto_descripcion||'') + ' ' + (m.motivo||'') + ' ' + (m.tecnico_nombre||'')).toLowerCase().includes(filtro)
+  );
+
+  const productosBajoMinimo = productos.filter(p => {
+    const stock = Number(p.stock_actual) || 0;
+    const min = Number(p.stock_minimo) || 0;
+    return min > 0 && stock <= min;
+  });
+
+  return `
+    <div class="grid-stats" style="margin-bottom:18px;">
+      <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-value">${totalSKUs}</div><div class="stat-label">SKUs activos</div></div>
+      <div class="stat-card" style="border-left:4px solid #f59e0b;"><div class="stat-icon">⚠️</div><div class="stat-value" style="color:#f59e0b;">${bajoMinimo}</div><div class="stat-label">Bajo mínimo</div></div>
+      <div class="stat-card" style="border-left:4px solid #dc2626;"><div class="stat-icon">🚫</div><div class="stat-value" style="color:#dc2626;">${sinStock}</div><div class="stat-label">Sin stock</div></div>
+      ${puedeVerCostos ? `
+        <div class="stat-card" style="border-left:4px solid #16a34a;"><div class="stat-icon">💰</div><div class="stat-value" style="color:#16a34a;font-size:18px;">$${fmtNum(valorInventario)}</div><div class="stat-label">Valor inventario</div></div>
+      ` : `
+        <div class="stat-card"><div class="stat-icon">🔄</div><div class="stat-value">${movsHoy.length}</div><div class="stat-label">Movs. hoy</div></div>
+      `}
+    </div>
+
+    <!-- TABS -->
+    <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:2px solid #e2e8f0;flex-wrap:wrap;">
+      <button class="tab-btn ${tab === 'stock' ? 'active' : ''}" onclick="window.setTab('inventario_mtto','stock')">📦 Stock Actual (${productos.length})</button>
+      <button class="tab-btn ${tab === 'movs' ? 'active' : ''}" onclick="window.setTab('inventario_mtto','movs')">🔄 Movimientos (${movimientos.length})</button>
+      <button class="tab-btn ${tab === 'bajo' ? 'active' : ''}" onclick="window.setTab('inventario_mtto','bajo')" ${bajoMinimo > 0 ? `style="color:#f59e0b;"` : ''}>⚠️ Bajo Mínimo (${productosBajoMinimo.length})</button>
+    </div>
+
+    <!-- TOOLBAR -->
+    <div class="toolbar" style="margin-bottom:14px;">
+      <input class="input" id="filtro-inv-mtto" style="max-width:340px;flex:1;min-width:240px;" placeholder="Buscar..." value="${filtro}" autocomplete="off" />
+      ${tab === 'stock' ? `
+        <select class="input" id="filtro-inv-mtto-familia" style="max-width:220px;">
+          <option value="">— Todas las familias —</option>
+          ${FAMILIAS_MTTO.map(fa => `<option value="${fa.codigo}" ${filtroFam === fa.codigo ? 'selected' : ''}>${fa.icono} ${fa.nombre}</option>`).join('')}
+        </select>
+      ` : ''}
+      ${puedeSalida ? `<button class="btn-primary" onclick="abrirModal('salida-mtto')" style="background:#dc2626;border-color:#dc2626;">📤 Registrar consumo</button>` : ''}
+      ${puedeAjuste ? `<button class="btn-secondary" onclick="abrirModal('ajuste-mtto')" style="background:#fef3c7;color:#92400e;border-color:#fcd34d;">⚖️ Ajuste inventario</button>` : ''}
+    </div>
+
+    ${tab === 'stock' ? renderTabStockMTTO(listProd, puedeVerCostos) : ''}
+    ${tab === 'movs' ? renderTabMovimientosMTTO(listMovs, puedeVerCostos) : ''}
+    ${tab === 'bajo' ? renderTabBajoMinimoMTTO(productosBajoMinimo) : ''}
+  `;
+}
+
+function renderTabStockMTTO(arr, puedeVerCostos) {
+  if (arr.length === 0) {
+    return `<div style="padding:40px;text-align:center;background:#fff;border:1px solid #e2e8f0;border-radius:10px;color:#94a3b8;">Sin productos que mostrar.</div>`;
+  }
+  return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead style="background:#f1f5f9;border-bottom:1px solid #cbd5e1;">
+          <tr>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Código</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Familia</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Descripción</th>
+            <th style="padding:10px 12px;text-align:center;font-size:11px;color:#475569;">UM</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Stock</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Mín / Máx</th>
+            ${puedeVerCostos ? `<th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Costo Prom.</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Valor</th>` : ''}
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Ubicación</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${arr.slice(0, 200).map(p => {
+            const fam = getFamiliaMTTO(p.familia);
+            const stock = Number(p.stock_actual) || 0;
+            const min = Number(p.stock_minimo) || 0;
+            const max = Number(p.stock_maximo) || 0;
+            const cu = Number(p.costo_promedio) || 0;
+            const valor = stock * cu;
+            const stockColor = stock <= 0 ? '#dc2626' : (min > 0 && stock <= min ? '#f59e0b' : '#16a34a');
+            const stockBg = stock <= 0 ? '#fef2f2' : (min > 0 && stock <= min ? '#fffbeb' : '#f0fdf4');
+            return `
+              <tr style="border-bottom:1px solid #f1f5f9;cursor:pointer;" onclick="abrirModal('editar-mtto','${p.codigo}')">
+                <td style="padding:9px 12px;font-family:'SF Mono',Monaco,monospace;font-size:10.5px;font-weight:700;color:#0f172a;">${p.codigo}</td>
+                <td style="padding:9px 12px;">${fam ? `<span style="padding:2px 7px;border-radius:5px;background:${fam.color}22;color:${fam.color};font-weight:700;font-size:10.5px;">${fam.icono} ${fam.codigo}</span>` : '—'}</td>
+                <td style="padding:9px 12px;">${p.descripcion || '—'}</td>
+                <td style="padding:9px 12px;text-align:center;font-size:11px;color:#64748b;">${(p.um || 'pza').toUpperCase()}</td>
+                <td style="padding:9px 12px;text-align:right;"><span style="display:inline-block;padding:3px 10px;border-radius:5px;background:${stockBg};color:${stockColor};font-weight:800;font-size:12px;">${fmtNum(stock)}</span></td>
+                <td style="padding:9px 12px;text-align:right;font-size:11px;color:#64748b;">${min || '—'} / ${max || '—'}</td>
+                ${puedeVerCostos ? `<td style="padding:9px 12px;text-align:right;font-size:11px;">${cu > 0 ? '$' + cu.toFixed(2) : '—'}</td>
+                <td style="padding:9px 12px;text-align:right;font-weight:700;font-size:11.5px;color:#16a34a;">${valor > 0 ? '$' + fmtNum(valor) : '—'}</td>` : ''}
+                <td style="padding:9px 12px;font-size:11px;color:#64748b;">${p.ubicacion || '—'}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+      ${arr.length > 200 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 200 de ${arr.length}. Refina el filtro.</div>` : ''}
+    </div>
+  `;
+}
+
+function renderTabMovimientosMTTO(arr, puedeVerCostos) {
+  if (arr.length === 0) {
+    return `<div style="padding:40px;text-align:center;background:#fff;border:1px solid #e2e8f0;border-radius:10px;color:#94a3b8;">Sin movimientos registrados todavía.</div>`;
+  }
+  return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead style="background:#f1f5f9;border-bottom:1px solid #cbd5e1;">
+          <tr>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Fecha</th>
+            <th style="padding:10px 12px;text-align:center;font-size:11px;color:#475569;">Tipo</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Producto</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Cantidad</th>
+            ${puedeVerCostos ? `<th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Costo Unit.</th>` : ''}
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Detalle</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Capturado por</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${arr.slice(0, 300).map(m => {
+            const esEntrada = m.tipo === 'entrada';
+            const esAjuste = m.tipo === 'ajuste';
+            const fecha = m.created_at?.seconds ? new Date(m.created_at.seconds * 1000).toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+            const tipoMtto = getTipoMantenimiento(m.tipo_mantenimiento);
+            let detalle = '';
+            if (esEntrada) {
+              detalle = `📥 OC ${m.oc_folio || ''} · ${m.proveedor_nombre || ''}`.trim();
+            } else if (esAjuste) {
+              detalle = `⚖️ Ajuste: ${m.motivo || '—'}`;
+            } else {
+              detalle = `${tipoMtto ? tipoMtto.icono + ' ' + tipoMtto.nombre : ''}${m.maquina ? ' · 🛠️ ' + m.maquina : ''}${m.tecnico_nombre ? ' · 👤 ' + m.tecnico_nombre : ''}${m.motivo ? ' · ' + m.motivo : ''}`.trim();
+            }
+            return `
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:9px 12px;font-size:11px;color:#64748b;white-space:nowrap;">${fecha}</td>
+                <td style="padding:9px 12px;text-align:center;">
+                  ${esEntrada ? `<span style="padding:2px 8px;background:#dcfce7;color:#16a34a;border-radius:5px;font-weight:700;font-size:10.5px;">📥 ENTRADA</span>` :
+                    esAjuste ? `<span style="padding:2px 8px;background:#fef3c7;color:#92400e;border-radius:5px;font-weight:700;font-size:10.5px;">⚖️ AJUSTE</span>` :
+                    `<span style="padding:2px 8px;background:#fee2e2;color:#dc2626;border-radius:5px;font-weight:700;font-size:10.5px;">📤 SALIDA</span>`}
+                </td>
+                <td style="padding:9px 12px;">
+                  <div style="font-family:'SF Mono',Monaco,monospace;font-size:10.5px;font-weight:700;">${m.producto_codigo || '—'}</div>
+                  <div style="font-size:11px;color:#64748b;">${m.producto_descripcion || ''}</div>
+                </td>
+                <td style="padding:9px 12px;text-align:right;font-weight:800;color:${esEntrada ? '#16a34a' : (esAjuste ? '#f59e0b' : '#dc2626')};">
+                  ${esEntrada ? '+' : (esAjuste ? '' : '-')}${fmtNum(Math.abs(Number(m.cantidad) || 0))} ${m.um || ''}
+                </td>
+                ${puedeVerCostos ? `<td style="padding:9px 12px;text-align:right;font-size:11px;">${m.costo_unitario ? '$' + Number(m.costo_unitario).toFixed(2) : '—'}</td>` : ''}
+                <td style="padding:9px 12px;font-size:11px;color:#475569;">${detalle}</td>
+                <td style="padding:9px 12px;font-size:11px;color:#64748b;">${m.created_by_nombre || '—'}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+      ${arr.length > 300 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 300 de ${arr.length}.</div>` : ''}
+    </div>
+  `;
+}
+
+function renderTabBajoMinimoMTTO(arr) {
+  if (arr.length === 0) {
+    return `<div style="padding:40px;text-align:center;background:#fff;border:1px solid #16a34a;border-radius:10px;color:#16a34a;font-weight:700;">✅ ¡Todo bien! Ningún producto está bajo mínimo.</div>`;
+  }
+  return `
+    <div style="padding:12px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:14px;font-size:12px;color:#92400e;">
+      ⚠️ <strong>${arr.length} producto(s)</strong> requieren reabastecimiento. Genera una RC desde el módulo de Requisiciones para solicitar compra.
+    </div>
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead style="background:#fef3c7;border-bottom:1px solid #fbbf24;">
+          <tr>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#92400e;">Código</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#92400e;">Descripción</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#92400e;">Stock</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#92400e;">Mínimo</th>
+            <th style="padding:10px 12px;text-align:right;font-size:11px;color:#92400e;">Faltante</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#92400e;">Proveedor preferente</th>
+            <th style="padding:10px 12px;text-align:left;font-size:11px;color:#92400e;">Máquinas</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${arr.sort((a,b) => (Number(a.stock_actual)||0) - (Number(b.stock_actual)||0)).map(p => {
+            const stock = Number(p.stock_actual) || 0;
+            const min = Number(p.stock_minimo) || 0;
+            const max = Number(p.stock_maximo) || 0;
+            const aPedir = Math.max(0, (max > 0 ? max : min) - stock);
+            const prov = (state.proveedores || []).find(x => x.id === p.proveedor_preferente_id);
+            return `
+              <tr style="border-bottom:1px solid #f1f5f9;background:${stock <= 0 ? '#fef2f2' : '#fffbeb'};">
+                <td style="padding:9px 12px;font-family:'SF Mono',Monaco,monospace;font-size:10.5px;font-weight:700;">${p.codigo}</td>
+                <td style="padding:9px 12px;">${p.descripcion || '—'}</td>
+                <td style="padding:9px 12px;text-align:right;"><span style="padding:3px 10px;border-radius:5px;background:${stock <= 0 ? '#fee2e2' : '#fef3c7'};color:${stock <= 0 ? '#dc2626' : '#f59e0b'};font-weight:800;">${fmtNum(stock)}</span></td>
+                <td style="padding:9px 12px;text-align:right;font-weight:700;">${fmtNum(min)}</td>
+                <td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;">${fmtNum(aPedir)} ${p.um || ''}</td>
+                <td style="padding:9px 12px;font-size:11px;color:#475569;">${prov ? prov.razon_social : '— sin asignar —'}</td>
+                <td style="padding:9px 12px;font-size:10.5px;color:#64748b;">${(p.maquinas_compatibles||[]).join(', ') || '—'}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
 
 function renderPedidos() {
   const tab = state.tabs.pedidos || 'pendientes';
@@ -3018,6 +3287,8 @@ function renderModal() {
   if (m === 'codigos-proveedor') return modalCodigosProveedor();
   if (m === 'crear-mtto') return modalProductoMTTO(false);
   if (m === 'editar-mtto') return modalProductoMTTO(true);
+  if (m === 'salida-mtto') return modalSalidaMTTO();
+  if (m === 'ajuste-mtto') return modalAjusteMTTO();
   return '';
 }
 
@@ -7962,12 +8233,18 @@ function modalRecibirOC() {
             ${(f.lineas || []).map((l, idx) => {
               const yaRecibido = Number(l.cantidad_recibida) || 0;
               const pendiente = Number(l.cantidad) - yaRecibido;
+              const esMTTO = (l.tipo_catalogo || 'MP') === 'MTTO';
               return `
-                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:10px;">
+                <div style="background:#fff;border:1px solid ${esMTTO ? '#dc2626' : '#e2e8f0'};border-radius:10px;padding:14px;margin-bottom:10px;${esMTTO ? 'border-left-width:4px;' : ''}">
                   <!-- ENCABEZADO INSUMO -->
                   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;border-bottom:1px solid #f1f5f9;padding-bottom:8px;">
                     <div>
-                      <div class="text-mono" style="font-weight:800;font-size:14px;color:#1e293b;">${l.mp_codigo}</div>
+                      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <span class="text-mono" style="font-weight:800;font-size:14px;color:#1e293b;">${l.mp_codigo}</span>
+                        ${esMTTO 
+                          ? `<span style="padding:2px 8px;background:#fee2e2;color:#dc2626;border-radius:4px;font-size:10px;font-weight:700;">🔧 MTTO</span>` 
+                          : `<span style="padding:2px 8px;background:#dbeafe;color:#1e40af;border-radius:4px;font-size:10px;font-weight:700;">🧪 MP</span>`}
+                      </div>
                       <div style="font-size:11px;color:#64748b;margin-top:2px;">${l.descripcion}</div>
                       ${l.codigo_proveedor ? `<div style="font-size:10px;color:#7c3aed;margin-top:2px;">↔ Cód. proveedor: <strong>${l.codigo_proveedor}</strong></div>` : ''}
                     </div>
@@ -7979,18 +8256,29 @@ function modalRecibirOC() {
                   </div>
                   
                   <!-- CAMPOS -->
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                  ${esMTTO ? `
+                    <!-- LÍNEA MTTO: solo cantidad recibida -->
                     <div class="field" style="margin:0;">
                       <label class="field-label">📦 Cantidad recibida hoy *</label>
                       <input class="input" type="number" min="0" max="${pendiente}" step="0.01" value="${l.cantidad_recibida_ahora || ''}" oninput="window.actualizarRecepcionLinea(${idx},'cantidad_recibida_ahora',this.value)" placeholder="0" style="font-weight:700;" />
+                      <div style="margin-top:4px;font-size:10.5px;color:#64748b;">ℹ️ Refacciones MTTO no requieren lote ni certificado de calidad. Solo se suma al inventario.</div>
                     </div>
-                    <div class="field" style="margin:0;">
-                      <label class="field-label">🏷️ Lote del proveedor *</label>
-                      <input class="input" type="text" value="${l.lote_proveedor || ''}" oninput="window.actualizarRecepcionLinea(${idx},'lote_proveedor',this.value)" placeholder="Ej: BSK-LD2-2026-04-29" style="font-family:monospace;" />
+                  ` : `
+                    <!-- LÍNEA MP: cantidad + lote + certificado -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                      <div class="field" style="margin:0;">
+                        <label class="field-label">📦 Cantidad recibida hoy *</label>
+                        <input class="input" type="number" min="0" max="${pendiente}" step="0.01" value="${l.cantidad_recibida_ahora || ''}" oninput="window.actualizarRecepcionLinea(${idx},'cantidad_recibida_ahora',this.value)" placeholder="0" style="font-weight:700;" />
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label">🏷️ Lote del proveedor *</label>
+                        <input class="input" type="text" value="${l.lote_proveedor || ''}" oninput="window.actualizarRecepcionLinea(${idx},'lote_proveedor',this.value)" placeholder="Ej: BSK-LD2-2026-04-29" style="font-family:monospace;" />
+                      </div>
                     </div>
-                  </div>
+                  `}
                   
-                  <!-- CALIDAD -->
+                  ${!esMTTO ? `
+                  <!-- CALIDAD (solo MP) -->
                   <div style="margin-top:10px;padding:10px;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;">
                     <div style="font-weight:800;color:#92400e;font-size:11px;margin-bottom:6px;">🔬 CERTIFICADO DE CALIDAD</div>
                     
@@ -8024,6 +8312,7 @@ function modalRecibirOC() {
                       </div>
                     `}
                   </div>
+                  ` : ''}
                 </div>
               `;
             }).join('')}
@@ -8088,15 +8377,15 @@ window.confirmarRecepcionOC = async (ocId) => {
     return;
   }
   
-  // Validar lote del proveedor por línea
-  const sinLote = lineasARecibir.filter(l => !l.lote_proveedor || !l.lote_proveedor.trim());
+  // Validar lote del proveedor por línea (solo MP, no MTTO)
+  const sinLote = lineasARecibir.filter(l => (l.tipo_catalogo || 'MP') === 'MP' && (!l.lote_proveedor || !l.lote_proveedor.trim()));
   if (sinLote.length > 0) {
     toast(`Lote del proveedor obligatorio para: ${sinLote.map(l => l.mp_codigo).join(', ')}`, 'error');
     return;
   }
   
-  // Validar número de certificado por línea
-  const sinCert = lineasARecibir.filter(l => !l.certificado_numero || !l.certificado_numero.trim());
+  // Validar número de certificado por línea (solo MP, no MTTO)
+  const sinCert = lineasARecibir.filter(l => (l.tipo_catalogo || 'MP') === 'MP' && (!l.certificado_numero || !l.certificado_numero.trim()));
   if (sinCert.length > 0) {
     toast(`Número de certificado obligatorio para: ${sinCert.map(l => l.mp_codigo).join(', ')}`, 'error');
     return;
@@ -8113,25 +8402,102 @@ window.confirmarRecepcionOC = async (ocId) => {
   const factura = tipoDoc === 'factura' ? numeroDoc : '';
   const remision = tipoDoc === 'remision' ? numeroDoc : '';
   
+  const lineasMP = lineasARecibir.filter(l => (l.tipo_catalogo || 'MP') === 'MP');
+  const lineasMTTOrec = lineasARecibir.filter(l => l.tipo_catalogo === 'MTTO');
+  
+  let mensajeRecepcion = `Insumos a recibir: ${lineasARecibir.length}\n\n`;
+  if (lineasMP.length > 0) mensajeRecepcion += `• ${lineasMP.length} lote(s) entrarán al Almacén MP (con lote y certificado)\n`;
+  if (lineasMTTOrec.length > 0) mensajeRecepcion += `• ${lineasMTTOrec.length} producto(s) entrarán al Inventario MTTO`;
+  
   if (!confirm(
     `¿Confirmar recepción?\n\n` +
     `OC: ${oc.folio}\n` +
     `Proveedor: ${oc.proveedor}\n` +
     `${tipoDoc === 'factura' ? 'Factura' : 'Remisión'}: ${numeroDoc}\n` +
-    `Insumos a recibir: ${lineasARecibir.length}\n\n` +
-    `Se crearán ${lineasARecibir.length} lote(s) en el almacén MP con lote del proveedor y certificado.`
+    mensajeRecepcion
   )) return;
   
   state.loadingAccion = true; render();
   
   try {
     const batch = writeBatch(db);
+    // Para actualizar stock de productos MTTO al final (necesitamos id y nuevo stock)
+    const ajustesStockMTTO = []; // [{id, nuevoStock, codigo}]
     
-    // 1. Crear lotes (uno por línea recibida)
+    // 1. Crear lotes / movimientos según tipo de catálogo (MP o MTTO)
     for (const l of lineasARecibir) {
       const cantRecibida = Number(l.cantidad_recibida_ahora) || 0;
       const costoUnit = Number(l.costo_unitario) || 0;
+      const esMTTO = (l.tipo_catalogo || 'MP') === 'MTTO';
       
+      // ════════════════════════════════════════════════════════
+      // 🔧 LÍNEA DE PRODUCTO MTTO: crear movimiento_mtto + actualizar stock
+      // ════════════════════════════════════════════════════════
+      if (esMTTO) {
+        const codigoProd = l.producto_codigo || l.mp_codigo;
+        const prodMtto = (state.productos_mtto || []).find(p => p.codigo === codigoProd);
+        if (!prodMtto) {
+          console.warn(`Producto MTTO ${codigoProd} no encontrado en catálogo; salto recepción`);
+          continue;
+        }
+        const stockAnterior = Number(prodMtto.stock_actual) || 0;
+        const stockNuevo = stockAnterior + cantRecibida;
+        
+        const movMttoData = {
+          tipo: 'entrada',
+          producto_codigo: codigoProd,
+          producto_descripcion: prodMtto.descripcion || l.descripcion || '',
+          cantidad: cantRecibida,
+          um: l.um || prodMtto.um || 'pza',
+          stock_anterior: stockAnterior,
+          stock_resultante: stockNuevo,
+          // Datos de la OC
+          oc_folio: oc.folio || '',
+          oc_id: ocId || '',
+          rc_folio: oc.rc_folio || '',
+          proveedor: oc.proveedor || '',
+          proveedor_nombre: oc.proveedor || '',
+          codigo_proveedor: l.codigo_proveedor || '',
+          tipo_documento: tipoDoc,
+          numero_documento: numeroDoc,
+          // Calidad
+          cumple_calidad: l.cumple_calidad || 'si',
+          observaciones_calidad: (l.observaciones_calidad || '').trim(),
+          // Costo (para mover costo_promedio del producto)
+          costo_unitario: costoUnit,
+          // Auditoría
+          fecha: fechaRec,
+          notas: notas,
+          created_at: serverTimestamp(),
+          created_by: state.user.id || '',
+          created_by_nombre: state.user.nombre || state.user.email || 'Usuario',
+        };
+        Object.keys(movMttoData).forEach(k => { if (movMttoData[k] === undefined) movMttoData[k] = ''; });
+        
+        const movMttoRef = doc(collection(db, 'movimientos_mtto'));
+        batch.set(movMttoRef, movMttoData);
+        
+        // Calcular costo promedio ponderado (PPP)
+        // PPP_nuevo = (stock_ant * costo_ant + entrada * costo_entrada) / stock_nuevo
+        const costoAnt = Number(prodMtto.costo_promedio) || 0;
+        const valorAnt = stockAnterior * costoAnt;
+        const valorEntrada = cantRecibida * costoUnit;
+        const nuevoCostoProm = stockNuevo > 0 ? ((valorAnt + valorEntrada) / stockNuevo) : costoUnit;
+        
+        // Marcamos la actualización para hacerla después del batch principal
+        ajustesStockMTTO.push({
+          id: prodMtto.id,
+          nuevoStock: stockNuevo,
+          codigo: codigoProd,
+          nuevoCostoProm: nuevoCostoProm,
+        });
+        
+        continue; // ya manejada, siguiente línea
+      }
+      
+      // ════════════════════════════════════════════════════════
+      // 🧪 LÍNEA DE MATERIA PRIMA (flujo original)
+      // ════════════════════════════════════════════════════════
       // Folio de lote: AA-NUM_DOC-MP (truncado)
       const año2dig = String(new Date().getFullYear()).slice(-2);
       const docCorto = numeroDoc.slice(-6).replace(/[^A-Za-z0-9]/g,'');
@@ -8211,6 +8577,17 @@ window.confirmarRecepcionOC = async (ocId) => {
         const movRef = doc(collection(db, 'movimientos_mp'));
         batch.set(movRef, movData);
       }
+    }
+    
+    // 1.5 — Actualizar stock + costo promedio de productos MTTO (en el mismo batch)
+    for (const aj of ajustesStockMTTO) {
+      const prodRef = doc(db, 'productos_mtto', aj.id);
+      batch.update(prodRef, {
+        stock_actual: aj.nuevoStock,
+        costo_promedio: aj.nuevoCostoProm,
+        ultima_entrada_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
     }
     
     // 3. Actualizar OC con cantidades recibidas
@@ -9027,6 +9404,394 @@ window.desactivarProductoMTTO = async (codigo) => {
     toast(`Producto ${codigo} desactivado`);
     cerrarModal();
   } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// 🔧 MODAL: Salida / Consumo de inventario MTTO
+// ============================================================
+function modalSalidaMTTO() {
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esMTTO = u.depto === 'MTTO' || esCEO;
+  if (!esMTTO) return '';
+
+  if (!state.modalForm) {
+    state.modalForm = {
+      producto_codigo: '',
+      cantidad: '',
+      tipo_mantenimiento: 'CORRECTIVO',
+      maquina: '',
+      maquina_otro: '',
+      tecnico_id: '',
+      tecnico_nombre: '',
+      motivo: '',
+      notas: '',
+    };
+  }
+  const f = state.modalForm;
+  const productos = (state.productos_mtto || []).filter(p => p.activo !== false);
+  const prodSel = productos.find(p => p.codigo === f.producto_codigo);
+  const stockActual = prodSel ? (Number(prodSel.stock_actual) || 0) : 0;
+  const cant = Number(f.cantidad) || 0;
+  const stockResultante = stockActual - cant;
+  const minimo = prodSel ? (Number(prodSel.stock_minimo) || 0) : 0;
+
+  // Filtro de máquinas compatibles si el producto está vinculado a unas específicas
+  let maquinasFiltradas = (state.maquinas || []).filter(m => m.activo !== false);
+  if (prodSel && Array.isArray(prodSel.maquinas_compatibles) && prodSel.maquinas_compatibles.length > 0) {
+    const compatibles = prodSel.maquinas_compatibles;
+    maquinasFiltradas = maquinasFiltradas.filter(m => compatibles.includes(m.codigo));
+  }
+
+  // Lista de técnicos: personal con depto MTTO
+  const tecnicos = (state.personal || []).filter(p => p.activo !== false && (p.depto === 'MTTO' || p.area === 'MTTO'));
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:680px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📤 Registrar consumo de refacción</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+
+          <!-- Producto -->
+          <div class="field">
+            <label class="field-label">Producto MTTO *</label>
+            <select class="input" id="sal-prod" onchange="window.modalFormSet('producto_codigo', this.value); window.modalFormSet('maquina','')">
+              <option value="">— Selecciona refacción —</option>
+              ${productos.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
+                const fam = getFamiliaMTTO(p.familia);
+                const stk = Number(p.stock_actual) || 0;
+                return `<option value="${p.codigo}" ${f.producto_codigo === p.codigo ? 'selected' : ''}>${fam?.icono || '🔧'} ${p.codigo} — ${p.descripcion} (stock: ${fmtNum(stk)} ${p.um || 'pza'})</option>`;
+              }).join('')}
+            </select>
+          </div>
+
+          ${prodSel ? `
+            <!-- Card de info del producto -->
+            <div style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:11.5px;">
+              <div><strong>📍 Ubicación:</strong><br>${prodSel.ubicacion || '—'}</div>
+              <div><strong>📦 Stock actual:</strong><br><span style="font-size:14px;font-weight:800;color:${stockActual <= 0 ? '#dc2626' : (minimo > 0 && stockActual <= minimo ? '#f59e0b' : '#16a34a')};">${fmtNum(stockActual)} ${prodSel.um || 'pza'}</span></div>
+              <div><strong>⚠️ Mínimo:</strong><br>${fmtNum(minimo)} ${prodSel.um || 'pza'}</div>
+            </div>
+          ` : ''}
+
+          <!-- Cantidad -->
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">Cantidad a consumir *</label>
+              <input class="input" id="sal-cant" type="number" min="0.01" step="0.01" value="${f.cantidad || ''}"
+                oninput="window.modalFormSet('cantidad', this.value)" />
+              ${cant > 0 && stockResultante < 0 ? `
+                <div style="margin-top:4px;font-size:11px;color:#dc2626;font-weight:700;">⚠ Stock insuficiente (faltan ${fmtNum(Math.abs(stockResultante))} ${prodSel?.um || ''})</div>
+              ` : cant > 0 && stockResultante <= minimo && minimo > 0 ? `
+                <div style="margin-top:4px;font-size:11px;color:#f59e0b;font-weight:700;">⚠ Quedará bajo mínimo: ${fmtNum(stockResultante)} ${prodSel?.um || ''}</div>
+              ` : cant > 0 ? `
+                <div style="margin-top:4px;font-size:11px;color:#16a34a;font-weight:700;">✓ Stock resultante: ${fmtNum(stockResultante)} ${prodSel?.um || ''}</div>
+              ` : ''}
+            </div>
+            <div class="field">
+              <label class="field-label">Tipo de mantenimiento *</label>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${TIPOS_MANTENIMIENTO.map(t => `
+                  <button type="button" onclick="window.modalFormSet('tipo_mantenimiento','${t.codigo}')"
+                    style="padding:8px 10px;border:1.5px solid ${f.tipo_mantenimiento === t.codigo ? t.color : '#cbd5e1'};background:${f.tipo_mantenimiento === t.codigo ? t.color : '#fff'};color:${f.tipo_mantenimiento === t.codigo ? '#fff' : t.color};border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">
+                    ${t.icono} ${t.nombre}
+                  </button>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+
+          <!-- Máquina -->
+          <div class="field">
+            <label class="field-label">🛠️ Máquina donde se usó *</label>
+            <select class="input" id="sal-maq" onchange="window.modalFormSet('maquina', this.value)">
+              <option value="">— Selecciona máquina —</option>
+              ${maquinasFiltradas.map(m => `<option value="${m.codigo}" ${f.maquina === m.codigo ? 'selected' : ''}>${m.codigo} — ${m.nombre || m.descripcion || ''}</option>`).join('')}
+              <option value="__OTRO__" ${f.maquina === '__OTRO__' ? 'selected' : ''}>📝 Otro / Texto libre</option>
+            </select>
+            ${prodSel && Array.isArray(prodSel.maquinas_compatibles) && prodSel.maquinas_compatibles.length > 0 ? `
+              <div style="margin-top:4px;font-size:10.5px;color:#64748b;">ℹ️ Esta refacción está vinculada a ${prodSel.maquinas_compatibles.length} máquina(s) específica(s). Si necesitas usar en otra, selecciona "Otro".</div>
+            ` : ''}
+            ${f.maquina === '__OTRO__' ? `
+              <input class="input" id="sal-maq-otro" placeholder="Describe el equipo (ej. Compresor 50HP, Báscula báscula PE)" value="${f.maquina_otro || ''}"
+                oninput="window.modalFormSetSilent('maquina_otro', this.value)" style="margin-top:6px;" />
+            ` : ''}
+          </div>
+
+          <!-- Técnico -->
+          <div class="field">
+            <label class="field-label">👤 Técnico responsable</label>
+            ${tecnicos.length > 0 ? `
+              <select class="input" id="sal-tec" onchange="window.setTecnicoSalidaMTTO(this.value)">
+                <option value="">— Selecciona técnico —</option>
+                ${tecnicos.map(t => `<option value="${t.id}" data-nombre="${t.nombre || ''}" ${f.tecnico_id === t.id ? 'selected' : ''}>${t.nombre || t.id}</option>`).join('')}
+                <option value="__OTRO__" ${f.tecnico_id === '__OTRO__' ? 'selected' : ''}>📝 Otro / Texto libre</option>
+              </select>
+              ${f.tecnico_id === '__OTRO__' ? `
+                <input class="input" id="sal-tec-otro" placeholder="Nombre del técnico" value="${f.tecnico_nombre || ''}"
+                  oninput="window.modalFormSetSilent('tecnico_nombre', this.value)" style="margin-top:6px;" />
+              ` : ''}
+            ` : `
+              <input class="input" id="sal-tec-otro" placeholder="Nombre del técnico" value="${f.tecnico_nombre || ''}"
+                oninput="window.modalFormSetSilent('tecnico_nombre', this.value)" />
+              <div style="font-size:10.5px;color:#64748b;margin-top:4px;">ℹ️ No hay personal de MTTO en el catálogo. Captura libre.</div>
+            `}
+          </div>
+
+          <!-- Motivo + Notas -->
+          <div class="field">
+            <label class="field-label">Motivo / Descripción del trabajo</label>
+            <input class="input" id="sal-motivo" value="${f.motivo || ''}"
+              placeholder="Ej. Reemplazo de balero del motor principal de COEX01"
+              oninput="window.modalFormSetSilent('motivo', this.value)" />
+          </div>
+
+          <div class="field">
+            <label class="field-label">Notas adicionales</label>
+            <textarea class="input" id="sal-notas" style="min-height:50px;"
+              placeholder="Observaciones, número de OT, próximo mantenimiento programado..."
+              oninput="window.modalFormSetSilent('notas', this.value)">${f.notas || ''}</textarea>
+          </div>
+
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.guardarSalidaMTTO()" style="background:#dc2626;border-color:#dc2626;">📤 Registrar salida</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Helper para asignar técnico + nombre
+window.setTecnicoSalidaMTTO = (id) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.tecnico_id = id;
+  if (id === '__OTRO__') {
+    state.modalForm.tecnico_nombre = '';
+  } else {
+    const t = (state.personal || []).find(p => p.id === id);
+    state.modalForm.tecnico_nombre = t ? (t.nombre || '') : '';
+  }
+  render();
+};
+
+// Guardar SALIDA de inventario MTTO
+window.guardarSalidaMTTO = async () => {
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esMTTO = u.depto === 'MTTO' || esCEO;
+  if (!esMTTO) { toast('No tienes permisos para registrar salidas MTTO', 'error'); return; }
+
+  const f = state.modalForm || {};
+  if (!f.producto_codigo) { toast('Selecciona un producto', 'error'); return; }
+  const cant = Number(f.cantidad) || 0;
+  if (cant <= 0) { toast('Cantidad inválida', 'error'); return; }
+  if (!f.tipo_mantenimiento) { toast('Selecciona tipo de mantenimiento', 'error'); return; }
+  if (!f.maquina) { toast('Selecciona la máquina', 'error'); return; }
+  if (f.maquina === '__OTRO__' && !(f.maquina_otro || '').trim()) { toast('Describe el equipo', 'error'); return; }
+  const tecNombre = (f.tecnico_id === '__OTRO__' || !f.tecnico_id) ? (f.tecnico_nombre || '').trim() : (f.tecnico_nombre || '');
+
+  const prod = (state.productos_mtto || []).find(p => p.codigo === f.producto_codigo);
+  if (!prod) { toast('Producto no encontrado', 'error'); return; }
+  const stockActual = Number(prod.stock_actual) || 0;
+  if (cant > stockActual) {
+    if (!confirm(`⚠ Stock insuficiente (actual: ${fmtNum(stockActual)}, pides: ${fmtNum(cant)}). ¿Registrar salida igualmente? (quedará en negativo)`)) return;
+  }
+
+  state.loadingAccion = true; render();
+  try {
+    // 1) Crear movimiento de salida
+    const maquinaFinal = f.maquina === '__OTRO__' ? (f.maquina_otro || '').trim() : f.maquina;
+    const movData = {
+      tipo: 'salida',
+      producto_codigo: prod.codigo,
+      producto_descripcion: prod.descripcion || '',
+      cantidad: cant,
+      um: prod.um || 'pza',
+      tipo_mantenimiento: f.tipo_mantenimiento,
+      maquina: maquinaFinal,
+      maquina_origen: f.maquina, // valor del select (para saber si fue libre o catálogo)
+      tecnico_id: f.tecnico_id || '',
+      tecnico_nombre: tecNombre,
+      motivo: (f.motivo || '').trim(),
+      notas: (f.notas || '').trim(),
+      stock_anterior: stockActual,
+      stock_resultante: stockActual - cant,
+      costo_unitario: Number(prod.costo_promedio) || 0,
+      created_at: serverTimestamp(),
+      created_by: u.id || '',
+      created_by_nombre: u.nombre || u.email || 'Usuario',
+    };
+    await addDoc(collection(db, 'movimientos_mtto'), movData);
+
+    // 2) Actualizar stock del producto
+    await updateDoc(doc(db, 'productos_mtto', prod.id), {
+      stock_actual: stockActual - cant,
+      ultimo_consumo_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+
+    // 3) Si quedó bajo mínimo, notificar a MTTO y COMP
+    const minimo = Number(prod.stock_minimo) || 0;
+    const nuevoStock = stockActual - cant;
+    if (minimo > 0 && nuevoStock <= minimo) {
+      try {
+        const batchNotif = writeBatch(db);
+        ['MTTO', 'COMP'].forEach(depto => {
+          const notifRef = doc(collection(db, 'notificaciones'));
+          batchNotif.set(notifRef, {
+            depto, leida: false,
+            tipo: 'mtto_bajo_minimo',
+            titulo: `⚠️ Stock MTTO bajo mínimo`,
+            mensaje: `${prod.codigo} (${prod.descripcion}) tiene ${fmtNum(nuevoStock)} ${prod.um || 'pza'} (mínimo ${fmtNum(minimo)}). Considera reabastecer.`,
+            created_at: serverTimestamp(),
+          });
+        });
+        await batchNotif.commit();
+      } catch (e) { console.warn('No se pudo notificar bajo mínimo:', e); }
+    }
+
+    toast(`✅ Salida registrada: -${fmtNum(cant)} ${prod.um || 'pza'} de ${prod.codigo}`);
+    cerrarModal();
+  } catch (e) {
+    console.error('Error salida MTTO:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// 🔧 MODAL: Ajuste de inventario MTTO (solo CEO/ADMIN)
+// ============================================================
+function modalAjusteMTTO() {
+  const u = state.user || {};
+  const puedeAjuste = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  if (!puedeAjuste) return '';
+
+  if (!state.modalForm) {
+    state.modalForm = {
+      producto_codigo: '',
+      nuevo_stock: '',
+      motivo: '',
+    };
+  }
+  const f = state.modalForm;
+  const productos = (state.productos_mtto || []).filter(p => p.activo !== false);
+  const prodSel = productos.find(p => p.codigo === f.producto_codigo);
+  const stockActual = prodSel ? (Number(prodSel.stock_actual) || 0) : 0;
+  const nuevoStock = Number(f.nuevo_stock);
+  const delta = !isNaN(nuevoStock) ? (nuevoStock - stockActual) : null;
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">⚖️ Ajuste de inventario MTTO</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+
+          <div style="padding:10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;margin-bottom:14px;font-size:11.5px;color:#92400e;">
+            ⚠️ Esta operación sobreescribe el stock actual. Se registra como movimiento de tipo "ajuste" con motivo obligatorio.
+          </div>
+
+          <div class="field">
+            <label class="field-label">Producto MTTO *</label>
+            <select class="input" id="adj-prod" onchange="window.modalFormSet('producto_codigo', this.value)">
+              <option value="">— Selecciona refacción —</option>
+              ${productos.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => `<option value="${p.codigo}" ${f.producto_codigo === p.codigo ? 'selected' : ''}>${p.codigo} — ${p.descripcion} (actual: ${fmtNum(Number(p.stock_actual)||0)} ${p.um || 'pza'})</option>`).join('')}
+            </select>
+          </div>
+
+          ${prodSel ? `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Stock actual</label>
+                <input class="input" value="${fmtNum(stockActual)} ${prodSel.um || ''}" readonly style="background:#f1f5f9;" />
+              </div>
+              <div class="field">
+                <label class="field-label">Nuevo stock *</label>
+                <input class="input" id="adj-stock" type="number" min="0" step="0.01" value="${f.nuevo_stock || ''}"
+                  oninput="window.modalFormSet('nuevo_stock', this.value)" />
+                ${delta !== null && delta !== 0 ? `
+                  <div style="margin-top:4px;font-size:11px;font-weight:700;color:${delta > 0 ? '#16a34a' : '#dc2626'};">
+                    ${delta > 0 ? '+' : ''}${fmtNum(delta)} ${prodSel.um || ''}
+                  </div>
+                ` : ''}
+              </div>
+            </div>
+          ` : ''}
+
+          <div class="field">
+            <label class="field-label">Motivo del ajuste * (obligatorio)</label>
+            <textarea class="input" id="adj-motivo" style="min-height:60px;"
+              placeholder="Ej. Conteo físico, pérdida, devolución de proveedor, etc."
+              oninput="window.modalFormSetSilent('motivo', this.value)">${f.motivo || ''}</textarea>
+          </div>
+
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.guardarAjusteMTTO()" style="background:#f59e0b;border-color:#f59e0b;">⚖️ Confirmar ajuste</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Guardar AJUSTE de inventario MTTO
+window.guardarAjusteMTTO = async () => {
+  const u = state.user || {};
+  const puedeAjuste = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  if (!puedeAjuste) { toast('Solo CEO/ADMIN puede ajustar inventario', 'error'); return; }
+
+  const f = state.modalForm || {};
+  if (!f.producto_codigo) { toast('Selecciona un producto', 'error'); return; }
+  const nuevoStock = Number(f.nuevo_stock);
+  if (isNaN(nuevoStock) || nuevoStock < 0) { toast('Stock inválido', 'error'); return; }
+  if (!(f.motivo || '').trim()) { toast('El motivo es obligatorio', 'error'); return; }
+
+  const prod = (state.productos_mtto || []).find(p => p.codigo === f.producto_codigo);
+  if (!prod) { toast('Producto no encontrado', 'error'); return; }
+  const stockActual = Number(prod.stock_actual) || 0;
+  const delta = nuevoStock - stockActual;
+
+  if (delta === 0) { toast('El stock no cambió', 'warning'); return; }
+  if (!confirm(`¿Confirmar ajuste de ${prod.codigo}?\n\nStock actual: ${fmtNum(stockActual)}\nStock nuevo: ${fmtNum(nuevoStock)}\nDelta: ${delta > 0 ? '+' : ''}${fmtNum(delta)} ${prod.um || ''}\n\nMotivo: ${f.motivo}`)) return;
+
+  state.loadingAccion = true; render();
+  try {
+    await addDoc(collection(db, 'movimientos_mtto'), {
+      tipo: 'ajuste',
+      producto_codigo: prod.codigo,
+      producto_descripcion: prod.descripcion || '',
+      cantidad: delta, // puede ser positivo o negativo
+      um: prod.um || 'pza',
+      motivo: f.motivo.trim(),
+      stock_anterior: stockActual,
+      stock_resultante: nuevoStock,
+      costo_unitario: Number(prod.costo_promedio) || 0,
+      created_at: serverTimestamp(),
+      created_by: u.id || '',
+      created_by_nombre: u.nombre || u.email || 'Usuario',
+    });
+    await updateDoc(doc(db, 'productos_mtto', prod.id), {
+      stock_actual: nuevoStock,
+      updated_at: serverTimestamp(),
+    });
+    toast(`✅ Ajuste registrado: ${prod.codigo} → ${fmtNum(nuevoStock)} ${prod.um || ''}`);
+    cerrarModal();
+  } catch (e) {
+    console.error('Error ajuste MTTO:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
@@ -16468,6 +17233,19 @@ function attachAppEvents() {
   if ($('#filtro-mtto-stock')) {
     $('#filtro-mtto-stock').onchange = (e) => { state.filtros.productos_mtto_stock = e.target.value; render(); };
   }
+  // Inventario MTTO
+  if ($('#filtro-inv-mtto')) {
+    $('#filtro-inv-mtto').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.inventario_mtto = e.target.value;
+      render();
+      const inp = $('#filtro-inv-mtto');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  if ($('#filtro-inv-mtto-familia')) {
+    $('#filtro-inv-mtto-familia').onchange = (e) => { state.filtros.inventario_mtto_familia = e.target.value; render(); };
+  }
   
   // Filtros de Programación de Producción
   if ($('#filtro-programacion')) {
@@ -17171,7 +17949,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
