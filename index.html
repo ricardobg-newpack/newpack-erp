@@ -294,6 +294,52 @@ const UM_MTTO = [
 window.UM_MTTO = UM_MTTO;
 
 // ============================================================
+// 🏷️ CATEGORÍAS DE COMPRA (unifica proveedores + materias primas + MTTO)
+// ============================================================
+// Aplican a: proveedores (multi), materias_primas (única), productos_mtto (única implícita = MTTO)
+// El campo 'deptos' define qué departamentos pueden ver/comprar esta categoría
+const CATEGORIAS_COMPRA = [
+  { codigo: 'RESINA',   nombre: 'Resinas',          icono: '🧪', color: '#0ea5e9', deptos: ['PLN','PRO','CAL','COMP'] },
+  { codigo: 'ADITIVO',  nombre: 'Aditivos',         icono: '⚗️', color: '#8b5cf6', deptos: ['PLN','PRO','CAL','COMP'] },
+  { codigo: 'PIGMENTO', nombre: 'Pigmentos',        icono: '🎨', color: '#ec4899', deptos: ['PLN','PRO','CAL','COMP'] },
+  { codigo: 'MTTO',     nombre: 'Mantenimiento',    icono: '🔧', color: '#dc2626', deptos: ['MTTO','COMP'] },
+  { codigo: 'EMPAQUE',  nombre: 'Empaque/Embalaje', icono: '📦', color: '#f59e0b', deptos: ['ALP','CEDMTY','CEDMEX','COMP'] },
+  { codigo: 'SERVICIO', nombre: 'Servicios',        icono: '🛎️', color: '#64748b', deptos: ['*'] }, // Todos
+];
+window.CATEGORIAS_COMPRA = CATEGORIAS_COMPRA;
+
+function getCategoriaCompra(codigo) {
+  return CATEGORIAS_COMPRA.find(c => c.codigo === codigo);
+}
+window.getCategoriaCompra = getCategoriaCompra;
+
+// Devuelve las categorías que un depto puede ver/comprar
+// COMP/CEO/ADMIN ven todas (regla de negocio: compras es transversal)
+function categoriasPorDepto(depto) {
+  if (!depto) return [];
+  if (['COMP','CEO','ADMIN'].includes(depto)) return CATEGORIAS_COMPRA.map(c => c.codigo);
+  return CATEGORIAS_COMPRA
+    .filter(c => c.deptos.includes('*') || c.deptos.includes(depto))
+    .map(c => c.codigo);
+}
+window.categoriasPorDepto = categoriasPorDepto;
+
+// Auto-detecta la categoría de una MP por su nombre/descripción
+// (útil para migración inicial y para nuevas MPs sin categoría asignada)
+function autoDetectarCategoriaMP(mp) {
+  const txt = ((mp.codigo || '') + ' ' + (mp.descripcion || '') + ' ' + (mp.nombre || '')).toUpperCase();
+  // Aditivos primero (palabras muy específicas)
+  if (/\b(ANTIBLOCK|ANTI-BLOCK|UV|ANTIFOG|ANTI-FOG|SLIP|ANTISTAT|ANTIESTÁT|ANTIESTAT|DESLIZ|OXO|BIODEGRAD)\b/.test(txt)) return 'ADITIVO';
+  // Pigmentos / Masterbatch
+  if (/\b(MASTERBATCH|MB-|PIGMENTO|COLORANTE|TINTA|MB\s|COLOR\s)/.test(txt)) return 'PIGMENTO';
+  // Resinas (default para polímeros)
+  if (/\b(POLIETILENO|POLIPROPILENO|PE\s|PE-|PP\s|PP-|LDPE|HDPE|LLDPE|PEBD|PEAD|EVA|RESIN)/.test(txt)) return 'RESINA';
+  // Si nada matcheó, dejar Resina como default conservador
+  return 'RESINA';
+}
+window.autoDetectarCategoriaMP = autoDetectarCategoriaMP;
+
+// ============================================================
 // TOLERANCIAS DE PRODUCCIÓN (configurables)
 // ============================================================
 // P1-EXT (extrusión): puede producir entre -2% y +5% de lo solicitado
@@ -6015,6 +6061,28 @@ const TIPOS_MP = [
 ];
 window.TIPOS_MP = TIPOS_MP;
 
+// Mapeo tipo_mp → categoria_compra (unifica el sistema)
+// Una MP de tipo 'resina' equivale a categoría 'RESINA' para efectos de RC/proveedores
+const TIPO_MP_A_CATEGORIA = {
+  resina:    'RESINA',
+  aditivo:   'ADITIVO',
+  pigmento:  'PIGMENTO',
+  bobina:    'EMPAQUE',
+  reciclado: 'RESINA', // Reciclado = resina técnicamente
+  otro:      'OTROS',
+};
+window.TIPO_MP_A_CATEGORIA = TIPO_MP_A_CATEGORIA;
+
+// Helper: devuelve la categoría unificada de una MP
+// Prioridad: campo .categoria explícito > mapeo desde .tipo > auto-detección
+function categoriaDeMP(mp) {
+  if (!mp) return null;
+  if (mp.categoria) return mp.categoria;
+  if (mp.tipo && TIPO_MP_A_CATEGORIA[mp.tipo]) return TIPO_MP_A_CATEGORIA[mp.tipo];
+  return autoDetectarCategoriaMP(mp);
+}
+window.categoriaDeMP = categoriaDeMP;
+
 // Catálogo inicial de proveedores (del Excel)
 const PROVEEDORES_INICIALES = [
   'Braskem', 'Polymat (Tricon)', 'Prime Resinas', 'Poly Resinas',
@@ -6593,8 +6661,26 @@ function modalRC(esEdicion) {
   }
   const f = state.modalForm;
   
-  // MP disponibles para selección
-  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+  // 🏷️ Categorías permitidas según el depto del solicitante
+  // COMP/CEO/ADMIN ven todo. Los demás solo lo de su área.
+  const u = state.user || {};
+  const catsPermitidas = categoriasPorDepto(u.depto);
+  const verTodo = ['COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  
+  // MP disponibles filtradas por categoría del solicitante
+  let mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+  if (!verTodo) {
+    mps = mps.filter(mp => {
+      const cat = categoriaDeMP(mp);
+      return catsPermitidas.includes(cat);
+    });
+  }
+  
+  // Productos MTTO disponibles (solo para MTTO, COMP, CEO, ADMIN, ALP)
+  const verMTTO = catsPermitidas.includes('MTTO');
+  const productosMTTO = verMTTO
+    ? (state.productos_mtto || []).filter(p => p.activo !== false)
+    : [];
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
@@ -6613,6 +6699,19 @@ function modalRC(esEdicion) {
               <div><strong>📅 Fecha:</strong> ${new Date().toISOString().split('T')[0]}</div>
               <div><strong>📧 Correo:</strong> ${state.user.email || auth.currentUser?.email || '—'}</div>
             </div>
+            ${!verTodo ? `
+              <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1;font-size:11px;color:#475569;">
+                <strong>🏷️ Puedes solicitar:</strong>
+                ${catsPermitidas.map(c => {
+                  const cat = getCategoriaCompra(c);
+                  return cat ? `<span style="display:inline-block;margin:2px 3px;padding:1px 6px;background:${cat.color}22;color:${cat.color};border-radius:4px;font-weight:700;">${cat.icono} ${cat.nombre}</span>` : '';
+                }).join('')}
+              </div>
+            ` : `
+              <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1;font-size:11px;color:#16a34a;font-weight:700;">
+                ✓ Como ${u.depto}, puedes solicitar productos de TODAS las categorías
+              </div>
+            `}
           </div>
           
           <!-- PRIORIDAD Y FECHA -->
@@ -6637,15 +6736,32 @@ function modalRC(esEdicion) {
           <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:12px;">
             <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Agregar insumo</div>
             <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:8px;">
-              <select class="input" id="rc-mp-select">
-                <option value="">— Selecciona materia prima —</option>
-                ${mps.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `
-                  <option value="${mp.codigo}" data-desc="${mp.descripcion}" data-um="${mp.um || 'Kg'}">${mp.codigo} — ${mp.descripcion}</option>
-                `).join('')}
+              <select class="input" id="rc-prod-select">
+                <option value="">— Selecciona producto —</option>
+                ${mps.length > 0 ? `
+                  <optgroup label="🧪 Materias Primas / Aditivos / Pigmentos">
+                    ${mps.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => {
+                      const cat = categoriaDeMP(mp);
+                      const catObj = getCategoriaCompra(cat);
+                      return `<option value="MP|${mp.codigo}" data-desc="${mp.descripcion || ''}" data-um="${mp.um || 'Kg'}" data-tipo="MP" data-cat="${cat}">${catObj?.icono || ''} ${mp.codigo} — ${mp.descripcion}</option>`;
+                    }).join('')}
+                  </optgroup>
+                ` : ''}
+                ${productosMTTO.length > 0 ? `
+                  <optgroup label="🔧 Refacciones de Mantenimiento">
+                    ${productosMTTO.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
+                      const fam = getFamiliaMTTO(p.familia);
+                      return `<option value="MTTO|${p.codigo}" data-desc="${p.descripcion || ''}" data-um="${p.um || 'pza'}" data-tipo="MTTO" data-cat="MTTO">${fam?.icono || '🔧'} ${p.codigo} — ${p.descripcion}</option>`;
+                    }).join('')}
+                  </optgroup>
+                ` : ''}
               </select>
               <input class="input" id="rc-cant" type="number" min="0" step="0.01" placeholder="Cantidad" />
               <button onclick="agregarLineaRC()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Agregar</button>
             </div>
+            ${mps.length === 0 && productosMTTO.length === 0 ? `
+              <div style="margin-top:8px;font-size:11px;color:#dc2626;font-weight:700;">⚠ No hay productos disponibles para tu departamento. Contacta a Compras o Admin.</div>
+            ` : ''}
           </div>
           
           <!-- LÍNEAS AGREGADAS -->
@@ -6657,6 +6773,7 @@ function modalRC(esEdicion) {
               <table style="width:100%;border-collapse:collapse;font-size:12px;">
                 <thead>
                   <tr style="background:#f1f5f9;">
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Tipo</th>
                     <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
                     <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
                     <th style="padding:6px 10px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Cantidad</th>
@@ -6665,9 +6782,15 @@ function modalRC(esEdicion) {
                   </tr>
                 </thead>
                 <tbody>
-                  ${f.lineas.map((l, idx) => `
+                  ${f.lineas.map((l, idx) => {
+                    const esMTTO = (l.tipo_catalogo || 'MP') === 'MTTO';
+                    const catObj = getCategoriaCompra(l.categoria || (esMTTO ? 'MTTO' : 'RESINA'));
+                    return `
                     <tr style="border-bottom:1px solid #f1f5f9;">
-                      <td style="padding:6px 10px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
+                      <td style="padding:6px 10px;">
+                        ${catObj ? `<span style="display:inline-block;padding:2px 6px;background:${catObj.color}22;color:${catObj.color};border-radius:4px;font-size:10px;font-weight:700;">${catObj.icono} ${catObj.codigo}</span>` : ''}
+                      </td>
+                      <td style="padding:6px 10px;" class="text-mono"><strong>${l.mp_codigo || l.producto_codigo}</strong></td>
                       <td style="padding:6px 10px;">${l.descripcion}</td>
                       <td style="padding:6px 10px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
                       <td style="padding:6px 10px;font-size:11px;color:#64748b;">${l.um || 'Kg'}</td>
@@ -6675,7 +6798,8 @@ function modalRC(esEdicion) {
                         <button onclick="quitarLineaRC(${idx})" style="padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">✕</button>
                       </td>
                     </tr>
-                  `).join('')}
+                    `;
+                  }).join('')}
                 </tbody>
               </table>
             </div>
@@ -6707,28 +6831,47 @@ function modalRC(esEdicion) {
 }
 
 window.agregarLineaRC = () => {
-  const sel = $('#rc-mp-select');
+  // El select ahora se llama 'rc-prod-select' y trae valores tipo "MP|codigo" o "MTTO|codigo"
+  const sel = $('#rc-prod-select') || $('#rc-mp-select'); // fallback por si quedó algún submódulo viejo
   const cantInp = $('#rc-cant');
   if (!sel || !cantInp) return;
-  const mp_codigo = sel.value;
+  const valor = sel.value;
   const cantidad = Number(cantInp.value) || 0;
-  if (!mp_codigo) { toast('Selecciona una materia prima', 'error'); return; }
+  if (!valor) { toast('Selecciona un producto', 'error'); return; }
   if (cantidad <= 0) { toast('Cantidad debe ser mayor a 0', 'error'); return; }
   
   const opt = sel.selectedOptions[0];
+  // Detectar formato: "MP|XXX", "MTTO|XXX", o legacy "XXX"
+  let tipo_catalogo = 'MP';
+  let prod_codigo = valor;
+  if (valor.includes('|')) {
+    [tipo_catalogo, prod_codigo] = valor.split('|');
+  }
   const descripcion = opt?.dataset.desc || '';
   const um = opt?.dataset.um || 'Kg';
+  const categoria = opt?.dataset.cat || 'RESINA';
   
   if (!state.modalForm) state.modalForm = { lineas: [] };
   if (!state.modalForm.lineas) state.modalForm.lineas = [];
   
-  // Si ya existe ese MP, sumar cantidad
-  const existe = state.modalForm.lineas.find(l => l.mp_codigo === mp_codigo);
+  // Buscar duplicados considerando tipo_catalogo + código
+  const existe = state.modalForm.lineas.find(l => 
+    (l.tipo_catalogo || 'MP') === tipo_catalogo && (l.mp_codigo || l.producto_codigo) === prod_codigo
+  );
   if (existe) {
-    if (!confirm(`Ya hay una línea con ${mp_codigo} (${fmtNum(existe.cantidad)} ${um}). ¿Sumar ${fmtNum(cantidad)} más?\n\nNueva cantidad total: ${fmtNum(existe.cantidad + cantidad)} ${um}`)) return;
+    if (!confirm(`Ya hay una línea con ${prod_codigo} (${fmtNum(existe.cantidad)} ${um}). ¿Sumar ${fmtNum(cantidad)} más?\n\nNueva cantidad total: ${fmtNum(existe.cantidad + cantidad)} ${um}`)) return;
     existe.cantidad += cantidad;
   } else {
-    state.modalForm.lineas.push({ mp_codigo, descripcion, cantidad, um });
+    // Nueva línea con campos extendidos
+    state.modalForm.lineas.push({
+      tipo_catalogo, // 'MP' o 'MTTO'
+      mp_codigo: prod_codigo, // mantengo el nombre por compatibilidad
+      producto_codigo: prod_codigo, // alias nuevo más claro
+      categoria,
+      descripcion,
+      cantidad,
+      um
+    });
   }
   
   sel.value = '';
@@ -8173,12 +8316,14 @@ function renderProveedores() {
   const puedeEditar = esCOMP;
   
   const filtro = (state.filtros.proveedores || '').toLowerCase();
+  const filtroCat = state.filtros.proveedores_categoria || '';
   let arr = state.proveedores || [];
   if (filtro) arr = arr.filter(p => 
     ((p.razon_social || '') + ' ' + (p.rfc || '') + ' ' + (p.contacto_nombre || '') + ' ' +
      (p.codigos || []).map(c => `${c.mp_codigo} ${c.codigo_proveedor}`).join(' ')
     ).toLowerCase().includes(filtro)
   );
+  if (filtroCat) arr = arr.filter(p => Array.isArray(p.categorias) && p.categorias.includes(filtroCat));
   
   arr.sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || ''));
   
@@ -8214,6 +8359,13 @@ function renderProveedores() {
     <!-- TOOLBAR -->
     <div class="toolbar" style="flex-wrap:wrap;">
       <input class="input" id="filtro-proveedores" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar razón social, RFC, contacto, código..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-proveedores-categoria" style="max-width:220px;">
+        <option value="">— Todas las categorías —</option>
+        ${CATEGORIAS_COMPRA.map(c => {
+          const n = (state.proveedores || []).filter(p => Array.isArray(p.categorias) && p.categorias.includes(c.codigo)).length;
+          return `<option value="${c.codigo}" ${filtroCat === c.codigo ? 'selected' : ''}>${c.icono} ${c.nombre}${n ? ` (${n})` : ''}</option>`;
+        }).join('')}
+      </select>
       <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} proveedor(es)</span>
       ${puedeEditar ? `
         <button class="btn-primary" onclick="abrirModal('crear-proveedor')" style="margin-left:auto;">${ICONS.plus} Nuevo proveedor</button>
@@ -8247,6 +8399,14 @@ function renderTarjetaProveedor(p, puedeEditar) {
               <h3 style="font-size:15px;font-weight:800;color:#1e293b;margin:0;">🏭 ${p.razon_social || '—'}</h3>
               ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
             </div>
+            ${Array.isArray(p.categorias) && p.categorias.length > 0 ? `
+              <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
+                ${p.categorias.map(c => {
+                  const cat = getCategoriaCompra(c);
+                  return cat ? `<span style="background:${cat.color}22;color:${cat.color};padding:2px 7px;border-radius:5px;font-size:10.5px;font-weight:700;">${cat.icono} ${cat.nombre}</span>` : '';
+                }).join('')}
+              </div>
+            ` : `<div style="margin-top:6px;"><span style="background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:5px;font-size:10.5px;font-weight:700;">⚠ Sin categoría asignada</span></div>`}
             <div style="font-size:11px;color:#64748b;margin-top:4px;">
               ${p.rfc ? `<strong>RFC:</strong> ${p.rfc}` : ''}
               ${p.rfc && p.terminos_pago ? ' · ' : ''}
@@ -8325,7 +8485,8 @@ function modalProveedor(esEdicion) {
     state.modalForm = prov ? { 
       ...prov, 
       moneda: prov.moneda || 'MXN',
-      maneja_iva: prov.maneja_iva !== undefined ? prov.maneja_iva : (prov.moneda === 'USD' ? false : true)
+      maneja_iva: prov.maneja_iva !== undefined ? prov.maneja_iva : (prov.moneda === 'USD' ? false : true),
+      categorias: Array.isArray(prov.categorias) && prov.categorias.length > 0 ? [...prov.categorias] : ['RESINA'] // default legacy
     } : {
       razon_social: '',
       rfc: '',
@@ -8336,6 +8497,7 @@ function modalProveedor(esEdicion) {
       terminos_pago: '',
       moneda: 'MXN',
       maneja_iva: true,
+      categorias: [],
       notas: ''
     };
   }
@@ -8364,6 +8526,28 @@ function modalProveedor(esEdicion) {
               <label class="field-label">Dirección</label>
               <input class="input" id="prov-dir" value="${f.direccion || ''}" placeholder="Calle, Colonia, Ciudad, Estado, CP" oninput="window.modalFormSetSilent('direccion', this.value)" />
             </div>
+          </div>
+          
+          <!-- 🏷️ CATEGORÍAS QUE VENDE ESTE PROVEEDOR (multi-select) -->
+          <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">🏷️ Categorías que vende <span style="color:#dc2626;font-weight:700;">*</span></div>
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;">
+            <div style="font-size:11px;color:#64748b;margin-bottom:6px;">Selecciona uno o más tipos de productos que vende este proveedor:</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">
+              ${CATEGORIAS_COMPRA.map(cat => {
+                const seleccionada = (f.categorias || []).includes(cat.codigo);
+                return `
+                  <button type="button" onclick="window.toggleCategoriaProveedor('${cat.codigo}')"
+                    style="padding:7px 12px;background:${seleccionada ? cat.color : '#fff'};color:${seleccionada ? '#fff' : '#475569'};border:1.5px solid ${seleccionada ? cat.color : '#cbd5e1'};border-radius:6px;cursor:pointer;font-size:11.5px;font-weight:700;transition:all 0.15s;">
+                    ${seleccionada ? '✓ ' : ''}${cat.icono} ${cat.nombre}
+                  </button>
+                `;
+              }).join('')}
+            </div>
+            ${(f.categorias || []).length === 0 ? `
+              <div style="margin-top:8px;font-size:11px;color:#dc2626;font-weight:700;">⚠ Selecciona al menos una categoría</div>
+            ` : `
+              <div style="margin-top:8px;font-size:11px;color:#16a34a;font-weight:700;">✓ ${f.categorias.length} categoría(s) seleccionada(s)</div>
+            `}
           </div>
           
           <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">👤 Contacto principal</div>
@@ -8447,6 +8631,10 @@ window.confirmarProveedor = async (id) => {
   
   if (!razon) { toast('Razón social obligatoria', 'error'); return; }
   
+  // Validar al menos una categoría
+  const categorias = Array.isArray(f.categorias) ? f.categorias.filter(c => CATEGORIAS_COMPRA.find(x => x.codigo === c)) : [];
+  if (categorias.length === 0) { toast('Selecciona al menos una categoría que vende este proveedor', 'error'); return; }
+  
   state.loadingAccion = true; render();
   try {
     const data = {
@@ -8459,6 +8647,7 @@ window.confirmarProveedor = async (id) => {
       terminos_pago: terminos,
       moneda: moneda,
       maneja_iva: maneja_iva,
+      categorias: categorias,
       notas: notas,
       updated_at: serverTimestamp()
     };
@@ -8746,6 +8935,17 @@ window.toggleMaquinaMTTO = (codigoMaquina) => {
   const idx = arr.indexOf(codigoMaquina);
   if (idx >= 0) arr.splice(idx, 1);
   else arr.push(codigoMaquina);
+  render();
+};
+
+// Toggle de categoría en proveedor (multi-select)
+window.toggleCategoriaProveedor = (codigoCat) => {
+  if (!state.modalForm) state.modalForm = {};
+  if (!Array.isArray(state.modalForm.categorias)) state.modalForm.categorias = [];
+  const arr = state.modalForm.categorias;
+  const idx = arr.indexOf(codigoCat);
+  if (idx >= 0) arr.splice(idx, 1);
+  else arr.push(codigoCat);
   render();
 };
 
@@ -16792,6 +16992,9 @@ function attachAppEvents() {
       const inp = $('#filtro-proveedores');
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
+  }
+  if ($('#filtro-proveedores-categoria')) {
+    $('#filtro-proveedores-categoria').onchange = (e) => { state.filtros.proveedores_categoria = e.target.value; render(); };
   }
   if ($('#filtro-ordenes-compra')) {
     $('#filtro-ordenes-compra').oninput = (e) => {
