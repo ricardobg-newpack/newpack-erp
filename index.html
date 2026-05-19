@@ -11678,8 +11678,16 @@ window.imprimirReporteProduccionPDF = (odpId) => {
   const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
   const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
     .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
-  const capturas = (state.capturas_produccion || []).filter(l => l.odp_id === odpId);
+  const capturas = (state.capturas_produccion || []).filter(l => l.odp_id === odpId)
+    .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0));
   const pkl = (state.packing_lists || []).find(p => p.odp_id === odpId);
+  // Movimientos de MP consumidos por esta ODP (para la sección de consumo)
+  const movsMP = (state.movimientos_mp || []).filter(m => m.odp_id === odpId && m.tipo === 'salida');
+  // Procesos completados (fuente principal de la verdad post-cierre de proceso)
+  const procesos = odp.procesos_completados || [];
+  // Permiso de ver costos (igual que en Kardex MP)
+  const u = state.user || {};
+  const puedeVerCostos = ['PLN', 'COMP', 'CEO', 'ADMIN'].includes(u.depto) || u.rol === 'admin';
   
   const { jsPDF } = window.jspdf;
   const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
@@ -11699,13 +11707,35 @@ window.imprimirReporteProduccionPDF = (odpId) => {
   docPDF.setTextColor(0, 0, 0);
   y += 18;
   
-  // ===== KPIs (4 cards arriba) =====
-  // Sumar último proceso (donde se obtuvo la cantidad final) o todos los procesos
-  // Producido total = el último proceso (BS, BAL, etc.) representa cantidad final
-  const ultimaCaptura = capturas[capturas.length - 1] || {};
-  const totalProducidoKg = Number(ultimaCaptura.producido_kg || odp.cantidad_producida_final || 0);
-  const totalMermaKg = capturas.reduce((s, l) => s + (Number(l.mermas_kg || l.mermas) || 0), 0);
-  const cantPlanKg = Number(odp.cantidad_planeada_kg || odp.cantidad_planeada) || 0;
+  // ===== KPIs (4 cards arriba) — CORREGIDOS =====
+  // FIX bug #1: usar cantidad_kg_produccion (que SÍ existe) o convertir desde cantidad+um
+  const um = (odp.um || 'kg').toLowerCase();
+  const umLbl = UM_LABELS[um] || 'kg';
+  let cantPlanKg = Number(odp.cantidad_kg_produccion) || 0;
+  if (!cantPlanKg && producto) {
+    cantPlanKg = window.convertirAKg(Number(odp.cantidad) || 0, um, producto) || 0;
+  }
+  if (!cantPlanKg) cantPlanKg = Number(odp.cantidad) || 0; // fallback si ya viene en kg
+  
+  // FIX bug #2: usar cantidad_producida_final_kg si la ODP ya cerró producción (válido y único)
+  // Si no, usar el último proceso completado o sumar capturas del último proceso
+  let totalProducidoKg = Number(odp.cantidad_producida_final_kg) || 0;
+  if (!totalProducidoKg && procesos.length > 0) {
+    totalProducidoKg = Number(procesos[procesos.length - 1].cantidad_producida_kg) || 0;
+  }
+  if (!totalProducidoKg && capturas.length > 0) {
+    const ultimoProc = capturas[capturas.length - 1].proceso;
+    totalProducidoKg = capturas
+      .filter(c => c.proceso === ultimoProc)
+      .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  }
+  
+  // FIX bug #5: mermas totales desde procesos_completados (no suma directa de capturas)
+  let totalMermaKg = Number(odp.mermas_finales_kg) || 0;
+  if (!totalMermaKg && procesos.length > 0) {
+    totalMermaKg = procesos.reduce((s, p) => s + (Number(p.mermas_kg) || 0), 0);
+  }
+  
   const eficiencia = cantPlanKg > 0 ? Math.round((totalProducidoKg / cantPlanKg) * 100) : 0;
   const mermaPct = totalProducidoKg > 0 ? Math.round((totalMermaKg / totalProducidoKg) * 1000) / 10 : 0;
   
@@ -11713,7 +11743,7 @@ window.imprimirReporteProduccionPDF = (odpId) => {
   const kpis = [
     { label: 'PLANEADO (kg)', value: fmtNum(cantPlanKg), color: _COL_AZUL },
     { label: 'PRODUCIDO (kg)', value: fmtNum(totalProducidoKg), color: _COL_VERDE },
-    { label: 'MERMA (kg)', value: fmtNum(totalMermaKg), color: [220, 38, 38] },
+    { label: `MERMA (${mermaPct}%)`, value: fmtNum(totalMermaKg) + ' kg', color: [220, 38, 38] },
     { label: 'EFICIENCIA', value: `${eficiencia}%`, color: eficiencia >= 95 ? _COL_VERDE : (eficiencia >= 80 ? [245, 158, 11] : [220, 38, 38]) }
   ];
   kpis.forEach((k, i) => {
@@ -11729,14 +11759,12 @@ window.imprimirReporteProduccionPDF = (odpId) => {
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.text(k.label, x + kpiW/2, y + 9, { align: 'center' });
     docPDF.setFontSize(13);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.setTextColor(k.color[0], k.color[1], k.color[2]);
-    docPDF.text(k.value, x + kpiW/2, y + 15, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.text(String(k.value), x + kpiW/2, y + 16, { align: 'center' });
   });
-  docPDF.setTextColor(0, 0, 0);
   y += kpiH + 4;
   
-  // ===== INFORMACIÓN GENERAL =====
+  // ===== INFORMACIÓN DE LA ODP =====
   y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE LA ODP', _COL_AZUL);
   
   docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
@@ -11764,7 +11792,9 @@ window.imprimirReporteProduccionPDF = (odpId) => {
   docPDF.setFontSize(8);
   docPDF.text(odp.producto_codigo || '—', 110, y + 10);
   docPDF.setFontSize(9);
-  docPDF.text(`${fmtNum(cantPlanKg)} kg`, 165, y + 10);
+  // FIX bug #3: cantidad en UM original + kg planeados como referencia
+  const cantUM = Number(odp.cantidad) || 0;
+  docPDF.text(`${fmtNum(cantUM)} ${umLbl}${um !== 'kg' && cantPlanKg ? ` (${fmtNum(cantPlanKg)} kg)` : ''}`, 165, y + 10);
   
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'normal');
@@ -11776,7 +11806,8 @@ window.imprimirReporteProduccionPDF = (odpId) => {
     : '—';
   docPDF.text(fIni, 18, y + 19);
   docPDF.text(fFin, 70, y + 19);
-  docPDF.text(pkl?.folio || '—', 110, y + 19);
+  // FIX bug #4: pkl.codigo (no pkl.folio)
+  docPDF.text(pkl?.codigo || '—', 110, y + 19);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
   docPDF.text((odp.estatus || '').replace(/_/g,' ').toUpperCase(), 165, y + 19);
@@ -11784,36 +11815,80 @@ window.imprimirReporteProduccionPDF = (odpId) => {
   
   y += 28;
   
-  // ===== PROCESOS =====
-  y = _pdfSeccionTitulo(docPDF, y, 'PROCESOS DE PRODUCCIÓN', _COL_AZUL);
-  
-  if (capturas.length > 0) {
+  // ===== FLUJO DE PROCESOS (resumen por proceso completado) =====
+  if (procesos.length > 0) {
+    y = _pdfSeccionTitulo(docPDF, y, 'FLUJO DE PROCESOS', _COL_AZUL);
     docPDF.autoTable({
       startY: y,
-      head: [['#', 'Proceso', 'Producido (kg)', 'Merma (kg)', 'Operador', 'Turno', 'Fecha captura']],
-      body: capturas.map((l, i) => [
-        i + 1,
-        l.proceso_nombre || l.proceso || '—',
-        fmtNum(l.producido_kg || l.cantidad_producida || 0),
-        fmtNum(l.mermas_kg || l.mermas || 0),
-        l.operador || l.capturado_por_nombre || '—',
-        l.turno || '—',
-        l.created_at?.seconds 
-          ? new Date(l.created_at.seconds*1000).toLocaleString('es-MX', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-          : '—'
-      ]),
+      head: [['#', 'Proceso', 'Máquina', 'Entrada (kg)', 'Producido (kg)', 'Merma (kg)', '% Merma', 'Turnos']],
+      body: procesos.map((p, i) => {
+        const pEntKg = Number(p.entrada_kg) || 0;
+        const pProdKg = Number(p.cantidad_producida_kg) || 0;
+        const pMerKg = Number(p.mermas_kg) || 0;
+        const pctMer = pEntKg > 0 ? ((pMerKg / pEntKg) * 100).toFixed(1) : '0';
+        return [
+          i + 1,
+          p.nombre || p.codigo || '—',
+          p.maquina || '—',
+          fmtNum(pEntKg),
+          fmtNum(pProdKg),
+          fmtNum(pMerKg),
+          `${pctMer}%`,
+          p.num_turnos || '—'
+        ];
+      }),
       theme: 'striped',
       headStyles: { fillColor: _COL_AZUL_OSCURO, textColor: 255, fontSize: 8.5, fontStyle: 'bold', halign: 'center', cellPadding: 2.5 },
       bodyStyles: { fontSize: 8.5, cellPadding: 2 },
       alternateRowStyles: { fillColor: [248, 250, 252] },
       columnStyles: {
         0: { cellWidth: 8, halign: 'center' },
-        1: { cellWidth: 38, fontStyle: 'bold' },
-        2: { cellWidth: 28, halign: 'right' },
+        1: { cellWidth: 32, fontStyle: 'bold' },
+        2: { cellWidth: 22 },
+        3: { cellWidth: 22, halign: 'right' },
+        4: { cellWidth: 24, halign: 'right' },
+        5: { cellWidth: 22, halign: 'right' },
+        6: { cellWidth: 16, halign: 'right' },
+        7: { cellWidth: 16, halign: 'center' },
+      },
+      margin: { left: 14, right: 14 }
+    });
+    y = docPDF.lastAutoTable.finalY + 6;
+  }
+  
+  // ===== CAPTURAS POR TURNO =====
+  if (y > 230) { docPDF.addPage(); y = 20; }
+  y = _pdfSeccionTitulo(docPDF, y, 'CAPTURAS POR TURNO', _COL_AZUL);
+  
+  if (capturas.length > 0) {
+    docPDF.autoTable({
+      startY: y,
+      head: [['#', 'Proceso', 'Máquina', 'Producido (kg)', 'Merma (kg)', 'Operador', 'Turno', 'Fecha']],
+      body: capturas.map((l, i) => [
+        i + 1,
+        l.proceso_nombre || l.proceso || '—',
+        l.maquina || '—',
+        fmtNum(Number(l.producido_kg) || 0),
+        fmtNum(Number(l.mermas_kg) || 0),
+        l.operador || l.capturado_por_nombre || '—',
+        l.turno || '—',
+        l.created_at?.seconds 
+          ? new Date(l.created_at.seconds*1000).toLocaleString('es-MX', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+          : (l.fecha || '—')
+      ]),
+      theme: 'striped',
+      headStyles: { fillColor: _COL_AZUL_OSCURO, textColor: 255, fontSize: 8, fontStyle: 'bold', halign: 'center', cellPadding: 2 },
+      bodyStyles: { fontSize: 8, cellPadding: 1.8 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 8, halign: 'center' },
+        1: { cellWidth: 28, fontStyle: 'bold' },
+        2: { cellWidth: 20 },
         3: { cellWidth: 24, halign: 'right' },
-        4: { cellWidth: 32 },
-        5: { cellWidth: 16, halign: 'center' },
-        6: { cellWidth: 36, halign: 'center' }
+        4: { cellWidth: 20, halign: 'right' },
+        5: { cellWidth: 30 },
+        6: { cellWidth: 14, halign: 'center' },
+        7: { cellWidth: 28, halign: 'center' }
       },
       margin: { left: 14, right: 14 }
     });
@@ -11827,8 +11902,134 @@ window.imprimirReporteProduccionPDF = (odpId) => {
     y += 10;
   }
   
+  // ===== CONSUMO DE MATERIA PRIMA (NUEVO) =====
+  if (movsMP.length > 0) {
+    if (y > 220) { docPDF.addPage(); y = 20; }
+    y = _pdfSeccionTitulo(docPDF, y, 'CONSUMO DE MATERIA PRIMA', _COL_AZUL);
+    
+    const headCols = ['MP', 'Descripción', 'Lote', 'Proveedor', 'Cant. (kg)'];
+    const colStyles = {
+      0: { cellWidth: 24, fontStyle: 'bold' },
+      1: { cellWidth: 42 },
+      2: { cellWidth: 26, fontSize: 7.5 },
+      3: { cellWidth: 30 },
+      4: { cellWidth: 22, halign: 'right' },
+    };
+    if (puedeVerCostos) {
+      headCols.push('$ Unit.', '$ Total');
+      colStyles[5] = { cellWidth: 18, halign: 'right' };
+      colStyles[6] = { cellWidth: 20, halign: 'right', fontStyle: 'bold' };
+    }
+    
+    let totalKgMP = 0, totalCostoMP = 0;
+    const bodyRows = movsMP.map(m => {
+      const cantKg = Number(m.cantidad) || 0;
+      const cu = Number(m.costo_unitario) || 0;
+      const total = cantKg * cu;
+      totalKgMP += cantKg;
+      totalCostoMP += total;
+      const row = [
+        m.mp_codigo || '—',
+        (m.mp_descripcion || '—').substring(0, 35),
+        m.lote_folio || '—',
+        (m.proveedor || '—').substring(0, 22),
+        fmtNum(cantKg),
+      ];
+      if (puedeVerCostos) {
+        row.push(cu > 0 ? `$${cu.toFixed(2)}` : '—');
+        row.push(total > 0 ? `$${total.toFixed(2)}` : '—');
+      }
+      return row;
+    });
+    
+    const footRow = ['', '', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, fmtNum(totalKgMP)];
+    if (puedeVerCostos) {
+      footRow.push('', `$${totalCostoMP.toFixed(2)}`);
+    }
+    
+    docPDF.autoTable({
+      startY: y,
+      head: [headCols],
+      body: bodyRows,
+      foot: [footRow],
+      theme: 'striped',
+      headStyles: { fillColor: _COL_AZUL_OSCURO, textColor: 255, fontSize: 8, fontStyle: 'bold', halign: 'center', cellPadding: 2 },
+      footStyles: { fillColor: _COL_GRIS_CLARO, textColor: _COL_AZUL_OSCURO, fontSize: 8.5, fontStyle: 'bold' },
+      bodyStyles: { fontSize: 7.5, cellPadding: 1.8 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: colStyles,
+      margin: { left: 14, right: 14 }
+    });
+    y = docPDF.lastAutoTable.finalY + 4;
+    
+    // Detectar SUSTITUCIONES / AJUSTES desde procesos_completados.consumos_mp
+    const sustituciones = [];
+    procesos.forEach(p => {
+      (p.consumos_mp || []).forEach(c => {
+        const kgPlan = Number(c.kg_originales || c.kg_necesarios) || 0;
+        const kgReal = Number(c.kg_ajustados || c.kg_consumidos) || 0;
+        if (c.es_sustitucion || Math.abs(kgReal - kgPlan) > 0.5) {
+          sustituciones.push({
+            proceso: p.nombre || p.codigo,
+            mp_original: c.mp_codigo_original || c.mp_codigo,
+            mp_consumida: c.mp_codigo,
+            kg_originales: kgPlan,
+            kg_consumidos: kgReal,
+            es_sustitucion: !!c.es_sustitucion,
+            motivo: c.motivo_sustitucion || c.motivo || '',
+          });
+        }
+      });
+    });
+    
+    if (sustituciones.length > 0) {
+      if (y > 245) { docPDF.addPage(); y = 20; }
+      docPDF.setFillColor(254, 243, 199);
+      docPDF.setDrawColor(245, 158, 11);
+      docPDF.setLineWidth(0.3);
+      docPDF.roundedRect(14, y, 182, 8, 1.5, 1.5, 'FD');
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(146, 64, 14);
+      docPDF.text(`AJUSTES / SUSTITUCIONES DE MP (${sustituciones.length})`, 18, y + 5.5);
+      y += 11;
+      
+      docPDF.autoTable({
+        startY: y,
+        head: [['Proceso', 'MP Original', 'MP Consumida', 'Kg plan', 'Kg real', 'Δ Kg', 'Motivo']],
+        body: sustituciones.map(s => {
+          const diff = s.kg_consumidos - s.kg_originales;
+          return [
+            s.proceso,
+            s.mp_original,
+            { content: s.mp_consumida, styles: { fontStyle: s.es_sustitucion ? 'bold' : 'normal', textColor: s.es_sustitucion ? [220,38,38] : [0,0,0] } },
+            fmtNum(s.kg_originales),
+            fmtNum(s.kg_consumidos),
+            { content: (diff >= 0 ? '+' : '') + fmtNum(diff), styles: { textColor: diff > 0 ? [220,38,38] : [22,163,74], fontStyle: 'bold' } },
+            (s.motivo || '—').substring(0, 40),
+          ];
+        }),
+        theme: 'grid',
+        headStyles: { fillColor: [245, 158, 11], textColor: 255, fontSize: 7.5, fontStyle: 'bold', halign: 'center', cellPadding: 1.8 },
+        bodyStyles: { fontSize: 7.5, cellPadding: 1.5 },
+        columnStyles: {
+          0: { cellWidth: 22 },
+          1: { cellWidth: 26, fontStyle: 'bold' },
+          2: { cellWidth: 26 },
+          3: { cellWidth: 18, halign: 'right' },
+          4: { cellWidth: 18, halign: 'right' },
+          5: { cellWidth: 18, halign: 'right' },
+          6: { cellWidth: 54, fontSize: 7 },
+        },
+        margin: { left: 14, right: 14 }
+      });
+      y = docPDF.lastAutoTable.finalY + 6;
+    }
+  }
+  
   // ===== TARIMAS PRODUCIDAS =====
-  if (tarimas.length > 0 && y < 240) {
+  if (tarimas.length > 0) {
+    if (y > 230) { docPDF.addPage(); y = 20; }
     y = _pdfSeccionTitulo(docPDF, y, 'TARIMAS PRODUCIDAS', _COL_AZUL);
     
     const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
@@ -11836,29 +12037,42 @@ window.imprimirReporteProduccionPDF = (odpId) => {
     
     docPDF.autoTable({
       startY: y,
-      head: [['#', 'Tarima', 'Lote', 'Cantidad', 'UM', 'Peso neto (kg)', 'Almacén actual']],
-      body: tarimas.map((t, i) => [
-        i + 1,
-        `T${String(t.numero_tarima || '').padStart(2, '0')}`,
-        t.lote_codigo || '—',
-        fmtNum(t.cantidad || 0),
-        (t.um || '').toUpperCase(),
-        fmtNum(t.peso_neto_kg || t.peso_neto || 0),
-        t.almacen_actual || (t.estatus === 'en_almacen_planta' ? 'Planta-MTY' : t.estatus.replace(/_/g,' '))
-      ]),
+      // FIX bug #7: incluir código completo de la tarima (trazabilidad real)
+      head: [['#', 'Código Tarima', 'Lote', 'Cantidad', 'UM', 'Peso neto (kg)', 'Estatus']],
+      body: tarimas.map((t, i) => {
+        // FIX bug #8: guard contra estatus undefined
+        const est = t.estatus || '';
+        const estLbl = t.almacen_actual ||
+          (est === 'en_almacen_planta' ? 'Planta-MTY' :
+           est === 'en_cedis_mty' ? 'CEDIS-MTY' :
+           est === 'en_cedis_mex' ? 'CEDIS-MEX' :
+           est === 'pendiente_empaque' ? 'Pend. Empaque' :
+           est === 'embarcada' ? 'Embarcada' :
+           est === 'entregada' ? 'Entregada' :
+           est ? est.replace(/_/g,' ') : '—');
+        return [
+          i + 1,
+          t.codigo || `T${String(t.numero_tarima || '').padStart(2, '0')}`,
+          t.lote_codigo || '—',
+          fmtNum(Number(t.cantidad) || 0),
+          (t.um || '').toUpperCase(),
+          fmtNum(Number(t.peso_neto_kg || t.peso_neto) || 0),
+          estLbl
+        ];
+      }),
       foot: [['', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKgN), '']],
       theme: 'striped',
       headStyles: { fillColor: _COL_VERDE, textColor: 255, fontSize: 8.5, fontStyle: 'bold', halign: 'center', cellPadding: 2.5 },
       footStyles: { fillColor: _COL_GRIS_CLARO, textColor: _COL_AZUL_OSCURO, fontSize: 9, fontStyle: 'bold' },
-      bodyStyles: { fontSize: 8.5, cellPadding: 2 },
+      bodyStyles: { fontSize: 8, cellPadding: 2 },
       alternateRowStyles: { fillColor: [248, 250, 252] },
       columnStyles: {
         0: { cellWidth: 8, halign: 'center' },
-        1: { cellWidth: 16, halign: 'center', fontStyle: 'bold' },
-        2: { cellWidth: 32 },
-        3: { cellWidth: 24, halign: 'right' },
+        1: { cellWidth: 42, halign: 'center', fontStyle: 'bold', fontSize: 7.5 },
+        2: { cellWidth: 30 },
+        3: { cellWidth: 22, halign: 'right' },
         4: { cellWidth: 14, halign: 'center' },
-        5: { cellWidth: 32, halign: 'right' },
+        5: { cellWidth: 28, halign: 'right' },
         6: { cellWidth: 36 }
       },
       margin: { left: 14, right: 14 }
