@@ -976,9 +976,14 @@ function _doRender() {
   const idActivo = activo?.id || null;
   const nombreActivo = activo?.name || null;
   const tagActivo = activo?.tagName;
+  const tipoActivo = activo?.type || ''; // 'text', 'number', 'email', etc.
   const esInput = tagActivo === 'INPUT' || tagActivo === 'TEXTAREA' || tagActivo === 'SELECT';
-  const posSel = (esInput && activo?.selectionStart != null) ? activo.selectionStart : null;
-  const posSelEnd = (esInput && activo?.selectionEnd != null) ? activo.selectionEnd : null;
+  // Los inputs type="number", "email", "date", "time", "color", "range" NO soportan setSelectionRange
+  // Si intentas usarlo, lanza InvalidStateError (que silenciábamos en try/catch pero igual causaba glitch)
+  const TIPOS_SIN_SELECTION = ['number', 'email', 'date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'];
+  const soportaSelection = esInput && tagActivo !== 'SELECT' && !TIPOS_SIN_SELECTION.includes(tipoActivo);
+  const posSel = (soportaSelection && activo?.selectionStart != null) ? activo.selectionStart : null;
+  const posSelEnd = (soportaSelection && activo?.selectionEnd != null) ? activo.selectionEnd : null;
   const valorActivo = esInput ? activo.value : null;
   
   // Preservar scroll del modal body o vista principal
@@ -1002,18 +1007,48 @@ function _doRender() {
   if (esInput && idActivo) {
     const nuevo = document.getElementById(idActivo);
     if (nuevo) {
-      // Si el valor cambió por re-render (típico de inputs sincronizados), respetar el del DOM
-      // Pero si tenemos posición, restaurarla
       try {
         nuevo.focus();
-        if (posSel != null && nuevo.setSelectionRange) {
+        // Solo restaurar posición de cursor en inputs que lo soporten (text, textarea, password, etc.)
+        // Para number/date/email simplemente focus() — el navegador mantiene el caret donde lo dejó el usuario
+        if (soportaSelection && posSel != null && typeof nuevo.setSelectionRange === 'function') {
           nuevo.setSelectionRange(posSel, posSelEnd != null ? posSelEnd : posSel);
+        }
+      } catch(e) {
+        // InvalidStateError en algunos browsers para inputs numéricos — ignorar
+      }
+    }
+  }
+}
+window.render = render;
+
+// ============================================================
+// Helper: render() que preserva foco correctamente en inputs numéricos
+// Úsalo cuando hagas re-renders manuales fuera del flujo normal
+// (evita el bug del cursor que se "salta" en type="number")
+// ============================================================
+function renderPreservandoFoco() {
+  const activo = document.activeElement;
+  const id = activo?.id;
+  const tipo = activo?.type || '';
+  const TIPOS_SIN_SEL = ['number', 'email', 'date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'];
+  const soportaSel = activo && activo.tagName === 'INPUT' && !TIPOS_SIN_SEL.includes(tipo);
+  const sel = soportaSel ? activo.selectionStart : null;
+  const selEnd = soportaSel ? activo.selectionEnd : null;
+  render();
+  if (id) {
+    const nuevo = document.getElementById(id);
+    if (nuevo) {
+      try {
+        nuevo.focus();
+        if (soportaSel && sel != null && typeof nuevo.setSelectionRange === 'function') {
+          nuevo.setSelectionRange(sel, selEnd != null ? selEnd : sel);
         }
       } catch(e) {}
     }
   }
 }
-window.render = render;
+window.renderPreservandoFoco = renderPreservandoFoco;
 
 // ============================================================
 // LOGIN
@@ -3354,7 +3389,7 @@ function modalFormCliente(cliente) {
                 ${state.almacenes.filter(a => a.tipo === 'cedis').map(a => `<option value="${a.codigo}" ${c.cedis_asignado === a.codigo ? 'selected' : ''}>${a.nombre}</option>`).join('')}
               </select>
             </div>
-            <div class="field"><label class="field-label">Días de crédito</label><input class="input" id="cli-credito" type="number" min="0" value="${c.dias_credito || 0}" /></div>
+            <div class="field"><label class="field-label">Días de crédito</label><input class="input" id="cli-credito" type="number" min="0" step="1" value="${c.dias_credito || 0}" /></div>
           </div>
           
           <div class="field"><label class="field-label">Notas internas</label><textarea class="input" id="cli-notas" style="min-height:60px;">${c.notas || ''}</textarea></div>
@@ -3709,11 +3744,11 @@ function modalCapturarTurno() {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
               <div class="field" style="margin:0;">
                 <label class="field-label">✅ kg producidos *</label>
-                <input class="input" id="ct-prod" type="number" min="0" step="0.1" value="${f.producido_kg || ''}" oninput="window.modalFormSetSilent('producido_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;" />
+                <input class="input" id="ct-prod" type="number" min="0" step="0.1" value="${f.producido_kg || ''}" oninput="window.modalFormSetSilent('producido_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;" />
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label">⚠ kg mermas</label>
-                <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;text-align:right;color:#dc2626;" />
+                <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;color:#dc2626;" />
               </div>
             </div>
             <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;font-style:italic;">
@@ -7692,11 +7727,7 @@ window.actualizarLineaOC = (idx, campo, valor) => {
       const activo = document.activeElement;
       const id = activo?.id;
       const sel = activo?.selectionStart;
-      render();
-      if (id) {
-        const nuevo = document.getElementById(id);
-        if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
-      }
+      renderPreservandoFoco();
     }, 400);
   }
 };
@@ -8099,14 +8130,7 @@ window.actualizarLineaEditOC = (idx, campo, valor) => {
   if (campo === 'costo_unitario') {
     if (state._timerLineaEditOC) clearTimeout(state._timerLineaEditOC);
     state._timerLineaEditOC = setTimeout(() => {
-      const activo = document.activeElement;
-      const id = activo?.id;
-      const sel = activo?.selectionStart;
-      render();
-      if (id) {
-        const nuevo = document.getElementById(id);
-        if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
-      }
+      renderPreservandoFoco();
     }, 400);
   }
 };
@@ -9229,21 +9253,21 @@ function modalProductoMTTO(esEdicion) {
             </div>
             <div class="field">
               <label class="field-label">Stock actual</label>
-              <input class="input" id="mtto-stock" type="number" min="0" step="0.01" value="${f.stock_actual || 0}"
+              <input class="input" id="mtto-stock" type="number" min="0" step="any" value="${f.stock_actual || 0}"
                 ${soloLectura ? 'readonly' : ''}
-                oninput="window.modalFormSetSilent('stock_actual', Number(this.value) || 0)" />
+                oninput="window.modalFormSetSilent('stock_actual', this.value)" />
             </div>
             <div class="field">
               <label class="field-label">Stock mínimo</label>
-              <input class="input" id="mtto-min" type="number" min="0" step="0.01" value="${f.stock_minimo || 0}"
+              <input class="input" id="mtto-min" type="number" min="0" step="any" value="${f.stock_minimo || 0}"
                 ${soloLectura ? 'readonly' : ''}
-                oninput="window.modalFormSetSilent('stock_minimo', Number(this.value) || 0)" />
+                oninput="window.modalFormSetSilent('stock_minimo', this.value)" />
             </div>
             <div class="field">
               <label class="field-label">Stock máximo</label>
-              <input class="input" id="mtto-max" type="number" min="0" step="0.01" value="${f.stock_maximo || 0}"
+              <input class="input" id="mtto-max" type="number" min="0" step="any" value="${f.stock_maximo || 0}"
                 ${soloLectura ? 'readonly' : ''}
-                oninput="window.modalFormSetSilent('stock_maximo', Number(this.value) || 0)" />
+                oninput="window.modalFormSetSilent('stock_maximo', this.value)" />
             </div>
           </div>
 
@@ -15208,15 +15232,15 @@ function modalLiberarCalidad() {
                 <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Calibre real *</div>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
                   <div>
-                    <input class="input form-cal" data-field="mediciones.calibre_max" type="number" value="${med.calibre_max}" style="${checkTol(med.calibre_max, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Máximo" />
+                    <input class="input form-cal" data-field="mediciones.calibre_max" type="number" step="any" value="${med.calibre_max}" style="${checkTol(med.calibre_max, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Máximo" />
                     <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MÁXIMO</div>
                   </div>
                   <div>
-                    <input class="input form-cal" data-field="mediciones.calibre_moda" type="number" value="${med.calibre_moda}" style="${checkTol(med.calibre_moda, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Moda" />
+                    <input class="input form-cal" data-field="mediciones.calibre_moda" type="number" step="any" value="${med.calibre_moda}" style="${checkTol(med.calibre_moda, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Moda" />
                     <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MODA</div>
                   </div>
                   <div>
-                    <input class="input form-cal" data-field="mediciones.calibre_min" type="number" value="${med.calibre_min}" style="${checkTol(med.calibre_min, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Mínimo" />
+                    <input class="input form-cal" data-field="mediciones.calibre_min" type="number" step="any" value="${med.calibre_min}" style="${checkTol(med.calibre_min, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Mínimo" />
                     <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MÍNIMO</div>
                   </div>
                 </div>
@@ -15225,7 +15249,7 @@ function modalLiberarCalidad() {
               <!-- Piezas por paquete -->
               <div class="field" style="margin-bottom:10px;">
                 <label class="field-label" style="font-size:10px;">Piezas por paquete real *</label>
-                <input class="input form-cal" data-field="mediciones.piezas_por_paq" type="number" value="${med.piezas_por_paq}" placeholder="ej. 20" />
+                <input class="input form-cal" data-field="mediciones.piezas_por_paq" type="number" step="any" value="${med.piezas_por_paq}" placeholder="ej. 20" />
               </div>
               
               <!-- Resultados de cumplimiento -->
@@ -16265,7 +16289,7 @@ function modalEditarProductoPT() {
               </select>
             </div>
             <div class="field"><label class="field-label">Empaque</label><input class="input form-pt-edit" data-field="tipo_empaque" value="${f.tipo_empaque}" /></div>
-            <div class="field"><label class="field-label">Cant.</label><input class="input form-pt-edit" data-field="cant_empaque" type="number" value="${f.cant_empaque}" /></div>
+            <div class="field"><label class="field-label">Cant.</label><input class="input form-pt-edit" data-field="cant_empaque" type="number" step="any" value="${f.cant_empaque}" /></div>
             <div class="field"><label class="field-label">UM emp.</label><input class="input form-pt-edit" data-field="um_empaque" value="${f.um_empaque}" /></div>
           </div>
           
@@ -16407,7 +16431,7 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
           <label style="font-size:11px;color:#475569;font-weight:700;">% espesor:</label>
-          <input class="input" id="capa-pctcapa-${capaIdx}" type="number" min="0" max="100" step="0.01" value="${capa.porcentaje_capa || ''}" oninput="window.actualizarPorcentajeCapa(${capaIdx}, this.value)" style="width:80px;text-align:right;font-weight:800;padding:4px 8px;font-size:13px;" />
+          <input class="input" id="capa-pctcapa-${capaIdx}" type="number" min="0" max="100" step="0.01" value="${capa.porcentaje_capa || ''}" oninput="window.actualizarPorcentajeCapa(${capaIdx}, this.value)" style="width:80px;font-weight:800;padding:4px 8px;font-size:13px;" />
           <span style="font-size:12px;color:#475569;font-weight:700;">%</span>
         </div>
       </div>
@@ -16600,19 +16624,19 @@ function renderBloqueEstandarizacion(f, p) {
               ${usarA ? `
                 <div class="field" style="margin:0;">
                   <label class="field-label" style="font-size:11px;color:#16a34a;">RPM Cañón A (Hz)</label>
-                  <input class="input" id="est-rpm-a" type="number" step="0.1" value="${est.rpm_canon_a || ''}" oninput="window.actualizarEst('rpm_canon_a', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                  <input class="input" id="est-rpm-a" type="number" step="0.1" value="${est.rpm_canon_a || ''}" oninput="window.actualizarEst('rpm_canon_a', this.value)" placeholder="0.0" style="font-weight:700;" />
                 </div>
               ` : ''}
               ${usarB ? `
                 <div class="field" style="margin:0;">
                   <label class="field-label" style="font-size:11px;color:#3b82f6;">RPM Cañón B (Hz)</label>
-                  <input class="input" id="est-rpm-b" type="number" step="0.1" value="${est.rpm_canon_b || ''}" oninput="window.actualizarEst('rpm_canon_b', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                  <input class="input" id="est-rpm-b" type="number" step="0.1" value="${est.rpm_canon_b || ''}" oninput="window.actualizarEst('rpm_canon_b', this.value)" placeholder="0.0" style="font-weight:700;" />
                 </div>
               ` : ''}
               ${usarC ? `
                 <div class="field" style="margin:0;">
                   <label class="field-label" style="font-size:11px;color:#7c3aed;">RPM Cañón C (Hz)</label>
-                  <input class="input" id="est-rpm-c" type="number" step="0.1" value="${est.rpm_canon_c || ''}" oninput="window.actualizarEst('rpm_canon_c', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                  <input class="input" id="est-rpm-c" type="number" step="0.1" value="${est.rpm_canon_c || ''}" oninput="window.actualizarEst('rpm_canon_c', this.value)" placeholder="0.0" style="font-weight:700;" />
                 </div>
               ` : ''}
             </div>
@@ -16621,19 +16645,19 @@ function renderBloqueEstandarizacion(f, p) {
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:11px;">NIP (Hz)</label>
-                <input class="input" id="est-nip" type="number" step="0.1" value="${est.nip || ''}" oninput="window.actualizarEst('nip', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                <input class="input" id="est-nip" type="number" step="0.1" value="${est.nip || ''}" oninput="window.actualizarEst('nip', this.value)" placeholder="0.0" style="font-weight:700;" />
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:11px;">Turbina (Hz)</label>
-                <input class="input" id="est-turb" type="number" step="0.1" value="${est.turbina || ''}" oninput="window.actualizarEst('turbina', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                <input class="input" id="est-turb" type="number" step="0.1" value="${est.turbina || ''}" oninput="window.actualizarEst('turbina', this.value)" placeholder="0.0" style="font-weight:700;" />
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:11px;">IBC Entrada</label>
-                <input class="input" id="est-ibc-e" type="number" step="0.1" value="${est.ibc_entrada || ''}" oninput="window.actualizarEst('ibc_entrada', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                <input class="input" id="est-ibc-e" type="number" step="0.1" value="${est.ibc_entrada || ''}" oninput="window.actualizarEst('ibc_entrada', this.value)" placeholder="0.0" style="font-weight:700;" />
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:11px;">IBC Salida</label>
-                <input class="input" id="est-ibc-s" type="number" step="0.1" value="${est.ibc_salida || ''}" oninput="window.actualizarEst('ibc_salida', this.value)" placeholder="0.0" style="text-align:right;font-weight:700;" />
+                <input class="input" id="est-ibc-s" type="number" step="0.1" value="${est.ibc_salida || ''}" oninput="window.actualizarEst('ibc_salida', this.value)" placeholder="0.0" style="font-weight:700;" />
               </div>
             </div>
           </div>
@@ -16655,7 +16679,7 @@ function renderBloqueEstandarizacion(f, p) {
                     <td style="padding:4px;font-weight:800;color:#16a34a;font-size:11px;">A</td>
                     ${[0,1,2,3,4,5,6,7].map(i => `
                       <td style="padding:2px;">
-                        <input class="input" id="est-ta-${i}" type="number" step="1" value="${(est.temp_a||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_a', ${i}, this.value)" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;font-weight:700;" />
+                        <input class="input" id="est-ta-${i}" type="number" step="0.1" value="${(est.temp_a||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_a', ${i}, this.value)" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;font-weight:700;" />
                       </td>
                     `).join('')}
                   </tr>
@@ -16665,7 +16689,7 @@ function renderBloqueEstandarizacion(f, p) {
                     <td style="padding:4px;font-weight:800;color:#3b82f6;font-size:11px;">B</td>
                     ${[0,1,2,3,4,5,6,7].map(i => `
                       <td style="padding:2px;">
-                        <input class="input" id="est-tb-${i}" type="number" step="1" value="${(est.temp_b||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_b', ${i}, this.value)" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;font-weight:700;" />
+                        <input class="input" id="est-tb-${i}" type="number" step="0.1" value="${(est.temp_b||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_b', ${i}, this.value)" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;font-weight:700;" />
                       </td>
                     `).join('')}
                   </tr>
@@ -16675,7 +16699,7 @@ function renderBloqueEstandarizacion(f, p) {
                     <td style="padding:4px;font-weight:800;color:#7c3aed;font-size:11px;">C</td>
                     ${[0,1,2,3,4,5,6,7].map(i => `
                       <td style="padding:2px;">
-                        <input class="input" id="est-tc-${i}" type="number" step="1" value="${(est.temp_c||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_c', ${i}, this.value)" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;font-weight:700;" />
+                        <input class="input" id="est-tc-${i}" type="number" step="0.1" value="${(est.temp_c||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_c', ${i}, this.value)" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;font-weight:700;" />
                       </td>
                     `).join('')}
                   </tr>
@@ -16698,7 +16722,7 @@ function renderBloqueEstandarizacion(f, p) {
                 <tr>
                   ${[0,1,2,3,4,5,6,7,8].map(i => `
                     <td style="padding:2px;">
-                      <input class="input" id="est-td-${i}" type="number" step="1" value="${(est.temp_dado||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_dado', ${i}, this.value)" style="width:100%;text-align:right;padding:4px 6px;font-size:11px;font-weight:700;" />
+                      <input class="input" id="est-td-${i}" type="number" step="0.1" value="${(est.temp_dado||[])[i] || ''}" oninput="window.actualizarEstTemp('temp_dado', ${i}, this.value)" style="width:100%;text-align:right;padding:4px 6px;font-size:11px;font-weight:700;" />
                     </td>
                   `).join('')}
                 </tr>
@@ -16873,14 +16897,7 @@ window.actualizarPorcentajeCapa = (capaIdx, valor) => {
   // Re-render diferido: actualiza visualmente sin perder foco
   if (state._timerCapas) clearTimeout(state._timerCapas);
   state._timerCapas = setTimeout(() => {
-    const activo = document.activeElement;
-    const id = activo?.id;
-    const sel = activo?.selectionStart;
-    render();
-    if (id) {
-      const nuevo = document.getElementById(id);
-      if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
-    }
+    renderPreservandoFoco();
   }, 400);
 };
 
@@ -16928,14 +16945,7 @@ window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
   // Re-render diferido
   if (state._timerIngr) clearTimeout(state._timerIngr);
   state._timerIngr = setTimeout(() => {
-    const activo = document.activeElement;
-    const id = activo?.id;
-    const sel = activo?.selectionStart;
-    render();
-    if (id) {
-      const nuevo = document.getElementById(id);
-      if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
-    }
+    renderPreservandoFoco();
   }, 400);
 };
 
@@ -17093,9 +17103,9 @@ function modalCrearProductoPT() {
           
           <!-- 2. Medidas -->
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 0.7fr;gap:8px;">
-            <div class="field"><label class="field-label">Ancho (cm) *</label><input class="input form-pt" data-field="ancho" type="number" min="0" max="999" step="1" value="${f.ancho}" /></div>
-            <div class="field"><label class="field-label">Fuelle (cm)</label><input class="input form-pt" data-field="fuelle" type="number" min="0" max="999" step="1" value="${f.fuelle}" /></div>
-            <div class="field"><label class="field-label">Largo (cm) *</label><input class="input form-pt" data-field="largo" type="number" min="0" max="999" step="1" value="${f.largo}" /></div>
+            <div class="field"><label class="field-label">Ancho (cm) *</label><input class="input form-pt" data-field="ancho" type="number" min="0" max="999" step="0.1" value="${f.ancho}" /></div>
+            <div class="field"><label class="field-label">Fuelle (cm)</label><input class="input form-pt" data-field="fuelle" type="number" min="0" max="999" step="0.1" value="${f.fuelle}" /></div>
+            <div class="field"><label class="field-label">Largo (cm) *</label><input class="input form-pt" data-field="largo" type="number" min="0" max="999" step="0.1" value="${f.largo}" /></div>
             <div class="field"><label class="field-label">Calibre *</label><input class="input form-pt" data-field="calibre" type="number" min="0" max="9999" step="1" value="${f.calibre}" /></div>
             <div class="field"><label class="field-label">Sec.</label><input class="input form-pt" data-field="secuencia" type="number" min="1" max="9" step="1" value="${f.secuencia}" /></div>
           </div>
@@ -17125,7 +17135,7 @@ function modalCrearProductoPT() {
               </select>
             </div>
             <div class="field"><label class="field-label">Empaque</label><input class="input form-pt" data-field="tipo_empaque" placeholder="Bultos" value="${f.tipo_empaque}" /></div>
-            <div class="field"><label class="field-label">Cant.</label><input class="input form-pt" data-field="cant_empaque" type="number" placeholder="25" value="${f.cant_empaque}" /></div>
+            <div class="field"><label class="field-label">Cant.</label><input class="input form-pt" data-field="cant_empaque" type="number" step="any" placeholder="25" value="${f.cant_empaque}" /></div>
             <div class="field"><label class="field-label">UM emp.</label><input class="input form-pt" data-field="um_empaque" placeholder="KG." value="${f.um_empaque}" /></div>
           </div>
           
@@ -19485,7 +19495,7 @@ function modalAjustarConsumoMP() {
                         </td>
                         <td style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">${fmtNum((c.kg_originales || 0).toFixed(2))}</td>
                         <td style="padding:6px 8px;text-align:right;">
-                          <input class="input" id="ajuste-kg-${idx}" type="number" min="0" step="0.01" value="${c.kg_ajustados || ''}" oninput="window.ajustarKgConsumo(${idx}, this.value)" style="width:90px;text-align:right;font-weight:700;padding:4px 6px;font-size:12px;" />
+                          <input class="input" id="ajuste-kg-${idx}" type="number" min="0" step="0.01" value="${c.kg_ajustados || ''}" oninput="window.ajustarKgConsumo(${idx}, this.value)" style="width:90px;font-weight:700;padding:4px 6px;font-size:12px;" />
                         </td>
                         <td style="padding:6px 8px;">
                           ${cambiada || kgAjustado ? `
@@ -19540,7 +19550,7 @@ function modalAjustarConsumoMP() {
                       <tr style="border-bottom:1px solid #dcfce7;">
                         <td style="padding:5px 8px;" class="text-mono"><strong>${c.mp_codigo}</strong><div style="font-size:9px;color:#64748b;">${(c.descripcion||'').substring(0,32)}</div></td>
                         <td style="padding:5px 8px;text-align:right;">
-                          <input class="input" id="extra-kg-${idx}" type="number" min="0" step="0.01" value="${c.kg || ''}" oninput="window.ajustarKgExtra(${idx}, this.value)" style="width:90px;text-align:right;font-weight:700;padding:4px 6px;font-size:12px;" />
+                          <input class="input" id="extra-kg-${idx}" type="number" min="0" step="0.01" value="${c.kg || ''}" oninput="window.ajustarKgExtra(${idx}, this.value)" style="width:90px;font-weight:700;padding:4px 6px;font-size:12px;" />
                         </td>
                         <td style="padding:5px 8px;">
                           <input class="input" id="extra-motivo-${idx}" type="text" value="${c.motivo || ''}" oninput="window.actualizarMotivoExtra(${idx}, this.value)" placeholder="Motivo" style="font-size:11px;padding:4px 6px;width:200px;" />
@@ -19610,14 +19620,7 @@ window.ajustarKgConsumo = (idx, valor) => {
   state.modalForm.consumosAjustados[idx].kg_ajustados = Number(valor) || 0;
   if (state._timerAjusteKg) clearTimeout(state._timerAjusteKg);
   state._timerAjusteKg = setTimeout(() => {
-    const activo = document.activeElement;
-    const id = activo?.id;
-    const sel = activo?.selectionStart;
-    render();
-    if (id) {
-      const nuevo = document.getElementById(id);
-      if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
-    }
+    renderPreservandoFoco();
   }, 400);
 };
 
@@ -19672,14 +19675,7 @@ window.ajustarKgExtra = (idx, valor) => {
   state.modalForm.consumosAgregados[idx].kg = Number(valor) || 0;
   if (state._timerAjusteKgExtra) clearTimeout(state._timerAjusteKgExtra);
   state._timerAjusteKgExtra = setTimeout(() => {
-    const activo = document.activeElement;
-    const id = activo?.id;
-    const sel = activo?.selectionStart;
-    render();
-    if (id) {
-      const nuevo = document.getElementById(id);
-      if (nuevo) { nuevo.focus(); if (sel != null) try { nuevo.setSelectionRange(sel, sel); } catch(e){} }
-    }
+    renderPreservandoFoco();
   }, 400);
 };
 
@@ -20993,4 +20989,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
