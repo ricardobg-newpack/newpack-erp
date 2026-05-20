@@ -12765,7 +12765,7 @@ window.imprimirFichaTecnicaPDF = (productoCodigo, clienteCodigo) => {
 
     // Si NO se especificó cliente pero hay 2+, abrir modal selector
     if (!clienteCodigo && relaciones.length >= 2) {
-      state.modalData = { productoCodigo, relaciones };
+      state.modalData = { productoCodigo, relaciones, destino: 'ficha' };
       state.modal = 'selector-cliente-ficha';
       render();
       return;
@@ -13223,6 +13223,552 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
   } catch (e) {
     console.error('Error PDF Certificado:', e);
     toast('Error generando certificado: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// 📐 PLANO MECÁNICO — Helpers de dibujo técnico para jsPDF
+// ============================================================
+// Coordenadas en mm. Estilo: trazos delgados, acotaciones con flechas,
+// líneas auxiliares dashed, etiquetas con bbox blanco para legibilidad.
+
+// Dibuja flecha con cabeza triangular en uno o ambos extremos
+function _drawFlecha(pdf, x1, y1, x2, y2, opts = {}) {
+  const cabeza = opts.cabeza || 1.6; // mm
+  const grosor = opts.grosor || 0.3;
+  const color = opts.color || [60, 60, 60];
+  const ambos = opts.ambos !== false; // por default ambos lados
+  pdf.setDrawColor(color[0], color[1], color[2]);
+  pdf.setLineWidth(grosor);
+  pdf.line(x1, y1, x2, y2);
+  const ang = Math.atan2(y2 - y1, x2 - x1);
+  // Cabeza final
+  const px1 = x2 - cabeza * Math.cos(ang - Math.PI / 6);
+  const py1 = y2 - cabeza * Math.sin(ang - Math.PI / 6);
+  const px2 = x2 - cabeza * Math.cos(ang + Math.PI / 6);
+  const py2 = y2 - cabeza * Math.sin(ang + Math.PI / 6);
+  pdf.line(x2, y2, px1, py1);
+  pdf.line(x2, y2, px2, py2);
+  // Cabeza inicial
+  if (ambos) {
+    const qx1 = x1 + cabeza * Math.cos(ang - Math.PI / 6);
+    const qy1 = y1 + cabeza * Math.sin(ang - Math.PI / 6);
+    const qx2 = x1 + cabeza * Math.cos(ang + Math.PI / 6);
+    const qy2 = y1 + cabeza * Math.sin(ang + Math.PI / 6);
+    pdf.line(x1, y1, qx1, qy1);
+    pdf.line(x1, y1, qx2, qy2);
+  }
+}
+
+// Dibuja línea auxiliar (extension line) dashed
+function _drawLineaAux(pdf, x1, y1, x2, y2) {
+  pdf.setDrawColor(120, 120, 120);
+  pdf.setLineWidth(0.15);
+  pdf.setLineDashPattern([0.5, 0.5], 0);
+  pdf.line(x1, y1, x2, y2);
+  pdf.setLineDashPattern([], 0);
+}
+
+// Dibuja etiqueta con caja blanca de fondo (para que el texto no se mezcle con líneas)
+function _drawEtiqueta(pdf, x, y, texto, opts = {}) {
+  const fontSize = opts.fontSize || 8;
+  const bold = opts.bold !== false;
+  const align = opts.align || 'center';
+  pdf.setFontSize(fontSize);
+  pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+  pdf.setTextColor(0, 0, 0);
+  const w = pdf.getTextWidth(texto);
+  const h = fontSize * 0.4;
+  let xBox;
+  if (align === 'center') xBox = x - w / 2 - 1.5;
+  else if (align === 'right') xBox = x - w - 1.5;
+  else xBox = x - 1.5;
+  // Fondo blanco
+  pdf.setFillColor(255, 255, 255);
+  pdf.rect(xBox, y - h, w + 3, h + 1.5, 'F');
+  // Texto
+  pdf.text(texto, x, y, { align });
+}
+
+// Acotación horizontal (con líneas auxiliares + flecha + etiqueta arriba)
+function _acotacionH(pdf, xIni, xFin, yObjeto, yAcot, texto) {
+  // Líneas auxiliares verticales hacia arriba
+  _drawLineaAux(pdf, xIni, yObjeto, xIni, yAcot - 1);
+  _drawLineaAux(pdf, xFin, yObjeto, xFin, yAcot - 1);
+  // Flecha doble
+  _drawFlecha(pdf, xIni, yAcot, xFin, yAcot);
+  // Etiqueta
+  _drawEtiqueta(pdf, (xIni + xFin) / 2, yAcot - 1.5, texto);
+}
+
+// Acotación vertical (similar pero rotada)
+function _acotacionV(pdf, yIni, yFin, xObjeto, xAcot, texto) {
+  _drawLineaAux(pdf, xObjeto, yIni, xAcot + 1, yIni);
+  _drawLineaAux(pdf, xObjeto, yFin, xAcot + 1, yFin);
+  _drawFlecha(pdf, xAcot, yIni, xAcot, yFin);
+  // Etiqueta a la derecha de la flecha
+  pdf.setFontSize(8);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setTextColor(0, 0, 0);
+  const w = pdf.getTextWidth(texto);
+  const yc = (yIni + yFin) / 2;
+  pdf.setFillColor(255, 255, 255);
+  pdf.rect(xAcot + 1.5, yc - 2, w + 3, 4, 'F');
+  pdf.text(texto, xAcot + 3, yc + 1.2);
+}
+
+// Leader line con etiqueta (callout fuera del dibujo)
+function _leader(pdf, xOrigen, yOrigen, xTexto, yTexto, texto, opts = {}) {
+  _drawLineaAux(pdf, xOrigen, yOrigen, xTexto, yTexto);
+  // Punto en el origen
+  pdf.setFillColor(40, 40, 40);
+  pdf.circle(xOrigen, yOrigen, 0.5, 'F');
+  // Texto
+  pdf.setFontSize(opts.fontSize || 8);
+  pdf.setFont('helvetica', opts.bold !== false ? 'bold' : 'normal');
+  pdf.setTextColor(0, 0, 0);
+  pdf.text(texto, xTexto, yTexto);
+}
+
+// ============================================================
+// 📐 PLANO MECÁNICO — Dibujos por tipo de producto
+// ============================================================
+// Cada función dibuja el producto + sus acotaciones dentro de un bbox dado.
+// bbox = { x, y, w, h } en mm. Se ajustan las proporciones para llenar.
+
+function _dibujarBolsaSuelta(pdf, bbox, producto) {
+  const { x, y, w, h } = bbox;
+  // Área de dibujo (deja margen para acotaciones)
+  const mt = 18, mb = 22, ml = 22, mr = 35;
+  const dx = x + ml, dy = y + mt;
+  const dw = w - ml - mr, dh = h - mt - mb;
+
+  // Cuerpo de la bolsa
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(dx, dy, dw, dh, 'FD');
+  // Sellado inferior (línea más gruesa)
+  pdf.setDrawColor(10, 30, 70);
+  pdf.setLineWidth(1.2);
+  pdf.line(dx, dy + dh, dx + dw, dy + dh);
+
+  // Acotación ANCHO (horizontal arriba)
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho ${producto.ancho} cm`);
+  }
+  // Acotación LARGO (vertical derecha)
+  if (Number(producto.largo) > 0) {
+    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 15, `Largo ${producto.largo} cm`);
+  }
+  // Leader: sellado inferior
+  _leader(pdf, dx + dw * 0.3, dy + dh + 0.5, dx - 18, dy + dh + 6, 'Sellado');
+}
+
+function _dibujarBolsaFuelle(pdf, bbox, producto) {
+  const { x, y, w, h } = bbox;
+  const mt = 18, mb = 22, ml = 28, mr = 38;
+  const dx = x + ml, dy = y + mt;
+  const dw = w - ml - mr, dh = h - mt - mb;
+  // Profundidad isométrica del fuelle (~12% del ancho)
+  const fProf = Math.min(dw * 0.10, 14);
+
+  // Fuelle izquierdo (polígono)
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+  pdf.setFillColor(181, 212, 244);
+  // izquierdo: 4 puntos
+  pdf.lines([
+    [-fProf, -fProf * 1.2],
+    [0, dh + fProf * 0.4 - dh],  // movimiento vertical
+    [fProf, fProf * 1.2],
+    [0, -(dh)],
+  ], dx, dy, [1, 1], 'FD', true);
+  // Para evitar líos con lines(), uso path manual:
+  pdf.setFillColor(181, 212, 244);
+  const izq = [
+    [dx, dy],
+    [dx - fProf, dy - fProf * 1.0],
+    [dx - fProf, dy + dh - fProf * 1.0],
+    [dx, dy + dh],
+  ];
+  _drawPoligono(pdf, izq, 'FD');
+
+  // Fuelle derecho
+  const der = [
+    [dx + dw, dy],
+    [dx + dw + fProf, dy - fProf * 1.0],
+    [dx + dw + fProf, dy + dh - fProf * 1.0],
+    [dx + dw, dy + dh],
+  ];
+  _drawPoligono(pdf, der, 'FD');
+
+  // Cara frontal
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(dx, dy, dw, dh, 'FD');
+
+  // Líneas centrales de fuelle (pliegue)
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.25);
+  pdf.setLineDashPattern([0.8, 0.6], 0);
+  pdf.line(dx - fProf / 2, dy - fProf * 0.5, dx - fProf / 2, dy + dh - fProf * 0.5);
+  pdf.line(dx + dw + fProf / 2, dy - fProf * 0.5, dx + dw + fProf / 2, dy + dh - fProf * 0.5);
+  pdf.setLineDashPattern([], 0);
+
+  // Sellado inferior (frontal + ambos fuelles)
+  pdf.setDrawColor(10, 30, 70);
+  pdf.setLineWidth(1.2);
+  pdf.line(dx, dy + dh, dx + dw, dy + dh);
+  pdf.line(dx - fProf, dy + dh - fProf * 1.0, dx, dy + dh);
+  pdf.line(dx + dw, dy + dh, dx + dw + fProf, dy + dh - fProf * 1.0);
+
+  // Acotación ANCHO frontal
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho ${producto.ancho} cm`);
+  }
+  // Acotación FUELLE (parte expuesta arriba del fuelle derecho)
+  if (Number(producto.fuelle) > 0) {
+    _acotacionH(pdf, dx + dw, dx + dw + fProf, dy - fProf * 0.5, dy - 17, `Fuelle ${producto.fuelle} cm`);
+  }
+  // Acotación LARGO (vertical derecha)
+  if (Number(producto.largo) > 0) {
+    _acotacionV(pdf, dy, dy + dh, dx + dw + fProf, dx + dw + fProf + 12, `Largo ${producto.largo} cm`);
+  }
+  // Leader: sellado
+  _leader(pdf, dx + dw * 0.3, dy + dh + 0.5, dx - 22, dy + dh + 7, 'Sellado');
+}
+
+function _dibujarRollo(pdf, bbox, producto) {
+  const { x, y, w, h } = bbox;
+  const mt = 18, mb = 22, ml = 22, mr = 38;
+  const dx = x + ml, dy = y + mt;
+  const dw = w - ml - mr, dh = h - mt - mb;
+
+  // Cilindro: rectángulo + 2 elipses (frontal y trasera)
+  const elipsW = Math.min(dh * 0.30, 22); // ancho horizontal de la elipse
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+
+  // Cuerpo cilíndrico (rectángulo con sombras laterales)
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(dx + elipsW / 2, dy, dw - elipsW, dh, 'FD');
+
+  // Elipse izquierda (trasera)
+  pdf.setFillColor(181, 212, 244);
+  pdf.ellipse(dx + elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
+
+  // Elipse derecha (frontal — sobre el cuerpo)
+  pdf.setFillColor(230, 241, 251);
+  pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
+
+  // Líneas finas internas para sugerir capas del rollo
+  pdf.setDrawColor(120, 150, 200);
+  pdf.setLineWidth(0.15);
+  for (let i = 1; i <= 3; i++) {
+    const r = (elipsW / 2) * (i / 4);
+    pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, r, (dh / 2) * (i / 4), 'D');
+  }
+
+  // Acotación ANCHO (largo del rollo, horizontal)
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho ${producto.ancho} cm`);
+  }
+  // Acotación DIÁMETRO (vertical derecha — equivale al largo del producto)
+  if (Number(producto.largo) > 0) {
+    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, `Largo ${producto.largo} cm`);
+  } else {
+    // Sin largo: mostrar diámetro etiquetado
+    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, 'Ø según pedido');
+  }
+  // Leader: indica que es un rollo
+  _leader(pdf, dx + dw - elipsW / 2, dy + dh / 2, dx - 18, dy + dh + 8, 'Núcleo');
+}
+
+function _dibujarBolsaRollo(pdf, bbox, producto) {
+  const { x, y, w, h } = bbox;
+  const mt = 18, mb = 22, ml = 22, mr = 38;
+  const dx = x + ml, dy = y + mt;
+  const dw = w - ml - mr, dh = h - mt - mb;
+
+  // Es un rollo de bolsas perforadas: cilindro como el rollo pero con líneas de troquel
+  const elipsW = Math.min(dh * 0.30, 22);
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(dx + elipsW / 2, dy, dw - elipsW, dh, 'FD');
+  pdf.setFillColor(181, 212, 244);
+  pdf.ellipse(dx + elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
+  pdf.setFillColor(230, 241, 251);
+  pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
+
+  // Líneas de troquel (perforaciones verticales)
+  pdf.setDrawColor(80, 80, 80);
+  pdf.setLineWidth(0.25);
+  pdf.setLineDashPattern([0.4, 0.6], 0);
+  const nTroqueles = 4;
+  for (let i = 1; i <= nTroqueles; i++) {
+    const xT = dx + elipsW / 2 + ((dw - elipsW) * i) / (nTroqueles + 1);
+    pdf.line(xT, dy + 1, xT, dy + dh - 1);
+  }
+  pdf.setLineDashPattern([], 0);
+
+  // Acotaciones
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho rollo ${producto.ancho} cm`);
+  }
+  if (Number(producto.largo) > 0) {
+    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, `Largo bolsa ${producto.largo} cm`);
+  }
+  // Leader: troquel
+  _leader(pdf, dx + dw * 0.5, dy + dh * 0.5, dx + dw + 18, dy - 5, 'Troquel');
+}
+
+function _dibujarManga(pdf, bbox, producto) {
+  // Tubular: cilindro con aperturas visibles en ambos extremos
+  const { x, y, w, h } = bbox;
+  const mt = 18, mb = 22, ml = 22, mr = 35;
+  const dx = x + ml, dy = y + mt;
+  const dw = w - ml - mr, dh = h - mt - mb;
+
+  // Cuerpo
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(dx, dy, dw, dh, 'FD');
+
+  // Líneas onduladas que sugieren material flexible doblado
+  pdf.setDrawColor(120, 150, 200);
+  pdf.setLineWidth(0.2);
+  for (let i = 1; i <= 4; i++) {
+    const xL = dx + (dw * i) / 5;
+    pdf.setLineDashPattern([0.6, 0.4], 0);
+    pdf.line(xL, dy + 1, xL, dy + dh - 1);
+  }
+  pdf.setLineDashPattern([], 0);
+
+  // Apertura izquierda (indicador)
+  pdf.setDrawColor(10, 30, 70);
+  pdf.setLineWidth(1.0);
+  pdf.line(dx, dy, dx, dy + dh);
+  // Apertura derecha
+  pdf.line(dx + dw, dy, dx + dw, dy + dh);
+
+  // Acotaciones
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho ${producto.ancho} cm`);
+  }
+  if (Number(producto.largo) > 0) {
+    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, `Largo ${producto.largo} cm`);
+  }
+  _leader(pdf, dx, dy + dh / 2, dx - 18, dy + dh + 6, 'Tubular');
+  _leader(pdf, dx + dw, dy + dh / 2, dx + dw + 18, dy + dh + 6, 'sin sello');
+}
+
+function _dibujarHoja(pdf, bbox, producto) {
+  const { x, y, w, h } = bbox;
+  const mt = 18, mb = 22, ml = 22, mr = 35;
+  const dx = x + ml, dy = y + mt;
+  const dw = w - ml - mr, dh = h - mt - mb;
+
+  // Rectángulo plano simple con esquinas marcadas
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(dx, dy, dw, dh, 'FD');
+
+  // Marcadores de esquinas
+  pdf.setDrawColor(10, 30, 70);
+  pdf.setLineWidth(1.0);
+  const cM = 4;
+  // Esquina sup-izq
+  pdf.line(dx, dy, dx + cM, dy);
+  pdf.line(dx, dy, dx, dy + cM);
+  // Sup-der
+  pdf.line(dx + dw, dy, dx + dw - cM, dy);
+  pdf.line(dx + dw, dy, dx + dw, dy + cM);
+  // Inf-izq
+  pdf.line(dx, dy + dh, dx + cM, dy + dh);
+  pdf.line(dx, dy + dh, dx, dy + dh - cM);
+  // Inf-der
+  pdf.line(dx + dw, dy + dh, dx + dw - cM, dy + dh);
+  pdf.line(dx + dw, dy + dh, dx + dw, dy + dh - cM);
+
+  // Acotaciones
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho ${producto.ancho} cm`);
+  }
+  if (Number(producto.largo) > 0) {
+    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, `Largo ${producto.largo} cm`);
+  }
+  _leader(pdf, dx + dw * 0.5, dy + dh * 0.5, dx - 18, dy + dh + 7, 'Hoja plana');
+}
+
+// Helper para polígonos cerrados con relleno + trazo
+function _drawPoligono(pdf, puntos, estilo) {
+  if (!puntos || puntos.length < 3) return;
+  pdf.lines(
+    puntos.slice(1).map((p, i) => [p[0] - puntos[i][0], p[1] - puntos[i][1]]),
+    puntos[0][0], puntos[0][1],
+    [1, 1], estilo || 'D', true
+  );
+}
+
+// ============================================================
+// 📐 PDF PRINCIPAL: PLANO MECÁNICO (NPA-IYD-AV-06)
+// ============================================================
+// Documento que se entrega al cliente con dibujo técnico del producto.
+// Si se pasa clienteCodigo, se personaliza con código interno del cliente.
+window.imprimirPlanoMecanicoPDF = (productoCodigo, clienteCodigo) => {
+  try {
+    const p = (state.productos_pt || []).find(x => x.codigo === productoCodigo);
+    if (!p) { toast('Producto no encontrado', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+
+    const relaciones = (state.cliente_productos || []).filter(cp => cp.producto_codigo === p.codigo);
+
+    // Si NO se especificó cliente pero hay 2+, abrir modal selector
+    if (!clienteCodigo && relaciones.length >= 2) {
+      state.modalData = { productoCodigo, relaciones, destino: 'plano' };
+      state.modal = 'selector-cliente-ficha';
+      render();
+      return;
+    }
+
+    // Determinar relación efectiva
+    let rel = null;
+    if (clienteCodigo && clienteCodigo !== '__GENERICA__') {
+      rel = relaciones.find(r => r.cliente_codigo === clienteCodigo);
+    } else if (!clienteCodigo && relaciones.length === 1) {
+      rel = relaciones[0];
+    }
+    const cliente = rel ? (state.clientes || []).find(c => c.codigo === rel.cliente_codigo) : null;
+    const codigoCliente = cliente
+      ? (cliente.codigo + (cliente.nombre || cliente.razon_social ? '  ·  ' + (cliente.nombre || cliente.razon_social) : ''))
+      : (clienteCodigo === '__GENERICA__' ? 'GENÉRICA' : 'GENÉRICA');
+    const codigoInternoCliente = rel ? (rel.codigo_cliente_interno || '') : '';
+
+    // Datos derivados
+    const tipoDesc = descripcionTipoProducto(p);
+    const formaTipo = tipoFormaProducto(p);
+    const densidad = calcularDensidad(p);
+    const tipoMaterial = densidad >= 0.940 ? 'HD' : 'LD';
+    const aditivo = p.aditivo && p.aditivo !== 'NINGUNO' ? p.aditivo : 'N/A';
+    const pigmento = p.pigmento || p.color || 'N/A';
+    const calibre = p.calibre || '—';
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+
+    // ====== HEADER NPA-IYD-AV-06 ======
+    _pdfHeaderEmpresa(docPDF, 'PLANO MECÁNICO DEL PRODUCTO', 'NPA-IYD-AV-06');
+
+    let y = 50;
+
+    // ====== TÍTULO ======
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.rect(14, y, 182, 9, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(14);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('PLANO MECÁNICO DEL PRODUCTO', 105, y + 6, { align: 'center' });
+    y += 12;
+
+    // ====== DATOS DEL CLIENTE / PRODUCTO ======
+    docPDF.autoTable({
+      startY: y,
+      head: [],
+      body: [
+        ['Cliente:', codigoCliente],
+        ['Código:', p.codigo + (codigoInternoCliente ? `  (Ref. cliente: ${codigoInternoCliente})` : '')],
+        ['Descripción:', tipoDesc.toUpperCase() + (Number(p.fuelle) > 0 ? ' CON FUELLE' : '')],
+      ],
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 35 },
+        1: { halign: 'left' },
+      },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 5;
+
+    // ====== ÁREA DE DIBUJO ======
+    // Marco del área de dibujo (donde va el plano técnico)
+    const dibujoY = y;
+    const dibujoH = 145;
+    docPDF.setDrawColor(150, 150, 150);
+    docPDF.setLineWidth(0.4);
+    docPDF.rect(14, dibujoY, 182, dibujoH);
+    // Marca de escala en la esquina sup-izq
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(120, 120, 120);
+    docPDF.text('VISTA TÉCNICA - SIN ESCALA', 16, dibujoY + 4);
+    // "1ª angulación" en esquina sup-der (estándar de dibujo)
+    docPDF.text('Acotaciones en cm', 194, dibujoY + 4, { align: 'right' });
+
+    // Dibujar la forma según el tipo
+    const bbox = { x: 14, y: dibujoY, w: 182, h: dibujoH };
+    try {
+      if (formaTipo === 'rollo') _dibujarRollo(docPDF, bbox, p);
+      else if (formaTipo === 'bolsa_fuelle') _dibujarBolsaFuelle(docPDF, bbox, p);
+      else if (formaTipo === 'bolsa_rollo') _dibujarBolsaRollo(docPDF, bbox, p);
+      else if (formaTipo === 'manga' || formaTipo === 'tubular') _dibujarManga(docPDF, bbox, p);
+      else if (formaTipo === 'hoja') _dibujarHoja(docPDF, bbox, p);
+      else _dibujarBolsaSuelta(docPDF, bbox, p);
+    } catch (e) {
+      console.error('Error dibujando producto:', e);
+      docPDF.setFontSize(10);
+      docPDF.setTextColor(150, 0, 0);
+      docPDF.text('Error al dibujar el producto. Especificaciones disponibles abajo.', 105, dibujoY + dibujoH / 2, { align: 'center' });
+    }
+
+    y = dibujoY + dibujoH + 5;
+
+    // ====== TABLA DE ESPECIFICACIONES (formato del PDF original) ======
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: 'PRODUCTO', colSpan: 2, styles: { halign: 'center' } }, { content: 'ESPECIFICACIONES', colSpan: 2, styles: { halign: 'center' } }, { content: '', styles: { fillColor: [255, 255, 255] } }]],
+      body: [
+        ['Ancho', `${p.ancho || '—'} cm`, 'Tipo de Material', tipoMaterial, ''],
+        ['Fuelles', Number(p.fuelle) > 0 ? `${p.fuelle} cm` : 'N/A', 'Aditivo', aditivo, ''],
+        ['Largo', `${p.largo || '—'} cm`, 'Color', pigmento, ''],
+        ['Tipo de Producto', tipoDesc, 'Calibre', String(calibre), { content: 'Autorizado', styles: { fillColor: [220, 240, 220], fontStyle: 'bold', halign: 'center', valign: 'middle' } }],
+      ],
+      theme: 'grid',
+      headStyles: { fillColor: _COL_VERDE, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
+      styles: { fontSize: 8, cellPadding: 2, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+      columnStyles: {
+        0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 35 },
+        1: { halign: 'center', cellWidth: 40 },
+        2: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 35 },
+        3: { halign: 'center', cellWidth: 40 },
+        4: { cellWidth: 32 },
+      },
+      margin: { left: 14, right: 14 },
+    });
+
+    // Línea de firma debajo del cuadro "Autorizado"
+    const yFirma = docPDF.lastAutoTable.finalY - 3;
+    docPDF.setDrawColor(100, 100, 100);
+    docPDF.setLineWidth(0.3);
+    docPDF.line(170, yFirma, 192, yFirma);
+
+    // Vista previa
+    const pdfBlob = docPDF.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    state.pdfPreview = {
+      blobUrl: url,
+      filename: `PlanoMecanico_${p.codigo}${cliente ? '_' + cliente.codigo : ''}.pdf`,
+      titulo: `Plano Mecánico ${p.codigo}${cliente ? ' — ' + cliente.codigo : ''}`,
+      blob: pdfBlob
+    };
+    state.modalData = null;
+    state.modal = 'pdf-preview';
+    render();
+  } catch (e) {
+    console.error('Error PDF Plano Mecánico:', e);
+    toast('Error generando plano: ' + e.message, 'error');
   }
 };
 
@@ -16332,6 +16878,7 @@ function modalEditarProductoPT() {
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
           <button class="btn-secondary" onclick="if(confirm('¿Desactivar este producto? Ya no aparecerá en las búsquedas.'))desactivarProductoPT('${p.codigo}')" style="background:#fee2e2;color:#dc2626;">${ICONS.trash} Desactivar</button>
           <button class="btn-secondary" onclick="window.imprimirFichaTecnicaPDF('${p.codigo}')" style="background:#dbeafe;color:#1e40af;border-color:#bfdbfe;">📄 Ficha Técnica</button>
+          <button class="btn-secondary" onclick="window.imprimirPlanoMecanicoPDF('${p.codigo}')" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;">📐 Plano Mecánico</button>
           <button class="btn-secondary" onclick="cerrarModalPT()" style="margin-left:auto;">Cancelar</button>
           <button class="btn-primary" onclick="guardarProductoPT('${p.codigo}')">${ICONS.check} Guardar cambios</button>
         </div>
@@ -16964,8 +17511,14 @@ function modalSelectorClienteFichaTecnica() {
   const data = state.modalData || {};
   const productoCodigo = data.productoCodigo;
   const relaciones = data.relaciones || [];
+  const destino = data.destino || 'ficha'; // 'ficha' o 'plano'
   const p = (state.productos_pt || []).find(x => x.codigo === productoCodigo);
   if (!p) return '';
+
+  // Función PDF a invocar según destino
+  const funcionPDF = destino === 'plano' ? 'imprimirPlanoMecanicoPDF' : 'imprimirFichaTecnicaPDF';
+  const tituloDoc = destino === 'plano' ? '📐 PLANO MECÁNICO' : '📄 FICHA TÉCNICA';
+  const tituloGenerica = destino === 'plano' ? '📐 Plano genérico (sin cliente)' : '📋 Ficha genérica (sin cliente)';
 
   const clientesRel = relaciones.map(rel => {
     const c = (state.clientes || []).find(cli => cli.codigo === rel.cliente_codigo);
@@ -16980,13 +17533,13 @@ function modalSelectorClienteFichaTecnica() {
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:520px;">
         <div style="padding:18px 22px;border-bottom:1px solid #e2e8f0;">
-          <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;">📄 FICHA TÉCNICA</div>
+          <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:0.1em;">${tituloDoc}</div>
           <h2 style="font-size:18px;font-weight:800;margin-top:4px;">¿Para qué cliente?</h2>
           <div style="font-size:12px;color:#64748b;margin-top:2px;">Producto <span class="text-mono" style="font-weight:700;">${p.codigo}</span> está asignado a ${clientesRel.length} clientes</div>
         </div>
         <div style="padding:18px 22px;display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow-y:auto;">
           ${clientesRel.map(c => `
-            <button onclick="window.imprimirFichaTecnicaPDF('${productoCodigo}', '${c.codigo}')"
+            <button onclick="window.${funcionPDF}('${productoCodigo}', '${c.codigo}')"
               style="text-align:left;padding:14px 16px;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;cursor:pointer;transition:all 0.15s;"
               onmouseover="this.style.borderColor='#16a34a';this.style.background='#f0fdf4';"
               onmouseout="this.style.borderColor='#e2e8f0';this.style.background='#f8fafc';">
@@ -16997,11 +17550,11 @@ function modalSelectorClienteFichaTecnica() {
               </div>
             </button>
           `).join('')}
-          <button onclick="window.imprimirFichaTecnicaPDF('${productoCodigo}', '__GENERICA__')"
+          <button onclick="window.${funcionPDF}('${productoCodigo}', '__GENERICA__')"
             style="text-align:left;padding:14px 16px;background:#fffbeb;border:1.5px dashed #fcd34d;border-radius:10px;cursor:pointer;margin-top:4px;"
             onmouseover="this.style.background='#fef3c7';"
             onmouseout="this.style.background='#fffbeb';">
-            <div style="font-weight:700;font-size:14px;color:#92400e;">📋 Ficha genérica (sin cliente)</div>
+            <div style="font-weight:700;font-size:14px;color:#92400e;">${tituloGenerica}</div>
             <div style="font-size:12px;color:#a16207;margin-top:2px;">Sin código interno ni datos de cliente</div>
           </button>
         </div>
