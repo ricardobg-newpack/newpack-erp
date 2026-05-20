@@ -13376,14 +13376,33 @@ function _drawEtiqueta(pdf, x, y, texto, opts = {}) {
 }
 
 // Acotación horizontal (con líneas auxiliares + flecha + etiqueta arriba)
-function _acotacionH(pdf, xIni, xFin, yObjeto, yAcot, texto) {
+// opts.color = [r, g, b] para diferenciar (ej. fuelles en azul oscuro)
+function _acotacionH(pdf, xIni, xFin, yObjeto, yAcot, texto, opts = {}) {
+  const color = opts.color || null;
   // Líneas auxiliares verticales hacia arriba
   _drawLineaAux(pdf, xIni, yObjeto, xIni, yAcot - 1);
   _drawLineaAux(pdf, xFin, yObjeto, xFin, yAcot - 1);
-  // Flecha doble
-  _drawFlecha(pdf, xIni, yAcot, xFin, yAcot);
-  // Etiqueta
-  _drawEtiqueta(pdf, (xIni + xFin) / 2, yAcot - 1.5, texto);
+  // Flecha doble (con color si se pidió)
+  if (color) {
+    _drawFlecha(pdf, xIni, yAcot, xFin, yAcot, { color });
+  } else {
+    _drawFlecha(pdf, xIni, yAcot, xFin, yAcot);
+  }
+  // Etiqueta con color
+  if (color) {
+    // Versión coloreada
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'bold');
+    const xC = (xIni + xFin) / 2;
+    const w = pdf.getTextWidth(texto);
+    pdf.setFillColor(255, 255, 255);
+    pdf.rect(xC - w / 2 - 1.5, yAcot - 1.5 - 8 * 0.4, w + 3, 8 * 0.4 + 1.5, 'F');
+    pdf.setTextColor(color[0], color[1], color[2]);
+    pdf.text(texto, xC, yAcot - 1.5, { align: 'center' });
+    pdf.setTextColor(0, 0, 0);
+  } else {
+    _drawEtiqueta(pdf, (xIni + xFin) / 2, yAcot - 1.5, texto);
+  }
 }
 
 // Acotación vertical (similar pero rotada)
@@ -13629,8 +13648,8 @@ function _dibujarBolsaFuelle(pdf, bbox, producto) {
   const fuelleTotal = Number(producto.fuelle) || 0;
   const fuelleLado = fuelleTotal / 2;
   if (fuelleLado > 0) {
-    _acotacionH(pdf, dx2, dx2 + fProf, dy2 + sectionH, dy2 + sectionH + 10, `${fuelleLado}`);
-    _acotacionH(pdf, dx2 + dw2 - fProf, dx2 + dw2, dy2 + sectionH, dy2 + sectionH + 10, `${fuelleLado}`);
+    _acotacionH(pdf, dx2, dx2 + fProf, dy2 + sectionH, dy2 + sectionH + 10, `${fuelleLado}`, { color: [30, 64, 175] });
+    _acotacionH(pdf, dx2 + dw2 - fProf, dx2 + dw2, dy2 + sectionH, dy2 + sectionH + 10, `${fuelleLado}`, { color: [30, 64, 175] });
   }
 
   // Leyenda fuelle total debajo
@@ -13853,10 +13872,21 @@ function _dibujarBolsaRollo(pdf, bbox, producto) {
 
   // Cotas de la bolsa
   if (Number(producto.ancho) > 0) {
-    _acotacionH(pdf, dx2, dx2 + dw2, dy2, dy2 - 9, `${producto.ancho} cm`);
+    // Si tiene fuelle, subir un poco la cota del ancho para dar espacio a las cotas del fuelle
+    const yCota = tieneFuelle ? dy2 - 16 : dy2 - 9;
+    _acotacionH(pdf, dx2, dx2 + dw2, dy2, yCota, `${producto.ancho} cm`);
+  }
+  // Si tiene fuelle: cotas individuales de cada lado del fuelle arriba del dibujo
+  if (tieneFuelle) {
+    const fSep = dw2 * 0.13;
+    // Color azul oscuro para diferenciar las cotas del fuelle del ancho total
+    const colorFuelle = [30, 64, 175]; // #1E40AF azul oscuro técnico
+    // Cota fuelle izquierdo (de dx2 a dx2 + fSep)
+    _acotacionH(pdf, dx2, dx2 + fSep, dy2, dy2 - 5, `${fuelleLado}`, { color: colorFuelle });
+    // Cota fuelle derecho (de dx2 + dw2 - fSep a dx2 + dw2)
+    _acotacionH(pdf, dx2 + dw2 - fSep, dx2 + dw2, dy2, dy2 - 5, `${fuelleLado}`, { color: colorFuelle });
   }
   // Largo va desde el borde superior HASTA EL SELLO (no hasta el punteo)
-  // El sello está en dy2 + dh2 - cejaH*2 (sobre el punteo)
   if (Number(producto.largo) > 0) {
     _acotacionV(pdf, dy2, dy2 + dh2 - cejaH * 2, dx2 + dw2, dx2 + dw2 + 14, `${producto.largo} cm`);
   }
