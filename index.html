@@ -13656,95 +13656,124 @@ function _dibujarRollo(pdf, bbox, producto) {
   const { x, y, w, h } = bbox;
   const mt = 26, mb = 28, ml = 40, mr = 48;
   const dx = x + ml, dy = y + mt;
-  const dw = w - ml - mr, dh = h - mt - mb;
+  const dw = w - ml - mr;
+  // El "alto" del cilindro (= "ancho" del rollo en términos del producto) 
+  // se limita para que el rollo se vea bajo y largo (proporción ~3:1).
+  // Tomamos como mucho 1/3 del alto disponible.
+  const altoDisponible = h - mt - mb;
+  const dh = Math.min(altoDisponible, dw / 3); // proporción 3:1 max
+  // Centrar verticalmente lo que sobra
+  const offsetY = (altoDisponible - dh) / 2;
+  const dyRollo = dy + offsetY;
 
   _tituloVista(pdf, dx + dw / 2, dy - 14, 'Vista isométrica', '(rollo)');
 
-  // Cilindro horizontal
-  const elipsW = Math.min(dh * 0.28, 22);
+  // Cilindro horizontal extendido
+  const elipsW = Math.min(dh * 0.45, 14); // elipses laterales pequeñas, proporcionadas al alto del rollo
   _estiloEstructural(pdf, { grosor: 0.6 });
 
-  // Líneas superiores e inferiores del cuerpo
-  pdf.line(dx + elipsW / 2, dy, dx + dw - elipsW / 2, dy);
-  pdf.line(dx + elipsW / 2, dy + dh, dx + dw - elipsW / 2, dy + dh);
+  // Líneas superior e inferior del cuerpo cilíndrico
+  pdf.line(dx + elipsW / 2, dyRollo, dx + dw - elipsW / 2, dyRollo);
+  pdf.line(dx + elipsW / 2, dyRollo + dh, dx + dw - elipsW / 2, dyRollo + dh);
 
-  // Elipse izquierda (cara trasera, queda detrás)
-  pdf.ellipse(dx + elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'S');
+  // Elipse izquierda (cara trasera)
+  pdf.ellipse(dx + elipsW / 2, dyRollo + dh / 2, elipsW / 2, dh / 2, 'S');
 
-  // Elipse derecha (cara frontal) - relleno blanco para tapar líneas que pasen por detrás
+  // Elipse derecha (cara frontal) - relleno blanco para tapar líneas detrás
   pdf.setFillColor(255, 255, 255);
-  pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
+  pdf.ellipse(dx + dw - elipsW / 2, dyRollo + dh / 2, elipsW / 2, dh / 2, 'FD');
 
-  // Capas internas (anillos concéntricos)
+  // Capas internas concéntricas (más para sugerir varias vueltas del rollo)
   pdf.setDrawColor(200);
   pdf.setLineWidth(0.2);
-  for (let i = 1; i <= 3; i++) {
-    const ratio = i / 4;
-    pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, (elipsW / 2) * ratio, (dh / 2) * ratio, 'D');
+  for (let i = 1; i <= 4; i++) {
+    const ratio = i / 5;
+    pdf.ellipse(dx + dw - elipsW / 2, dyRollo + dh / 2, (elipsW / 2) * ratio, (dh / 2) * ratio, 'D');
   }
-  // Núcleo central
+  // Núcleo central pequeño
   pdf.setFillColor(255, 255, 255);
   pdf.setDrawColor(71, 85, 105);
   pdf.setLineWidth(0.4);
-  pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, elipsW * 0.08, dh * 0.08, 'FD');
+  pdf.ellipse(dx + dw - elipsW / 2, dyRollo + dh / 2, elipsW * 0.12, dh * 0.12, 'FD');
 
-  // Cota ancho del rollo
+  // Cota ANCHO (largo del rollo extendido horizontalmente)
   if (Number(producto.ancho) > 0) {
-    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `${producto.ancho} cm`);
+    _acotacionH(pdf, dx, dx + dw, dyRollo, dyRollo - 9, `${producto.ancho} cm`);
   }
-  // Cota largo (diámetro/altura del rollo)
+  // Cota LARGO (alto del rollo = diámetro vertical)
   if (Number(producto.largo) > 0) {
-    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, `${producto.largo} cm`);
+    _acotacionV(pdf, dyRollo, dyRollo + dh, dx + dw, dx + dw + 14, `${producto.largo} cm`);
   }
 }
 
 // ═══════════════════════════════════════════════════════════
 // BOLSA EN ROLLO (rollo de bolsas perforadas)
+// Detecta automáticamente si tiene fuelle (producto.fuelle > 0)
+// y dibuja los pliegues internos + cota del fuelle en la bolsa individual
 // ═══════════════════════════════════════════════════════════
 function _dibujarBolsaRollo(pdf, bbox, producto) {
   const { x, y, w, h } = bbox;
   const mt = 26, mb = 30;
   const gap = 22;
   const half = (w - gap) / 2;
+  const altoVista = h - mt - mb;
 
-  // ───── VISTA 1: ROLLO (izquierda) — orientación HORIZONTAL ─────
+  const fuelleTotal = Number(producto.fuelle) || 0;
+  const fuelleLado = fuelleTotal / 2;
+  const tieneFuelle = fuelleTotal > 0;
+
+  // ───── VISTA 1: ROLLO HORIZONTAL EXTENDIDO (izquierda) ─────
   const ml1 = 30, mr1 = 8;
-  const dx1 = x + ml1, dy1 = y + mt;
-  const dw1 = half - ml1 - mr1, dh1 = h - mt - mb;
+  const dx1 = x + ml1, dy1Base = y + mt;
+  const dw1 = half - ml1 - mr1;
+  // ALTO DEL ROLLO: limitado para que se vea horizontal extendido (proporción ~3:1)
+  // Si dw1 es grande, dh1 se limita a dw1/3 para que se vea como tubo, no como balón
+  const dh1 = Math.min(altoVista * 0.55, dw1 * 0.33);
+  // Centrar verticalmente
+  const offsetY1 = (altoVista - dh1) / 2;
+  const dy1 = dy1Base + offsetY1;
 
-  _tituloVista(pdf, dx1 + dw1 / 2, dy1 - 14, 'Rollo enrollado', '(presentación final)');
+  _tituloVista(pdf, dx1 + dw1 / 2, dy1Base - 14, 'Rollo enrollado', '(presentación final)');
 
-  // Cilindro: rect central + 2 elipses laterales
-  const elipsW = Math.min(dh1 * 0.18, 16);
+  // Cilindro: elipses pequeñas proporcionadas al alto del rollo
+  const elipsW = Math.min(dh1 * 0.45, 12);
   _estiloEstructural(pdf, { grosor: 0.6 });
 
+  // Líneas superior e inferior del cuerpo
   pdf.line(dx1 + elipsW / 2, dy1, dx1 + dw1 - elipsW / 2, dy1);
   pdf.line(dx1 + elipsW / 2, dy1 + dh1, dx1 + dw1 - elipsW / 2, dy1 + dh1);
   // Elipse izquierda (trasera)
   pdf.ellipse(dx1 + elipsW / 2, dy1 + dh1 / 2, elipsW / 2, dh1 / 2, 'S');
-  // Elipse derecha (frontal)
+  // Elipse derecha (frontal, con relleno blanco)
   pdf.setFillColor(255, 255, 255);
   pdf.ellipse(dx1 + dw1 - elipsW / 2, dy1 + dh1 / 2, elipsW / 2, dh1 / 2, 'FD');
-  // Capas internas
+  // Capas internas (más, para sugerir varias vueltas)
   pdf.setDrawColor(200);
   pdf.setLineWidth(0.2);
-  for (let i = 1; i <= 2; i++) {
-    const ratio = i / 3;
+  for (let i = 1; i <= 4; i++) {
+    const ratio = i / 5;
     pdf.ellipse(dx1 + dw1 - elipsW / 2, dy1 + dh1 / 2, (elipsW / 2) * ratio, (dh1 / 2) * ratio, 'D');
   }
-  // Núcleo
+  // Núcleo central pequeño
   pdf.setFillColor(255, 255, 255);
   pdf.setDrawColor(71, 85, 105);
   pdf.setLineWidth(0.4);
-  pdf.ellipse(dx1 + dw1 - elipsW / 2, dy1 + dh1 / 2, elipsW * 0.10, dh1 * 0.06, 'FD');
+  pdf.ellipse(dx1 + dw1 - elipsW / 2, dy1 + dh1 / 2, elipsW * 0.15, dh1 * 0.15, 'FD');
 
   // Cota VERTICAL del ancho del rollo (= ancho de bolsa)
   if (Number(producto.ancho) > 0) {
     _acotacionV(pdf, dy1, dy1 + dh1, dx1, dx1 - 14, `${producto.ancho} cm`);
   }
 
+  // Etiqueta abajo del rollo: aclarar que el ancho del rollo = ancho de bolsa
+  pdf.setFontSize(6.5);
+  pdf.setFont('helvetica', 'italic');
+  pdf.setTextColor(148, 163, 184);
+  pdf.text('ancho del rollo = ancho de bolsa', dx1 + dw1 / 2, dy1 + dh1 + 8, { align: 'center' });
+  pdf.setTextColor(0, 0, 0);
+
   // ───── Flecha "desenrolla" entre las 2 vistas ─────
-  const flY = y + mt + (h - mt - mb) / 2;
+  const flY = y + mt + altoVista / 2;
   const flX1 = x + half + 3;
   const flX2 = x + half + gap - 3;
   pdf.setDrawColor(148, 163, 184);
@@ -13760,14 +13789,23 @@ function _dibujarBolsaRollo(pdf, bbox, producto) {
   // ───── VISTA 2: BOLSA INDIVIDUAL (derecha) ─────
   const ml2 = 12, mr2 = 30;
   const dx2 = x + half + gap + ml2;
-  const dw2 = half - ml2 - mr2, dh2 = h - mt - mb;
+  const dw2 = half - ml2 - mr2, dh2 = altoVista;
   const dy2 = y + mt;
 
-  _tituloVista(pdf, dx2 + dw2 / 2, dy2 - 14, 'Bolsa individual', '(net plano)');
+  _tituloVista(pdf, dx2 + dw2 / 2, dy2 - 14, 'Bolsa individual', tieneFuelle ? '(net plano · con fuelle)' : '(net plano)');
 
   // Cuerpo bolsa
   _estiloEstructural(pdf, { grosor: 0.6 });
   pdf.rect(dx2, dy2, dw2, dh2, 'S');
+
+  // Si tiene fuelle: dibujar los pliegues internos como líneas verticales tenues
+  if (tieneFuelle) {
+    _estiloAuxiliar(pdf);
+    const fSep = dw2 * 0.13; // separación visual del pliegue
+    pdf.line(dx2 + fSep, dy2 + 2, dx2 + fSep, dy2 + dh2 - 2);
+    pdf.line(dx2 + dw2 - fSep, dy2 + 2, dx2 + dw2 - fSep, dy2 + dh2 - 2);
+    pdf.setLineDashPattern([], 0);
+  }
 
   // Sello + ceja + punteo en parte inferior
   const cejaH = Math.max(4, dh2 * 0.04);
@@ -13777,7 +13815,7 @@ function _dibujarBolsaRollo(pdf, bbox, producto) {
   // Ceja gris entre sello y punteo
   pdf.setFillColor(241, 245, 249);
   pdf.rect(dx2 + 0.3, dy2 + dh2 - cejaH * 2 + 0.3, dw2 - 0.6, cejaH - 0.3, 'F');
-  // Punteo rojo dashed
+  // Punteo rojo (rayitas tipo perforación)
   _estiloPunteo(pdf);
   pdf.line(dx2, dy2 + dh2 - cejaH, dx2 + dw2, dy2 + dh2 - cejaH);
   // Borde inferior (siguiente bolsa tenue)
@@ -13800,6 +13838,15 @@ function _dibujarBolsaRollo(pdf, bbox, producto) {
   }
   if (Number(producto.largo) > 0) {
     _acotacionV(pdf, dy2, dy2 + dh2 - cejaH, dx2 + dw2, dx2 + dw2 + 14, `${producto.largo} cm`);
+  }
+
+  // Si tiene fuelle: agregar leyenda con el fuelle total debajo del dibujo
+  if (tieneFuelle) {
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(71, 85, 105);
+    pdf.text(`Fuelle: ${fuelleLado} + ${fuelleLado} = ${fuelleTotal} cm (al abrirse)`, dx2 + dw2 / 2, dy2 + dh2 + 14, { align: 'center' });
+    pdf.setTextColor(0, 0, 0);
   }
 
   // Leaders simples
