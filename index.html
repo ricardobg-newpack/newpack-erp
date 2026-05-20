@@ -5839,6 +5839,13 @@ ${urlApp}
 ¡Bienvenido(a) a NewPack! 🚀`;
 
   const mensajeWhatsApp = encodeURIComponent(mensajeTexto);
+  // Asunto y cuerpo del correo (URL-encoded para mailto:)
+  const mailSubject = encodeURIComponent(`Tus credenciales de acceso - NewPack ERP`);
+  const mailBody = encodeURIComponent(mensajeTexto);
+  
+  // Guardar el mensaje en state para que los botones de copiar lo lean sin pasarlo por onclick
+  // (evita problemas con caracteres especiales en strings JSON inline)
+  state._credCompartir = { mensaje: mensajeTexto, password: cred.password };
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarCompartir()">
@@ -5871,13 +5878,13 @@ ${urlApp}
           
           <!-- INSTRUCCIONES -->
           <div style="padding:12px;background:#eff6ff;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af;">
-            <strong>📌 Comparte estas credenciales con el usuario por WhatsApp o personal.</strong><br>
+            <strong>📌 Comparte estas credenciales con el usuario por WhatsApp, correo o de manera personal.</strong><br>
             <span style="color:#475569;font-size:11px;">Recomienda que cambie su contraseña al iniciar sesión por seguridad.</span>
           </div>
           
           <!-- BOTONES DE COMPARTIR -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-            <button onclick="copiarCredenciales(${JSON.stringify(JSON.stringify(mensajeTexto))})" style="padding:12px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">
+            <button onclick="copiarCredenciales()" style="padding:12px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">
               📋 Copiar todo
             </button>
             <a href="https://wa.me/?text=${mensajeWhatsApp}" target="_blank" style="padding:12px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;text-align:center;text-decoration:none;display:block;">
@@ -5885,7 +5892,12 @@ ${urlApp}
             </a>
           </div>
           
-          <button onclick="copiarSoloContrasena('${cred.password}')" style="margin-top:8px;width:100%;padding:10px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+          <!-- ENVIAR POR CORREO (nuevo) -->
+          <a href="mailto:${cred.email}?subject=${mailSubject}&body=${mailBody}" style="margin-top:8px;display:block;text-align:center;padding:12px;background:#0ea5e9;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;text-decoration:none;">
+            ✉️ Enviar por correo a ${cred.email}
+          </a>
+          
+          <button onclick="copiarSoloContrasena()" style="margin-top:8px;width:100%;padding:10px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
             🔑 Copiar solo contraseña
           </button>
           
@@ -5907,6 +5919,7 @@ ${urlApp}
 window.cerrarCompartir = () => {
   state.modal = null;
   state.credencialesCompartir = null;
+  state._credCompartir = null;
   render();
 };
 
@@ -6105,34 +6118,64 @@ window.cerrarCambiarPassword = () => {
   render();
 };
 
-window.copiarCredenciales = (mensajeJson) => {
-  const mensaje = JSON.parse(mensajeJson);
-  navigator.clipboard.writeText(mensaje).then(() => {
-    toast('📋 Mensaje completo copiado al portapapeles');
-  }).catch(() => {
-    // Fallback para navegadores que no permiten clipboard
-    const ta = document.createElement('textarea');
-    ta.value = mensaje;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    toast('📋 Mensaje copiado');
+// Helper genérico de copiado al portapapeles: prueba API moderna, cae a textarea+execCommand
+// Funciona en HTTP (donde navigator.clipboard no está disponible) y HTTPS
+function _copiarAlPortapapeles(texto) {
+  return new Promise((resolve, reject) => {
+    if (!texto) { reject(new Error('Texto vacío')); return; }
+    // Método 1: API moderna (requiere HTTPS o localhost)
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(texto)
+        .then(() => resolve(true))
+        .catch(() => _fallbackCopy(texto, resolve, reject));
+    } else {
+      _fallbackCopy(texto, resolve, reject);
+    }
   });
+}
+function _fallbackCopy(texto, resolve, reject) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = texto;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) resolve(true);
+    else reject(new Error('execCommand falló'));
+  } catch (e) {
+    reject(e);
+  }
+}
+window._copiarAlPortapapeles = _copiarAlPortapapeles;
+
+window.copiarCredenciales = () => {
+  const datos = state._credCompartir;
+  if (!datos || !datos.mensaje) { toast('No hay credenciales para copiar', 'error'); return; }
+  _copiarAlPortapapeles(datos.mensaje)
+    .then(() => toast('📋 Mensaje completo copiado al portapapeles'))
+    .catch(e => {
+      console.error('Error copiando credenciales:', e);
+      toast('No se pudo copiar. Selecciona y copia el texto manualmente.', 'error');
+    });
 };
 
-window.copiarSoloContrasena = (password) => {
-  navigator.clipboard.writeText(password).then(() => {
-    toast(`🔑 Contraseña copiada: ${password}`);
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = password;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    toast(`🔑 Contraseña copiada: ${password}`);
-  });
+window.copiarSoloContrasena = (passwordArg) => {
+  // Acepta password como argumento O lee del state (compatibilidad con código viejo y nuevo)
+  const password = passwordArg || (state._credCompartir && state._credCompartir.password);
+  if (!password) { toast('No hay contraseña para copiar', 'error'); return; }
+  _copiarAlPortapapeles(password)
+    .then(() => toast(`🔑 Contraseña copiada: ${password}`))
+    .catch(e => {
+      console.error('Error copiando contraseña:', e);
+      toast(`Contraseña: ${password} — cópiala manualmente`, 'error');
+    });
 };
 
 window.crearUsuarioNuevo = async () => {
@@ -10859,9 +10902,51 @@ window.cerrarVistaPreviaPDF = () => {
 
 window.descargarVistaPreviaPDF = () => {
   const p = state.pdfPreview;
-  if (!p || !p.docPDF) return;
-  p.docPDF.save(p.filename);
-  toast(`📥 Descargado: ${p.filename}`);
+  if (!p) { toast('No hay PDF para descargar', 'error'); return; }
+  
+  // Método 1: tiene docPDF (PDFs viejos)
+  if (p.docPDF && typeof p.docPDF.save === 'function') {
+    try {
+      p.docPDF.save(p.filename);
+      toast(`📥 Descargado: ${p.filename}`);
+      return;
+    } catch (e) {
+      console.error('Error con docPDF.save:', e);
+    }
+  }
+  
+  // Método 2: tiene blob (PDFs nuevos: Ficha, Certificado, Plano, OC, etc.)
+  if (p.blob) {
+    try {
+      const url = URL.createObjectURL(p.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = p.filename || 'documento.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Liberar memoria después de un momento
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast(`📥 Descargado: ${p.filename}`);
+      return;
+    } catch (e) {
+      console.error('Error descargando blob:', e);
+    }
+  }
+  
+  // Método 3 (fallback): tiene blobUrl, abrir en nueva pestaña para descarga manual
+  if (p.blobUrl) {
+    const a = document.createElement('a');
+    a.href = p.blobUrl;
+    a.download = p.filename || 'documento.pdf';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast(`📥 Descargado: ${p.filename}`);
+    return;
+  }
+  
+  toast('No se pudo descargar el PDF. Recarga la página e inténtalo de nuevo.', 'error');
 };
 
 window.imprimirVistaPreviaPDF = () => {
@@ -13367,24 +13452,18 @@ function _dibujarBolsaSuelta(pdf, bbox, producto) {
 
 function _dibujarBolsaFuelle(pdf, bbox, producto) {
   const { x, y, w, h } = bbox;
-  const mt = 18, mb = 22, ml = 28, mr = 38;
+  const mt = 18, mb = 22, ml = 32, mr = 42;
   const dx = x + ml, dy = y + mt;
   const dw = w - ml - mr, dh = h - mt - mb;
   // Profundidad isométrica del fuelle (~12% del ancho)
   const fProf = Math.min(dw * 0.10, 14);
+  // Cada lado del fuelle = fuelle total / 2
+  const fuelleLado = Number(producto.fuelle) > 0 ? (Number(producto.fuelle) / 2) : 0;
+  const fuelleTotal = Number(producto.fuelle) > 0 ? Number(producto.fuelle) : 0;
 
   // Fuelle izquierdo (polígono)
   pdf.setDrawColor(20, 50, 100);
   pdf.setLineWidth(0.6);
-  pdf.setFillColor(181, 212, 244);
-  // izquierdo: 4 puntos
-  pdf.lines([
-    [-fProf, -fProf * 1.2],
-    [0, dh + fProf * 0.4 - dh],  // movimiento vertical
-    [fProf, fProf * 1.2],
-    [0, -(dh)],
-  ], dx, dy, [1, 1], 'FD', true);
-  // Para evitar líos con lines(), uso path manual:
   pdf.setFillColor(181, 212, 244);
   const izq = [
     [dx, dy],
@@ -13407,7 +13486,7 @@ function _dibujarBolsaFuelle(pdf, bbox, producto) {
   pdf.setFillColor(230, 241, 251);
   pdf.rect(dx, dy, dw, dh, 'FD');
 
-  // Líneas centrales de fuelle (pliegue)
+  // Líneas centrales de fuelle (pliegue interior, indica que se dobla a la mitad)
   pdf.setDrawColor(20, 50, 100);
   pdf.setLineWidth(0.25);
   pdf.setLineDashPattern([0.8, 0.6], 0);
@@ -13422,20 +13501,41 @@ function _dibujarBolsaFuelle(pdf, bbox, producto) {
   pdf.line(dx - fProf, dy + dh - fProf * 1.0, dx, dy + dh);
   pdf.line(dx + dw, dy + dh, dx + dw + fProf, dy + dh - fProf * 1.0);
 
-  // Acotación ANCHO frontal
+  // ===== ACOTACIONES (corregidas con la convención real del operador) =====
+
+  // Acotación ANCHO frontal (parte plana de la bolsa = lo que ve el cliente)
   if (Number(producto.ancho) > 0) {
     _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho ${producto.ancho} cm`);
   }
-  // Acotación FUELLE (parte expuesta arriba del fuelle derecho)
-  if (Number(producto.fuelle) > 0) {
-    _acotacionH(pdf, dx + dw, dx + dw + fProf, dy - fProf * 0.5, dy - 17, `Fuelle ${producto.fuelle} cm`);
+
+  // Acotación FUELLE IZQUIERDO (mitad del fuelle total): indica fuelleLado
+  if (fuelleLado > 0) {
+    _acotacionH(pdf, dx - fProf, dx, dy - fProf * 1.0, dy - 17, `${fuelleLado} cm`);
   }
+  // Acotación FUELLE DERECHO (la otra mitad): indica fuelleLado
+  if (fuelleLado > 0) {
+    _acotacionH(pdf, dx + dw, dx + dw + fProf, dy - fProf * 1.0, dy - 17, `${fuelleLado} cm`);
+  }
+  // Etiqueta resumen del fuelle total al lado (leader): "Fuelle: 10 + 10 = 20 cm"
+  if (fuelleLado > 0) {
+    pdf.setFontSize(7.5);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(20, 50, 100);
+    const lblFuelle = `Fuelle: ${fuelleLado} + ${fuelleLado} = ${fuelleTotal} cm`;
+    // Caja blanca de fondo bajo el dibujo
+    const wLbl = pdf.getTextWidth(lblFuelle);
+    pdf.setFillColor(255, 255, 255);
+    pdf.rect(dx + dw / 2 - wLbl / 2 - 2, dy + dh + 14, wLbl + 4, 5, 'F');
+    pdf.text(lblFuelle, dx + dw / 2, dy + dh + 17.5, { align: 'center' });
+    pdf.setTextColor(0, 0, 0);
+  }
+
   // Acotación LARGO (vertical derecha)
   if (Number(producto.largo) > 0) {
-    _acotacionV(pdf, dy, dy + dh, dx + dw + fProf, dx + dw + fProf + 12, `Largo ${producto.largo} cm`);
+    _acotacionV(pdf, dy, dy + dh, dx + dw + fProf, dx + dw + fProf + 14, `Largo ${producto.largo} cm`);
   }
   // Leader: sellado
-  _leader(pdf, dx + dw * 0.3, dy + dh + 0.5, dx - 22, dy + dh + 7, 'Sellado');
+  _leader(pdf, dx + dw * 0.3, dy + dh + 0.5, dx - 26, dy + dh + 6, 'Sellado');
 }
 
 function _dibujarRollo(pdf, bbox, producto) {
@@ -13486,41 +13586,97 @@ function _dibujarRollo(pdf, bbox, producto) {
 
 function _dibujarBolsaRollo(pdf, bbox, producto) {
   const { x, y, w, h } = bbox;
-  const mt = 18, mb = 22, ml = 22, mr = 38;
+  const mt = 18, mb = 26, ml = 26, mr = 42;
   const dx = x + ml, dy = y + mt;
   const dw = w - ml - mr, dh = h - mt - mb;
 
-  // Es un rollo de bolsas perforadas: cilindro como el rollo pero con líneas de troquel
+  // En "Bolsa en Rollo" el dibujo se interpreta así:
+  // - El ANCHO del producto = ancho del rollito enrollado = ancho de cada bolsa
+  // - El LARGO del producto = medida de CORTE de cada bolsa (vertical en el rollo)
+  // Para enseñarlo mejor: dibujo el rollo HORIZONTAL pero también UNA bolsa desplegada al lado
+
+  // ===== ROLLO (lado izquierdo del bbox) =====
+  const rolloW = dw * 0.45; // 45% del ancho para el rollo
   const elipsW = Math.min(dh * 0.30, 22);
+
   pdf.setDrawColor(20, 50, 100);
   pdf.setLineWidth(0.6);
   pdf.setFillColor(230, 241, 251);
-  pdf.rect(dx + elipsW / 2, dy, dw - elipsW, dh, 'FD');
+  pdf.rect(dx + elipsW / 2, dy, rolloW - elipsW, dh, 'FD');
   pdf.setFillColor(181, 212, 244);
   pdf.ellipse(dx + elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
   pdf.setFillColor(230, 241, 251);
-  pdf.ellipse(dx + dw - elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
+  pdf.ellipse(dx + rolloW - elipsW / 2, dy + dh / 2, elipsW / 2, dh / 2, 'FD');
 
-  // Líneas de troquel (perforaciones verticales)
+  // Líneas de troquel (separaciones entre bolsas a lo largo del rollo)
   pdf.setDrawColor(80, 80, 80);
   pdf.setLineWidth(0.25);
   pdf.setLineDashPattern([0.4, 0.6], 0);
-  const nTroqueles = 4;
+  const nTroqueles = 3;
   for (let i = 1; i <= nTroqueles; i++) {
-    const xT = dx + elipsW / 2 + ((dw - elipsW) * i) / (nTroqueles + 1);
-    pdf.line(xT, dy + 1, xT, dy + dh - 1);
+    const xT = dx + elipsW / 2 + ((rolloW - elipsW) * i) / (nTroqueles + 1);
+    pdf.line(xT, dy + 2, xT, dy + dh - 2);
   }
   pdf.setLineDashPattern([], 0);
 
-  // Acotaciones
+  // Etiqueta "ROLLO" debajo
+  pdf.setFontSize(7);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setTextColor(60, 60, 60);
+  pdf.text('ROLLO', dx + rolloW / 2, dy + dh + 5, { align: 'center' });
+
+  // Acotación ANCHO del rollo (= ancho de bolsa)
   if (Number(producto.ancho) > 0) {
-    _acotacionH(pdf, dx, dx + dw, dy, dy - 9, `Ancho rollo ${producto.ancho} cm`);
+    _acotacionV(pdf, dy, dy + dh, dx, dx - 14, `Ancho ${producto.ancho} cm`);
   }
+
+  // ===== Flecha indicando "se desenrolla" =====
+  const flechaX1 = dx + rolloW + 4;
+  const flechaX2 = dx + rolloW + 18;
+  const flechaY = dy + dh / 2;
+  _drawFlecha(pdf, flechaX1, flechaY, flechaX2, flechaY, { ambos: false, color: [120, 120, 120] });
+  pdf.setFontSize(6.5);
+  pdf.setFont('helvetica', 'normal');
+  pdf.setTextColor(120, 120, 120);
+  pdf.text('desenrolla', flechaX1 + 7, flechaY - 2, { align: 'center' });
+
+  // ===== BOLSA INDIVIDUAL DESPLEGADA (lado derecho) =====
+  const bolsaX = dx + rolloW + 22;
+  const bolsaW = dw - rolloW - 22;
+  // Mantener proporción: la bolsa desplegada tiene ancho = ancho del rollo, largo = largo del producto
+  // El alto del bbox = largo de bolsa; el ancho de la bolsa lo escalamos al ancho disponible
+  pdf.setDrawColor(20, 50, 100);
+  pdf.setLineWidth(0.6);
+  pdf.setFillColor(230, 241, 251);
+  pdf.rect(bolsaX, dy, bolsaW, dh, 'FD');
+  // Sellado inferior
+  pdf.setDrawColor(10, 30, 70);
+  pdf.setLineWidth(1.2);
+  pdf.line(bolsaX, dy + dh, bolsaX + bolsaW, dy + dh);
+  // Marca de troquel arriba (línea punteada que indica que se separa del rollo)
+  pdf.setDrawColor(80, 80, 80);
+  pdf.setLineWidth(0.3);
+  pdf.setLineDashPattern([0.5, 0.5], 0);
+  pdf.line(bolsaX, dy, bolsaX + bolsaW, dy);
+  pdf.setLineDashPattern([], 0);
+
+  // Etiqueta "1 BOLSA" debajo
+  pdf.setFontSize(7);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setTextColor(60, 60, 60);
+  pdf.text('1 BOLSA', bolsaX + bolsaW / 2, dy + dh + 5, { align: 'center' });
+
+  // Acotación ANCHO bolsa (= ancho del rollo)
+  if (Number(producto.ancho) > 0) {
+    _acotacionH(pdf, bolsaX, bolsaX + bolsaW, dy, dy - 9, `Ancho ${producto.ancho} cm`);
+  }
+  // Acotación LARGO de corte (vertical derecha de la bolsa)
   if (Number(producto.largo) > 0) {
-    _acotacionV(pdf, dy, dy + dh, dx + dw, dx + dw + 14, `Largo bolsa ${producto.largo} cm`);
+    _acotacionV(pdf, dy, dy + dh, bolsaX + bolsaW, bolsaX + bolsaW + 14, `Largo corte ${producto.largo} cm`);
   }
-  // Leader: troquel
-  _leader(pdf, dx + dw * 0.5, dy + dh * 0.5, dx + dw + 18, dy - 5, 'Troquel');
+
+  // Leader: troquel (apunta a la línea punteada arriba de la bolsa)
+  _leader(pdf, bolsaX + bolsaW * 0.5, dy + 0.2, bolsaX + bolsaW + 14, dy + dh + 5, 'Troquel');
 }
 
 function _dibujarManga(pdf, bbox, producto) {
@@ -21542,3 +21698,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
