@@ -499,19 +499,74 @@ window.calcularTolerancias = calcularTolerancias;
 // Devuelve: 'rollo' | 'tubular' | 'bolsa_suelta' | 'bolsa_fuelle' | 'bolsa_rollo' | 'hoja' | 'manga'
 function tipoFormaProducto(producto) {
   if (!producto) return 'bolsa_suelta';
-  const tipo = (producto.tipo || '').toUpperCase();
+  const tipo = (producto.tipo || '').toUpperCase().trim();
   const fuelle = Number(producto.fuelle) || 0;
-  if (tipo.includes('ROLLO') && !tipo.includes('BOLSA')) return 'rollo';
-  if (tipo.includes('BR') || (tipo.includes('BOLSA') && tipo.includes('ROLLO'))) return 'bolsa_rollo';
-  if (tipo.includes('TUBULAR') || tipo.includes('MANGA')) return 'manga';
-  if (tipo.includes('HOJA') || tipo.includes('CORTE')) return 'hoja';
+
+  // ───── Mapeo directo por nombre exacto (más confiable) ─────
+  const mapaExacto = {
+    'BOLSA SUELTA': 'bolsa_suelta',
+    'BOLSA EN ROLLO': 'bolsa_rollo',
+    'BOLSA SUELTA PERFORADA': 'bolsa_suelta',
+    'BOLSA SUELTA MICROPERFORADA': 'bolsa_suelta',
+    'BOLSA ROLLO PERFORADA': 'bolsa_rollo',
+    'BOLSA ROLLO MICROPERFORADA': 'bolsa_rollo',
+    'PELICULA PLANA': 'rollo',
+    'PELICULA PLANA REFILADA': 'rollo',
+    'PELICULA PLANA PUNTEADA': 'rollo',
+    'PELICULA PLANA CORTE SUELTO': 'hoja',
+    'ROLLO DIRECTO TUBULAR': 'manga',
+    'ROLLO DIRECTO AX1L': 'rollo',
+    'ROLLO TUBULAR MICROPERF': 'manga',
+    'ROLLO TUBULAR PERFORADO': 'manga',
+    'ROLLO AX1L PUNTEADO': 'rollo',
+    'MANGA EN ROLLO PUNTEADA': 'manga',
+    'MANGA CORTE SUELTO': 'manga',
+    'HOJA O CORTE': 'hoja',
+    'ROLLO MANUAL': 'rollo',
+    'ROLLO AUTOMATICO': 'rollo',
+    'ADHESIVO HOTMELT': 'hoja',
+    'ADHESIVO ACRILICO': 'hoja',
+  };
+  if (mapaExacto[tipo]) {
+    let forma = mapaExacto[tipo];
+    // Si es bolsa_suelta y tiene fuelle, cambiar a bolsa_fuelle
+    if (forma === 'bolsa_suelta' && fuelle > 0) forma = 'bolsa_fuelle';
+    return forma;
+  }
+
+  // ───── Fallback por palabras clave (productos legacy o con texto libre) ─────
+  // El orden importa: lo más específico primero
+  if (tipo.includes('HOJA') || tipo.includes('CORTE SUELTO') || tipo.includes('LAMINA') || tipo.includes('ADHESIVO')) return 'hoja';
+  if (tipo.includes('MANGA') || tipo.includes('TUBULAR')) return 'manga';
+  if (tipo.includes('BOLSA') && (tipo.includes('ROLLO') || tipo.includes('BR'))) return 'bolsa_rollo';
+  if (tipo.includes('BOLSA ROLLO')) return 'bolsa_rollo';
+  if (tipo.includes('PELICULA') || tipo.includes('FILM')) return 'rollo';
+  if (tipo.includes('ROLLO')) return 'rollo';
+  if (tipo.includes('BOLSA')) {
+    // Bolsa sin "ROLLO" en el nombre → bolsa suelta
+    return fuelle > 0 ? 'bolsa_fuelle' : 'bolsa_suelta';
+  }
+  // Sin "BOLSA" en el nombre pero con fuelle: tratar como bolsa con fuelle
   if (fuelle > 0) return 'bolsa_fuelle';
   return 'bolsa_suelta';
 }
 window.tipoFormaProducto = tipoFormaProducto;
 
 // Descripción legible del tipo de producto (para certificado/ficha)
+// Si el producto tiene un tipo guardado, lo usa directamente (más preciso).
+// Si no, cae a un mapeo genérico basado en la forma detectada.
 function descripcionTipoProducto(producto) {
+  // 1) Si el producto tiene tipo guardado, usarlo (con capitalización elegante)
+  if (producto && producto.tipo) {
+    const tipo = producto.tipo.trim();
+    // Capitalizar: "BOLSA EN ROLLO" → "Bolsa en Rollo"
+    return tipo.toLowerCase().replace(/\b\w/g, c => c.toUpperCase())
+               .replace(/\bEn\b/g, 'en')
+               .replace(/\bCon\b/g, 'con')
+               .replace(/\bDe\b/g, 'de')
+               .replace(/\bO\b/g, 'o');
+  }
+  // 2) Fallback al mapeo por forma
   const forma = tipoFormaProducto(producto);
   const map = {
     rollo: 'Película en Rollo',
@@ -21904,4 +21959,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
