@@ -2379,12 +2379,17 @@ function renderCatalogoGenerico(config) {
             <th style="padding:10px 12px;text-align:left;font-size:11px;color:#475569;">Marca</th>
             <th style="padding:10px 12px;text-align:center;font-size:11px;color:#475569;">UM</th>
             <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Stock total</th>
+            ${config.con_precios ? `
+              <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">P. Compra</th>
+              <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">P. Venta</th>
+              <th style="padding:10px 12px;text-align:right;font-size:11px;color:#475569;">Margen</th>
+            ` : ''}
             <th style="padding:10px 12px;text-align:center;font-size:11px;color:#475569;">Acciones</th>
           </tr>
         </thead>
         <tbody>
           ${arr.length === 0 ? `
-            <tr><td colspan="7" style="padding:30px;text-align:center;color:#94a3b8;">
+            <tr><td colspan="${config.con_precios ? 10 : 7}" style="padding:30px;text-align:center;color:#94a3b8;">
               ${(state[config.state_key] || []).length === 0
                 ? `${config.icono} No hay productos ${config.nombre} aún. Crea el primero con el botón "Nuevo producto ${config.nombre}".`
                 : 'Sin resultados con los filtros actuales.'}
@@ -2395,6 +2400,10 @@ function renderCatalogoGenerico(config) {
             const min = Number(p.stock_minimo) || 0;
             const stockColor = stock <= 0 ? '#dc2626' : (min > 0 && stock <= min ? '#f59e0b' : '#16a34a');
             const stockBg = stock <= 0 ? '#fef2f2' : (min > 0 && stock <= min ? '#fffbeb' : '#f0fdf4');
+            // Calcular margen si hay precios
+            const pc = Number(p.precio_compra) || 0;
+            const pv = Number(p.precio_venta_lista) || 0;
+            const margen = (pc > 0 && pv > 0) ? (((pv - pc) / pc) * 100) : null;
             return `
               <tr style="border-bottom:1px solid #f1f5f9;">
                 <td style="padding:9px 12px;font-family:'SF Mono',Monaco,monospace;font-size:10.5px;font-weight:700;color:#0f172a;">${p.codigo}</td>
@@ -2407,6 +2416,11 @@ function renderCatalogoGenerico(config) {
                 <td style="padding:9px 12px;text-align:right;">
                   <span style="display:inline-block;padding:2px 8px;border-radius:5px;background:${stockBg};color:${stockColor};font-weight:700;font-size:11px;">${fmtNum(stock)}${min > 0 ? ` / ${fmtNum(min)} mín` : ''}</span>
                 </td>
+                ${config.con_precios ? `
+                  <td style="padding:9px 12px;text-align:right;font-size:11px;color:#475569;">${pc > 0 ? '$' + pc.toFixed(2) : '—'}</td>
+                  <td style="padding:9px 12px;text-align:right;font-size:11px;font-weight:700;color:#16a34a;">${pv > 0 ? '$' + pv.toFixed(2) : '—'}</td>
+                  <td style="padding:9px 12px;text-align:right;font-size:11px;font-weight:700;color:${margen !== null && margen >= 0 ? '#16a34a' : (margen !== null ? '#dc2626' : '#94a3b8')};">${margen !== null ? margen.toFixed(1) + '%' : '—'}</td>
+                ` : ''}
                 <td style="padding:9px 12px;text-align:center;">
                   <button class="icon-btn" onclick="abrirModal('${config.modal_editar}','${p.codigo}')" title="${puedeEditar ? 'Editar' : 'Ver'}">${puedeEditar ? ICONS.edit : '👁'}</button>
                 </td>
@@ -3421,13 +3435,13 @@ function renderFormPedido() {
             </div>
           ` : `
             <div class="field" style="margin-top:14px;">
-              <label class="field-label">Buscar producto${esStockInterno ? ' (cualquier producto del catálogo)' : ' del cliente'}</label>
+              <label class="field-label">Buscar producto${esStockInterno ? ' (cualquier producto del catálogo)' : (esComercializado ? ' comercializado (todos los disponibles)' : ' del cliente')}</label>
               <input class="input" id="ped-busq" placeholder="Código o descripción..." value="${state.busqProd || ''}" autocomplete="off" />
             </div>
             <div style="max-height:340px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;">
               ${prodsFiltrados.length === 0 ? `
                 <div style="padding:30px;text-align:center;color:#94a3b8;font-size:13px;">
-                  ${productosCli.length === 0 ? (esStockInterno ? 'No hay productos en catálogo' : 'Cliente sin productos asignados') : 'No se encontraron productos'}
+                  ${productosCli.length === 0 ? (esStockInterno ? 'No hay productos en catálogo' : (esComercializado ? 'No hay productos comercializados en el catálogo. Crea uno primero.' : 'Cliente sin productos asignados')) : 'No se encontraron productos'}
                 </div>
               ` : prodsFiltrados.slice(0, 50).map(p => {
                 const yaAgregado = datos.lineas.some(l => l.producto_codigo === p.codigo);
@@ -3476,26 +3490,49 @@ function renderFormPedido() {
                   <div class="field" style="margin-bottom:8px;">
                     <label class="field-label">Cantidad en ${UM_LABELS[umLinea]} *</label>
                     <input class="input ped-cant" data-idx="${i}" type="number" min="0" step="${stepCant}" value="${l.cantidad_solicitada || ''}" placeholder="${esEntera ? 'Solo enteros' : '0.00'}" />
-                    ${(umLinea === 'pza' || umLinea === 'millar') && l.cantidad_solicitada ? (() => {
+                    ${(umLinea === 'pza' || umLinea === 'millar') && l.cantidad_solicitada && !l.es_comercializado ? (() => {
                       const prod = window.getProductoPT(l.producto_codigo);
                       const conv = window.fmtConversionKg(l.cantidad_solicitada, umLinea, prod);
                       return conv ? `<div style="font-size:10px;color:#059669;margin-top:4px;font-weight:600;">🏭 Producción: ${conv}</div>` : '';
                     })() : ''}
                   </div>
-                  <div class="field" style="margin-bottom:0;">
-                    <label class="field-label">Origen *</label>
-                    <select class="input ped-origen" data-idx="${i}">
-                      <option value="stock" ${l.tipo_origen === 'stock' ? 'selected' : ''}>📦 De Stock</option>
-                      <option value="producir" ${l.tipo_origen === 'producir' ? 'selected' : ''}>🏭 Producir</option>
-                      <option value="mixto" ${l.tipo_origen === 'mixto' ? 'selected' : ''}>🔀 Mixto</option>
-                    </select>
-                  </div>
-                  ${l.tipo_origen === 'mixto' ? `
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-                      <input class="input ped-stock" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="Stock" value="${l.cantidad_stock || ''}" />
-                      <input class="input ped-prod" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="Producir" value="${l.cantidad_producir || ''}" />
+                  ${l.es_comercializado || esComercializado ? `
+                    <!-- 🛒 Para productos comercializados: precio sugerido editable y NO selector Origen -->
+                    <div class="field" style="margin-bottom:0;">
+                      <label class="field-label">Precio unitario sugerido ($/${umLinea})</label>
+                      <input class="input ped-precio" data-idx="${i}" type="number" min="0" step="0.01" value="${l.precio_unitario || 0}" placeholder="0.00" />
+                      ${(() => {
+                        const prodCOM = (state.productos_comercializados || []).find(x => x.codigo === l.producto_codigo);
+                        if (!prodCOM) return '';
+                        const pvMin = Number(prodCOM.precio_venta_minimo) || 0;
+                        const pvList = Number(prodCOM.precio_venta_lista) || 0;
+                        if (pvList > 0 || pvMin > 0) {
+                          return `<div style="font-size:10px;color:#64748b;margin-top:4px;">
+                            ${pvList > 0 ? `Lista: $${pvList.toFixed(2)}` : ''}
+                            ${pvMin > 0 ? ` · Mínimo: $${pvMin.toFixed(2)}` : ''}
+                            ${Number(l.precio_unitario) > 0 && pvMin > 0 && Number(l.precio_unitario) < pvMin ? ` · <strong style="color:#dc2626;">⚠ Por debajo del mínimo</strong>` : ''}
+                          </div>`;
+                        }
+                        return '';
+                      })()}
                     </div>
-                  ` : ''}
+                    <input type="hidden" data-idx="${i}" class="ped-origen-hidden" data-origen="stock" />
+                  ` : `
+                    <div class="field" style="margin-bottom:0;">
+                      <label class="field-label">Origen *</label>
+                      <select class="input ped-origen" data-idx="${i}">
+                        <option value="stock" ${l.tipo_origen === 'stock' ? 'selected' : ''}>📦 De Stock</option>
+                        <option value="producir" ${l.tipo_origen === 'producir' ? 'selected' : ''}>🏭 Producir</option>
+                        <option value="mixto" ${l.tipo_origen === 'mixto' ? 'selected' : ''}>🔀 Mixto</option>
+                      </select>
+                    </div>
+                    ${l.tipo_origen === 'mixto' ? `
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+                        <input class="input ped-stock" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="Stock" value="${l.cantidad_stock || ''}" />
+                        <input class="input ped-prod" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="Producir" value="${l.cantidad_producir || ''}" />
+                      </div>
+                    ` : ''}
+                  `}
                 </div>
               `;}).join('')}
             </div>
@@ -3529,16 +3566,18 @@ function renderListaPedidos(pedidos, puedeAprobar) {
         const lblEst = { pendiente_aprobacion: 'Por aprobar', aprobado: 'Aprobado', en_proceso: 'En proceso', completado: 'Completado', cancelado: 'Cancelado' }[p.estatus] || p.estatus;
         const tipoBadge = { stock: { l: '📦 Stock', c: '#16a34a' }, producir: { l: '🏭 Producir', c: '#f59e0b' }, mixto: { l: '🔀 Mixto', c: '#3b82f6' } }[p.tipo] || { l: p.tipo, c: '#64748b' };
         const esStockInt = p.tipo_pi === 'stock_interno';
+        const esCOMint = p.tipo_pi === 'comercializado';
         
         return `
-          <div class="panel" style="border:2px solid ${esStockInt ? '#3fd34b' : colorEst};">
-            <div style="padding:14px 18px;background:${esStockInt ? '#dcfce7' : colorEst+'11'};display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div class="panel" style="border:2px solid ${esStockInt ? '#3fd34b' : (esCOMint ? '#16a34a' : colorEst)};">
+            <div style="padding:14px 18px;background:${esStockInt ? '#dcfce7' : (esCOMint ? '#f0fdf4' : colorEst+'11')};display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
               <div>
                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                   <span class="text-mono" style="font-weight:800;font-size:16px;">${p.folio}</span>
                   ${esStockInt ? `<span style="font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;background:#3fd34b;color:#fff;">🏭 PRODUCCIÓN PARA STOCK</span>` : ''}
+                  ${esCOMint ? `<span style="font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;background:#16a34a;color:#fff;">🛒 COMERCIALIZADO</span>` : ''}
                   <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${colorEst}22;color:${colorEst};">${lblEst}</span>
-                  ${!esStockInt ? `<span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px;background:${tipoBadge.c}22;color:${tipoBadge.c};">${tipoBadge.l}</span>` : ''}
+                  ${!esStockInt && !esCOMint ? `<span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:99px;background:${tipoBadge.c}22;color:${tipoBadge.c};">${tipoBadge.l}</span>` : ''}
                 </div>
                 <div style="font-size:13px;font-weight:600;margin-top:4px;">${esStockInt ? '🏭 Stock Interno NewPack' : p.cliente_nombre + ' <span style="color:#64748b;font-size:11px;">(' + p.cliente_codigo + ')</span>'}</div>
                 <div style="font-size:11px;color:#64748b;margin-top:2px;">
@@ -18489,6 +18528,8 @@ function modalDetallePedido() {
         </div>
         <div class="modal-body">
           <div style="padding:14px;background:#f8fafc;border-radius:10px;margin-bottom:14px;font-size:12px;">
+            ${p.tipo_pi === 'comercializado' ? `<div style="margin-bottom:8px;padding:6px 10px;background:#16a34a;color:#fff;border-radius:6px;font-weight:800;display:inline-block;">🛒 PEDIDO COMERCIALIZADO (sin ODP)</div>` : ''}
+            ${p.tipo_pi === 'stock_interno' ? `<div style="margin-bottom:8px;padding:6px 10px;background:#3fd34b;color:#fff;border-radius:6px;font-weight:800;display:inline-block;">🏭 PRODUCCIÓN PARA STOCK</div>` : ''}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
               <div><strong>Cliente:</strong> ${p.cliente_nombre}</div>
               <div><strong>Código:</strong> ${p.cliente_codigo}</div>
@@ -19837,8 +19878,10 @@ function attachAppEvents() {
         if (!f) return;
         state.modalForm = state.modalForm || {};
         state.modalForm[f] = e.target.value;
-        // Re-render solo si es un campo que afecta otros (familia, subtipo, especificacion)
-        if (['familia', 'subtipo', 'especificacion'].includes(f)) {
+        // Re-render solo si es un campo que afecta otros:
+        // - familia/subtipo/especificacion → afectan el código autogenerado
+        // - precio_compra/precio_venta_lista/precio_venta_minimo → afectan el cálculo de margen
+        if (['familia', 'subtipo', 'especificacion', 'precio_compra', 'precio_venta_lista', 'precio_venta_minimo'].includes(f)) {
           render();
         }
       };
@@ -20515,7 +20558,7 @@ function attachAppEvents() {
     if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
   };
   ['ped-odc','ped-fecha','ped-obs'].forEach(id => { const el = $('#' + id); if (el) el.onblur = () => capturarPedido(); });
-  $$('.ped-cant, .ped-stock, .ped-prod').forEach(inp => { inp.onblur = () => { capturarPedido(); render(); }; });
+  $$('.ped-cant, .ped-stock, .ped-prod, .ped-precio').forEach(inp => { inp.onblur = () => { capturarPedido(); render(); }; });
   $$('.ped-origen').forEach(sel => { sel.onchange = () => { capturarPedido(); render(); }; });
 }
 
@@ -20542,6 +20585,8 @@ function capturarPedido() {
   $$('.ped-origen').forEach(sel => { const i = +sel.dataset.idx; if (d.lineas[i]) d.lineas[i].tipo_origen = sel.value; });
   $$('.ped-stock').forEach(inp => { const i = +inp.dataset.idx; if (d.lineas[i]) d.lineas[i].cantidad_stock = inp.value; });
   $$('.ped-prod').forEach(inp => { const i = +inp.dataset.idx; if (d.lineas[i]) d.lineas[i].cantidad_producir = inp.value; });
+  // 🛒 Precio unitario (solo aplica a productos comercializados)
+  $$('.ped-precio').forEach(inp => { const i = +inp.dataset.idx; if (d.lineas[i]) d.lineas[i].precio_unitario = inp.value; });
 }
 
 // ============================================================
@@ -21025,7 +21070,19 @@ window.quitarLineaPedido = (i) => {
 
 window.cambiarTipoPI = (tipo) => {
   state.pedidoData = state.pedidoData || { lineas: [] };
+  const tipoAnterior = state.pedidoData.tipo_pi || 'cliente';
   state.pedidoData.tipo_pi = tipo;
+  
+  // Si cambia el tipo y hay líneas previas: avisar y limpiar (porque los catálogos son distintos)
+  if (tipoAnterior !== tipo && (state.pedidoData.lineas || []).length > 0) {
+    if (!confirm(`Cambiar de tipo de PI vaciará las ${state.pedidoData.lineas.length} línea(s) actuales porque cada tipo usa un catálogo distinto. ¿Continuar?`)) {
+      state.pedidoData.tipo_pi = tipoAnterior; // revertir
+      return;
+    }
+    state.pedidoData.lineas = [];
+    state.busqProd = '';
+  }
+  
   if (tipo === 'stock_interno') {
     state.pedidoData.cliente_codigo = 'STOCK';
     state.pedidoData.cliente_nombre = 'STOCK INTERNO NEWPACK';
@@ -21119,6 +21176,8 @@ window.enviarPedido = async () => {
         precio_unitario: Number(l.precio_unitario) || 0,
         cantidad_stock: Number(l.cantidad_stock) || 0,
         cantidad_producir: Number(l.cantidad_producir) || 0,
+        // 🛒 Flag para distinguir productos comercializados (sin ODP)
+        es_comercializado: l.es_comercializado === true,
         observaciones: l.observaciones || '',
         created_at: serverTimestamp()
       });
@@ -23616,4 +23675,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
