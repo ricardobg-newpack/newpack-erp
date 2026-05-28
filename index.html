@@ -182,6 +182,9 @@ const state = {
   // 🖇️ OFICINA — Papelería, tóners, limpieza, cafetería, varios
   productos_oficina: [],
   movimientos_oficina: [],
+  // 🛒 COMERCIALIZADO — Productos que compramos y revendemos (sin fabricar)
+  productos_comercializados: [],
+  movimientos_comercializados: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -423,6 +426,61 @@ const UM_OFICINA = [
   { codigo: 'mll',   nombre: 'Millar' },
 ];
 window.UM_OFICINA = UM_OFICINA;
+
+// ============================================================
+// 🛒 FAMILIAS DE PRODUCTOS COMERCIALIZADOS (compra-venta)
+// ============================================================
+// Codificación: COM-{FAMILIA}-{SUBTIPO}-{ESPECIFICACIÓN}
+// Estos productos se COMPRAN a proveedores y se REVENDEN a clientes.
+// Stock multi-almacén: típicamente CEDMTY y CEDMEX
+const FAMILIAS_COM = [
+  { codigo: 'STR', nombre: 'Stretch Film',  icono: '🎞️', color: '#0891b2',
+    subtipos: ['MAN', 'MAQ', 'PRE'],
+    subtipos_label: { MAN: 'Manual', MAQ: 'Para máquina', PRE: 'Preestirado' } },
+  { codigo: 'CIN', nombre: 'Cintas',        icono: '🧵', color: '#dc2626',
+    subtipos: ['TRP', 'CAN', 'DUC', 'AVI', 'EMB'],
+    subtipos_label: { TRP: 'Transparente', CAN: 'Canela', DUC: 'Duct Tape', AVI: 'Aviso/Frágil', EMB: 'Embalaje' } },
+  { codigo: 'FLJ', nombre: 'Fleje',         icono: '🔗', color: '#475569',
+    subtipos: ['PLA', 'MET', 'HEB'],
+    subtipos_label: { PLA: 'Plástico', MET: 'Metálico', HEB: 'Hebillas' } },
+  { codigo: 'FOM', nombre: 'Foam',          icono: '🧊', color: '#7c3aed',
+    subtipos: ['LAM', 'ROL', 'PLN'],
+    subtipos_label: { LAM: 'Lámina', ROL: 'Rollo', PLN: 'Plancha' } },
+  { codigo: 'PBR', nombre: 'Poliburbuja',   icono: '🫧', color: '#0ea5e9',
+    subtipos: ['PEQ', 'GDE', 'TRI'],
+    subtipos_label: { PEQ: 'Burbuja pequeña', GDE: 'Burbuja grande', TRI: 'Tricapa' } },
+  { codigo: 'ETQ', nombre: 'Etiquetas',     icono: '🏷️', color: '#f59e0b',
+    subtipos: ['EMB', 'IDF', 'TER', 'COD'],
+    subtipos_label: { EMB: 'Embalaje', IDF: 'Identificación', TER: 'Térmicas', COD: 'Código de barras' } },
+];
+window.FAMILIAS_COM = FAMILIAS_COM;
+
+function getFamiliaCOM(codigo) {
+  return FAMILIAS_COM.find(f => f.codigo === codigo);
+}
+window.getFamiliaCOM = getFamiliaCOM;
+
+function generarCodigoCOM(familia, subtipo, especificacion) {
+  const fam = (familia || '').toUpperCase().trim();
+  const sub = (subtipo || '').toUpperCase().trim().replace(/\s+/g, '');
+  const esp = (especificacion || '').toUpperCase().trim().replace(/\s+/g, '-');
+  if (!fam) return '';
+  let codigo = `COM-${fam}`;
+  if (sub) codigo += `-${sub}`;
+  if (esp) codigo += `-${esp}`;
+  return codigo;
+}
+window.generarCodigoCOM = generarCodigoCOM;
+
+const UM_COM = [
+  { codigo: 'pza',   nombre: 'Pieza' },
+  { codigo: 'm',     nombre: 'Metro' },
+  { codigo: 'rollo', nombre: 'Rollo' },
+  { codigo: 'caja',  nombre: 'Caja' },
+  { codigo: 'paq',   nombre: 'Paquete' },
+  { codigo: 'kg',    nombre: 'Kilogramo' },
+];
+window.UM_COM = UM_COM;
 
 // ============================================================
 // 🏪 ALMACENES FÍSICOS (con permisos por depto)
@@ -1108,6 +1166,15 @@ async function cargarTodo() {
       onSnapshot(collection(db, 'movimientos_oficina'), (snap) => {
         state.movimientos_oficina = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
+      }),
+      // 🛒 COMERCIALIZADO
+      onSnapshot(collection(db, 'productos_comercializados'), (snap) => {
+        state.productos_comercializados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'movimientos_comercializados'), (snap) => {
+        state.movimientos_comercializados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
       })
     );
   } catch (err) {
@@ -1346,6 +1413,10 @@ function renderApp() {
   const esVerEmpaque = esALP || esCEDMTY || esCEDMEX || esCOMP || esCEO || esADMIN;
   // 🖇️ OFICINA: ADMIN, COMP, CEO (responsable de oficina = ADMIN)
   const esVerOficina = esADMIN || esCOMP || esCEO;
+  // 🛒 COMERCIALIZADO: CS, KAM, CEDMTY, CEDMEX, COMP, CEO, ADMIN
+  const esCS = u.depto === 'CS' || esCEO;
+  const esKAM = u.depto === 'KAM' || esCEO;
+  const esVerCOM = esCS || esKAM || esCEDMTY || esCEDMEX || esCOMP || esCEO || esADMIN;
   
   return `
     <div class="app">
@@ -1424,6 +1495,12 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'inventario_oficina' ? 'active' : ''}" data-vista="inventario_oficina">📊 Inventario Oficina</button>
         ` : ''}
         
+        ${esVerCOM ? `
+          <div class="sidebar-section">Comercializado</div>
+          <button class="nav-item ${state.vista === 'productos_com' ? 'active' : ''}" data-vista="productos_com">🛒 Productos Comercializados</button>
+          <button class="nav-item ${state.vista === 'inventario_com' ? 'active' : ''}" data-vista="inventario_com">📊 Inventario Comercializado</button>
+        ` : ''}
+        
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
         ${esPLN || esCEO || u.rol === 'admin' ? `
@@ -1487,6 +1564,8 @@ function tituloVista() {
     inventario_empaque: '📊 Inventario de Empaque',
     productos_oficina: '🖇️ Catálogo Productos de Oficina',
     inventario_oficina: '📊 Inventario de Oficina',
+    productos_com: '🛒 Catálogo Productos Comercializados',
+    inventario_com: '📊 Inventario Comercializado',
     usuarios: '⚙️ Usuarios del Sistema'
   })[state.vista] || '';
 }
@@ -1520,6 +1599,8 @@ function renderVista() {
   if (v === 'inventario_empaque') return renderInventarioEmpaque();
   if (v === 'productos_oficina') return renderProductosOficina();
   if (v === 'inventario_oficina') return renderInventarioOficina();
+  if (v === 'productos_com') return renderProductosCOM();
+  if (v === 'inventario_com') return renderInventarioCOM();
   if (v === 'usuarios') return renderUsuariosSistema();
   return '';
 }
@@ -2199,6 +2280,31 @@ const CONFIG_CATALOGOS = {
     deptos_editar: ['ADMIN', 'CEO'],
     deptos_salida: ['ADMIN', 'CEO'],
   },
+  comercializado: {
+    nombre: 'Comercializado',
+    icono: '🛒',
+    coleccion: 'productos_comercializados',
+    coleccion_mov: 'movimientos_comercializados',
+    state_key: 'productos_comercializados',
+    state_mov_key: 'movimientos_comercializados',
+    familias: FAMILIAS_COM,
+    getFamilia: getFamiliaCOM,
+    generarCodigo: generarCodigoCOM,
+    UM: UM_COM,
+    almacenes: ['CEDMTY', 'CEDMEX'],
+    modal_crear: 'crear-com',
+    modal_editar: 'editar-com',
+    modal_salida: 'salida-com',
+    modal_ajuste: 'ajuste-com',
+    modal_transfer: 'transfer-com',
+    vista_catalogo: 'productos_com',
+    vista_inventario: 'inventario_com',
+    deptos_ver: ['CS', 'KAM', 'CEDMTY', 'CEDMEX', 'COMP', 'CEO', 'ADMIN'],
+    deptos_editar: ['CS', 'COMP', 'CEO', 'ADMIN'],
+    deptos_salida: ['CEDMTY', 'CEDMEX', 'CS', 'CEO', 'ADMIN'],
+    // 💰 Característica especial: tiene precios (compra y venta)
+    con_precios: true,
+  },
 };
 window.CONFIG_CATALOGOS = CONFIG_CATALOGOS;
 
@@ -2340,6 +2446,7 @@ window._getStockEnAlmacen = _getStockEnAlmacen;
 // Wrappers para llamar desde renderVista
 function renderProductosEmpaque() { return renderCatalogoGenerico(CONFIG_CATALOGOS.empaque); }
 function renderProductosOficina() { return renderCatalogoGenerico(CONFIG_CATALOGOS.oficina); }
+function renderProductosCOM() { return renderCatalogoGenerico(CONFIG_CATALOGOS.comercializado); }
 
 // ============================================================
 // 📊 INVENTARIO GENÉRICO (con tabs por almacén)
@@ -2601,6 +2708,7 @@ function _renderTabBajoMinimoGenerico(arr, config) {
 // Wrappers
 function renderInventarioEmpaque() { return renderInventarioGenerico(CONFIG_CATALOGOS.empaque); }
 function renderInventarioOficina() { return renderInventarioGenerico(CONFIG_CATALOGOS.oficina); }
+function renderInventarioCOM() { return renderInventarioGenerico(CONFIG_CATALOGOS.comercializado); }
 
 
 // ============================================================
@@ -2629,10 +2737,16 @@ function modalProductoGenerico(config, esEdicion) {
     proveedor_preferente_id: productoExistente.proveedor_preferente_id || '',
     ubicacion: productoExistente.ubicacion || '',
     notas: productoExistente.notas || '',
+    // Campos específicos para COMERCIALIZADO
+    codigo_proveedor: productoExistente.codigo_proveedor || '',
+    precio_compra: productoExistente.precio_compra ?? '',
+    precio_venta_lista: productoExistente.precio_venta_lista ?? '',
+    precio_venta_minimo: productoExistente.precio_venta_minimo ?? '',
   } : {
     familia: '', subtipo: '', especificacion: '', codigo: '', descripcion: '',
     marca: '', modelo: '', um: 'pza', stock_minimo: '', stock_maximo: '',
     proveedor_preferente_id: '', ubicacion: '', notas: '',
+    codigo_proveedor: '', precio_compra: '', precio_venta_lista: '', precio_venta_minimo: '',
   });
 
   const f = state.modalForm;
@@ -2695,6 +2809,37 @@ function modalProductoGenerico(config, esEdicion) {
             <div class="field"><label class="field-label">Marca</label><input class="input form-prod" data-field="marca" value="${f.marca || ''}" placeholder="Ej: 3M, Tesa, BopP..." /></div>
             <div class="field"><label class="field-label">Modelo / Referencia</label><input class="input form-prod" data-field="modelo" value="${f.modelo || ''}" /></div>
           </div>
+
+          ${config.con_precios ? `
+            <!-- 💰 Código de proveedor + Precios (solo para productos comercializados) -->
+            <div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:10px;padding:14px;margin-bottom:14px;">
+              <div style="font-weight:800;color:#166534;font-size:13px;margin-bottom:10px;">💰 Compra-Venta</div>
+              <div class="field">
+                <label class="field-label">Código del proveedor (SKU)</label>
+                <input class="input form-prod" data-field="codigo_proveedor" value="${f.codigo_proveedor || ''}" placeholder="Ej: 3M-DUCT-50MM" />
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                <div class="field">
+                  <label class="field-label">Precio compra (sin IVA)</label>
+                  <input class="input form-prod" data-field="precio_compra" type="number" step="0.01" min="0" value="${f.precio_compra}" placeholder="0.00" />
+                </div>
+                <div class="field">
+                  <label class="field-label">Precio venta de lista</label>
+                  <input class="input form-prod" data-field="precio_venta_lista" type="number" step="0.01" min="0" value="${f.precio_venta_lista}" placeholder="0.00" />
+                </div>
+                <div class="field">
+                  <label class="field-label">Precio venta mínimo</label>
+                  <input class="input form-prod" data-field="precio_venta_minimo" type="number" step="0.01" min="0" value="${f.precio_venta_minimo}" placeholder="0.00" />
+                </div>
+              </div>
+              ${(Number(f.precio_compra) > 0 && Number(f.precio_venta_lista) > 0) ? `
+                <div style="margin-top:8px;padding:8px 12px;background:#fff;border-radius:6px;font-size:11px;color:#475569;">
+                  📊 Margen lista: <strong style="color:#16a34a;">${(((Number(f.precio_venta_lista) - Number(f.precio_compra)) / Number(f.precio_compra)) * 100).toFixed(1)}%</strong>
+                  ${Number(f.precio_venta_minimo) > 0 ? ` · Margen mínimo: <strong style="color:#f59e0b;">${(((Number(f.precio_venta_minimo) - Number(f.precio_compra)) / Number(f.precio_compra)) * 100).toFixed(1)}%</strong>` : ''}
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
 
           <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px;">
             <div class="field"><label class="field-label">Stock mínimo</label><input class="input form-prod" data-field="stock_minimo" type="number" step="any" min="0" value="${f.stock_minimo}" /></div>
@@ -2966,6 +3111,14 @@ window.guardarProductoCatalogo = async (accion, catKey) => {
     activo: true,
   };
 
+  // Si el catálogo maneja precios (Comercializado), agregar esos campos
+  if (config.con_precios) {
+    data.codigo_proveedor = f.codigo_proveedor?.trim() || '';
+    data.precio_compra = f.precio_compra === '' ? 0 : Number(f.precio_compra);
+    data.precio_venta_lista = f.precio_venta_lista === '' ? 0 : Number(f.precio_venta_lista);
+    data.precio_venta_minimo = f.precio_venta_minimo === '' ? 0 : Number(f.precio_venta_minimo);
+  }
+
   try {
     if (accion === 'editar') {
       const productoExistente = (state[config.state_key] || []).find(p => p.codigo === state.modalData);
@@ -3178,6 +3331,7 @@ function renderFormPedido() {
   if (!datos.tipo_pi) datos.tipo_pi = 'cliente';
   
   const esStockInterno = datos.tipo_pi === 'stock_interno';
+  const esComercializado = datos.tipo_pi === 'comercializado';
   
   // Para PI de stock interno: cliente virtual fijo
   if (esStockInterno) {
@@ -3188,19 +3342,26 @@ function renderFormPedido() {
     }
   }
   
+  // 🛒 Para PI Comercializado: el catálogo de productos es state.productos_comercializados
+  // El cliente es el cliente normal (no virtual)
   const productosCli = esStockInterno 
     ? state.productos_pt 
-    : (datos.cliente_codigo ? window.productosDeCliente(datos.cliente_codigo) : []);
+    : esComercializado
+      ? (state.productos_comercializados || []).filter(p => p.activo !== false)
+      : (datos.cliente_codigo ? window.productosDeCliente(datos.cliente_codigo) : []);
   const busq = (state.busqProd || '').toLowerCase();
   let prodsFiltrados = busq ? productosCli.filter(p => (p.codigo + ' ' + (p.descripcion||'')).toLowerCase().includes(busq)) : productosCli;
   
   return `
     <!-- TOGGLE TIPO DE PI -->
-    <div style="background:#fff;border:2px solid ${esStockInterno ? '#3fd34b' : '#3b82f6'};border-radius:14px;padding:14px;margin-bottom:14px;">
+    <div style="background:#fff;border:2px solid ${esStockInterno ? '#3fd34b' : (esComercializado ? '#16a34a' : '#3b82f6')};border-radius:14px;padding:14px;margin-bottom:14px;">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <span style="font-weight:800;color:#475569;font-size:13px;">📋 TIPO DE PEDIDO INTERNO:</span>
-        <button onclick="cambiarTipoPI('cliente')" style="padding:10px 18px;background:${!esStockInterno?'#3b82f6':'#fff'};color:${!esStockInterno?'#fff':'#475569'};border:2px solid ${!esStockInterno?'#3b82f6':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
-          👥 Cliente Externo
+        <button onclick="cambiarTipoPI('cliente')" style="padding:10px 18px;background:${!esStockInterno && !esComercializado ?'#3b82f6':'#fff'};color:${!esStockInterno && !esComercializado ?'#fff':'#475569'};border:2px solid ${!esStockInterno && !esComercializado ?'#3b82f6':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
+          👥 PT Fabricado
+        </button>
+        <button onclick="cambiarTipoPI('comercializado')" style="padding:10px 18px;background:${esComercializado?'#16a34a':'#fff'};color:${esComercializado?'#fff':'#475569'};border:2px solid ${esComercializado?'#16a34a':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
+          🛒 Comercializado
         </button>
         <button onclick="cambiarTipoPI('stock_interno')" style="padding:10px 18px;background:${esStockInterno?'#3fd34b':'#fff'};color:${esStockInterno?'#fff':'#475569'};border:2px solid ${esStockInterno?'#3fd34b':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
           🏭 Producción para Stock
@@ -3208,7 +3369,9 @@ function renderFormPedido() {
         <span style="font-size:11px;color:#64748b;margin-left:auto;">
           ${esStockInterno 
             ? '🏭 Las tarimas quedarán disponibles en CEDIS para futuras OVs' 
-            : '👥 Pedido normal con cliente final'}
+            : esComercializado
+              ? '🛒 Productos que NewPack revende (compra-venta, NO fabricamos)'
+              : '👥 Pedido normal con cliente final'}
         </span>
       </div>
     </div>
@@ -4577,6 +4740,11 @@ function renderModal() {
   if (m === 'editar-oficina') return modalProductoGenerico(CONFIG_CATALOGOS.oficina, true);
   if (m === 'salida-oficina') return modalSalidaGenerico(CONFIG_CATALOGOS.oficina);
   if (m === 'ajuste-oficina') return modalAjusteGenerico(CONFIG_CATALOGOS.oficina);
+  if (m === 'crear-com') return modalProductoGenerico(CONFIG_CATALOGOS.comercializado, false);
+  if (m === 'editar-com') return modalProductoGenerico(CONFIG_CATALOGOS.comercializado, true);
+  if (m === 'salida-com') return modalSalidaGenerico(CONFIG_CATALOGOS.comercializado);
+  if (m === 'ajuste-com') return modalAjusteGenerico(CONFIG_CATALOGOS.comercializado);
+  if (m === 'transfer-com') return modalTransferenciaGenerico(CONFIG_CATALOGOS.comercializado);
   if (m === 'salida-mtto') return modalSalidaMTTO();
   if (m === 'ajuste-mtto') return modalAjusteMTTO();
   return '';
@@ -8305,6 +8473,12 @@ function modalRC(esEdicion) {
     ? (state.productos_oficina || []).filter(p => p.activo !== false)
     : [];
   
+  // 🛒 Productos COMERCIALIZADOS disponibles (para CS, KAM, CEDMTY, CEDMEX, COMP, CEO, ADMIN)
+  const verCOM = ['CS','KAM','CEDMTY','CEDMEX','COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const productosCOM = verCOM
+    ? (state.productos_comercializados || []).filter(p => p.activo !== false)
+    : [];
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:880px;max-height:90vh;display:flex;flex-direction:column;">
@@ -8394,11 +8568,19 @@ function modalRC(esEdicion) {
                     }).join('')}
                   </optgroup>
                 ` : ''}
+                ${productosCOM.length > 0 ? `
+                  <optgroup label="🛒 Comercializado (revendemos a clientes)">
+                    ${productosCOM.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
+                      const fam = getFamiliaCOM(p.familia);
+                      return `<option value="COM|${p.codigo}" data-desc="${p.descripcion || ''}" data-um="${p.um || 'pza'}" data-tipo="COM" data-cat="COM">${fam?.icono || '🛒'} ${p.codigo} — ${p.descripcion}</option>`;
+                    }).join('')}
+                  </optgroup>
+                ` : ''}
               </select>
               <input class="input" id="rc-cant" type="number" min="0" step="0.01" placeholder="Cantidad" />
               <button onclick="agregarLineaRC()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Agregar</button>
             </div>
-            ${mps.length === 0 && productosMTTO.length === 0 && productosEmpaque.length === 0 && productosOficina.length === 0 ? `
+            ${mps.length === 0 && productosMTTO.length === 0 && productosEmpaque.length === 0 && productosOficina.length === 0 && productosCOM.length === 0 ? `
               <div style="margin-top:8px;font-size:11px;color:#dc2626;font-weight:700;">⚠ No hay productos disponibles para tu departamento. Contacta a Compras o Admin.</div>
             ` : ''}
           </div>
@@ -8505,6 +8687,12 @@ window.agregarLineaRC = () => {
     else if (u.depto === 'CEDMEX') almacen_destino = 'CEDMEX';
     else if (u.depto === 'ALP') almacen_destino = 'ALP';
     else almacen_destino = 'ALP'; // default si lo hace COMP/CEO/ADMIN
+  }
+  else if (tipo_catalogo === 'COM') {
+    // 🛒 Comercializado: depende del CEDIS solicitante
+    if (u.depto === 'CEDMTY') almacen_destino = 'CEDMTY';
+    else if (u.depto === 'CEDMEX') almacen_destino = 'CEDMEX';
+    else almacen_destino = 'CEDMTY'; // default si lo hace CS/KAM/COMP/CEO/ADMIN
   }
   
   // Buscar duplicados considerando tipo_catalogo + código
@@ -9783,12 +9971,14 @@ window.confirmarRecepcionOC = async (ocId) => {
   const lineasMTTOrec = lineasARecibir.filter(l => l.tipo_catalogo === 'MTTO');
   const lineasEMP = lineasARecibir.filter(l => l.tipo_catalogo === 'EMP');
   const lineasOFI = lineasARecibir.filter(l => l.tipo_catalogo === 'OFI');
+  const lineasCOM = lineasARecibir.filter(l => l.tipo_catalogo === 'COM');
   
   let mensajeRecepcion = `Insumos a recibir: ${lineasARecibir.length}\n\n`;
   if (lineasMP.length > 0) mensajeRecepcion += `• ${lineasMP.length} lote(s) entrarán al Almacén MP (con lote y certificado)\n`;
   if (lineasMTTOrec.length > 0) mensajeRecepcion += `• ${lineasMTTOrec.length} producto(s) entrarán al Inventario MTTO\n`;
   if (lineasEMP.length > 0) mensajeRecepcion += `• ${lineasEMP.length} producto(s) entrarán al almacén de Empaque (${(oc.depto_destino || 'ALP')})\n`;
-  if (lineasOFI.length > 0) mensajeRecepcion += `• ${lineasOFI.length} producto(s) entrarán al Almacén de Oficina`;
+  if (lineasOFI.length > 0) mensajeRecepcion += `• ${lineasOFI.length} producto(s) entrarán al Almacén de Oficina\n`;
+  if (lineasCOM.length > 0) mensajeRecepcion += `• 🛒 ${lineasCOM.length} producto(s) Comercializados entrarán al CEDIS asignado`;
   
   if (!confirm(
     `¿Confirmar recepción?\n\n` +
@@ -9806,6 +9996,7 @@ window.confirmarRecepcionOC = async (ocId) => {
     const ajustesStockMTTO = []; // [{id, nuevoStock, codigo}]
     const ajustesStockEMP = []; // [{id, stock_por_almacen, stock_total, costoProm}]
     const ajustesStockOFI = []; // igual estructura
+    const ajustesStockCOM = []; // igual estructura (productos comercializados)
     
     // 1. Crear lotes / movimientos según tipo de catálogo (MP o MTTO o EMP o OFI)
     for (const l of lineasARecibir) {
@@ -9814,12 +10005,13 @@ window.confirmarRecepcionOC = async (ocId) => {
       const esMTTO = (l.tipo_catalogo || 'MP') === 'MTTO';
       const esEMP = l.tipo_catalogo === 'EMP';
       const esOFI = l.tipo_catalogo === 'OFI';
+      const esCOM = l.tipo_catalogo === 'COM';
       
       // ════════════════════════════════════════════════════════
-      // 📦 LÍNEA DE EMPAQUE u 🖇️ OFICINA
+      // 📦 LÍNEA DE EMPAQUE u 🖇️ OFICINA o 🛒 COMERCIALIZADO
       // ════════════════════════════════════════════════════════
-      if (esEMP || esOFI) {
-        const catKey = esEMP ? 'empaque' : 'oficina';
+      if (esEMP || esOFI || esCOM) {
+        const catKey = esEMP ? 'empaque' : (esOFI ? 'oficina' : 'comercializado');
         const config = CONFIG_CATALOGOS[catKey];
         const codigoProd = l.producto_codigo || l.mp_codigo;
         const producto = (state[config.state_key] || []).find(p => p.codigo === codigoProd);
@@ -9828,10 +10020,16 @@ window.confirmarRecepcionOC = async (ocId) => {
           continue;
         }
         // Determinar almacén destino:
-        // - EMP: usa l.almacen_destino si existe, si no usa oc.depto_destino (ALP/CEDMTY/CEDMEX), default ALP
+        // - EMP: usa l.almacen_destino, si no oc.depto_destino, default ALP
         // - OFI: siempre OFI
+        // - COM: usa l.almacen_destino (CEDMTY o CEDMEX), default CEDMTY
         let almacenDestino = 'ALP';
         if (esOFI) almacenDestino = 'OFI';
+        else if (esCOM) {
+          if (l.almacen_destino && ['CEDMTY','CEDMEX'].includes(l.almacen_destino)) almacenDestino = l.almacen_destino;
+          else if (oc.depto_destino && ['CEDMTY','CEDMEX'].includes(oc.depto_destino)) almacenDestino = oc.depto_destino;
+          else almacenDestino = 'CEDMTY';
+        }
         else if (l.almacen_destino) almacenDestino = l.almacen_destino;
         else if (oc.depto_destino && ['ALP','CEDMTY','CEDMEX'].includes(oc.depto_destino)) almacenDestino = oc.depto_destino;
         
@@ -9878,7 +10076,7 @@ window.confirmarRecepcionOC = async (ocId) => {
         const movRef = doc(collection(db, config.coleccion_mov));
         batch.set(movRef, movData);
         
-        const arr = esEMP ? ajustesStockEMP : ajustesStockOFI;
+        const arr = esEMP ? ajustesStockEMP : (esOFI ? ajustesStockOFI : ajustesStockCOM);
         arr.push({
           id: producto.id,
           coleccion: config.coleccion,
@@ -10049,8 +10247,8 @@ window.confirmarRecepcionOC = async (ocId) => {
       });
     }
     
-    // 1.6 — Actualizar stock_por_almacen de productos EMPAQUE y OFICINA
-    for (const aj of [...ajustesStockEMP, ...ajustesStockOFI]) {
+    // 1.6 — Actualizar stock_por_almacen de productos EMPAQUE, OFICINA y COMERCIALIZADO
+    for (const aj of [...ajustesStockEMP, ...ajustesStockOFI, ...ajustesStockCOM]) {
       const prodRef = doc(db, aj.coleccion, aj.id);
       batch.update(prodRef, {
         stock_por_almacen: aj.stock_por_almacen,
@@ -19614,6 +19812,7 @@ function attachAppEvents() {
   // Handler unificado para todos los inputs/selects con clase form-prod
   document.querySelectorAll('.form-prod').forEach(el => {
     if (el.tagName === 'SELECT' || el.type === 'checkbox') {
+      // Selects y checkboxes SÍ disparan render (afectan el dropdown de otras secciones)
       el.onchange = (e) => {
         const f = e.target.dataset.field;
         if (!f) return;
@@ -19622,15 +19821,26 @@ function attachAppEvents() {
         render();
       };
     } else {
+      // Inputs de texto: NO renderizar en cada keystroke (rompe el foco)
+      // Solo actualizar state silenciosamente. El render se dispara cuando
+      // el usuario hace blur (sale del campo) o presiona Enter.
       el.oninput = (e) => {
         const f = e.target.dataset.field;
         if (!f) return;
         state.modalForm = state.modalForm || {};
-        const pos = e.target.selectionStart;
         state.modalForm[f] = e.target.value;
-        render();
-        const inp = document.querySelector(`.form-prod[data-field="${f}"]`);
-        if (inp && inp.setSelectionRange) { inp.focus(); try { inp.setSelectionRange(pos, pos); } catch {} }
+        // NO llamar render() aquí
+      };
+      // Al salir del campo: SÍ renderizar (para actualizar código autogenerado, etc.)
+      el.onblur = (e) => {
+        const f = e.target.dataset.field;
+        if (!f) return;
+        state.modalForm = state.modalForm || {};
+        state.modalForm[f] = e.target.value;
+        // Re-render solo si es un campo que afecta otros (familia, subtipo, especificacion)
+        if (['familia', 'subtipo', 'especificacion'].includes(f)) {
+          render();
+        }
       };
     }
   });
@@ -20340,7 +20550,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina','crear-com','editar-com','salida-com','ajuste-com','transfer-com'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
@@ -20452,19 +20662,41 @@ window.agregarLineaPedido = (codigo) => {
   capturarPedido();
   const d = state.pedidoData;
   if (d.lineas.some(l => l.producto_codigo === codigo)) return;
-  const p = window.getProductoPT(codigo);
-  if (!p) return;
-  d.lineas.push({
-    producto_codigo: p.codigo,
-    descripcion: p.descripcion,
-    um: (p.um || 'kg').toLowerCase(),
-    cantidad_solicitada: '',
-    tipo_origen: 'stock',
-    cantidad_stock: 0,
-    cantidad_producir: 0,
-    precio_unitario: 0,
-    observaciones: ''
-  });
+  // Detectar si es comercializado por el tipo_pi actual
+  const esComercializado = d.tipo_pi === 'comercializado';
+  
+  let p;
+  if (esComercializado) {
+    p = (state.productos_comercializados || []).find(x => x.codigo === codigo);
+    if (!p) return;
+    d.lineas.push({
+      producto_codigo: p.codigo,
+      descripcion: p.descripcion,
+      um: (p.um || 'pza').toLowerCase(),
+      cantidad_solicitada: '',
+      tipo_origen: 'stock', // siempre stock (no se fabrica)
+      cantidad_stock: 0,
+      cantidad_producir: 0, // siempre 0 para comercializado
+      precio_unitario: Number(p.precio_venta_lista) || 0,
+      observaciones: '',
+      es_comercializado: true, // flag clave para diferenciar en aprobación
+    });
+  } else {
+    p = window.getProductoPT(codigo);
+    if (!p) return;
+    d.lineas.push({
+      producto_codigo: p.codigo,
+      descripcion: p.descripcion,
+      um: (p.um || 'kg').toLowerCase(),
+      cantidad_solicitada: '',
+      tipo_origen: 'stock',
+      cantidad_stock: 0,
+      cantidad_producir: 0,
+      precio_unitario: 0,
+      observaciones: '',
+      es_comercializado: false,
+    });
+  }
   render();
 };
 
@@ -20919,10 +21151,13 @@ window.enviarPedido = async () => {
 window.aprobarPedido = async (pedidoId, folio) => {
   const pedidoCheck = state.pedidos.find(p => p.id === pedidoId);
   const esStockInterno = pedidoCheck?.tipo_pi === 'stock_interno';
+  const esComercializadoPI = pedidoCheck?.tipo_pi === 'comercializado';
   
   const mensaje = esStockInterno 
     ? '¿Aprobar PI de PRODUCCIÓN PARA STOCK ' + folio + '?\n\nSe generarán solo ODPs (NO se generan OVs).\nLas tarimas quedarán en stock disponible para futuros clientes.'
-    : '¿Aprobar pedido ' + folio + '?\n\nSe generarán automáticamente las OVs y ODPs.';
+    : esComercializadoPI
+      ? '¿Aprobar PI COMERCIALIZADO ' + folio + '?\n\nSe generarán solo OVs hacia el CEDIS asignado (NO se genera ODP porque no fabricamos estos productos).\nCEDIS revisará stock y, si falta, generará RC al proveedor.'
+      : '¿Aprobar pedido ' + folio + '?\n\nSe generarán automáticamente las OVs y ODPs.';
   
   if (!confirm(mensaje)) return;
   
@@ -20938,10 +21173,18 @@ window.aprobarPedido = async (pedidoId, folio) => {
     
     // Generar folios
     for (const l of lineas) {
-      const cantStock = (!esStockInterno && l.tipo_origen === 'stock') ? Number(l.cantidad_solicitada) : (!esStockInterno ? (Number(l.cantidad_stock) || 0) : 0);
-      const cantProd = esStockInterno 
+      // 🛒 Si la línea es comercializada O el PI completo es comercializado: solo OV, sin ODP
+      const esLineaCOM = l.es_comercializado === true || esComercializadoPI;
+      
+      // Para comercializado: toda la cantidad va a OV directa (no a producir)
+      const cantStock = esLineaCOM 
         ? Number(l.cantidad_solicitada)
-        : (l.tipo_origen === 'producir' ? Number(l.cantidad_solicitada) : (Number(l.cantidad_producir) || 0));
+        : ((!esStockInterno && l.tipo_origen === 'stock') ? Number(l.cantidad_solicitada) : (!esStockInterno ? (Number(l.cantidad_stock) || 0) : 0));
+      const cantProd = esLineaCOM
+        ? 0  // ⚠️ NUNCA producir productos comercializados
+        : (esStockInterno 
+          ? Number(l.cantidad_solicitada)
+          : (l.tipo_origen === 'producir' ? Number(l.cantidad_solicitada) : (Number(l.cantidad_producir) || 0)));
       
       // ===== OV de stock (solo si NO es stock interno) =====
       if (cantStock > 0 && !esStockInterno) {
@@ -20956,7 +21199,10 @@ window.aprobarPedido = async (pedidoId, folio) => {
           cantidad_enviada: 0,
           cantidad: cantStock,
           um: l.um,
-          tipo_origen: 'stock',
+          tipo_origen: esLineaCOM ? 'comercializado' : 'stock',
+          // 🛒 Flag clave para que CEDIS sepa que NO viene de producción
+          es_comercializado: esLineaCOM,
+          precio_unitario: Number(l.precio_unitario) || 0,
           estatus: 'pendiente_asignar',
           tarimas_ids: [],
           fecha_entrega_solicitada: pedido.fecha_requerida || null,
