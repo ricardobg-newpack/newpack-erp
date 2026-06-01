@@ -487,12 +487,14 @@ window.UM_COM = UM_COM;
 // ============================================================
 // Cada almacén tiene un código único + depto responsable + lista de catálogos válidos
 const ALMACENES_FISICOS = [
-  { codigo: 'MP',     nombre: 'Almacén de MP',          icono: '🧪', color: '#0ea5e9', depto: 'ALP',     catalogos: ['MP'] },
-  { codigo: 'ALP',    nombre: 'Almacén de Planta',      icono: '📦', color: '#f59e0b', depto: 'ALP',     catalogos: ['EMP'] },
-  { codigo: 'CEDMTY', nombre: 'CEDIS Monterrey',        icono: '🏭', color: '#16a34a', depto: 'CEDMTY',  catalogos: ['EMP'] },
-  { codigo: 'CEDMEX', nombre: 'CEDIS México',           icono: '🏙️', color: '#7c3aed', depto: 'CEDMEX',  catalogos: ['EMP'] },
-  { codigo: 'MTTO',   nombre: 'Almacén Mantenimiento',  icono: '🔧', color: '#dc2626', depto: 'MTTO',    catalogos: ['MTTO'] },
-  { codigo: 'OFI',    nombre: 'Almacén de Oficina',     icono: '🖇️', color: '#64748b', depto: 'ADMIN',   catalogos: ['OFI'] },
+  { codigo: 'MP',         nombre: 'Almacén de MP',          icono: '🧪', color: '#0ea5e9', depto: 'ALP',     catalogos: ['MP'] },
+  { codigo: 'ALP',        nombre: 'Almacén de Planta',      icono: '📦', color: '#f59e0b', depto: 'ALP',     catalogos: ['EMP'] },
+  { codigo: 'CEDMTY',     nombre: 'CEDIS Monterrey',        icono: '🏭', color: '#16a34a', depto: 'CEDMTY',  catalogos: ['EMP','COM'] },
+  { codigo: 'CEDMEX',     nombre: 'CEDIS México',           icono: '🏙️', color: '#7c3aed', depto: 'CEDMEX',  catalogos: ['EMP','COM'] },
+  { codigo: 'MTTO',       nombre: 'Almacén Mantenimiento',  icono: '🔧', color: '#dc2626', depto: 'MTTO',    catalogos: ['MTTO'] },
+  { codigo: 'OFI-ALP',    nombre: 'Oficinas Planta',        icono: '🖇️', color: '#64748b', depto: 'ALP',     catalogos: ['OFI'] },
+  { codigo: 'OFI-CEDMTY', nombre: 'Oficinas CEDIS MTY',     icono: '🖇️', color: '#16a34a', depto: 'CEDMTY',  catalogos: ['OFI'] },
+  { codigo: 'OFI-CEDMEX', nombre: 'Oficinas CEDIS MEX',     icono: '🖇️', color: '#7c3aed', depto: 'CEDMEX',  catalogos: ['OFI'] },
 ];
 window.ALMACENES_FISICOS = ALMACENES_FISICOS;
 
@@ -1413,8 +1415,9 @@ function renderApp() {
   const esVerMTTO = esMTTO || esCOMP || esCEO; // Quien puede VER catálogo MTTO
   // 📦 EMPAQUE: ALP, CEDMTY, CEDMEX, COMP, CEO, ADMIN
   const esVerEmpaque = esALP || esCEDMTY || esCEDMEX || esCOMP || esCEO || esADMIN;
-  // 🖇️ OFICINA: ADMIN, COMP, CEO (responsable de oficina = ADMIN)
-  const esVerOficina = esADMIN || esCOMP || esCEO;
+  // 🖇️ OFICINA: ahora todos los deptos que tienen oficinas físicas pueden VER catálogo e inventario
+  // (su sub-almacén respectivo). Solo COMP/CEO/ADMIN crean productos.
+  const esVerOficina = esALP || esCEDMTY || esCEDMEX || esADMIN || esCOMP || esCEO || esCS || esKAM || esPLN || esPRO || esCAL || esMTTO;
   // 🛒 COMERCIALIZADO: CS, KAM, CEDMTY, CEDMEX, COMP, CEO, ADMIN
   // (esCS ya está declarado arriba e incluye CS+KAM, pero declaro esKAM por separado para claridad)
   const esKAM = u.depto === 'KAM' || esCEO;
@@ -2278,7 +2281,7 @@ const CONFIG_CATALOGOS = {
     getFamilia: getFamiliaOficina,
     generarCodigo: generarCodigoOficina,
     UM: UM_OFICINA,
-    almacenes: ['OFI'],
+    almacenes: ['OFI-ALP', 'OFI-CEDMTY', 'OFI-CEDMEX'],
     modal_crear: 'crear-oficina',
     modal_editar: 'editar-oficina',
     modal_salida: 'salida-oficina',
@@ -2286,9 +2289,12 @@ const CONFIG_CATALOGOS = {
     modal_transfer: 'transfer-oficina',
     vista_catalogo: 'productos_oficina',
     vista_inventario: 'inventario_oficina',
-    deptos_ver: ['ADMIN', 'COMP', 'CEO'],
-    deptos_editar: ['ADMIN', 'CEO'],
-    deptos_salida: ['ADMIN', 'CEO'],
+    // Ahora todos los deptos que tienen oficinas pueden VER el catálogo
+    deptos_ver: ['ALP', 'CEDMTY', 'CEDMEX', 'ADMIN', 'COMP', 'CEO', 'CS', 'KAM', 'PLN', 'PRO', 'CAL', 'MTTO'],
+    // Solo COMP/CEO/ADMIN pueden crear/editar productos en el catálogo
+    deptos_editar: ['ADMIN', 'COMP', 'CEO'],
+    // Pero cualquier oficina puede consumir de su almacén
+    deptos_salida: ['ALP', 'CEDMTY', 'CEDMEX', 'ADMIN', 'COMP', 'CEO'],
   },
   comercializado: {
     nombre: 'Comercializado',
@@ -7060,6 +7066,35 @@ const UBICACIONES = [
 ];
 window.UBICACIONES = UBICACIONES;
 
+// Mapeo ubicación física de usuario → código de almacén OFI
+// Si el usuario es de PLANTA-MTY, su oficina recibe en OFI-ALP
+// Si es de CEDIS-MTY, en OFI-CEDMTY; CEDIS-MEX → OFI-CEDMEX
+function getAlmacenOfiUsuario(user) {
+  if (!user) return 'OFI-ALP';
+  // Primero ver ubicacion del usuario (campo nuevo)
+  const ub = user.ubicacion || user.ubicacion_fisica || '';
+  if (ub === 'CEDIS-MTY' || ub === 'CEDMTY') return 'OFI-CEDMTY';
+  if (ub === 'CEDIS-MEX' || ub === 'CEDMEX') return 'OFI-CEDMEX';
+  if (ub === 'PLANTA-MTY' || ub === 'ALP') return 'OFI-ALP';
+  // Fallback por depto
+  const d = user.depto || '';
+  if (d === 'CEDMTY') return 'OFI-CEDMTY';
+  if (d === 'CEDMEX') return 'OFI-CEDMEX';
+  return 'OFI-ALP'; // Por default planta (cubre PLN/PRO/CAL/MTTO/ALP/COMP/CS/KAM/CEO/ADMIN/CYC/FAC)
+}
+window.getAlmacenOfiUsuario = getAlmacenOfiUsuario;
+
+// Mapeo almacén OFI → nombre legible y ubicación humana
+function getInfoAlmacenOfi(codigo) {
+  const map = {
+    'OFI-ALP':    { nombre: 'Oficinas Planta',       icono: '🏭', ubicacion: 'PLANTA-MTY' },
+    'OFI-CEDMTY': { nombre: 'Oficinas CEDIS MTY',    icono: '📦', ubicacion: 'CEDIS-MTY' },
+    'OFI-CEDMEX': { nombre: 'Oficinas CEDIS MEX',    icono: '📦', ubicacion: 'CEDIS-MEX' },
+  };
+  return map[codigo] || null;
+}
+window.getInfoAlmacenOfi = getInfoAlmacenOfi;
+
 function renderUsuariosSistema() {
   const u = state.user || {};
   const esAdmin = u.rol === 'admin' || u.depto === 'CEO' || u.depto === 'ADMIN';
@@ -8729,7 +8764,11 @@ window.agregarLineaRC = () => {
   let almacen_destino = '';
   if (tipo_catalogo === 'MP') almacen_destino = 'MP';
   else if (tipo_catalogo === 'MTTO') almacen_destino = 'MTTO';
-  else if (tipo_catalogo === 'OFI') almacen_destino = 'OFI';
+  else if (tipo_catalogo === 'OFI') {
+    // 🖇️ Oficina: depende de la ubicación física del usuario solicitante
+    // PLANTA-MTY → OFI-ALP; CEDIS-MTY → OFI-CEDMTY; CEDIS-MEX → OFI-CEDMEX
+    almacen_destino = getAlmacenOfiUsuario(u);
+  }
   else if (tipo_catalogo === 'EMP') {
     // Empaque: depende del depto solicitante
     if (u.depto === 'CEDMTY') almacen_destino = 'CEDMTY';
@@ -10111,10 +10150,15 @@ window.confirmarRecepcionOC = async (ocId) => {
         }
         // Determinar almacén destino:
         // - EMP: usa l.almacen_destino, si no oc.depto_destino, default ALP
-        // - OFI: siempre OFI
+        // - OFI: usa l.almacen_destino (OFI-ALP / OFI-CEDMTY / OFI-CEDMEX); legacy 'OFI' → OFI-ALP
         // - COM: usa l.almacen_destino (CEDMTY o CEDMEX), default CEDMTY
         let almacenDestino = 'ALP';
-        if (esOFI) almacenDestino = 'OFI';
+        if (esOFI) {
+          if (l.almacen_destino && l.almacen_destino.startsWith('OFI-')) almacenDestino = l.almacen_destino;
+          else if (l.almacen_destino === 'OFI') almacenDestino = 'OFI-ALP'; // legacy
+          else if (oc.almacen_destino && oc.almacen_destino.startsWith('OFI-')) almacenDestino = oc.almacen_destino;
+          else almacenDestino = 'OFI-ALP'; // fallback default
+        }
         else if (esCOM) {
           if (l.almacen_destino && ['CEDMTY','CEDMEX'].includes(l.almacen_destino)) almacenDestino = l.almacen_destino;
           else if (oc.depto_destino && ['CEDMTY','CEDMEX'].includes(oc.depto_destino)) almacenDestino = oc.depto_destino;
@@ -12221,8 +12265,10 @@ function _tiposOCParaDepto(depto, rol) {
   if (rol === 'admin' || depto === 'CEO' || depto === 'ADMIN' || depto === 'COMP') {
     return ['MP', 'MTTO', 'EMP', 'OFI', 'COM', 'MIXTA']; // todo
   }
-  if (depto === 'ALP') return ['MP', 'MTTO', 'MIXTA'];
-  if (depto === 'CEDMTY' || depto === 'CEDMEX') return ['EMP', 'COM'];
+  // ALP recibe MP, MTTO, EMP-ALP y OFI-ALP
+  if (depto === 'ALP') return ['MP', 'MTTO', 'EMP', 'OFI', 'MIXTA'];
+  // CEDIS reciben EMP, COM y OFI de su almacén
+  if (depto === 'CEDMTY' || depto === 'CEDMEX') return ['EMP', 'COM', 'OFI'];
   // Otros deptos no reciben OCs físicamente
   return [];
 }
@@ -12239,14 +12285,33 @@ function renderRecepcionesMP() {
   const ocsFiltradas = todasOCs.filter(oc => {
     const tipo = _tipoOC(oc);
     if (!tiposPermitidos.includes(tipo)) return false;
-    // Para EMP/COM: el CEDIS solo ve las suyas
-    if ((tipo === 'EMP' || tipo === 'COM') && !esALL) {
-      const alm = _almacenOC(oc);
-      if (u.depto === 'CEDMTY' && alm !== 'CEDMTY') return false;
-      if (u.depto === 'CEDMEX' && alm !== 'CEDMEX') return false;
-      // ALP no debe ver EMP/COM (a menos que sea EMP destino ALP)
-      if (u.depto === 'ALP' && tipo === 'EMP' && alm === 'ALP') return true;
-      if (u.depto === 'ALP') return false;
+    if (esALL) return true; // supervisor ve todo
+    
+    const alm = _almacenOC(oc);
+    
+    // 📦 Para EMP: cada depto solo ve las de su almacén destino
+    if (tipo === 'EMP') {
+      if (u.depto === 'ALP') return alm === 'ALP' || !alm; // ALP recibe EMP→ALP (o sin almacén legacy)
+      if (u.depto === 'CEDMTY') return alm === 'CEDMTY';
+      if (u.depto === 'CEDMEX') return alm === 'CEDMEX';
+      return false;
+    }
+    // 🛒 Para COM: solo CEDIS (cada uno el suyo)
+    if (tipo === 'COM') {
+      if (u.depto === 'CEDMTY') return alm === 'CEDMTY';
+      if (u.depto === 'CEDMEX') return alm === 'CEDMEX';
+      return false; // ALP no recibe COM
+    }
+    // 🖇️ Para OFI: filtrar por sub-almacén según ubicación física del depto
+    if (tipo === 'OFI') {
+      if (u.depto === 'ALP') return alm === 'OFI-ALP' || alm === 'OFI' || !alm; // ALP recibe oficinas planta (+ legacy)
+      if (u.depto === 'CEDMTY') return alm === 'OFI-CEDMTY';
+      if (u.depto === 'CEDMEX') return alm === 'OFI-CEDMEX';
+      return false;
+    }
+    // MP y MTTO siempre van a ALP
+    if (tipo === 'MP' || tipo === 'MTTO') {
+      return u.depto === 'ALP';
     }
     return true;
   });
