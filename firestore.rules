@@ -2,7 +2,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Helpers
+    // ────────────────────────────────────────────────────────────
+    // HELPERS
+    // ────────────────────────────────────────────────────────────
     function isAuth() { return request.auth != null; }
     function userProfile() { return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data; }
     function isAdmin() { return isAuth() && userProfile().rol == 'admin'; }
@@ -10,8 +12,9 @@ service cloud.firestore {
     function isCEO() { return userDept() == 'CEO'; }
     function isAdminOrCEO() { return isAuth() && (userProfile().rol == 'admin' || userProfile().depto == 'CEO' || userProfile().depto == 'ADMIN'); }
     
-    // Usuarios: lectura para todos los autenticados (necesario para listar en panel admin)
-    // Escritura: admin/CEO/ADMIN pueden gestionar a cualquiera; cada quien puede editar su propio perfil básico
+    // ────────────────────────────────────────────────────────────
+    // USUARIOS
+    // ────────────────────────────────────────────────────────────
     match /usuarios/{uid} {
       allow read: if isAuth();
       allow create: if isAuth() && isAdminOrCEO();
@@ -19,20 +22,22 @@ service cloud.firestore {
       allow delete: if isAuth() && isAdminOrCEO();
     }
     
-    // Catálogos: cualquier usuario autenticado lee; solo admin/CS escribe
+    // ────────────────────────────────────────────────────────────
+    // CATÁLOGOS GENERALES
+    // ────────────────────────────────────────────────────────────
     match /clientes/{id} {
       allow read: if isAuth();
-      allow write: if isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN'];
+      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN'];
     }
     
     match /productos_pt/{id} {
       allow read: if isAuth();
-      allow write: if isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN'];
+      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN'];
     }
     
     match /cliente_productos/{id} {
       allow read: if isAuth();
-      allow write: if isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN'];
+      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN'];
     }
     
     match /almacenes/{id} {
@@ -40,30 +45,33 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
     
-    // Pedidos: lectura abierta a todos los autenticados; creación CS/CEO/COMP/ADMIN
+    // ────────────────────────────────────────────────────────────
+    // PEDIDOS Y ÓRDENES DE VENTA
+    // ────────────────────────────────────────────────────────────
     match /pedidos/{id} {
       allow read: if isAuth();
-      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN','PLN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','PLN']);
       allow delete: if isAdmin();
     }
     
     match /pedido_lineas/{id} {
       allow read: if isAuth();
-      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','CEO','COMP','ADMIN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN']);
       allow delete: if isAdmin();
     }
     
-    // Órdenes de venta: lectura abierta; CS/KAM asignan, CEDIS prepara, CS genera remisión, CEDIS confirma carga
     match /ordenes_venta/{id} {
       allow read: if isAuth();
-      allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN','CS','KAM']);
       allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','ALP','CEDMTY','CEDMEX','CEO','ADMIN']);
       allow delete: if isAdmin();
     }
     
-    // Órdenes de producción: PLN/PRO/CEO/ADMIN gestionan
+    // ────────────────────────────────────────────────────────────
+    // PRODUCCIÓN
+    // ────────────────────────────────────────────────────────────
     match /ordenes_produccion/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
@@ -71,14 +79,12 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // Capturas de producción: PRO/CEO/ADMIN crean; todos leen
     match /capturas_produccion/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CEO','ADMIN']);
       allow update, delete: if isAdmin();
     }
     
-    // Lotes de producción: PRO/CEO/ADMIN crean; ALP/CEDMTY/CEDMEX actualizan (cantidad disponible)
     match /lotes/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CAL','CEO','ADMIN']);
@@ -86,7 +92,6 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // Tarimas (con QR): generadas al liberar calidad
     match /tarimas/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CAL','CEO','ADMIN']);
@@ -94,7 +99,6 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // Packing Lists: generados al liberar calidad
     match /packing_lists/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CAL','CEO','ADMIN']);
@@ -102,7 +106,6 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // OTI (Órdenes de Transferencia Interna): ALP crea, CEDMTY/CEDMEX recibe
     match /oti/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEO','ADMIN']);
@@ -110,7 +113,9 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // Comentarios en pedidos: cualquier autenticado puede leer y crear; solo admin elimina
+    // ────────────────────────────────────────────────────────────
+    // COMUNICACIÓN
+    // ────────────────────────────────────────────────────────────
     match /comentarios_pedidos/{id} {
       allow read: if isAuth();
       allow create: if isAuth();
@@ -118,42 +123,58 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // Notificaciones: lectura para todos; cualquier usuario autenticado puede crear
     match /notificaciones/{id} {
       allow read: if isAuth();
       allow create: if isAuth();
       allow update, delete: if isAdmin();
     }
     
-    // Máquinas de producción: lectura abierta; PLN/CEO/ADMIN escriben
+    // ────────────────────────────────────────────────────────────
+    // MÁQUINAS Y PERSONAL
+    // ────────────────────────────────────────────────────────────
     match /maquinas/{id} {
       allow read: if isAuth();
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['PLN','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['PLN','CEO','ADMIN']);
     }
     
-    // Operadores: lectura abierta; PLN/PRO/CEO/ADMIN escriben
     match /operadores/{id} {
       allow read: if isAuth();
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['PLN','PRO','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['PLN','PRO','CEO','ADMIN']);
     }
     
-    // Supervisores: lectura abierta; PLN/PRO/CEO/ADMIN escriben
     match /supervisores/{id} {
       allow read: if isAuth();
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['PLN','PRO','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['PLN','PRO','CEO','ADMIN']);
     }
     
-    // Materias Primas: lectura abierta; COMP/ADMIN/CEO escriben
+    // ────────────────────────────────────────────────────────────
+    // MATERIAS PRIMAS
+    // ────────────────────────────────────────────────────────────
     match /materias_primas/{id} {
       allow read: if isAuth();
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','ADMIN','CEO']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','ADMIN','CEO']);
     }
     
-    // Requisiciones de compra: cualquier autenticado crea/lee; solo COMP/CEO aprueban
+    match /movimientos_mp/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    match /lotes_mp/{id} {
+      allow read: if isAuth();
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ALP','COMP','CEO','PRO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    // ────────────────────────────────────────────────────────────
+    // COMPRAS (RC, OC, PROVEEDORES)
+    // ────────────────────────────────────────────────────────────
+    // Requisiciones de compra: cualquier depto operativo crea, COMP/CEO aprueban
     match /requisiciones_compras/{id} {
       allow read: if isAuth();
       allow create: if isAuth();
@@ -161,100 +182,106 @@ service cloud.firestore {
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
     
-    // Órdenes de compra: COMP/CEO escriben, todos leen
+    // Órdenes de compra: COMP/CEO/ADMIN crean.
+    // 🆕 Los ALMACENES (ALP, CEDMTY, CEDMEX) ahora pueden ACTUALIZAR estatus al recibir físicamente.
     match /ordenes_compra/{id} {
       allow read: if isAuth();
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','ALP','CEDMTY','CEDMEX']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
     
-    // Lotes de MP: ALP/COMP/CEO crean al recibir, todos leen
-    match /lotes_mp/{id} {
-      allow read: if isAuth();
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ALP','COMP','CEO','PRO','ADMIN']);
-      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
-    }
-    
-    // Proveedores: COMP/CEO/ADMIN escriben, todos leen
+    // Proveedores: solo COMP/CEO/ADMIN
     match /proveedores/{id} {
       allow read: if isAuth();
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
     
-    // Historial de estandarización: PLN/CEO/ADMIN crean, todos leen
+    // ────────────────────────────────────────────────────────────
+    // ESTANDARIZACIÓN
+    // ────────────────────────────────────────────────────────────
     match /estandarizacion_historial/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['PLN','CEO','ADMIN']);
       allow update, delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
     
-    // Movimientos de MP (kardex): cualquier proceso autorizado escribe
-    match /movimientos_mp/{id} {
-      allow read: if isAuth();
-      allow create: if isAuth();
-      allow update, delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
-    }
-    
-    // 🔧 MTTO — Catálogo de productos de mantenimiento
-    // Lectura: MTTO, COMP, CEO, ADMIN (Compras los necesita ver para RCs/OCs)
-    // Escritura: MTTO, CEO, ADMIN
+    // ────────────────────────────────────────────────────────────
+    // 🔧 MTTO
+    // ────────────────────────────────────────────────────────────
     match /productos_mtto/{id} {
-      allow read: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN']);
+      allow read: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP']);
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['MTTO','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
     
-    // 🔧 MTTO — Movimientos de inventario (entradas/salidas) — Fase 2
-    // Lectura: MTTO, COMP, CEO, ADMIN
-    // Escritura: MTTO crea salidas (consumos), COMP crea entradas al recibir OC
     match /movimientos_mtto/{id} {
-      allow read: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN']);
-      allow create: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN']);
-      allow update, delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+      allow read: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP']);
+      // ALP también puede crear movimientos cuando recibe OCs de MTTO
+      allow create: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP']);
+      allow update, delete: if false; // Kardex inmutable
     }
     
-    // 📦 EMPAQUE — Catálogo de productos de empaque
-    // (cajas, cinta, stretch, etiquetas, tarimas, flejes, esquineros, bolsas auxiliares)
-    // Lectura: ALP, CEDMTY, CEDMEX, COMP, CEO, ADMIN
-    // Escritura: ALP, CEDMTY, CEDMEX, CEO, ADMIN
+    // ────────────────────────────────────────────────────────────
+    // 📦 EMPAQUE
+    // ────────────────────────────────────────────────────────────
     match /productos_empaque/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
     
-    // 📦 EMPAQUE — Movimientos de inventario (entradas / salidas / ajustes / transferencias entre almacenes)
-    // Lectura: ALP, CEDMTY, CEDMEX, COMP, CEO, ADMIN
-    // Escritura: deptos operativos crean (consumos en sus almacenes); COMP crea entradas al recibir OC
-    // Update/Delete: NUNCA (kardex inmutable, las correcciones se hacen vía ajustes)
     match /movimientos_empaque/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
       allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
-      allow update, delete: if false;
+      allow update, delete: if false; // Kardex inmutable
     }
     
-    // 🖇️ OFICINA — Catálogo de productos de oficina
-    // (papelería, tóners, limpieza, cafetería, productos varios)
-    // Lectura: ADMIN, COMP, CEO
-    // Escritura: ADMIN, CEO
+    // ────────────────────────────────────────────────────────────
+    // 🖇️ OFICINA
+    // ────────────────────────────────────────────────────────────
+    // 🆕 Ahora todos los deptos con oficinas físicas pueden VER el catálogo
+    // (cada uno verá su sub-almacén OFI-ALP / OFI-CEDMTY / OFI-CEDMEX)
     match /productos_oficina/{id} {
-      allow read: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ADMIN','CEO']);
+      allow read: if isAuth() && (isAdmin() || userDept() in [
+        'ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO',
+        'CS','KAM','PLN','PRO','CAL','MTTO'
+      ]);
+      // Solo COMP/CEO/ADMIN crean productos en el catálogo
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
     
-    // 🖇️ OFICINA — Movimientos de inventario
-    // Lectura: ADMIN, COMP, CEO
-    // Escritura: ADMIN crea consumos, COMP crea entradas al recibir OC
-    // Update/Delete: NUNCA (kardex inmutable)
     match /movimientos_oficina/{id} {
-      allow read: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
-      allow create: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
-      allow update, delete: if false;
+      allow read: if isAuth() && (isAdmin() || userDept() in [
+        'ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO',
+        'CS','KAM','PLN','PRO','CAL','MTTO'
+      ]);
+      // Cualquier almacén físico crea movimientos (consumos en su sub-almacén)
+      allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO']);
+      allow update, delete: if false; // Kardex inmutable
     }
     
-    // Contadores: cualquier autenticado los actualiza (vía transacción) para folios
+    // ────────────────────────────────────────────────────────────
+    // 🛒 COMERCIALIZADO
+    // ────────────────────────────────────────────────────────────
+    match /productos_comercializados/{id} {
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CS','COMP','CEO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    match /movimientos_comercializados/{id} {
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
+      // CEDIS hacen consumos al entregar, COMP/ALP entradas al recibir OC
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEDMTY','CEDMEX','ALP','COMP','CEO','ADMIN']);
+      allow update, delete: if false; // Kardex inmutable
+    }
+    
+    // ────────────────────────────────────────────────────────────
+    // CONTADORES (FOLIOS)
+    // ────────────────────────────────────────────────────────────
     match /contadores/{id} {
       allow read, write: if isAuth();
     }
