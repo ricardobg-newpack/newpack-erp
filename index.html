@@ -1407,7 +1407,7 @@ function renderApp() {
   const esCOMP = u.depto === 'COMP' || esCEO;
   const esMTTO = u.depto === 'MTTO' || esCEO;
   const esADMIN = u.depto === 'ADMIN' || esCEO || u.rol === 'admin';
-  const esVerCompras = esCOMP || esPLN || esALP || esCEO; // Quien puede VER compras
+  const esVerCompras = esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS; // Todos los deptos que pueden crear RCs
   const esVerMTTO = esMTTO || esCOMP || esCEO; // Quien puede VER catálogo MTTO
   // 📦 EMPAQUE: ALP, CEDMTY, CEDMEX, COMP, CEO, ADMIN
   const esVerEmpaque = esALP || esCEDMTY || esCEDMEX || esCOMP || esCEO || esADMIN;
@@ -1464,17 +1464,25 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'embarques' ? 'active' : ''}" data-vista="embarques">🚚 Embarques (OV)</button>
         ` : ''}
         
-        ${esVerCompras ? `
-          <div class="sidebar-section">Compras y MP</div>
+        ${(esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS) ? `
+          <div class="sidebar-section">Requisiciones de Compra</div>
           <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Requisiciones (RC)</button>
-          ${esCOMP || esCEO ? `
-            <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes Compra (OC)</button>
-            <button class="nav-item ${state.vista === 'proveedores' ? 'active' : ''}" data-vista="proveedores">🏭 Proveedores</button>
-          ` : ''}
-          ${esALP || esCEO ? `
-            <button class="nav-item ${state.vista === 'recepciones_mp' ? 'active' : ''}" data-vista="recepciones_mp">📥 Recepciones MP</button>
-          ` : ''}
+        ` : ''}
+        
+        ${(esCOMP || esCEO || esADMIN) ? `
+          <div class="sidebar-section">Compras</div>
+          <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes Compra (OC)</button>
+          <button class="nav-item ${state.vista === 'proveedores' ? 'active' : ''}" data-vista="proveedores">🏭 Proveedores</button>
+        ` : ''}
+        
+        ${(esALP || esCEO || esPLN || esCOMP) ? `
+          <div class="sidebar-section">Materias Primas</div>
           <button class="nav-item ${state.vista === 'almacen_mp' ? 'active' : ''}" data-vista="almacen_mp">📦 Almacén MP</button>
+        ` : ''}
+        
+        ${(esALP || esCEDMTY || esCEDMEX || esADMIN || esCOMP || esCEO) ? `
+          <div class="sidebar-section">Recepciones</div>
+          <button class="nav-item ${state.vista === 'recepciones_mp' ? 'active' : ''}" data-vista="recepciones_mp">📥 Recepción de OCs</button>
         ` : ''}
         
         ${esVerMTTO ? `
@@ -1555,7 +1563,7 @@ function tituloVista() {
     materias_primas: '🧪 Materias Primas, Aditivos y Pigmentos',
     requisiciones: '📋 Requisiciones de Compra (RC)',
     ordenes_compra: '📑 Órdenes de Compra (OC)',
-    recepciones_mp: '📥 Recepciones de Materias Primas',
+    recepciones_mp: '📥 Recepción de Órdenes de Compra',
     almacen_mp: '📦 Almacén de Materias Primas',
     proveedores: '🏭 Proveedores y Códigos Vinculados',
     productos_mtto: '🔧 Catálogo Productos de Mantenimiento',
@@ -9376,6 +9384,20 @@ window.confirmarGenerarOC = async (rcId) => {
       almacen_destino: l.almacen_destino || '',
     }));
     
+    // Calcular tipo_oc dominante de las líneas (todas deberían ser del mismo tipo idealmente)
+    const tiposEnLineas = new Set(lineasLimpias.map(l => l.tipo_catalogo || 'MP'));
+    let tipoOC = 'MP';
+    if (tiposEnLineas.size === 1) {
+      tipoOC = [...tiposEnLineas][0];
+    } else {
+      // Mezcla de tipos: la marca como MIXTA para que solo COMP/CEO la vean
+      tipoOC = 'MIXTA';
+      console.warn('⚠ OC con líneas de tipos mezclados:', [...tiposEnLineas]);
+    }
+    // Almacén destino dominante (primer línea con almacén)
+    const lineaConAlmacen = lineasLimpias.find(l => l.almacen_destino);
+    const almacenOC = lineaConAlmacen?.almacen_destino || '';
+    
     // 3. Crear OC
     const dataOC = {
       folio: folioOC,
@@ -9395,6 +9417,9 @@ window.confirmarGenerarOC = async (rcId) => {
       costo_total_mxn: f.moneda === 'USD' && Number(f.tipo_cambio) > 0 ? totalCalc * Number(f.tipo_cambio) : totalCalc,
       observaciones: observaciones,
       estatus: 'en_transito',
+      // 🏷️ Clasificación para filtrar recepción por depto
+      tipo_oc: tipoOC, // MP | MTTO | EMP | OFI | COM | MIXTA
+      almacen_destino: almacenOC, // ALP | CEDMTY | CEDMEX | MTTO | OFI | MP
       generada_por_id: state.user.id || '',
       generada_por_nombre: state.user.nombre || state.user.email || 'Usuario',
       depto_solicitante: rc.depto || '',
@@ -9800,7 +9825,12 @@ function modalRecibirOC() {
         <div class="modal-header" style="background:#16a34a11;border-bottom:2px solid #16a34a;">
           <div>
             <h2 style="font-size:18px;font-weight:800;">📥 Capturar recepción de materiales</h2>
-            <div style="font-size:11px;color:#64748b;margin-top:2px;"><span class="text-mono">${oc.folio}</span> · 🏭 ${oc.proveedor}</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap;">
+              <span class="text-mono" style="font-size:12px;color:#64748b;">${oc.folio}</span>
+              <span style="font-size:12px;color:#64748b;">·</span>
+              <span style="font-size:12px;color:#64748b;">🏭 ${oc.proveedor}</span>
+              ${_badgeTipoOC(_tipoOC(oc), _almacenOC(oc))}
+            </div>
           </div>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
@@ -11892,35 +11922,195 @@ function renderTarjetaOC(oc, esCOMP) {
   `;
 }
 
+// ============================================================
+// 📥 RECEPCIÓN DE ÓRDENES DE COMPRA (filtrada por depto)
+// ============================================================
+// Cada OC tiene UN tipo de catálogo (MP/MTTO/EMP/OFI/COM).
+// Cada depto ve solo las OCs que le corresponde recibir.
+// La OC misma guarda el tipo_catalogo en el campo `tipo_oc` y el `almacen_destino`.
+
+// Helper: determinar tipo dominante de una OC (basado en sus líneas)
+function _tipoOC(oc) {
+  // Si la OC ya tiene tipo_oc guardado, usarlo (nuevas OCs)
+  if (oc.tipo_oc) return oc.tipo_oc;
+  // Legacy: deducir del campo de líneas
+  const lineas = oc.lineas || [];
+  if (lineas.length === 0) return 'MP';
+  // Las líneas pueden tener tipo_catalogo (nuevo) o ser legacy (MP)
+  const tipos = new Set(lineas.map(l => l.tipo_catalogo || 'MP'));
+  if (tipos.size === 1) return [...tipos][0];
+  // Mezcla: por compatibilidad legacy, regresar 'MIXTA' para que se vea
+  return 'MIXTA';
+}
+window._tipoOC = _tipoOC;
+
+// Helper: almacén destino de una OC (basado en la primera línea con almacén)
+function _almacenOC(oc) {
+  if (oc.almacen_destino) return oc.almacen_destino;
+  const lineas = oc.lineas || [];
+  const l = lineas.find(x => x.almacen_destino);
+  if (l) return l.almacen_destino;
+  // Defaults por tipo
+  const t = _tipoOC(oc);
+  if (t === 'MP') return 'MP';
+  if (t === 'MTTO') return 'MTTO';
+  if (t === 'OFI') return 'OFI';
+  return ''; // EMP/COM dependen del depto
+}
+window._almacenOC = _almacenOC;
+
+// Helper: badge visual de tipo de OC
+function _badgeTipoOC(tipo, almacen) {
+  const map = {
+    MP:    { icon: '🧪', label: 'Materia Prima', color: '#0ea5e9' },
+    MTTO:  { icon: '🔧', label: 'Mantenimiento', color: '#dc2626' },
+    EMP:   { icon: '📦', label: 'Empaque',       color: '#f59e0b' },
+    OFI:   { icon: '🖇️', label: 'Oficina',       color: '#64748b' },
+    COM:   { icon: '🛒', label: 'Comercializado', color: '#16a34a' },
+    MIXTA: { icon: '🔀', label: 'Mixta (legacy)', color: '#7c3aed' },
+  };
+  const m = map[tipo] || map.MP;
+  return `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;background:${m.color}22;color:${m.color};font-weight:800;font-size:10.5px;">
+    ${m.icon} ${m.label}${almacen ? ` → ${almacen}` : ''}
+  </span>`;
+}
+window._badgeTipoOC = _badgeTipoOC;
+
+// Helper: qué tipos de OC puede ver/recibir un depto
+function _tiposOCParaDepto(depto, rol) {
+  if (rol === 'admin' || depto === 'CEO' || depto === 'ADMIN' || depto === 'COMP') {
+    return ['MP', 'MTTO', 'EMP', 'OFI', 'COM', 'MIXTA']; // todo
+  }
+  if (depto === 'ALP') return ['MP', 'MTTO', 'MIXTA'];
+  if (depto === 'CEDMTY' || depto === 'CEDMEX') return ['EMP', 'COM'];
+  // Otros deptos no reciben OCs físicamente
+  return [];
+}
+window._tiposOCParaDepto = _tiposOCParaDepto;
+
 function renderRecepcionesMP() {
-  const ocsEnTransito = (state.ordenes_compra || []).filter(oc => oc.estatus !== 'recibida' && oc.estatus !== 'cancelada');
+  const u = state.user || {};
+  const tiposPermitidos = _tiposOCParaDepto(u.depto, u.rol);
+  const esALL = u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'COMP' || u.rol === 'admin';
+  
+  // Filtrar OCs según depto + (para EMP/COM) almacén destino
+  const todasOCs = (state.ordenes_compra || []).filter(oc => oc.estatus !== 'cancelada');
+  
+  const ocsFiltradas = todasOCs.filter(oc => {
+    const tipo = _tipoOC(oc);
+    if (!tiposPermitidos.includes(tipo)) return false;
+    // Para EMP/COM: el CEDIS solo ve las suyas
+    if ((tipo === 'EMP' || tipo === 'COM') && !esALL) {
+      const alm = _almacenOC(oc);
+      if (u.depto === 'CEDMTY' && alm !== 'CEDMTY') return false;
+      if (u.depto === 'CEDMEX' && alm !== 'CEDMEX') return false;
+      // ALP no debe ver EMP/COM (a menos que sea EMP destino ALP)
+      if (u.depto === 'ALP' && tipo === 'EMP' && alm === 'ALP') return true;
+      if (u.depto === 'ALP') return false;
+    }
+    return true;
+  });
+  
+  const pendientes = ocsFiltradas.filter(oc => oc.estatus !== 'recibida');
+  const recibidas = ocsFiltradas.filter(oc => oc.estatus === 'recibida');
+  
+  const tab = state.tabs.recepciones || 'pendientes';
+  const listaActiva = tab === 'pendientes' ? pendientes : (tab === 'recibidas' ? recibidas : ocsFiltradas);
+  
+  // KPIs por tipo
+  const kpisPorTipo = {};
+  pendientes.forEach(oc => {
+    const t = _tipoOC(oc);
+    kpisPorTipo[t] = (kpisPorTipo[t] || 0) + 1;
+  });
+  
   return `
     <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
-      <div style="font-weight:800;color:#1e40af;font-size:13px;">📥 Recepciones de Materias Primas</div>
+      <div style="font-weight:800;color:#1e40af;font-size:13px;">📥 Recepción de Órdenes de Compra</div>
       <div style="font-size:11px;color:#475569;margin-top:4px;">
-        Cuando llegue material físicamente, ALP captura aquí cantidad recibida, factura/remisión y se crea automáticamente el lote con kardex.
+        ${esALL 
+          ? 'Vista supervisora: ves todas las OCs del sistema. Cada depto recibe solo lo que le corresponde físicamente.'
+          : u.depto === 'ALP' ? 'Tu depto recibe Materias Primas (MP) y Productos de Mantenimiento (MTTO).'
+          : u.depto === 'CEDMTY' ? 'Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMTY.'
+          : u.depto === 'CEDMEX' ? 'Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMEX.'
+          : 'Tu depto no recibe OCs físicamente. Contacta a Compras o Admin.'}
       </div>
     </div>
     
-    ${ocsEnTransito.length === 0 ? `
+    ${Object.keys(kpisPorTipo).length > 0 ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+        ${Object.entries(kpisPorTipo).map(([tipo, n]) => `
+          <div style="padding:8px 14px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;">
+            ${_badgeTipoOC(tipo)} <strong style="font-size:14px;margin-left:4px;">${n}</strong>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+    
+    <!-- TABS -->
+    <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:2px solid #e2e8f0;">
+      <button class="tab-btn ${tab === 'pendientes' ? 'active' : ''}" onclick="window.setTab('recepciones','pendientes')">
+        📥 Pendientes (${pendientes.length})
+      </button>
+      <button class="tab-btn ${tab === 'recibidas' ? 'active' : ''}" onclick="window.setTab('recepciones','recibidas')">
+        ✅ Recibidas (${recibidas.length})
+      </button>
+      <button class="tab-btn ${tab === 'historial' ? 'active' : ''}" onclick="window.setTab('recepciones','historial')">
+        🗂️ Historial (${ocsFiltradas.length})
+      </button>
+    </div>
+    
+    ${listaActiva.length === 0 ? `
       <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
         <div style="font-size:48px;margin-bottom:12px;">📥</div>
-        <div style="font-weight:700;color:#475569;">No hay OCs pendientes de recibir</div>
+        <div style="font-weight:700;color:#475569;">${tab === 'pendientes' ? 'No hay OCs pendientes de recibir' : (tab === 'recibidas' ? 'No hay OCs recibidas aún' : 'Sin OCs')}</div>
+        ${tiposPermitidos.length === 0 ? `<div style="margin-top:8px;font-size:12px;color:#dc2626;">Tu departamento no tiene permisos para recibir mercancía.</div>` : ''}
       </div>
     ` : `
       <div style="display:flex;flex-direction:column;gap:12px;">
-        ${ocsEnTransito.map(oc => `
-          <div class="panel" style="border-left:4px solid #f59e0b;padding:14px 18px;">
-            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-              <div>
-                <div class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</div>
-                <div style="font-size:12px;color:#475569;margin-top:4px;"><strong>🏭 ${oc.proveedor || '—'}</strong></div>
-                <div style="font-size:11px;color:#64748b;margin-top:2px;">🎯 Promesa: ${oc.fecha_promesa || '—'}</div>
+        ${listaActiva.sort((a,b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0)).map(oc => {
+          const tipo = _tipoOC(oc);
+          const alm = _almacenOC(oc);
+          const yaRecibida = oc.estatus === 'recibida';
+          const parcial = oc.estatus === 'recepcion_parcial';
+          const borderColor = yaRecibida ? '#16a34a' : (parcial ? '#3b82f6' : '#f59e0b');
+          const numLineas = (oc.lineas || []).length;
+          const totalCantidad = (oc.lineas || []).reduce((s,l) => s + (Number(l.cantidad) || 0), 0);
+          const totalRecibido = (oc.lineas || []).reduce((s,l) => s + (Number(l.cantidad_recibida) || 0), 0);
+          const pctRecibido = totalCantidad > 0 ? (totalRecibido / totalCantidad * 100) : 0;
+          
+          return `
+            <div class="panel" style="border-left:4px solid ${borderColor};padding:14px 18px;">
+              <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:center;">
+                <div style="flex:1;min-width:240px;">
+                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+                    <span class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</span>
+                    ${_badgeTipoOC(tipo, alm)}
+                    ${yaRecibida ? `<span style="padding:2px 8px;background:#dcfce7;color:#16a34a;border-radius:5px;font-weight:700;font-size:10.5px;">✅ RECIBIDA</span>` : ''}
+                    ${parcial ? `<span style="padding:2px 8px;background:#dbeafe;color:#1e40af;border-radius:5px;font-weight:700;font-size:10.5px;">📦 PARCIAL ${pctRecibido.toFixed(0)}%</span>` : ''}
+                  </div>
+                  <div style="font-size:12px;color:#475569;"><strong>🏭 ${oc.proveedor || '—'}</strong></div>
+                  <div style="font-size:11px;color:#64748b;margin-top:2px;">
+                    🎯 Promesa: ${oc.fecha_promesa || '—'} 
+                    · 📋 ${numLineas} línea${numLineas !== 1 ? 's' : ''}
+                    · Total: ${fmtNum(totalCantidad)}
+                    ${parcial ? ` · Recibido: ${fmtNum(totalRecibido)}` : ''}
+                  </div>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button onclick="abrirModal('detalle-oc','${oc.id}')" style="padding:8px 12px;background:#fff;color:#475569;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">
+                    👁 Ver detalle
+                  </button>
+                  ${!yaRecibida && tiposPermitidos.includes(tipo) ? `
+                    <button onclick="abrirModal('recibir-oc','${oc.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                      📥 ${parcial ? 'Continuar' : 'Capturar'} recepción
+                    </button>
+                  ` : ''}
+                </div>
               </div>
-              <button onclick="abrirModal('recibir-oc','${oc.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📥 Capturar recepción</button>
             </div>
-          </div>
-        `).join('')}
+          `;
+        }).join('')}
       </div>
     `}
   `;
