@@ -517,12 +517,14 @@ window.almacenesPorDepto = almacenesPorDepto;
 // Aplican a: proveedores (multi), materias_primas (única), productos_mtto (única implícita = MTTO)
 // El campo 'deptos' define qué departamentos pueden ver/comprar esta categoría
 const CATEGORIAS_COMPRA = [
-  { codigo: 'RESINA',   nombre: 'Resinas',          icono: '🧪', color: '#0ea5e9', deptos: ['PLN','PRO','CAL','COMP'] },
-  { codigo: 'ADITIVO',  nombre: 'Aditivos',         icono: '⚗️', color: '#8b5cf6', deptos: ['PLN','PRO','CAL','COMP'] },
-  { codigo: 'PIGMENTO', nombre: 'Pigmentos',        icono: '🎨', color: '#ec4899', deptos: ['PLN','PRO','CAL','COMP'] },
-  { codigo: 'MTTO',     nombre: 'Mantenimiento',    icono: '🔧', color: '#dc2626', deptos: ['MTTO','COMP'] },
-  { codigo: 'EMPAQUE',  nombre: 'Empaque/Embalaje', icono: '📦', color: '#f59e0b', deptos: ['ALP','CEDMTY','CEDMEX','COMP'] },
-  { codigo: 'SERVICIO', nombre: 'Servicios',        icono: '🛎️', color: '#64748b', deptos: ['*'] }, // Todos
+  { codigo: 'RESINA',         nombre: 'Resinas',          icono: '🧪', color: '#0ea5e9', deptos: ['PLN','PRO','CAL','COMP'] },
+  { codigo: 'ADITIVO',        nombre: 'Aditivos',         icono: '⚗️', color: '#8b5cf6', deptos: ['PLN','PRO','CAL','COMP'] },
+  { codigo: 'PIGMENTO',       nombre: 'Pigmentos',        icono: '🎨', color: '#ec4899', deptos: ['PLN','PRO','CAL','COMP'] },
+  { codigo: 'MTTO',           nombre: 'Mantenimiento',    icono: '🔧', color: '#dc2626', deptos: ['MTTO','COMP'] },
+  { codigo: 'EMPAQUE',        nombre: 'Empaque/Embalaje', icono: '📦', color: '#f59e0b', deptos: ['ALP','CEDMTY','CEDMEX','COMP'] },
+  { codigo: 'OFICINA',        nombre: 'Oficina',          icono: '🖇️', color: '#64748b', deptos: ['ADMIN','COMP'] },
+  { codigo: 'COMERCIALIZADO', nombre: 'Comercializado',   icono: '🛒', color: '#16a34a', deptos: ['CS','KAM','CEDMTY','CEDMEX','COMP'] },
+  { codigo: 'SERVICIO',       nombre: 'Servicios',        icono: '🛎️', color: '#475569', deptos: ['*'] }, // Todos
 ];
 window.CATEGORIAS_COMPRA = CATEGORIAS_COMPRA;
 
@@ -9084,7 +9086,12 @@ function modalGenerarOC() {
       costo_total: 0,
       observaciones: '',
       lineas: (rc.lineas || []).map(l => ({
-        mp_codigo: l.mp_codigo,
+        // 🏷️ Preservar tipo_catalogo y producto_codigo de la RC para que la OC sepa qué es
+        tipo_catalogo: l.tipo_catalogo || 'MP',
+        mp_codigo: l.mp_codigo || l.producto_codigo || '',
+        producto_codigo: l.producto_codigo || l.mp_codigo || '',
+        categoria: l.categoria || '',
+        almacen_destino: l.almacen_destino || '',
         descripcion: l.descripcion,
         cantidad: l.cantidad,
         um: l.um || 'Kg',
@@ -9098,17 +9105,31 @@ function modalGenerarOC() {
   // Recalcular total
   const totalCalc = (f.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0), 0);
   
+  // Identificar tipos de catálogo presentes en las líneas
+  const tiposEnLineas = [...new Set((f.lineas || []).map(l => l.tipo_catalogo || 'MP'))];
+  const esMixta = tiposEnLineas.length > 1;
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:900px;max-height:90vh;display:flex;flex-direction:column;">
         <div class="modal-header" style="background:#7c3aed11;border-bottom:2px solid #7c3aed;">
           <div>
             <h2 style="font-size:18px;font-weight:800;">📑 Generar Orden de Compra</h2>
-            <div style="font-size:11px;color:#64748b;margin-top:2px;">RC origen: <span class="text-mono">${rc.folio}</span> · ${rc.solicitante_nombre}</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap;">
+              <span style="font-size:11px;color:#64748b;">RC origen: <span class="text-mono">${rc.folio}</span> · ${rc.solicitante_nombre}</span>
+              ${tiposEnLineas.map(t => _badgeTipoOC(t)).join('')}
+            </div>
           </div>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body" style="overflow-y:auto;flex:1;">
+          ${esMixta ? `
+            <div style="padding:10px 14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:14px;font-size:11.5px;color:#92400e;">
+              ⚠ <strong>OC mixta detectada:</strong> esta RC tiene líneas de tipos distintos (${tiposEnLineas.join(', ')}). 
+              Se generará una sola OC marcada como MIXTA y solo COMP/CEO podrán recibirla. 
+              <strong>Recomendado:</strong> separa los productos por tipo en RCs distintas para que cada CEDIS/depto reciba lo suyo automáticamente.
+            </div>
+          ` : ''}
           
           <!-- DATOS PROVEEDOR -->
           <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:14px;">
@@ -10601,11 +10622,25 @@ function modalProveedor(esEdicion) {
       ...prov, 
       moneda: prov.moneda || 'MXN',
       maneja_iva: prov.maneja_iva !== undefined ? prov.maneja_iva : (prov.moneda === 'USD' ? false : true),
-      categorias: Array.isArray(prov.categorias) && prov.categorias.length > 0 ? [...prov.categorias] : ['RESINA'] // default legacy
+      categorias: Array.isArray(prov.categorias) && prov.categorias.length > 0 ? [...prov.categorias] : ['RESINA'], // default legacy
+      // Datos adicionales nuevos
+      pais: prov.pais || 'México',
+      tipo_proveedor: prov.tipo_proveedor || 'nacional',
+      // Datos bancarios
+      banco: prov.banco || '',
+      cuenta_bancaria: prov.cuenta_bancaria || '',
+      clabe_interbancaria: prov.clabe_interbancaria || '',
+      beneficiario: prov.beneficiario || '',
+      banco_extranjero: prov.banco_extranjero || '',
+      swift: prov.swift || '',
+      iban: prov.iban || '',
+      condiciones_especiales: prov.condiciones_especiales || '',
     } : {
       razon_social: '',
       rfc: '',
       direccion: '',
+      pais: 'México',
+      tipo_proveedor: 'nacional',
       contacto_nombre: '',
       telefono: '',
       email: '',
@@ -10613,6 +10648,14 @@ function modalProveedor(esEdicion) {
       moneda: 'MXN',
       maneja_iva: true,
       categorias: [],
+      banco: '',
+      cuenta_bancaria: '',
+      clabe_interbancaria: '',
+      beneficiario: '',
+      banco_extranjero: '',
+      swift: '',
+      iban: '',
+      condiciones_especiales: '',
       notas: ''
     };
   }
@@ -10640,6 +10683,33 @@ function modalProveedor(esEdicion) {
             <div class="field">
               <label class="field-label">Dirección</label>
               <input class="input" id="prov-dir" value="${f.direccion || ''}" placeholder="Calle, Colonia, Ciudad, Estado, CP" oninput="window.modalFormSetSilent('direccion', this.value)" />
+            </div>
+          </div>
+          
+          <!-- 🌍 PAÍS Y TIPO DE PROVEEDOR -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div class="field">
+              <label class="field-label">País</label>
+              <input class="input" id="prov-pais" value="${f.pais || 'México'}" list="lista-paises" placeholder="México" oninput="window.modalFormSetSilent('pais', this.value)" />
+              <datalist id="lista-paises">
+                <option value="México">
+                <option value="Estados Unidos">
+                <option value="China">
+                <option value="Brasil">
+                <option value="Argentina">
+                <option value="Canadá">
+                <option value="Alemania">
+                <option value="España">
+                <option value="Colombia">
+              </datalist>
+            </div>
+            <div class="field">
+              <label class="field-label">Tipo de proveedor</label>
+              <select class="input" id="prov-tipo" onchange="window.modalFormSet('tipo_proveedor', this.value)">
+                <option value="nacional" ${f.tipo_proveedor === 'nacional' ? 'selected' : ''}>🇲🇽 Nacional</option>
+                <option value="extranjero" ${f.tipo_proveedor === 'extranjero' ? 'selected' : ''}>🌎 Extranjero</option>
+                <option value="internacional" ${f.tipo_proveedor === 'internacional' ? 'selected' : ''}>🌐 Internacional</option>
+              </select>
             </div>
           </div>
           
@@ -10716,6 +10786,75 @@ function modalProveedor(esEdicion) {
             <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Algunos proveedores extranjeros facturan sin IVA. Se aplica automáticamente al generar la OC.</div>
           </div>
           
+          <!-- 🏦 DATOS BANCARIOS -->
+          <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">🏦 Datos bancarios (para pagos)</div>
+          
+          ${f.tipo_proveedor === 'extranjero' || f.tipo_proveedor === 'internacional' ? `
+            <!-- Datos bancarios EXTRANJEROS -->
+            <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:10px;margin-bottom:10px;font-size:11px;color:#92400e;">
+              🌐 Proveedor ${f.tipo_proveedor === 'extranjero' ? 'extranjero' : 'internacional'}: completa SWIFT/IBAN si aplica transferencia internacional.
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Banco</label>
+                <input class="input" id="prov-banco" value="${f.banco_extranjero || f.banco || ''}" placeholder="Bank of America, JP Morgan, etc." oninput="window.modalFormSetSilent('banco_extranjero', this.value)" />
+              </div>
+              <div class="field">
+                <label class="field-label">Beneficiario</label>
+                <input class="input" id="prov-benef" value="${f.beneficiario || ''}" placeholder="A nombre de..." oninput="window.modalFormSetSilent('beneficiario', this.value)" />
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Número de cuenta</label>
+                <input class="input" id="prov-cuenta" value="${f.cuenta_bancaria || ''}" placeholder="Account number" style="font-family:monospace;" oninput="window.modalFormSetSilent('cuenta_bancaria', this.value)" />
+              </div>
+              <div class="field">
+                <label class="field-label">SWIFT / BIC</label>
+                <input class="input" id="prov-swift" value="${f.swift || ''}" placeholder="ABCDUSXX" maxlength="11" style="font-family:monospace;text-transform:uppercase;" oninput="window.modalFormSetSilent('swift', this.value.toUpperCase())" />
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label">IBAN (si aplica)</label>
+              <input class="input" id="prov-iban" value="${f.iban || ''}" placeholder="MXxx xxxx xxxx xxxx xxxx xx" style="font-family:monospace;" oninput="window.modalFormSetSilent('iban', this.value.toUpperCase())" />
+            </div>
+          ` : `
+            <!-- Datos bancarios MEXICANOS -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Banco</label>
+                <input class="input" id="prov-banco" value="${f.banco || ''}" list="lista-bancos" placeholder="BBVA, Santander, Banorte..." oninput="window.modalFormSetSilent('banco', this.value)" />
+                <datalist id="lista-bancos">
+                  <option value="BBVA"><option value="Santander"><option value="Banorte"><option value="HSBC">
+                  <option value="Citibanamex"><option value="Scotiabank"><option value="Inbursa"><option value="Banregio">
+                  <option value="Banco Azteca"><option value="BanBajío"><option value="Multiva"><option value="Mifel">
+                </datalist>
+              </div>
+              <div class="field">
+                <label class="field-label">Beneficiario</label>
+                <input class="input" id="prov-benef" value="${f.beneficiario || ''}" placeholder="A nombre de... (si difiere de Razón Social)" oninput="window.modalFormSetSilent('beneficiario', this.value)" />
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Número de cuenta</label>
+                <input class="input" id="prov-cuenta" value="${f.cuenta_bancaria || ''}" placeholder="0123456789" maxlength="20" style="font-family:monospace;" oninput="window.modalFormSetSilent('cuenta_bancaria', this.value.replace(/\\D/g, ''))" />
+              </div>
+              <div class="field">
+                <label class="field-label">CLABE interbancaria (18 dígitos)</label>
+                <input class="input" id="prov-clabe" value="${f.clabe_interbancaria || ''}" placeholder="012345678901234567" maxlength="18" style="font-family:monospace;" oninput="window.modalFormSetSilent('clabe_interbancaria', this.value.replace(/\\D/g, ''))" />
+                ${f.clabe_interbancaria && f.clabe_interbancaria.length > 0 && f.clabe_interbancaria.length !== 18 ? `<div style="font-size:10px;color:#dc2626;margin-top:3px;">⚠ Debe tener 18 dígitos (lleva ${f.clabe_interbancaria.length})</div>` : ''}
+              </div>
+            </div>
+          `}
+          
+          <!-- 📝 CONDICIONES ESPECIALES -->
+          <div style="font-weight:800;font-size:12px;color:#475569;margin:14px 0 6px;border-top:1px solid #e2e8f0;padding-top:10px;">📝 Condiciones especiales</div>
+          <div class="field">
+            <label class="field-label">Acuerdos comerciales, descuentos, garantías, etc.</label>
+            <textarea class="input" id="prov-condiciones" style="min-height:60px;" placeholder="Ej: Descuento del 5% por pronto pago. Garantía de 6 meses en defectos de fábrica. Flete LAB destino para pedidos > 5 toneladas." oninput="window.modalFormSetSilent('condiciones_especiales', this.value)">${f.condiciones_especiales || ''}</textarea>
+          </div>
+          
           <div class="field">
             <label class="field-label">Notas adicionales</label>
             <textarea class="input" id="prov-notas" style="min-height:50px;" placeholder="Información complementaria, acuerdos, etc." oninput="window.modalFormSetSilent('notas', this.value)">${f.notas || ''}</textarea>
@@ -10736,12 +10875,22 @@ window.confirmarProveedor = async (id) => {
   const razon = ($('#prov-razon')?.value || f.razon_social || '').trim();
   const rfc = ($('#prov-rfc')?.value || f.rfc || '').trim().toUpperCase();
   const direccion = ($('#prov-dir')?.value || f.direccion || '').trim();
+  const pais = ($('#prov-pais')?.value || f.pais || 'México').trim();
+  const tipo_proveedor = f.tipo_proveedor || 'nacional';
   const contacto = ($('#prov-cont')?.value || f.contacto_nombre || '').trim();
   const telefono = ($('#prov-tel')?.value || f.telefono || '').trim();
   const email = ($('#prov-email')?.value || f.email || '').trim();
   const terminos = ($('#prov-pago')?.value || f.terminos_pago || '').trim();
   const moneda = f.moneda || 'MXN';
   const maneja_iva = f.maneja_iva !== false; // por default true
+  // Datos bancarios
+  const banco = ($('#prov-banco')?.value || f.banco || f.banco_extranjero || '').trim();
+  const beneficiario = ($('#prov-benef')?.value || f.beneficiario || '').trim();
+  const cuenta_bancaria = ($('#prov-cuenta')?.value || f.cuenta_bancaria || '').trim();
+  const clabe_interbancaria = ($('#prov-clabe')?.value || f.clabe_interbancaria || '').trim();
+  const swift = ($('#prov-swift')?.value || f.swift || '').trim().toUpperCase();
+  const iban = ($('#prov-iban')?.value || f.iban || '').trim().toUpperCase();
+  const condiciones_especiales = ($('#prov-condiciones')?.value || f.condiciones_especiales || '').trim();
   const notas = ($('#prov-notas')?.value || f.notas || '').trim();
   
   if (!razon) { toast('Razón social obligatoria', 'error'); return; }
@@ -10750,12 +10899,19 @@ window.confirmarProveedor = async (id) => {
   const categorias = Array.isArray(f.categorias) ? f.categorias.filter(c => CATEGORIAS_COMPRA.find(x => x.codigo === c)) : [];
   if (categorias.length === 0) { toast('Selecciona al menos una categoría que vende este proveedor', 'error'); return; }
   
+  // Validar CLABE si es nacional
+  if (tipo_proveedor === 'nacional' && clabe_interbancaria && clabe_interbancaria.length !== 18) {
+    toast('CLABE inválida: debe tener 18 dígitos (o déjala vacía)', 'error'); return;
+  }
+  
   state.loadingAccion = true; render();
   try {
     const data = {
       razon_social: razon,
       rfc: rfc,
       direccion: direccion,
+      pais: pais,
+      tipo_proveedor: tipo_proveedor,
       contacto_nombre: contacto,
       telefono: telefono,
       email: email,
@@ -10763,6 +10919,14 @@ window.confirmarProveedor = async (id) => {
       moneda: moneda,
       maneja_iva: maneja_iva,
       categorias: categorias,
+      // Datos bancarios
+      banco: banco,
+      beneficiario: beneficiario,
+      cuenta_bancaria: cuenta_bancaria,
+      clabe_interbancaria: clabe_interbancaria,
+      swift: swift,
+      iban: iban,
+      condiciones_especiales: condiciones_especiales,
       notas: notas,
       updated_at: serverTimestamp()
     };
@@ -11546,14 +11710,53 @@ function modalCodigosProveedor() {
   if (!state.modalForm) {
     state.modalForm = {
       codigos: [...(prov.codigos || [])],
-      nuevoCodigo: { mp_codigo: '', codigo_proveedor: '', costo_referencia: '' }
+      nuevoCodigo: { mp_codigo: '', codigo_proveedor: '', costo_referencia: '', tipo_catalogo: 'MP' }
     };
   }
   const f = state.modalForm;
+  const catsProv = prov.categorias || [];
   
-  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
-  const codigosYaVinculados = new Set((f.codigos || []).map(c => c.mp_codigo));
-  const mpsDisponibles = mps.filter(mp => !codigosYaVinculados.has(mp.codigo));
+  // Construir lista de productos disponibles según categorías del proveedor
+  const codigosYaVinculados = new Set((f.codigos || []).map(c => `${c.tipo_catalogo || 'MP'}|${c.mp_codigo}`));
+  
+  const grupos = [];
+  // MP (resinas, aditivos, pigmentos)
+  if (catsProv.some(c => ['RESINA','ADITIVO','PIGMENTO'].includes(c))) {
+    const items = (state.materias_primas || [])
+      .filter(mp => mp.activo !== false && !codigosYaVinculados.has(`MP|${mp.codigo}`))
+      .sort((a,b) => a.codigo.localeCompare(b.codigo));
+    if (items.length > 0) grupos.push({ label: '🧪 Materias Primas', tipo: 'MP', items });
+  }
+  // MTTO
+  if (catsProv.includes('MTTO')) {
+    const items = (state.productos_mtto || [])
+      .filter(p => p.activo !== false && !codigosYaVinculados.has(`MTTO|${p.codigo}`))
+      .sort((a,b) => a.codigo.localeCompare(b.codigo));
+    if (items.length > 0) grupos.push({ label: '🔧 Mantenimiento', tipo: 'MTTO', items });
+  }
+  // EMP
+  if (catsProv.includes('EMPAQUE')) {
+    const items = (state.productos_empaque || [])
+      .filter(p => p.activo !== false && !codigosYaVinculados.has(`EMP|${p.codigo}`))
+      .sort((a,b) => a.codigo.localeCompare(b.codigo));
+    if (items.length > 0) grupos.push({ label: '📦 Empaque', tipo: 'EMP', items });
+  }
+  // OFI
+  if (catsProv.includes('OFICINA')) {
+    const items = (state.productos_oficina || [])
+      .filter(p => p.activo !== false && !codigosYaVinculados.has(`OFI|${p.codigo}`))
+      .sort((a,b) => a.codigo.localeCompare(b.codigo));
+    if (items.length > 0) grupos.push({ label: '🖇️ Oficina', tipo: 'OFI', items });
+  }
+  // COM
+  if (catsProv.includes('COMERCIALIZADO')) {
+    const items = (state.productos_comercializados || [])
+      .filter(p => p.activo !== false && !codigosYaVinculados.has(`COM|${p.codigo}`))
+      .sort((a,b) => a.codigo.localeCompare(b.codigo));
+    if (items.length > 0) grupos.push({ label: '🛒 Comercializado', tipo: 'COM', items });
+  }
+  
+  const sinCategoria = catsProv.length === 0;
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
@@ -11562,27 +11765,45 @@ function modalCodigosProveedor() {
           <div>
             <h2 style="font-size:18px;font-weight:800;">🔗 Códigos vinculados</h2>
             <div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${prov.razon_social}</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;">
+              ${catsProv.map(c => {
+                const cat = getCategoriaCompra(c);
+                return cat ? `<span style="padding:2px 8px;background:${cat.color}22;color:${cat.color};border-radius:5px;font-size:10px;font-weight:700;">${cat.icono} ${cat.nombre}</span>` : '';
+              }).join('')}
+            </div>
           </div>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body" style="overflow-y:auto;flex:1;">
           
-          <!-- AGREGAR NUEVO -->
-          <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:14px;">
-            <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Vincular nuevo código</div>
-            <div style="display:grid;grid-template-columns:3fr 2fr 1fr 1fr;gap:8px;">
-              <select class="input" id="cv-mp">
-                <option value="">— Materia prima NewPack —</option>
-                ${mpsDisponibles.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `
-                  <option value="${mp.codigo}" data-desc="${mp.descripcion}">${mp.codigo} — ${mp.descripcion}</option>
-                `).join('')}
-              </select>
-              <input class="input" id="cv-codprov" placeholder="Cód. del proveedor" style="font-family:monospace;" />
-              <input class="input" id="cv-costo" type="number" min="0" step="0.01" placeholder="$ ref" />
-              <button onclick="agregarCodigoProveedor()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Vincular</button>
+          ${sinCategoria ? `
+            <div style="padding:14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;margin-bottom:14px;font-size:12px;color:#92400e;">
+              ⚠ Este proveedor no tiene categorías asignadas. Edita el proveedor y marca qué tipos de productos vende antes de vincular códigos.
             </div>
-            <div style="font-size:10px;color:#64748b;margin-top:6px;">💡 El costo de referencia es opcional, ayuda para sugerir precios al generar OCs</div>
-          </div>
+          ` : grupos.length === 0 ? `
+            <div style="padding:14px;background:#dbeafe;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;font-size:12px;color:#1e40af;">
+              ℹ Todos los productos disponibles según las categorías de este proveedor ya están vinculados, o no hay productos en los catálogos de esas categorías.
+            </div>
+          ` : `
+            <!-- AGREGAR NUEVO -->
+            <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:14px;">
+              <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Vincular nuevo código</div>
+              <div style="display:grid;grid-template-columns:3fr 2fr 1fr 1fr;gap:8px;">
+                <select class="input" id="cv-mp">
+                  <option value="">— Seleccionar producto —</option>
+                  ${grupos.map(g => `
+                    <optgroup label="${g.label}">
+                      ${g.items.map(p => `<option value="${g.tipo}|${p.codigo}" data-desc="${p.descripcion || ''}">${p.codigo} — ${p.descripcion || ''}</option>`).join('')}
+                    </optgroup>
+                  `).join('')}
+                </select>
+                <input class="input" id="cv-codprov" placeholder="Cód. del proveedor" style="font-family:monospace;" />
+                <input class="input" id="cv-costo" type="number" min="0" step="0.01" placeholder="$ ref" />
+                <button onclick="agregarCodigoProveedor()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Vincular</button>
+              </div>
+              <div style="font-size:10px;color:#64748b;margin-top:6px;">💡 El costo de referencia es opcional, ayuda para sugerir precios al generar OCs</div>
+            </div>
+          `}
           
           ${(f.codigos || []).length === 0 ? `
             <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:10px;border:1px dashed #cbd5e1;">
@@ -11598,6 +11819,7 @@ function modalCodigosProveedor() {
               <table style="width:100%;border-collapse:collapse;font-size:12px;">
                 <thead>
                   <tr style="background:#f1f5f9;">
+                    <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Tipo</th>
                     <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Cód. NewPack</th>
                     <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Cód. Proveedor</th>
                     <th style="padding:6px 10px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
@@ -11606,17 +11828,29 @@ function modalCodigosProveedor() {
                   </tr>
                 </thead>
                 <tbody>
-                  ${f.codigos.map((c, idx) => `
+                  ${f.codigos.map((c, idx) => {
+                    const tipo = c.tipo_catalogo || 'MP';
+                    const tipoBadges = {
+                      MP:   { l: '🧪 MP',  c: '#0ea5e9' },
+                      MTTO: { l: '🔧 MTTO', c: '#dc2626' },
+                      EMP:  { l: '📦 EMP',  c: '#f59e0b' },
+                      OFI:  { l: '🖇️ OFI',  c: '#64748b' },
+                      COM:  { l: '🛒 COM',  c: '#16a34a' },
+                    };
+                    const b = tipoBadges[tipo] || tipoBadges.MP;
+                    return `
                     <tr style="border-bottom:1px solid #f1f5f9;">
+                      <td style="padding:5px 10px;"><span style="padding:2px 7px;background:${b.c}22;color:${b.c};border-radius:5px;font-weight:700;font-size:10px;">${b.l}</span></td>
                       <td style="padding:5px 10px;" class="text-mono"><strong>${c.mp_codigo}</strong></td>
-                      <td style="padding:5px 10px;" class="text-mono" style="color:#7c3aed;">${c.codigo_proveedor || '—'}</td>
+                      <td style="padding:5px 10px;color:#7c3aed;font-family:monospace;">${c.codigo_proveedor || '—'}</td>
                       <td style="padding:5px 10px;font-size:11px;color:#64748b;">${c.descripcion || ''}</td>
                       <td style="padding:5px 10px;text-align:right;font-size:11px;color:#64748b;">${c.costo_referencia ? '$' + fmtNum(c.costo_referencia) : '—'}</td>
                       <td style="padding:5px 10px;text-align:center;">
                         <button onclick="quitarCodigoProveedor(${idx})" style="padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">✕</button>
                       </td>
                     </tr>
-                  `).join('')}
+                  `;
+                  }).join('')}
                 </tbody>
               </table>
             </div>
@@ -11638,25 +11872,31 @@ window.agregarCodigoProveedor = () => {
   const costo = $('#cv-costo');
   if (!sel || !codProv) return;
   
-  const mp_codigo = sel.value;
+  const valor = sel.value;
   const codigo_proveedor = (codProv.value || '').trim();
   const costo_referencia = Number(costo.value) || 0;
   
-  if (!mp_codigo) { toast('Selecciona la materia prima', 'error'); return; }
+  if (!valor) { toast('Selecciona un producto', 'error'); return; }
   if (!codigo_proveedor) { toast('Captura el código del proveedor', 'error'); return; }
+  
+  // Parsear tipo|codigo (ej: "MP|RES-PE-001" o "COM|COM-STR-MAN-CAL70")
+  const partes = valor.split('|');
+  const tipo_catalogo = partes.length === 2 ? partes[0] : 'MP';
+  const mp_codigo = partes.length === 2 ? partes[1] : valor;
   
   const opt = sel.selectedOptions[0];
   const descripcion = opt?.dataset.desc || '';
   
   if (!state.modalForm.codigos) state.modalForm.codigos = [];
   
-  // Validar duplicado
-  if (state.modalForm.codigos.find(c => c.mp_codigo === mp_codigo)) {
+  // Validar duplicado (tipo + código combinados)
+  if (state.modalForm.codigos.find(c => c.mp_codigo === mp_codigo && (c.tipo_catalogo || 'MP') === tipo_catalogo)) {
     toast(`${mp_codigo} ya está vinculado`, 'error');
     return;
   }
   
   state.modalForm.codigos.push({
+    tipo_catalogo,
     mp_codigo,
     descripcion,
     codigo_proveedor,
@@ -23865,3 +24105,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
