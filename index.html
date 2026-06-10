@@ -1636,7 +1636,7 @@ function renderDashboard() {
   const pedidosPend = state.pedidos.filter(p => p.estatus === 'pendiente_aprobacion').length;
   const pedidosAprob = state.pedidos.filter(p => p.estatus === 'aprobado').length;
   const ovsPend = state.ordenes_venta.filter(o => o.estatus === 'pendiente').length;
-  const odpsPend = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_planeacion').length;
+  const odpsPend = state.ordenes_produccion.filter(o => !o.archivada && o.estatus === 'pendiente_planeacion').length;
   
   // Tarimas viejas sin pedido_folio (para migración) — visible para CEO/admin/ALP
   const esCEO = state.user.depto === 'CEO' || state.user.rol === 'admin' || state.user.depto === 'ADMIN';
@@ -3346,7 +3346,7 @@ function renderPedidos() {
   const pendientes = state.pedidos.filter(p => p.estatus === 'pendiente_aprobacion');
   const aprobados = state.pedidos.filter(p => p.estatus === 'aprobado');
   const ovsPend = state.ordenes_venta.filter(o => o.estatus === 'pendiente');
-  const odpsActivas = state.ordenes_produccion.filter(o => ['pendiente_planeacion','programada','en_produccion'].includes(o.estatus));
+  const odpsActivas = state.ordenes_produccion.filter(o => !o.archivada && ['pendiente_planeacion','programada','en_produccion'].includes(o.estatus));
   
   const ovsParaMi = state.user.almacen_asignado ? ovsPend.filter(o => o.cedis === state.user.almacen_asignado) : ovsPend;
   const puedeCrearPI = ['CS','CEO','ADMIN','COMP'].includes(state.user.depto) || state.user.rol === 'admin';
@@ -3747,10 +3747,12 @@ function renderProgramacion() {
   const subTab = state.tabs.programacion || 'pendientes';
   const vistaModo = state.vistaModo?.programacion || 'lista'; // 'lista' | 'proceso'
   
-  const odpsPend = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_planeacion');
-  const odpsProg = state.ordenes_produccion.filter(o => o.estatus === 'programada');
-  const odpsEnProd = state.ordenes_produccion.filter(o => o.estatus === 'en_produccion');
-  const odpsCompletadas = state.ordenes_produccion.filter(o => o.estatus === 'completada').slice(0, 30);
+  // 🗄️ Excluir ODPs archivadas (uso en vivo)
+  const odpsBase = state.ordenes_produccion.filter(o => !o.archivada);
+  const odpsPend = odpsBase.filter(o => o.estatus === 'pendiente_planeacion');
+  const odpsProg = odpsBase.filter(o => o.estatus === 'programada');
+  const odpsEnProd = odpsBase.filter(o => o.estatus === 'en_produccion');
+  const odpsCompletadas = odpsBase.filter(o => o.estatus === 'completada').slice(0, 30);
   
   const filtro = (state.filtros.programacion || '').toLowerCase();
   const filtroProc = state.filtros.programacion_proceso || '';
@@ -3785,7 +3787,7 @@ function renderProgramacion() {
         <button class="tab-btn ${subTab === 'pendientes' ? 'active' : ''}" onclick="cambiarTab('programacion','pendientes')">⏳ Por programar (${odpsPend.length})</button>
         <button class="tab-btn ${subTab === 'programadas' ? 'active' : ''}" onclick="cambiarTab('programacion','programadas')">📅 Programadas (${odpsProg.length})</button>
         <button class="tab-btn ${subTab === 'en_produccion' ? 'active' : ''}" onclick="cambiarTab('programacion','en_produccion')">🔄 En producción (${odpsEnProd.length})</button>
-        <button class="tab-btn ${subTab === 'completadas' ? 'active' : ''}" onclick="cambiarTab('programacion','completadas')">✅ Completadas (${state.ordenes_produccion.filter(o => o.estatus === 'completada').length})</button>
+        <button class="tab-btn ${subTab === 'completadas' ? 'active' : ''}" onclick="cambiarTab('programacion','completadas')">✅ Completadas (${odpsBase.filter(o => o.estatus === 'completada').length})</button>
       </div>
     </div>
     
@@ -3836,12 +3838,14 @@ function renderProgramacion() {
 // ============================================================
 function renderKanbanMaquinas() {
   const u = state.user || {};
+  const puedeEditarOrden = u.depto === 'PLN' || u.depto === 'CEO' || u.rol === 'admin';
   
   // Filtro de proceso (con guard de seguridad)
   const procFiltro = state.kanban_proceso || 'todos';
   
-  // Obtener ODPs activas
-  const todasODPs = state.ordenes_produccion || [];
+  // Obtener ODPs activas (NO archivadas)
+  const todasODPs = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  const cantArchivadas = (state.ordenes_produccion || []).filter(o => o.archivada).length;
   
   // Obtener máquinas activas — múltiples campos posibles
   const todasMaquinas = (state.maquinas || []).filter(m => m && m.activa !== false);
@@ -3864,10 +3868,17 @@ function renderKanbanMaquinas() {
     <div style="padding:14px;background:#1e40af;color:#fff;border-radius:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
       <div>
         <div style="font-weight:800;font-size:14px;">📋 Kanban de Producción por Máquina</div>
-        <div style="font-size:11px;opacity:0.9;margin-top:2px;">Filtro actual: ${procFiltro === 'todos' ? 'Todos los procesos' : (getProc(procFiltro)?.nombre || procFiltro)}</div>
+        <div style="font-size:11px;opacity:0.9;margin-top:2px;">
+          Filtro: ${procFiltro === 'todos' ? 'Todos los procesos' : (getProc(procFiltro)?.nombre || procFiltro)}
+          ${cantArchivadas > 0 ? ` · ${cantArchivadas} archivadas (ocultas)` : ''}
+          ${puedeEditarOrden ? ' · 🖱️ Arrastra tarjetas en COLA para reordenar' : ''}
+        </div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         ${procFiltro !== 'todos' ? `<button onclick="state.kanban_proceso='todos';render();" style="padding:8px 14px;background:#fff;color:#1e40af;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">⬅️ Volver a Todos</button>` : ''}
+        ${puedeEditarOrden && todasODPs.length > 0 ? `
+          <button onclick="window.archivarTodasODPsViejas()" style="padding:8px 14px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">🗄️ Archivar ODPs viejas</button>
+        ` : ''}
         <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#1e40af;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">🖨️ Imprimir</button>
       </div>
     </div>
@@ -3945,6 +3956,18 @@ function renderKanbanMaquinas() {
     }
   }
   
+  // 🔢 Ordenar cada cola por prioridad_cola (menor = más arriba). 
+  // ODPs sin prioridad_cola van al final (Infinity)
+  Object.keys(porMaquina).forEach(k => {
+    porMaquina[k].en_cola.sort((a, b) => {
+      const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Infinity;
+      const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Infinity;
+      if (pa !== pb) return pa - pb;
+      // Si empate, por fecha de entrega
+      return (a.fecha_entrega_solicitada || '').localeCompare(b.fecha_entrega_solicitada || '');
+    });
+  });
+  
   // KPIs
   const totalEnCola = Object.values(porMaquina).reduce((s, m) => s + m.en_cola.length, 0);
   const totalEnProceso = Object.values(porMaquina).reduce((s, m) => s + m.en_proceso.length, 0);
@@ -3999,10 +4022,18 @@ function renderKanbanMaquinas() {
             <div style="display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:10px;padding:12px;background:#f8fafc;">
               <div>
                 <div style="font-weight:800;font-size:11px;color:#f59e0b;margin-bottom:8px;padding:6px 10px;background:#fef3c7;border-radius:6px;border-left:3px solid #f59e0b;">
-                  📦 EN COLA (${datos.en_cola.length})
+                  📦 EN COLA (${datos.en_cola.length})${puedeEditarOrden ? ' <span style="font-size:9px;font-weight:600;opacity:0.7;">· arrastra para reordenar</span>' : ''}
                 </div>
-                <div style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
-                  ${datos.en_cola.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">vacío</div>` : datos.en_cola.map(odp => _renderTarjetaKanban(odp, 'cola')).join('')}
+                <div 
+                  style="display:flex;flex-direction:column;gap:6px;min-height:80px;padding:4px;border-radius:6px;border:2px dashed transparent;transition:all 0.15s;"
+                  ${puedeEditarOrden ? `
+                    data-maquina-destino="${m.codigo}"
+                    ondragover="window.onKanbanDragOver(event)"
+                    ondragleave="window.onKanbanDragLeave(event)"
+                    ondrop="window.onKanbanDrop(event, '${m.codigo}')"
+                  ` : ''}
+                >
+                  ${datos.en_cola.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">vacío</div>` : datos.en_cola.map((odp, idx) => _renderTarjetaKanban(odp, 'cola', { draggable: puedeEditarOrden, idx, maquina: m.codigo })).join('')}
                 </div>
               </div>
               
@@ -4045,12 +4076,17 @@ function renderKanbanMaquinas() {
 }
 
 // Tarjeta de ODP para Kanban
-function _renderTarjetaKanban(odp, columna) {
-  const idx = odp.proceso_actual_idx ?? 0;
-  const procActual = getProc((odp.ruta_procesos || [])[idx]);
+function _renderTarjetaKanban(odp, columna, opts) {
+  opts = opts || {};
+  const draggable = opts.draggable === true && columna === 'cola';
+  const idx = opts.idx !== undefined ? opts.idx : 0;
+  const maquina = opts.maquina || '';
+  
+  const procIdx = odp.proceso_actual_idx ?? 0;
+  const procActual = getProc((odp.ruta_procesos || [])[procIdx]);
   const um = (odp.um || 'kg').toLowerCase();
   
-  const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[idx]);
+  const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[procIdx]);
   const totalProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
   const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
   const pct = cantTotal > 0 ? Math.min(100, (totalProd / cantTotal) * 100) : 0;
@@ -4063,10 +4099,23 @@ function _renderTarjetaKanban(odp, columna) {
   const hoy = new Date().toISOString().split('T')[0];
   const vencida = fechaEnt && fechaEnt < hoy && columna !== 'completada';
   
+  // Atributos de drag-drop si aplica
+  const dragAttrs = draggable ? `
+    draggable="true"
+    data-odp-id="${odp.id}"
+    data-maquina-origen="${maquina}"
+    data-idx-origen="${idx}"
+    ondragstart="window.onKanbanDragStart(event)"
+    ondragend="window.onKanbanDragEnd(event)"
+  ` : '';
+  
+  const cursorStyle = draggable ? 'cursor:grab;' : '';
+  const dragHint = draggable ? `<span style="font-size:9px;color:#94a3b8;margin-left:4px;">⠿</span>` : '';
+  
   return `
-    <div style="background:${bgColor};border:1px solid ${borderColor};border-left:3px solid ${borderColor};border-radius:6px;padding:8px 10px;font-size:11px;${vencida ? 'box-shadow: 0 0 0 2px #fca5a5;' : ''}">
+    <div ${dragAttrs} style="background:${bgColor};border:1px solid ${borderColor};border-left:3px solid ${borderColor};border-radius:6px;padding:8px 10px;font-size:11px;${cursorStyle}${vencida ? 'box-shadow: 0 0 0 2px #fca5a5;' : ''}">
       <div style="display:flex;justify-content:space-between;align-items:start;gap:6px;">
-        <div class="text-mono" style="font-weight:800;font-size:11.5px;color:#0f172a;">${odp.folio || (odp.id || '').slice(0,6)}</div>
+        <div class="text-mono" style="font-weight:800;font-size:11.5px;color:#0f172a;">${dragHint}${odp.folio || (odp.id || '').slice(0,6)}</div>
         ${vencida ? `<span style="font-size:9px;font-weight:800;color:#dc2626;">🔴 VENCIDA</span>` : ''}
       </div>
       <div style="font-weight:700;color:#475569;margin-top:3px;font-size:11px;">${odp.producto_codigo || ''}</div>
@@ -4086,6 +4135,200 @@ function _renderTarjetaKanban(odp, columna) {
     </div>
   `;
 }
+
+
+// ============================================================
+// 🖱️ DRAG-AND-DROP DEL KANBAN — Reordenar ODPs en cola
+// ============================================================
+window._kanbanDrag = null;
+
+window.onKanbanDragStart = (event) => {
+  const card = event.currentTarget;
+  const odpId = card.dataset.odpId;
+  const maqOrigen = card.dataset.maquinaOrigen;
+  const idxOrigen = parseInt(card.dataset.idxOrigen, 10);
+  if (!odpId) return;
+  
+  window._kanbanDrag = { odpId, maqOrigen, idxOrigen };
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', odpId);
+  
+  card.style.opacity = '0.4';
+  card.style.cursor = 'grabbing';
+};
+
+window.onKanbanDragEnd = (event) => {
+  const card = event.currentTarget;
+  card.style.opacity = '1';
+  card.style.cursor = 'grab';
+  document.querySelectorAll('[data-maquina-destino]').forEach(el => {
+    el.style.background = '';
+    el.style.borderColor = 'transparent';
+  });
+};
+
+window.onKanbanDragOver = (event) => {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  const zone = event.currentTarget;
+  zone.style.background = '#fef3c7';
+  zone.style.borderColor = '#f59e0b';
+};
+
+window.onKanbanDragLeave = (event) => {
+  const zone = event.currentTarget;
+  if (!zone.contains(event.relatedTarget)) {
+    zone.style.background = '';
+    zone.style.borderColor = 'transparent';
+  }
+};
+
+window.onKanbanDrop = async (event, maqDestino) => {
+  event.preventDefault();
+  event.stopPropagation();
+  
+  const drag = window._kanbanDrag;
+  if (!drag) return;
+  
+  const { odpId, maqOrigen } = drag;
+  
+  // Limpiar estilos
+  document.querySelectorAll('[data-maquina-destino]').forEach(el => {
+    el.style.background = '';
+    el.style.borderColor = 'transparent';
+  });
+  
+  // Calcular el índice de inserción según posición Y del cursor
+  const zone = event.currentTarget;
+  const cards = Array.from(zone.querySelectorAll('[data-odp-id]')).filter(c => c.dataset.odpId !== odpId);
+  let insertIdx = cards.length;
+  
+  for (let i = 0; i < cards.length; i++) {
+    const rect = cards[i].getBoundingClientRect();
+    if (event.clientY < rect.top + rect.height / 2) {
+      insertIdx = i;
+      break;
+    }
+  }
+  
+  try {
+    state.loadingAccion = true;
+    render();
+    
+    const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+    if (!odp) { toast('ODP no encontrada', 'error'); return; }
+    
+    // ODPs actuales en la máquina destino (excluyendo la que movemos)
+    const odpsEnDestino = (state.ordenes_produccion || []).filter(o => {
+      if (o.archivada) return false;
+      if (o.id === odpId) return false;
+      const idx = o.proceso_actual_idx ?? 0;
+      const maqs = o.maquinas_asignadas || {};
+      const procCodigo = (o.ruta_procesos || [])[idx];
+      let maq = null;
+      if (typeof maqs === 'object' && !Array.isArray(maqs)) maq = maqs[procCodigo];
+      else if (Array.isArray(maqs)) maq = maqs[idx];
+      else if (typeof maqs === 'string') maq = maqs;
+      if (maq !== maqDestino) return false;
+      const est = o.estatus || '';
+      return est === 'aprobada' || est === 'pendiente' || est === 'programada';
+    }).sort((a, b) => {
+      const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Infinity;
+      const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Infinity;
+      return pa - pb;
+    });
+    
+    // Insertar la ODP movida en su nueva posición
+    odpsEnDestino.splice(insertIdx, 0, odp);
+    
+    // Re-numerar prioridades en batch
+    const cambioMaquina = maqOrigen !== maqDestino && maqOrigen !== '_sin_asignar';
+    const batch = writeBatch(db);
+    
+    odpsEnDestino.forEach((o, i) => {
+      const updates = { prioridad_cola: (i + 1) * 10, updated_at: serverTimestamp() };
+      if (o.id === odpId && cambioMaquina) {
+        const idxProc = o.proceso_actual_idx ?? 0;
+        const procCodigo = (o.ruta_procesos || [])[idxProc];
+        const maqsActuales = (typeof o.maquinas_asignadas === 'object' && !Array.isArray(o.maquinas_asignadas))
+          ? { ...o.maquinas_asignadas }
+          : {};
+        if (procCodigo) maqsActuales[procCodigo] = maqDestino;
+        updates.maquinas_asignadas = maqsActuales;
+      }
+      batch.update(doc(db, 'ordenes_produccion', o.id), updates);
+    });
+    
+    await batch.commit();
+    toast(`✅ ${odp.folio || odpId.slice(0,6)} reordenada${cambioMaquina ? ' a ' + maqDestino : ''}`, 'success');
+    
+  } catch (e) {
+    console.error('Error al reordenar:', e);
+    toast('Error al reordenar: ' + e.message, 'error');
+  } finally {
+    window._kanbanDrag = null;
+    state.loadingAccion = false;
+    render();
+  }
+};
+
+// ============================================================
+// 🗄️ ARCHIVAR ODPs VIEJAS (para iniciar uso en vivo)
+// ============================================================
+window.archivarTodasODPsViejas = async () => {
+  const activas = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  if (activas.length === 0) {
+    toast('No hay ODPs para archivar', 'info');
+    return;
+  }
+  
+  const confirmacion = confirm(
+    `⚠️ ARCHIVAR ${activas.length} ODPs\n\n` +
+    `Esto marca todas las ODPs actuales como "archivadas".\n` +
+    `Ya no aparecerán en Kanban, Programación ni Captura.\n` +
+    `(NO se borran, solo se ocultan).\n\n` +
+    `Úsalo cuando estés iniciando uso en vivo y quieras empezar limpio.\n\n` +
+    `¿Continuar?`
+  );
+  if (!confirmacion) return;
+  
+  const segundo = prompt(`Para confirmar, escribe exactamente: ARCHIVAR ${activas.length}`);
+  if (segundo !== `ARCHIVAR ${activas.length}`) {
+    toast('Cancelado: confirmación incorrecta', 'info');
+    return;
+  }
+  
+  try {
+    state.loadingAccion = true;
+    render();
+    
+    // Firestore permite hasta 500 ops por batch
+    const lotes = [];
+    for (let i = 0; i < activas.length; i += 400) {
+      lotes.push(activas.slice(i, i + 400));
+    }
+    
+    for (const lote of lotes) {
+      const batch = writeBatch(db);
+      lote.forEach(o => {
+        batch.update(doc(db, 'ordenes_produccion', o.id), {
+          archivada: true,
+          archivada_at: serverTimestamp(),
+          archivada_por: state.user?.nombre || state.user?.email || 'sistema'
+        });
+      });
+      await batch.commit();
+    }
+    
+    toast(`✅ ${activas.length} ODPs archivadas. Kanban limpio.`, 'success');
+  } catch (e) {
+    console.error('Error al archivar:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false;
+    render();
+  }
+};
 
 
 function renderProgramacionPorProceso(odps, subTab) {
@@ -4438,7 +4681,7 @@ function renderTarjetaODP(o, contexto) {
 // ============================================================
 function renderCapturaProduccion() {
   const odpsActivas = state.ordenes_produccion.filter(o => 
-    ['programada', 'en_produccion'].includes(o.estatus)
+    !o.archivada && ['programada', 'en_produccion'].includes(o.estatus)
   );
   
   const filtro = (state.filtros.captura || '').toLowerCase();
