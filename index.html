@@ -1460,11 +1460,15 @@ function renderApp() {
         ${esPLN || esPRO || esCAL ? `<div class="sidebar-section">Producción</div>` : ''}
         ${esPLN ? `
           <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
-          <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
         ` : ''}
         ${esPRO ? `
           <button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>
+        ` : ''}
+        ${esPLN || esPRO ? `
           <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
+        ` : ''}
+        ${esCS || esKAM || esPLN || esPRO || esCAL || esCEO || esADMIN ? `
+          <button class="nav-item ${state.vista === 'seguimiento_pedidos' ? 'active' : ''}" data-vista="seguimiento_pedidos">📍 Seguimiento de Pedidos</button>
         ` : ''}
         ${esCAL ? `
           <button class="nav-item ${state.vista === 'calidad' ? 'active' : ''}" data-vista="calidad">✅ Liberación Calidad</button>
@@ -1572,6 +1576,7 @@ function tituloVista() {
     productos_pt: 'Catálogo Productos PT',
     programacion: 'Programación de Producción',
     kanban_maquinas: '📋 Kanban por Máquina',
+    seguimiento_pedidos: '📍 Seguimiento de Pedidos',
     captura_produccion: 'Captura de Producción',
     calidad: 'Liberación de Calidad',
     seguimiento: 'Seguimiento de Pedidos',
@@ -1608,6 +1613,7 @@ function renderVista() {
   if (v === 'productos_pt') return renderProductosPT();
   if (v === 'programacion') return renderProgramacion();
   if (v === 'kanban_maquinas') return renderKanbanMaquinas();
+  if (v === 'seguimiento_pedidos') return renderSeguimientoPedidos();
   if (v === 'captura_produccion') return renderCapturaProduccion();
   if (v === 'calidad') return renderCalidad();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -3354,9 +3360,12 @@ window.guardarTransferenciaCatalogo = async (catKey) => {
 
 function renderPedidos() {
   const tab = state.tabs.pedidos || 'pendientes';
-  const pendientes = state.pedidos.filter(p => p.estatus === 'pendiente_aprobacion');
-  const aprobados = state.pedidos.filter(p => p.estatus === 'aprobado');
-  const ovsPend = state.ordenes_venta.filter(o => o.estatus === 'pendiente');
+  // 🗄️ Excluir archivados
+  const pedidosBase = state.pedidos.filter(p => !p.archivada);
+  const ovsBase = state.ordenes_venta.filter(o => !o.archivada);
+  const pendientes = pedidosBase.filter(p => p.estatus === 'pendiente_aprobacion');
+  const aprobados = pedidosBase.filter(p => p.estatus === 'aprobado');
+  const ovsPend = ovsBase.filter(o => o.estatus === 'pendiente');
   const odpsActivas = state.ordenes_produccion.filter(o => !o.archivada && ['pendiente_planeacion','programada','en_produccion'].includes(o.estatus));
   
   const ovsParaMi = state.user.almacen_asignado ? ovsPend.filter(o => o.cedis === state.user.almacen_asignado) : ovsPend;
@@ -3655,9 +3664,14 @@ function renderListaPedidos(pedidos, puedeAprobar) {
               </table>
             </div>
             ${p.observaciones ? `<div style="padding:8px 18px;font-size:12px;color:#64748b;">💬 ${p.observaciones}</div>` : '<div style="padding:6px;"></div>'}
-            ${p.estatus === 'pendiente_aprobacion' && puedeAprobar ? `
-              <div style="padding:12px 18px;background:#fffbeb;display:flex;justify-content:flex-end;">
-                <button class="btn-primary" onclick="aprobarPedido('${p.id}','${p.folio}')">${ICONS.check} Aprobar y generar OV/ODP</button>
+            ${p.estatus !== 'cancelado' && p.estatus !== 'completado' && puedeAprobar ? `
+              <div style="padding:12px 18px;background:#fffbeb;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                <button onclick="window.cancelarPedidoConDevolucion('${p.id}','${p.folio}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                  ✗ Cancelar PI
+                </button>
+                ${p.estatus === 'pendiente_aprobacion' ? `
+                  <button class="btn-primary" onclick="aprobarPedido('${p.id}','${p.folio}')">${ICONS.check} Aprobar y generar OV/ODP</button>
+                ` : ''}
               </div>
             ` : ''}
           </div>
@@ -3958,11 +3972,26 @@ function renderKanbanMaquinas() {
     const maq = getMaquinaActualODP(odp);
     const key = maq && porMaquina[maq] ? maq : '_sin_asignar';
     const estatus = odp.estatus || '';
-    if (estatus === 'completada' || estatus === 'liberada') {
+    const procEst = odp.proceso_estatus_actual || ''; // 🔀 estado granular: 'esperando' | 'en_proceso' | 'completado'
+    
+    if (estatus === 'cancelada') continue;
+    
+    // ✅ COMPLETADAS: ODP cerrada (liberada o pendiente_calidad)
+    if (estatus === 'completada' || estatus === 'liberada' || estatus === 'pendiente_calidad') {
       porMaquina[key].completadas.push(odp);
-    } else if (estatus === 'en_proceso' || (odp.proceso_actual_idx > 0 && estatus !== 'cancelada' && estatus !== 'pendiente')) {
-      porMaquina[key].en_proceso.push(odp);
-    } else if (estatus === 'aprobada' || estatus === 'pendiente' || estatus === 'programada') {
+    }
+    // ⚙️ EN PROCESO: el proceso tiene capturas activas
+    else if (procEst === 'en_proceso' || estatus === 'en_produccion' && procEst !== 'esperando' && procEst !== 'completado') {
+      // Si tiene capturas en este proceso = en proceso
+      const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === odp.proceso_actual);
+      if (capturas.length > 0 || procEst === 'en_proceso') {
+        porMaquina[key].en_proceso.push(odp);
+      } else {
+        porMaquina[key].en_cola.push(odp);
+      }
+    }
+    // 📦 EN COLA: programada o esperando inicio de proceso (incluye "esperando turno tras cerrar anterior")
+    else if (estatus === 'aprobada' || estatus === 'pendiente_planeacion' || estatus === 'programada' || procEst === 'esperando' || estatus === 'en_produccion') {
       porMaquina[key].en_cola.push(odp);
     }
   }
@@ -4095,12 +4124,33 @@ function _renderTarjetaKanban(odp, columna, opts) {
   
   const procIdx = odp.proceso_actual_idx ?? 0;
   const procActual = getProc((odp.ruta_procesos || [])[procIdx]);
+  const procEst = odp.proceso_estatus_actual || '';
+  const estatus = odp.estatus || '';
   const um = (odp.um || 'kg').toLowerCase();
   
   const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[procIdx]);
   const totalProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
   const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
   const pct = cantTotal > 0 ? Math.min(100, (totalProd / cantTotal) * 100) : 0;
+  
+  // 🔀 Calcular badge de estado granular preciso
+  let estadoBadge = null;
+  const ruta = odp.ruta_procesos || [];
+  const esUltimoProc = procIdx === ruta.length - 1;
+  
+  if (estatus === 'completada' || estatus === 'liberada') {
+    estadoBadge = { txt: '🎉 LIBERADA', color: '#15803d', bg: '#dcfce7' };
+  } else if (estatus === 'pendiente_calidad') {
+    estadoBadge = { txt: '🟡 ESPERANDO CALIDAD', color: '#a16207', bg: '#fef3c7' };
+  } else if (procEst === 'en_proceso' || capturas.length > 0) {
+    estadoBadge = { txt: '⚙️ EN ' + (procActual?.nombre || 'PROCESO').toUpperCase(), color: '#1e40af', bg: '#dbeafe' };
+  } else if (procEst === 'esperando' && procIdx > 0) {
+    // Proceso anterior cerrado, esperando inicio del actual
+    const procAnt = getProc(ruta[procIdx - 1]);
+    estadoBadge = { txt: `⏳ ESPERANDO ${procActual?.nombre?.toUpperCase() || ''}`, color: '#92400e', bg: '#fef3c7' };
+  } else if (estatus === 'programada' || estatus === 'aprobada' || procIdx === 0 && !capturas.length) {
+    estadoBadge = { txt: '📦 POR INICIAR', color: '#92400e', bg: '#fef3c7' };
+  }
   
   const borderColor = columna === 'cola' ? '#f59e0b' : (columna === 'proceso' ? '#3b82f6' : '#16a34a');
   const bgColor = columna === 'cola' ? '#fffbeb' : (columna === 'proceso' ? '#eff6ff' : '#f0fdf4');
@@ -4129,20 +4179,20 @@ function _renderTarjetaKanban(odp, columna, opts) {
         <div class="text-mono" style="font-weight:800;font-size:11.5px;color:#0f172a;">${dragHint}${odp.folio || (odp.id || '').slice(0,6)}</div>
         ${vencida ? `<span style="font-size:9px;font-weight:800;color:#dc2626;">🔴 VENCIDA</span>` : ''}
       </div>
-      <div style="font-weight:700;color:#475569;margin-top:3px;font-size:11px;">${odp.producto_codigo || ''}</div>
+      ${estadoBadge ? `<div style="margin-top:4px;display:inline-block;padding:2px 7px;background:${estadoBadge.bg};color:${estadoBadge.color};border-radius:99px;font-size:9.5px;font-weight:800;letter-spacing:0.02em;">${estadoBadge.txt}</div>` : ''}
+      <div style="font-weight:700;color:#475569;margin-top:4px;font-size:11px;">${odp.producto_codigo || ''}</div>
       <div style="font-size:10px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${odp.producto_descripcion || ''}</div>
       <div style="display:flex;justify-content:space-between;margin-top:5px;font-size:10px;">
         <span style="color:#475569;"><strong>${fmtNum(cantTotal)}</strong> ${um}</span>
         <span style="color:#64748b;">${cliente.length > 18 ? cliente.slice(0,17) + '…' : cliente}</span>
       </div>
-      ${columna === 'proceso' && pct > 0 ? `
+      ${(columna === 'proceso' || (procEst === 'en_proceso' && pct > 0)) ? `
         <div style="margin-top:6px;background:#e2e8f0;height:5px;border-radius:3px;overflow:hidden;">
           <div style="background:#3b82f6;height:100%;width:${pct}%;"></div>
         </div>
         <div style="font-size:9px;color:#3b82f6;font-weight:700;margin-top:2px;text-align:right;">${pct.toFixed(0)}% · ${fmtNum(totalProd)} ${um}</div>
       ` : ''}
       ${columna === 'cola' && fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#64748b'};margin-top:4px;">📅 Entrega: ${fechaEnt}</div>` : ''}
-      ${procActual ? `<div style="font-size:9px;color:#475569;margin-top:3px;font-weight:600;">${procActual.icono} ${procActual.nombre}</div>` : ''}
     </div>
   `;
 }
@@ -4386,6 +4436,573 @@ window.migrarUsuariosCALaALP = async () => {
     render();
   }
 };
+
+// ============================================================
+// ✗ CANCELAR DOCUMENTOS CON DEVOLUCIÓN DE STOCK
+// ============================================================
+
+// 1️⃣ Cancelar Pedido Interno (PI) y todo lo derivado de él
+window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
+  const p = (state.pedidos || []).find(x => x.id === pedidoId);
+  if (!p) { toast('Pedido no encontrado', 'error'); return; }
+  if (p.estatus === 'cancelado') { toast('Este pedido ya está cancelado', 'info'); return; }
+  
+  // Buscar lo derivado de este PI
+  const ovsHijas = (state.ordenes_venta || []).filter(o => o.pedido_id === pedidoId && o.estatus !== 'cancelada');
+  const odpsHijas = (state.ordenes_produccion || []).filter(o => o.pedido_id === pedidoId && !o.archivada && o.estatus !== 'cancelada');
+  
+  // Verificar si hay tarimas/lotes ya creados de las ODPs (stock en PT)
+  const odpFolios = odpsHijas.map(o => o.folio).filter(Boolean);
+  const tarimasRelacionadas = (state.tarimas || []).filter(t => odpFolios.includes(t.odp_folio) && t.estatus !== 'cancelada');
+  
+  const motivo = prompt(
+    `✗ CANCELAR PI ${folio}\n\n` +
+    `Esta acción cancelará:\n` +
+    `• 1 Pedido Interno\n` +
+    `• ${ovsHijas.length} Orden(es) de Venta\n` +
+    `• ${odpsHijas.length} Orden(es) de Producción\n` +
+    `${tarimasRelacionadas.length > 0 ? `• ${tarimasRelacionadas.length} tarima(s) ya producida(s) (las devolveremos a stock libre)\n` : ''}` +
+    `\nMotivo de la cancelación:`
+  );
+  if (!motivo || !motivo.trim()) {
+    toast('Cancelación abortada (sin motivo)', 'info');
+    return;
+  }
+  
+  try {
+    state.loadingAccion = true; render();
+    
+    const batch = writeBatch(db);
+    const ahora = serverTimestamp();
+    const meta = {
+      cancelado_motivo: motivo.trim(),
+      cancelado_por: state.user?.nombre || state.user?.email || 'sistema',
+      cancelado_at: ahora
+    };
+    
+    // Cancelar el PI
+    batch.update(doc(db, 'pedidos', pedidoId), {
+      estatus: 'cancelado',
+      ...meta,
+      updated_at: ahora
+    });
+    
+    // Cancelar OVs hijas
+    ovsHijas.forEach(o => {
+      batch.update(doc(db, 'ordenes_venta', o.id), {
+        estatus: 'cancelada',
+        ...meta,
+        updated_at: ahora
+      });
+    });
+    
+    // Cancelar ODPs hijas (también archivar para que no aparezcan)
+    odpsHijas.forEach(o => {
+      batch.update(doc(db, 'ordenes_produccion', o.id), {
+        estatus: 'cancelada',
+        archivada: true,
+        ...meta,
+        updated_at: ahora
+      });
+    });
+    
+    // Devolver tarimas a stock libre (quitarles el pedido_folio asociado)
+    tarimasRelacionadas.forEach(t => {
+      batch.update(doc(db, 'tarimas', t.id), {
+        pedido_folio_anterior: t.pedido_folio,  // memoria
+        pedido_folio: '',  // liberar
+        liberada_por_cancelacion: true,
+        ...meta,
+        updated_at: ahora
+      });
+    });
+    
+    await batch.commit();
+    toast(`✅ PI ${folio} cancelado. ${tarimasRelacionadas.length} tarima(s) regresaron a stock libre.`, 'success');
+  } catch (e) {
+    console.error('Error cancelar PI:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// 2️⃣ Cancelar ODP individual
+window.cancelarODPConDevolucion = async (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (odp.estatus === 'cancelada') { toast('Esta ODP ya está cancelada', 'info'); return; }
+  
+  // Tarimas/capturas asociadas
+  const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odpId);
+  const tarimas = (state.tarimas || []).filter(t => t.odp_folio === odp.folio && t.estatus !== 'cancelada');
+  
+  const motivo = prompt(
+    `✗ CANCELAR ODP ${odp.folio || odpId.slice(0,6)}\n\n` +
+    `Esta ODP tiene:\n` +
+    `• ${capturas.length} captura(s) de producción\n` +
+    `• ${tarimas.length} tarima(s) creada(s)\n\n` +
+    `Las tarimas se liberarán a stock libre (no se borran).\n\n` +
+    `Motivo:`
+  );
+  if (!motivo || !motivo.trim()) return;
+  
+  try {
+    state.loadingAccion = true; render();
+    
+    const batch = writeBatch(db);
+    const ahora = serverTimestamp();
+    const meta = {
+      cancelado_motivo: motivo.trim(),
+      cancelado_por: state.user?.nombre || state.user?.email || 'sistema',
+      cancelado_at: ahora
+    };
+    
+    batch.update(doc(db, 'ordenes_produccion', odpId), {
+      estatus: 'cancelada',
+      archivada: true,
+      ...meta,
+      updated_at: ahora
+    });
+    
+    tarimas.forEach(t => {
+      batch.update(doc(db, 'tarimas', t.id), {
+        pedido_folio_anterior: t.pedido_folio,
+        pedido_folio: '',
+        liberada_por_cancelacion: true,
+        ...meta,
+        updated_at: ahora
+      });
+    });
+    
+    await batch.commit();
+    toast(`✅ ODP ${odp.folio} cancelada. ${tarimas.length} tarima(s) liberadas a stock.`, 'success');
+  } catch (e) {
+    console.error('Error cancelar ODP:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// 3️⃣ Cancelar OC (Orden de Compra)
+window.cancelarOCConDevolucion = async (ocId) => {
+  const oc = (state.ordenes_compra || []).find(o => o.id === ocId);
+  if (!oc) { toast('OC no encontrada', 'error'); return; }
+  if (oc.estatus === 'cancelada') { toast('Esta OC ya está cancelada', 'info'); return; }
+  
+  const totalRecibido = (oc.lineas || []).reduce((s,l) => s + (Number(l.cantidad_recibida) || 0), 0);
+  
+  let textoExtra = '';
+  if (totalRecibido > 0) {
+    textoExtra = `⚠ Esta OC ya tiene ${fmtNum(totalRecibido)} de material recibido.\n` +
+                 `NO se revertirán esos movimientos (ya están en kardex inmutable).\n` +
+                 `El estatus quedará como cancelada para registro.\n\n`;
+  }
+  
+  const motivo = prompt(
+    `✗ CANCELAR OC ${oc.folio}\n\n` +
+    textoExtra +
+    `Motivo:`
+  );
+  if (!motivo || !motivo.trim()) return;
+  
+  try {
+    state.loadingAccion = true; render();
+    
+    await updateDoc(doc(db, 'ordenes_compra', ocId), {
+      estatus: 'cancelada',
+      cancelado_motivo: motivo.trim(),
+      cancelado_por: state.user?.nombre || state.user?.email || 'sistema',
+      cancelado_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    toast(`✅ OC ${oc.folio} cancelada`, 'success');
+  } catch (e) {
+    console.error('Error cancelar OC:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// 🧪 REINICIAR PARA PRUEBAS — Archivar todo de un golpe
+window.reiniciarParaPruebas = async () => {
+  const u = state.user || {};
+  if (u.rol !== 'admin' && u.depto !== 'CEO') {
+    toast('⛔ Solo CEO/Admin pueden reiniciar el sistema', 'error');
+    return;
+  }
+  
+  const pedidosActivos = (state.pedidos || []).filter(p => p.estatus !== 'cancelado' && !p.archivada).length;
+  const ovsActivas = (state.ordenes_venta || []).filter(o => o.estatus !== 'cancelada' && !o.archivada).length;
+  const odpsActivas = (state.ordenes_produccion || []).filter(o => !o.archivada).length;
+  const ocsActivas = (state.ordenes_compra || []).filter(o => o.estatus !== 'cancelada' && !o.archivada).length;
+  const rcsActivas = (state.requisiciones_compras || []).filter(r => r.estatus !== 'cancelada' && !r.archivada).length;
+  
+  const total = pedidosActivos + ovsActivas + odpsActivas + ocsActivas + rcsActivas;
+  if (total === 0) {
+    toast('No hay documentos activos para archivar', 'info');
+    return;
+  }
+  
+  const ok = confirm(
+    `🧪 REINICIAR PARA PRUEBAS\n\n` +
+    `Se archivarán TODOS los documentos activos:\n` +
+    `• ${pedidosActivos} Pedido(s) Interno(s)\n` +
+    `• ${ovsActivas} Orden(es) de Venta\n` +
+    `• ${odpsActivas} Orden(es) de Producción\n` +
+    `• ${ocsActivas} Orden(es) de Compra\n` +
+    `• ${rcsActivas} Requisición(es) de Compra\n\n` +
+    `⚠ Los datos NO se borran (solo se marcan como archivados).\n` +
+    `Esto te deja un sistema limpio para empezar pruebas en vivo.\n\n` +
+    `¿Continuar?`
+  );
+  if (!ok) return;
+  
+  const conf = prompt(`Para confirmar, escribe exactamente: REINICIAR ${total}`);
+  if (conf !== `REINICIAR ${total}`) {
+    toast('Cancelado: confirmación incorrecta', 'info');
+    return;
+  }
+  
+  try {
+    state.loadingAccion = true; render();
+    const ahora = serverTimestamp();
+    const meta = {
+      archivada: true,
+      archivada_at: ahora,
+      archivada_por: state.user?.nombre || state.user?.email || 'sistema',
+      archivada_motivo: 'Reinicio masivo para pruebas en vivo'
+    };
+    
+    // Función helper para hacer batches de hasta 400
+    async function batchArchivar(coleccion, items, extraFields = {}) {
+      if (items.length === 0) return 0;
+      const lotes = [];
+      for (let i = 0; i < items.length; i += 400) lotes.push(items.slice(i, i + 400));
+      let total = 0;
+      for (const lote of lotes) {
+        const b = writeBatch(db);
+        lote.forEach(item => {
+          b.update(doc(db, coleccion, item.id), { ...meta, ...extraFields, updated_at: ahora });
+        });
+        await b.commit();
+        total += lote.length;
+      }
+      return total;
+    }
+    
+    // Archivar Pedidos
+    const pedidos = (state.pedidos || []).filter(p => p.estatus !== 'cancelado' && !p.archivada);
+    await batchArchivar('pedidos', pedidos, { estatus: 'cancelado' });
+    
+    // Archivar OVs
+    const ovs = (state.ordenes_venta || []).filter(o => o.estatus !== 'cancelada' && !o.archivada);
+    await batchArchivar('ordenes_venta', ovs, { estatus: 'cancelada' });
+    
+    // Archivar ODPs
+    const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+    await batchArchivar('ordenes_produccion', odps);
+    
+    // Archivar OCs
+    const ocs = (state.ordenes_compra || []).filter(o => o.estatus !== 'cancelada' && !o.archivada);
+    await batchArchivar('ordenes_compra', ocs, { estatus: 'cancelada' });
+    
+    // Archivar RCs
+    const rcs = (state.requisiciones_compras || []).filter(r => r.estatus !== 'cancelada' && !r.archivada);
+    await batchArchivar('requisiciones_compras', rcs, { estatus: 'cancelada' });
+    
+    toast(`✅ Sistema reiniciado: ${total} documento(s) archivado(s). Listo para pruebas en vivo.`, 'success');
+  } catch (e) {
+    console.error('Error al reiniciar:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+
+// ============================================================
+// 📍 SEGUIMIENTO DE PEDIDOS — Vista en vivo para CS / Dirección
+// ============================================================
+// Por cada PI muestra timeline de procesos con estado actual
+// y permite a CS responderle al cliente con confianza
+function renderSeguimientoPedidos() {
+  const u = state.user || {};
+  
+  // Filtros UI
+  const filtroTexto = (state.filtros.seguimiento || '').toLowerCase();
+  const filtroEstado = state.filtros.seguimiento_estado || 'activos';
+  
+  // PIs activos (no cancelados ni archivados)
+  let pedidos = (state.pedidos || []).filter(p => !p.archivada && p.estatus !== 'cancelado');
+  
+  // Filtros por texto
+  if (filtroTexto) {
+    pedidos = pedidos.filter(p => 
+      ((p.folio || '') + ' ' + (p.cliente_nombre || '') + ' ' + (p.cliente_codigo || '')).toLowerCase().includes(filtroTexto)
+    );
+  }
+  
+  // Filtros por estado
+  if (filtroEstado === 'activos') {
+    pedidos = pedidos.filter(p => p.estatus !== 'completado' && p.estatus !== 'entregado');
+  } else if (filtroEstado === 'completados') {
+    pedidos = pedidos.filter(p => p.estatus === 'completado' || p.estatus === 'entregado');
+  }
+  
+  // Ordenar por más reciente
+  pedidos.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+  
+  // KPIs
+  const totalActivos = (state.pedidos || []).filter(p => !p.archivada && p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado').length;
+  const odpsCorriendo = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso').length;
+  const odpsEsperando = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'esperando').length;
+  const odpsCalidad = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'pendiente_calidad').length;
+  
+  return `
+    <div style="padding:14px;background:linear-gradient(135deg,#1e40af 0%,#3b82f6 100%);color:#fff;border-radius:10px;margin-bottom:14px;">
+      <div style="font-weight:800;font-size:14px;">📍 Seguimiento de Pedidos en Vivo</div>
+      <div style="font-size:11px;opacity:0.9;margin-top:2px;">Estado actualizado en tiempo real para responder a clientes con seguridad.</div>
+    </div>
+    
+    <!-- KPIs RÁPIDOS -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #1e40af;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">PEDIDOS ACTIVOS</div>
+        <div style="font-size:24px;font-weight:800;color:#1e40af;">${totalActivos}</div>
+      </div>
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #3b82f6;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">⚙️ EN PROCESO AHORA</div>
+        <div style="font-size:24px;font-weight:800;color:#3b82f6;">${odpsCorriendo}</div>
+      </div>
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #f59e0b;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">⏳ ESPERANDO INICIO</div>
+        <div style="font-size:24px;font-weight:800;color:#f59e0b;">${odpsEsperando}</div>
+      </div>
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #a16207;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">🟡 ESPERANDO CALIDAD</div>
+        <div style="font-size:24px;font-weight:800;color:#a16207;">${odpsCalidad}</div>
+      </div>
+    </div>
+    
+    <!-- FILTROS -->
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;background:#fff;padding:10px;border-radius:8px;border:1px solid #e2e8f0;">
+      <input class="input" id="filtro-seguimiento" style="max-width:300px;flex:1;" placeholder="Buscar PI, cliente..." value="${state.filtros.seguimiento || ''}" oninput="state.filtros.seguimiento=this.value;render();" />
+      <button onclick="state.filtros.seguimiento_estado='activos';render();" style="padding:6px 14px;background:${filtroEstado === 'activos' ? '#1e40af' : '#fff'};color:${filtroEstado === 'activos' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'activos' ? '#1e40af' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+        🔄 Activos
+      </button>
+      <button onclick="state.filtros.seguimiento_estado='completados';render();" style="padding:6px 14px;background:${filtroEstado === 'completados' ? '#16a34a' : '#fff'};color:${filtroEstado === 'completados' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'completados' ? '#16a34a' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+        ✅ Completados
+      </button>
+      <button onclick="state.filtros.seguimiento_estado='todos';render();" style="padding:6px 14px;background:${filtroEstado === 'todos' ? '#475569' : '#fff'};color:${filtroEstado === 'todos' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'todos' ? '#475569' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+        Todos
+      </button>
+    </div>
+    
+    ${pedidos.length === 0 ? `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">📍</div>
+        <div style="font-weight:700;color:#475569;">No hay pedidos con estos filtros</div>
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${pedidos.map(p => _renderTimelinePedido(p)).join('')}
+      </div>
+    `}
+  `;
+}
+
+// Timeline visual de un pedido con todas sus ODPs
+function _renderTimelinePedido(pedido) {
+  // ODPs hijas de este pedido (no archivadas)
+  const odps = (state.ordenes_produccion || []).filter(o => 
+    o.pedido_id === pedido.id && !o.archivada
+  );
+  // Tarimas asociadas
+  const tarimas = (state.tarimas || []).filter(t => t.pedido_folio === pedido.folio);
+  
+  const colorEst = { 
+    pendiente_aprobacion: '#f59e0b', 
+    aprobado: '#3b82f6', 
+    en_proceso: '#7c3aed',
+    completado: '#16a34a',
+    entregado: '#15803d',
+    cancelado: '#dc2626' 
+  }[pedido.estatus] || '#64748b';
+  
+  const lblEst = { 
+    pendiente_aprobacion: '⏳ Por aprobar', 
+    aprobado: '✓ Aprobado · esperando producción',
+    en_proceso: '⚙️ En producción',
+    completado: '✅ Completado',
+    entregado: '🚚 Entregado',
+    cancelado: '✗ Cancelado'
+  }[pedido.estatus] || pedido.estatus;
+  
+  return `
+    <div style="background:#fff;border:1.5px solid #e2e8f0;border-left:4px solid ${colorEst};border-radius:12px;overflow:hidden;">
+      <!-- Header del pedido -->
+      <div style="padding:14px 18px;background:${colorEst}11;border-bottom:1px solid #e2e8f0;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span class="text-mono" style="font-weight:800;font-size:16px;color:#0f172a;">${pedido.folio}</span>
+              <span style="padding:3px 10px;background:${colorEst};color:#fff;border-radius:99px;font-size:11px;font-weight:800;">${lblEst}</span>
+            </div>
+            <div style="font-size:13px;font-weight:700;color:#475569;margin-top:4px;">${pedido.cliente_nombre || '—'}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">
+              ${pedido.odc_cliente ? `📋 ODC: ${pedido.odc_cliente} · ` : ''}
+              ${pedido.fecha_requerida ? `🎯 Entrega: ${pedido.fecha_requerida} · ` : ''}
+              ${odps.length} ODP(s) · ${tarimas.length} tarima(s)
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ODPs del pedido -->
+      ${odps.length === 0 ? `
+        <div style="padding:24px;text-align:center;color:#94a3b8;font-size:12px;">
+          ${pedido.estatus === 'pendiente_aprobacion' ? '⏳ Aún sin ODPs (esperando aprobación)' : 'Sin ODPs asignadas a este pedido'}
+        </div>
+      ` : `
+        <div style="padding:14px 18px;display:flex;flex-direction:column;gap:14px;">
+          ${odps.map(odp => _renderTimelineODP(odp)).join('')}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// Timeline visual de UNA ODP mostrando sus procesos
+function _renderTimelineODP(odp) {
+  const ruta = odp.ruta_procesos || [];
+  const procIdx = odp.proceso_actual_idx ?? 0;
+  const procEst = odp.proceso_estatus_actual || '';
+  const procesosCompletados = odp.procesos_completados || [];
+  const estatus = odp.estatus || '';
+  const um = (odp.um || 'kg').toLowerCase();
+  const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
+  
+  // Estado global de la ODP
+  let estadoGlobal = '';
+  let colorGlobal = '#64748b';
+  if (estatus === 'cancelada') { estadoGlobal = '✗ Cancelada'; colorGlobal = '#dc2626'; }
+  else if (estatus === 'completada' || estatus === 'liberada') { estadoGlobal = '🎉 Liberada para entrega'; colorGlobal = '#15803d'; }
+  else if (estatus === 'pendiente_calidad') { estadoGlobal = '🟡 Producida · esperando liberación de calidad'; colorGlobal = '#a16207'; }
+  else if (procEst === 'en_proceso') {
+    const procActual = getProc(ruta[procIdx]);
+    estadoGlobal = `⚙️ En ${procActual?.nombre || 'proceso'}`;
+    colorGlobal = '#1e40af';
+  }
+  else if (procEst === 'esperando' && procIdx > 0) {
+    const procActual = getProc(ruta[procIdx]);
+    estadoGlobal = `⏳ Esperando iniciar ${procActual?.nombre || ''}`;
+    colorGlobal = '#92400e';
+  }
+  else if (estatus === 'programada' || estatus === 'aprobada') {
+    estadoGlobal = '📦 Programada para producir';
+    colorGlobal = '#92400e';
+  }
+  else if (estatus === 'pendiente_planeacion') {
+    estadoGlobal = '📋 Esperando programación';
+    colorGlobal = '#f59e0b';
+  }
+  
+  return `
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;">
+      <!-- Cabecera ODP -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="text-mono" style="font-weight:800;font-size:13px;color:#0f172a;">${odp.folio || ''}</span>
+            <span style="font-size:11.5px;font-weight:600;color:#475569;">${odp.producto_codigo || ''}</span>
+            <span style="padding:2px 8px;background:${colorGlobal}22;color:${colorGlobal};border-radius:99px;font-size:10.5px;font-weight:800;">${estadoGlobal}</span>
+          </div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px;">${odp.producto_descripcion || ''} · <strong>${fmtNum(cantTotal)} ${um}</strong></div>
+        </div>
+      </div>
+      
+      <!-- Timeline horizontal de procesos -->
+      <div style="display:flex;align-items:center;gap:0;margin-top:8px;padding:4px;background:#fff;border-radius:6px;border:1px solid #e2e8f0;overflow-x:auto;">
+        ${ruta.map((procCod, i) => {
+          const proc = getProc(procCod);
+          const esCompletado = i < procIdx;
+          const esActual = i === procIdx;
+          const esFuturo = i > procIdx;
+          
+          let icono, bg, color, txt;
+          if (esCompletado) {
+            icono = '✅';
+            bg = '#dcfce7';
+            color = '#15803d';
+            txt = 'Completado';
+          } else if (esActual) {
+            if (procEst === 'en_proceso') {
+              icono = '⚙️';
+              bg = '#dbeafe';
+              color = '#1e40af';
+              txt = 'En proceso';
+            } else if (procEst === 'esperando' && i > 0) {
+              icono = '⏳';
+              bg = '#fef3c7';
+              color = '#92400e';
+              txt = 'Esperando iniciar';
+            } else {
+              icono = '📦';
+              bg = '#fef3c7';
+              color = '#92400e';
+              txt = 'Por iniciar';
+            }
+          } else {
+            icono = '⚪';
+            bg = '#f1f5f9';
+            color = '#94a3b8';
+            txt = 'Pendiente';
+          }
+          
+          // Stats si está completado o en proceso
+          let stats = '';
+          if (esCompletado && procesosCompletados[i]) {
+            const pc = procesosCompletados[i];
+            stats = `${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida || 0)} ${um}`;
+          } else if (esActual && procEst === 'en_proceso') {
+            const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === procCod);
+            const prod = capturas.reduce((s,c) => s + (Number(c.producido_kg)||0), 0);
+            const pct = cantTotal > 0 ? Math.round((prod/cantTotal)*100) : 0;
+            stats = `${fmtNum(prod)} ${um} · ${pct}%`;
+          }
+          
+          return `
+            <div style="display:flex;align-items:center;flex:1;min-width:120px;">
+              <div style="flex:1;padding:8px 6px;text-align:center;background:${bg};border-radius:6px;border:${esActual ? '2px' : '1px'} solid ${color};">
+                <div style="font-size:18px;">${proc?.icono || icono}</div>
+                <div style="font-size:10px;font-weight:800;color:${color};margin-top:2px;">${proc?.nombre || procCod}</div>
+                <div style="font-size:9px;color:${color};margin-top:2px;font-weight:600;">${icono} ${txt}</div>
+                ${stats ? `<div style="font-size:10px;color:#475569;margin-top:3px;font-weight:700;">${stats}</div>` : ''}
+              </div>
+              ${i < ruta.length - 1 ? `<div style="font-size:18px;color:${esCompletado ? '#16a34a' : '#cbd5e1'};padding:0 4px;">→</div>` : ''}
+            </div>
+          `;
+        }).join('')}
+        ${ruta.length > 0 ? `
+          <div style="font-size:18px;color:#cbd5e1;padding:0 4px;">→</div>
+          <div style="flex:1;min-width:120px;padding:8px 6px;text-align:center;background:${estatus === 'completada' || estatus === 'liberada' ? '#dcfce7' : (estatus === 'pendiente_calidad' ? '#fef3c7' : '#f1f5f9')};border-radius:6px;border:1px solid ${estatus === 'completada' || estatus === 'liberada' ? '#15803d' : (estatus === 'pendiente_calidad' ? '#a16207' : '#cbd5e1')};">
+            <div style="font-size:18px;">${estatus === 'completada' || estatus === 'liberada' ? '🎉' : '🟡'}</div>
+            <div style="font-size:10px;font-weight:800;color:${estatus === 'completada' || estatus === 'liberada' ? '#15803d' : (estatus === 'pendiente_calidad' ? '#a16207' : '#94a3b8')};margin-top:2px;">Liberación</div>
+            <div style="font-size:9px;color:${estatus === 'completada' || estatus === 'liberada' ? '#15803d' : (estatus === 'pendiente_calidad' ? '#a16207' : '#94a3b8')};margin-top:2px;font-weight:600;">
+              ${estatus === 'completada' || estatus === 'liberada' ? '✅ Liberada' : (estatus === 'pendiente_calidad' ? '🟡 Pendiente' : '⚪ Por hacer')}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+      
+      ${odp.fecha_entrega_solicitada ? `<div style="margin-top:8px;font-size:11px;color:#64748b;">🎯 Entrega solicitada: <strong>${odp.fecha_entrega_solicitada}</strong></div>` : ''}
+    </div>
+  `;
+}
 
 
 function renderProgramacionPorProceso(odps, subTab) {
@@ -4726,6 +5343,9 @@ function renderTarjetaODP(o, contexto) {
           ` : `
             <button onclick="abrirModal('completar-proceso','${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">⚠ Cerrar antes de meta (${pctProcActual}%)</button>
           `}
+        ` : ''}
+        ${o.estatus !== 'cancelada' && o.estatus !== 'completada' && (state.user.depto === 'PLN' || state.user.depto === 'CEO' || state.user.rol === 'admin') ? `
+          <button onclick="window.cancelarODPConDevolucion('${o.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">✗ Cancelar ODP</button>
         ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
@@ -5940,15 +6560,24 @@ window.guardarCapturaTurno = async (odpId) => {
       created_at: serverTimestamp()
     });
     
-    // 2. Si la ODP está en programada, pasar a en_produccion
+    // 2. Actualizar ODP con estado granular del proceso
+    // Si está programada → arrancarla (en_produccion)
+    // Si proceso_estatus_actual era 'esperando' → ahora es 'en_proceso'
+    const yaTeniaCapturas = (state.capturas_produccion || []).some(c => c.odp_id === odpId && c.proceso === procActual);
+    const updates = {
+      updated_at: serverTimestamp()
+    };
     if (odp.estatus === 'programada') {
-      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-        estatus: 'en_produccion',
-        fecha_inicio_real: serverTimestamp(),
-        proceso_actual_inicio: serverTimestamp(),
-        updated_at: serverTimestamp()
-      });
+      updates.estatus = 'en_produccion';
+      updates.fecha_inicio_real = serverTimestamp();
+      updates.proceso_actual_inicio = serverTimestamp();
     }
+    // Marcar proceso como en_proceso (si era el primer turno de este proceso)
+    if (!yaTeniaCapturas || odp.proceso_estatus_actual !== 'en_proceso') {
+      updates.proceso_estatus_actual = 'en_proceso';
+      updates.proceso_actual_inicio = updates.proceso_actual_inicio || serverTimestamp();
+    }
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     
     cerrarModal();
     toast(`✅ Turno guardado: ${fmtNum(prodKg)} kg · ${op?.nombre || ''} · Grupo ${f.grupo}`);
@@ -7694,7 +8323,33 @@ function renderUsuariosSistema() {
   // 🔀 Detectar usuarios pendientes de migración CAL → ALP (fusión organizacional)
   const usuariosCAL = (state.usuarios_sistema || []).filter(usr => usr.depto === 'CAL');
   
+  // Conteo de documentos activos para el botón Reiniciar
+  const pedidosActivos = (state.pedidos || []).filter(p => p.estatus !== 'cancelado' && !p.archivada).length;
+  const ovsActivas = (state.ordenes_venta || []).filter(o => o.estatus !== 'cancelada' && !o.archivada).length;
+  const odpsActivas = (state.ordenes_produccion || []).filter(o => !o.archivada).length;
+  const ocsActivas = (state.ordenes_compra || []).filter(o => o.estatus !== 'cancelada' && !o.archivada).length;
+  const rcsActivas = (state.requisiciones_compras || []).filter(r => r.estatus !== 'cancelada' && !r.archivada).length;
+  const totalActivosSistema = pedidosActivos + ovsActivas + odpsActivas + ocsActivas + rcsActivas;
+  
   return `
+    ${totalActivosSistema > 0 ? `
+      <div style="padding:14px;background:linear-gradient(135deg,#fef2f2 0%,#fee2e2 100%);border:2px solid #dc2626;border-radius:10px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-weight:800;color:#7f1d1d;font-size:14px;">🧪 Zona de pruebas — Reiniciar sistema</div>
+            <div style="font-size:12px;color:#991b1b;margin-top:4px;line-height:1.5;">
+              Hay <strong>${totalActivosSistema} documento(s)</strong> activos en el sistema:<br>
+              ${pedidosActivos} PI · ${ovsActivas} OV · ${odpsActivas} ODP · ${ocsActivas} OC · ${rcsActivas} RC<br>
+              <span style="color:#7f1d1d;font-weight:600;">Archivarlos todos limpia el sistema para arrancar pruebas en vivo (NO los borra, solo los oculta).</span>
+            </div>
+          </div>
+          <button onclick="window.reiniciarParaPruebas()" style="padding:10px 16px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;white-space:nowrap;">
+            🧪 Reiniciar sistema para pruebas
+          </button>
+        </div>
+      </div>
+    ` : ''}
+    
     ${usuariosCAL.length > 0 ? `
       <div style="padding:14px;background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
@@ -8928,7 +9583,8 @@ function renderRequisiciones() {
   const filtro = (state.filtros.requisiciones || '').toLowerCase();
   const tab = state.tabs.requisiciones || 'activas';
   
-  let arr = state.requisiciones_compras || [];
+  // 🗄️ Excluir archivadas
+  let arr = (state.requisiciones_compras || []).filter(r => !r.archivada);
   
   // Filtrar por tab
   if (tab === 'activas') arr = arr.filter(r => !['recibida','cancelada'].includes(r.estatus));
@@ -12635,7 +13291,8 @@ function renderOrdenesCompra() {
   const filtro = (state.filtros.ordenes_compra || '').toLowerCase();
   const tab = state.tabs.ordenes_compra || 'activas';
   
-  let arr = (state.ordenes_compra || []).slice();
+  // 🗄️ Excluir archivadas
+  let arr = (state.ordenes_compra || []).filter(o => !o.archivada);
   
   // Filtrar por tab
   if (tab === 'activas') arr = arr.filter(o => !['recibida','cancelada'].includes(o.estatus));
@@ -12651,7 +13308,8 @@ function renderOrdenesCompra() {
   
   arr.sort((a,b) => (b.created_at?.seconds||0) - (a.created_at?.seconds||0));
   
-  const todas = state.ordenes_compra || [];
+  // KPIs basados en no-archivados
+  const todas = (state.ordenes_compra || []).filter(o => !o.archivada);
   const enTransito = todas.filter(o => o.estatus === 'en_transito').length;
   const parciales = todas.filter(o => o.estatus === 'recepcion_parcial').length;
   const recibidas = todas.filter(o => o.estatus === 'recibida').length;
@@ -12786,6 +13444,9 @@ function renderTarjetaOC(oc, esCOMP) {
         ` : ''}
         ${esCOMP ? `
           <button onclick="abrirModal('editar-oc','${oc.id}')" style="padding:6px 12px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;" title="Editar moneda, IVA, costos">${ICONS.edit} Editar</button>
+          ${oc.estatus !== 'recibida' && oc.estatus !== 'cancelada' ? `
+            <button onclick="window.cancelarOCConDevolucion('${oc.id}')" style="padding:6px 12px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">✗ Cancelar OC</button>
+          ` : ''}
           ${oc.estatus !== 'recibida' ? `
             <button onclick="eliminarOC('${oc.id}')" style="margin-left:auto;padding:6px 12px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🗑️ Eliminar</button>
           ` : ''}
@@ -23120,6 +23781,7 @@ window.confirmarCompletarProceso = async (odpId) => {
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
         estatus: 'pendiente_calidad',
+        proceso_estatus_actual: 'completado',
         proceso_actual: null,
         procesos_completados: procesosCompletados,
         cantidad_producida_final: prodEnUM,
@@ -23152,12 +23814,13 @@ window.confirmarCompletarProceso = async (odpId) => {
       const msgMP2 = consumosMP.length > 0 ? ` · 🧪 ${fmtNum(totalMpConsumida2.toFixed(0))} kg de MP descontados` : '';
       toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas${msgMP2}`);
     } else {
-      // Avanzar al siguiente proceso
+      // Avanzar al siguiente proceso, pero EN ESTADO ESPERANDO (no en proceso aún)
       const siguienteIdx = idx + 1;
       const siguienteProc = getProc(ruta[siguienteIdx]);
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-        estatus: 'programada',
+        estatus: 'en_produccion',
+        proceso_estatus_actual: 'esperando',
         procesos_completados: procesosCompletados,
         proceso_actual_idx: siguienteIdx,
         proceso_actual: ruta[siguienteIdx],
@@ -23754,6 +24417,8 @@ window._aplicarCierreExtrusionConMP = async () => {
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
         estatus: 'pendiente_calidad',
+        // 🔀 Granular: último proceso ya terminó, esperando liberación calidad
+        proceso_estatus_actual: 'completado',
         proceso_actual: null,
         procesos_completados: procesosCompletados,
         cantidad_producida_final: prodEnUM,
@@ -23772,7 +24437,10 @@ window._aplicarCierreExtrusionConMP = async () => {
       const siguienteProc = getProc(ruta[siguienteIdx]);
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-        estatus: 'programada',
+        // 🔀 NO marcamos en_produccion del siguiente: queda en estado "esperando"
+        // hasta que alguien capture el primer turno del nuevo proceso
+        estatus: 'en_produccion',
+        proceso_estatus_actual: 'esperando',
         procesos_completados: procesosCompletados,
         proceso_actual_idx: siguienteIdx,
         proceso_actual: ruta[siguienteIdx],
