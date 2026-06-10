@@ -957,8 +957,12 @@ window.abrirNotificacion = async (notifId) => {
 };
 
 window.marcarTodasLeidas = async () => {
+  // ALP y CAL comparten notificaciones (mismo depto fusionado)
+  const deptosCompatibles = state.user.depto === 'ALP' ? ['ALP','CAL'] : 
+                            state.user.depto === 'CAL' ? ['ALP','CAL'] : 
+                            [state.user.depto];
   const misNotifs = state.notificaciones.filter(n => 
-    !n.leida && (n.depto_destino === state.user.depto || state.user.rol === 'admin')
+    !n.leida && (deptosCompatibles.includes(n.depto_destino) || state.user.rol === 'admin')
   );
   if (misNotifs.length === 0) return;
   
@@ -1413,8 +1417,10 @@ function renderApp() {
   const esCEO = u.depto === 'CEO' || esAdmin;
   const esPLN = u.depto === 'PLN' || esCEO;
   const esPRO = u.depto === 'PRO' || esCEO;
-  const esCAL = u.depto === 'CAL' || esCEO;
+  // 🔀 ALP ahora es "Aseguramiento de Calidad y Logística Interna" — hereda permisos de Calidad
+  const esCAL = u.depto === 'CAL' || u.depto === 'ALP' || esCEO;
   const esCS = u.depto === 'CS' || u.depto === 'KAM' || esCEO;
+  const esKAM = u.depto === 'KAM' || esCEO;
   const esALP = u.depto === 'ALP' || esCEO;
   const esCEDMTY = u.depto === 'CEDMTY' || esCEO;
   const esCEDMEX = u.depto === 'CEDMEX' || esCEO;
@@ -1429,8 +1435,6 @@ function renderApp() {
   // (su sub-almacén respectivo). Solo COMP/CEO/ADMIN crean productos.
   const esVerOficina = esALP || esCEDMTY || esCEDMEX || esADMIN || esCOMP || esCEO || esCS || esKAM || esPLN || esPRO || esCAL || esMTTO;
   // 🛒 COMERCIALIZADO: CS, KAM, CEDMTY, CEDMEX, COMP, CEO, ADMIN
-  // (esCS ya está declarado arriba e incluye CS+KAM, pero declaro esKAM por separado para claridad)
-  const esKAM = u.depto === 'KAM' || esCEO;
   const esVerCOM = esCS || esKAM || esCEDMTY || esCEDMEX || esCOMP || esCEO || esADMIN;
   
   return `
@@ -1700,8 +1704,12 @@ function renderDashboard() {
       <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;">
         <span>${ICONS.bell} Notificaciones para ${state.user.depto || 'mí'}</span>
         ${(() => {
+          // 🔀 ALP y CAL ahora son el mismo depto (ACyLI): ALP ve también notificaciones de CAL
+          const deptosCompatibles = state.user.depto === 'ALP' ? ['ALP','CAL'] : 
+                                    state.user.depto === 'CAL' ? ['ALP','CAL'] : 
+                                    [state.user.depto];
           const misNotifs = state.notificaciones.filter(n => 
-            n.depto_destino === state.user.depto || 
+            deptosCompatibles.includes(n.depto_destino) || 
             (state.user.rol === 'admin' && n.depto_destino === 'ADMIN')
           );
           const noLeidas = misNotifs.filter(n => !n.leida).length;
@@ -1712,8 +1720,11 @@ function renderDashboard() {
       </div>
       <div style="max-height:520px;overflow-y:auto;">
         ${(() => {
+          const deptosCompatibles = state.user.depto === 'ALP' ? ['ALP','CAL'] : 
+                                    state.user.depto === 'CAL' ? ['ALP','CAL'] : 
+                                    [state.user.depto];
           const misNotifs = state.notificaciones.filter(n => 
-            n.depto_destino === state.user.depto || 
+            deptosCompatibles.includes(n.depto_destino) || 
             (state.user.rol === 'admin')
           ).slice(0, 30);
           
@@ -4323,6 +4334,52 @@ window.archivarTodasODPsViejas = async () => {
     toast(`✅ ${activas.length} ODPs archivadas. Kanban limpio.`, 'success');
   } catch (e) {
     console.error('Error al archivar:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false;
+    render();
+  }
+};
+
+// ============================================================
+// 🔀 MIGRACIÓN CAL → ALP (fusión de departamentos)
+// ============================================================
+window.migrarUsuariosCALaALP = async () => {
+  const usuariosCAL = (state.usuarios_sistema || []).filter(usr => usr.depto === 'CAL');
+  if (usuariosCAL.length === 0) {
+    toast('No hay usuarios de CAL para migrar', 'info');
+    return;
+  }
+  
+  const nombres = usuariosCAL.map(u => u.nombre || u.email).join('\n  • ');
+  const ok = confirm(
+    `🔀 MIGRAR ${usuariosCAL.length} usuario(s) de CAL → ALP\n\n` +
+    `Aseguramiento de Calidad y Logística Interna ahora unifica ambos.\n\n` +
+    `Usuarios a migrar:\n  • ${nombres}\n\n` +
+    `Su departamento cambiará a ALP. Mantendrán todos los permisos de Calidad (porque ALP ahora también incluye eso).\n\n` +
+    `¿Continuar?`
+  );
+  if (!ok) return;
+  
+  try {
+    state.loadingAccion = true;
+    render();
+    
+    const batch = writeBatch(db);
+    usuariosCAL.forEach(usr => {
+      batch.update(doc(db, 'usuarios', usr.id), {
+        depto: 'ALP',
+        depto_anterior: 'CAL',
+        migrado_at: serverTimestamp(),
+        migrado_por: state.user?.nombre || state.user?.email || 'sistema',
+        updated_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    
+    toast(`✅ ${usuariosCAL.length} usuario(s) migrados a ALP`, 'success');
+  } catch (e) {
+    console.error('Error al migrar:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false;
@@ -7559,9 +7616,9 @@ const DEPARTAMENTOS = [
   { codigo: 'COMP',    nombre: 'Compras',                   color: '#7c2d12' },
   { codigo: 'PLN',     nombre: 'Planeación',                color: '#f59e0b' },
   { codigo: 'PRO',     nombre: 'Producción',                color: '#dc2626' },
-  { codigo: 'CAL',     nombre: 'Calidad',                   color: '#16a34a' },
+  { codigo: 'ALP',     nombre: 'Aseguramiento de Calidad y Logística Interna', color: '#0d9488' },
   { codigo: 'MTTO',    nombre: 'Mantenimiento',             color: '#64748b' },
-  { codigo: 'ALP',     nombre: 'Almacén Planta',            color: '#0d9488' },
+  { codigo: 'CAL',     nombre: 'Calidad (Legacy → migrado a ALP)', color: '#94a3b8', deprecated: true },
   { codigo: 'CEDMTY',  nombre: 'CEDIS Monterrey',           color: '#9333ea' },
   { codigo: 'CEDMEX',  nombre: 'CEDIS México',              color: '#c026d3' },
   { codigo: 'CPH',     nombre: 'Coordinador Planta/Hub',    color: '#0284c7' },
@@ -7634,7 +7691,28 @@ function renderUsuariosSistema() {
   const totalActivos = (state.usuarios_sistema || []).filter(usr => usr.activo !== false).length;
   const totalInactivos = (state.usuarios_sistema || []).filter(usr => usr.activo === false).length;
   
+  // 🔀 Detectar usuarios pendientes de migración CAL → ALP (fusión organizacional)
+  const usuariosCAL = (state.usuarios_sistema || []).filter(usr => usr.depto === 'CAL');
+  
   return `
+    ${usuariosCAL.length > 0 ? `
+      <div style="padding:14px;background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-weight:800;color:#92400e;font-size:14px;">🔀 Migración de departamento pendiente</div>
+            <div style="font-size:12px;color:#78350f;margin-top:4px;line-height:1.5;">
+              El depto <strong>CAL (Calidad)</strong> se fusionó con <strong>ALP</strong> bajo el nombre 
+              <strong>"Aseguramiento de Calidad y Logística Interna"</strong>.<br>
+              Hay <strong>${usuariosCAL.length} usuario(s)</strong> aún asignado(s) a CAL: <em>${usuariosCAL.map(u => u.nombre || u.email).join(', ')}</em>
+            </div>
+          </div>
+          <button onclick="window.migrarUsuariosCALaALP()" style="padding:10px 16px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;white-space:nowrap;">
+            🔄 Migrar ${usuariosCAL.length} usuario(s) a ALP
+          </button>
+        </div>
+      </div>
+    ` : ''}
+    
     <!-- KPIs -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
       <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #3b82f6;">
@@ -7801,7 +7879,7 @@ function modalUsuario(esEdicion) {
             <label class="field-label">Departamento *</label>
             <select class="input" id="usr-depto" onchange="window.modalFormSet('depto', this.value)">
               <option value="">— Selecciona —</option>
-              ${DEPARTAMENTOS.map(d => `<option value="${d.codigo}" ${f.depto === d.codigo ? 'selected' : ''}>${d.codigo} — ${d.nombre}</option>`).join('')}
+              ${DEPARTAMENTOS.filter(d => !d.deprecated || f.depto === d.codigo).map(d => `<option value="${d.codigo}" ${f.depto === d.codigo ? 'selected' : ''}>${d.codigo} — ${d.nombre}</option>`).join('')}
             </select>
           </div>
           
@@ -23057,7 +23135,7 @@ window.confirmarCompletarProceso = async (odpId) => {
       });
       
       const batch = writeBatch(db);
-      ['CAL', 'CEO'].forEach(depto => {
+      ['CAL', 'ALP', 'CEO'].forEach(depto => {
         const ref = doc(collection(db, 'notificaciones'));
         batch.set(ref, {
           titulo: '🟡 Pendiente liberación calidad ' + odp.folio,
@@ -23707,7 +23785,7 @@ window._aplicarCierreExtrusionConMP = async () => {
     const batchNotif = writeBatch(db);
     
     if (esUltimo) {
-      ['CAL', 'CEO'].forEach(depto => {
+      ['CAL', 'ALP', 'CEO'].forEach(depto => {
         batchNotif.set(doc(collection(db, 'notificaciones')), {
           titulo: '🟡 Pendiente liberación calidad ' + odp.folio,
           mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · ${fmtNum(prodKg)} kg producidos · ${capturasProcActual.length} turno(s)`,
