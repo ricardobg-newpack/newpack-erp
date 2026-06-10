@@ -575,6 +575,16 @@ const TOLERANCIAS = {
   CAL_EXTRA_PCT: 0.05         // 5% (extra tolerable: aún libera TOTAL)
 };
 window.TOLERANCIAS = TOLERANCIAS;
+
+// ============================================================
+// 🚧 MODO SIMPLIFICADO DE PRODUCCIÓN (deployment urgente)
+// ============================================================
+// Cuando está en true: ignora todo lo de descuento/validación de MP en ODPs.
+// Los procesos se cierran libremente sin tocar inventario de MP.
+// Cuando lo quites: poner en false y se reactiva la lógica completa de MP.
+const MODO_SIMPLIFICADO_PROD = true;
+window.MODO_SIMPLIFICADO_PROD = MODO_SIMPLIFICADO_PROD;
+
 const getProc = (cod) => PROCESOS.find(p => p.codigo === cod);
 window.getProc = getProc;
 
@@ -1446,9 +1456,11 @@ function renderApp() {
         ${esPLN || esPRO || esCAL ? `<div class="sidebar-section">Producción</div>` : ''}
         ${esPLN ? `
           <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
+          <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
         ` : ''}
         ${esPRO ? `
           <button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>
+          <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
         ` : ''}
         ${esCAL ? `
           <button class="nav-item ${state.vista === 'calidad' ? 'active' : ''}" data-vista="calidad">✅ Liberación Calidad</button>
@@ -1555,6 +1567,7 @@ function tituloVista() {
     pedidos: 'Pedidos Internos (PI/OV/ODP)',
     productos_pt: 'Catálogo Productos PT',
     programacion: 'Programación de Producción',
+    kanban_maquinas: '📋 Kanban por Máquina',
     captura_produccion: 'Captura de Producción',
     calidad: 'Liberación de Calidad',
     seguimiento: 'Seguimiento de Pedidos',
@@ -1590,6 +1603,7 @@ function renderVista() {
   if (v === 'pedidos') return renderPedidos();
   if (v === 'productos_pt') return renderProductosPT();
   if (v === 'programacion') return renderProgramacion();
+  if (v === 'kanban_maquinas') return renderKanbanMaquinas();
   if (v === 'captura_produccion') return renderCapturaProduccion();
   if (v === 'calidad') return renderCalidad();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -3818,8 +3832,266 @@ function renderProgramacion() {
 }
 
 // ============================================================
-// VISTA: Programación agrupada por proceso → máquina
+// 📋 KANBAN POR MÁQUINA — Vista práctica para planeación y producción
 // ============================================================
+// Muestra cada máquina como columna con 3 sub-secciones:
+// - En Cola (pendientes/aprobadas, en orden de prioridad)
+// - En Proceso (la ODP que está corriendo actualmente)
+// - Recién Terminadas (últimas 3 completadas en esa máquina)
+function renderKanbanMaquinas() {
+  const u = state.user || {};
+  
+  // Filtros
+  const procFiltro = state.kanban_proceso || 'todos';
+  const turnoFiltro = state.kanban_turno || 'todos';
+  
+  // Obtener ODPs activas (no completadas ni canceladas)
+  const todasODPs = state.ordenes_produccion || [];
+  
+  // Obtener máquinas activas
+  const todasMaquinas = (state.maquinas || []).filter(m => m.activa !== false);
+  
+  // Filtrar por proceso seleccionado
+  let maquinas = todasMaquinas;
+  if (procFiltro !== 'todos') {
+    maquinas = maquinas.filter(m => (m.procesos_compatibles || []).includes(procFiltro) || m.proceso === procFiltro);
+  }
+  // Ordenar máquinas por código
+  maquinas = maquinas.slice().sort((a, b) => (a.codigo || '').localeCompare(b.codigo || ''));
+  
+  if (maquinas.length === 0) {
+    return `
+      <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:48px;margin-bottom:12px;">🛠️</div>
+        <div style="font-weight:700;color:#475569;">No hay máquinas registradas</div>
+        <div style="font-size:12px;margin-top:6px;">Crea máquinas en "🛠️ Máquinas de Producción" para verlas aquí</div>
+      </div>
+    `;
+  }
+  
+  // Agrupar ODPs por máquina y estatus
+  // Cada ODP tiene maquinas_asignadas = ['MAQ01', ...] y proceso_actual_idx
+  function getMaquinaActualODP(odp) {
+    // Tomar la máquina asignada del proceso actual
+    const idx = odp.proceso_actual_idx ?? 0;
+    const maqs = odp.maquinas_asignadas || {};
+    // maqs puede ser { 'P1-EXT': 'COEX01', 'P2-IMP': 'IMP02' } o array
+    if (typeof maqs === 'object' && !Array.isArray(maqs)) {
+      const procCodigo = (odp.ruta_procesos || [])[idx];
+      return maqs[procCodigo] || null;
+    }
+    if (Array.isArray(maqs)) return maqs[idx] || null;
+    return null;
+  }
+  
+  // Agrupar ODPs por máquina
+  const porMaquina = {}; // { 'COEX01': { en_cola: [], en_proceso: [], completadas: [] } }
+  maquinas.forEach(m => {
+    porMaquina[m.codigo] = { en_cola: [], en_proceso: [], completadas: [] };
+  });
+  // Cubo para máquinas no listadas
+  porMaquina['_sin_asignar'] = { en_cola: [], en_proceso: [], completadas: [] };
+  
+  for (const odp of todasODPs) {
+    const maq = getMaquinaActualODP(odp);
+    const key = maq && porMaquina[maq] ? maq : '_sin_asignar';
+    if (odp.estatus === 'completada') {
+      porMaquina[key].completadas.push(odp);
+    } else if (odp.estatus === 'en_proceso' || odp.proceso_actual_idx > 0) {
+      porMaquina[key].en_proceso.push(odp);
+    } else if (odp.estatus === 'aprobada' || odp.estatus === 'pendiente') {
+      porMaquina[key].en_cola.push(odp);
+    }
+  }
+  
+  // KPIs globales
+  const totalEnCola = Object.values(porMaquina).reduce((s, m) => s + m.en_cola.length, 0);
+  const totalEnProceso = Object.values(porMaquina).reduce((s, m) => s + m.en_proceso.length, 0);
+  const totalCompletadas = Object.values(porMaquina).reduce((s, m) => s + m.completadas.length, 0);
+  
+  return `
+    <!-- HEADER + FILTROS -->
+    <div style="padding:14px;background:#1e40af;color:#fff;border-radius:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div style="font-weight:800;font-size:14px;">📋 Kanban de Producción por Máquina</div>
+        <div style="font-size:11px;opacity:0.9;margin-top:2px;">Vista pública para planeación, producción y seguimiento. Actualización automática.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#1e40af;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">🖨️ Imprimir</button>
+      </div>
+    </div>
+    
+    <!-- KPIs RÁPIDOS -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #f59e0b;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">EN COLA</div>
+        <div style="font-size:24px;font-weight:800;color:#f59e0b;">${totalEnCola}</div>
+      </div>
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #3b82f6;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">EN PROCESO</div>
+        <div style="font-size:24px;font-weight:800;color:#3b82f6;">${totalEnProceso}</div>
+      </div>
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #16a34a;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">COMPLETADAS</div>
+        <div style="font-size:24px;font-weight:800;color:#16a34a;">${totalCompletadas}</div>
+      </div>
+      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #7c3aed;border-radius:8px;">
+        <div style="font-size:10px;color:#64748b;font-weight:700;">MÁQUINAS ACTIVAS</div>
+        <div style="font-size:24px;font-weight:800;color:#7c3aed;">${maquinas.length}</div>
+      </div>
+    </div>
+    
+    <!-- FILTRO POR PROCESO -->
+    <div style="margin-bottom:14px;display:flex;gap:6px;flex-wrap:wrap;">
+      <button onclick="state.kanban_proceso='todos';render();" style="padding:6px 14px;background:${procFiltro === 'todos' ? '#1e40af' : '#fff'};color:${procFiltro === 'todos' ? '#fff' : '#475569'};border:1.5px solid ${procFiltro === 'todos' ? '#1e40af' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+        🏭 Todos los procesos
+      </button>
+      ${(window.PROCESOS || []).map(p => `
+        <button onclick="state.kanban_proceso='${p.codigo}';render();" style="padding:6px 14px;background:${procFiltro === p.codigo ? p.color || '#1e40af' : '#fff'};color:${procFiltro === p.codigo ? '#fff' : '#475569'};border:1.5px solid ${procFiltro === p.codigo ? p.color || '#1e40af' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+          ${p.icono || ''} ${p.nombre}
+        </button>
+      `).join('')}
+    </div>
+    
+    <!-- KANBAN: cada máquina es una fila completa con sus 3 columnas -->
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      ${maquinas.map(m => {
+        const datos = porMaquina[m.codigo] || { en_cola: [], en_proceso: [], completadas: [] };
+        const proc = getProc(m.proceso) || getProc((m.procesos_compatibles || [])[0]);
+        const procColor = proc?.color || '#64748b';
+        
+        return `
+          <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+            <!-- Header de la máquina -->
+            <div style="padding:12px 16px;background:linear-gradient(90deg, ${procColor}11, transparent);border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+              <div>
+                <div style="font-weight:800;font-size:15px;color:#0f172a;">${m.icono || '🛠️'} ${m.codigo} — ${m.nombre || ''}</div>
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">
+                  ${proc ? `${proc.icono} ${proc.nombre}` : ''} 
+                  ${m.capacidad_kg_hora ? ` · ${m.capacidad_kg_hora} kg/hr` : ''}
+                  ${m.estatus_operativo ? ` · <span style="color:${m.estatus_operativo === 'operativa' ? '#16a34a' : '#dc2626'};font-weight:700;">${m.estatus_operativo}</span>` : ''}
+                </div>
+              </div>
+              <div style="display:flex;gap:12px;font-size:11px;">
+                <span style="color:#f59e0b;font-weight:700;">📦 ${datos.en_cola.length}</span>
+                <span style="color:#3b82f6;font-weight:700;">⚙️ ${datos.en_proceso.length}</span>
+                <span style="color:#16a34a;font-weight:700;">✅ ${datos.completadas.length}</span>
+              </div>
+            </div>
+            
+            <!-- 3 columnas: Cola / En Proceso / Completadas -->
+            <div style="display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:10px;padding:12px;background:#f8fafc;">
+              
+              <!-- COLA -->
+              <div>
+                <div style="font-weight:800;font-size:11px;color:#f59e0b;margin-bottom:8px;padding:6px 10px;background:#fef3c7;border-radius:6px;border-left:3px solid #f59e0b;">
+                  📦 EN COLA (${datos.en_cola.length})
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
+                  ${datos.en_cola.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">vacío</div>` : datos.en_cola.map(odp => _renderTarjetaKanban(odp, 'cola')).join('')}
+                </div>
+              </div>
+              
+              <!-- EN PROCESO -->
+              <div>
+                <div style="font-weight:800;font-size:11px;color:#3b82f6;margin-bottom:8px;padding:6px 10px;background:#dbeafe;border-radius:6px;border-left:3px solid #3b82f6;">
+                  ⚙️ EN PROCESO (${datos.en_proceso.length})
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
+                  ${datos.en_proceso.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">sin actividad</div>` : datos.en_proceso.map(odp => _renderTarjetaKanban(odp, 'proceso')).join('')}
+                </div>
+              </div>
+              
+              <!-- COMPLETADAS -->
+              <div>
+                <div style="font-weight:800;font-size:11px;color:#16a34a;margin-bottom:8px;padding:6px 10px;background:#dcfce7;border-radius:6px;border-left:3px solid #16a34a;">
+                  ✅ COMPLETADAS (${datos.completadas.length})
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
+                  ${datos.completadas.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">aún ninguna</div>` : datos.completadas.slice(0, 5).map(odp => _renderTarjetaKanban(odp, 'completada')).join('')}
+                  ${datos.completadas.length > 5 ? `<div style="text-align:center;font-size:10px;color:#94a3b8;padding:4px;">+${datos.completadas.length - 5} más</div>` : ''}
+                </div>
+              </div>
+              
+            </div>
+          </div>
+        `;
+      }).join('')}
+      
+      ${porMaquina['_sin_asignar'].en_cola.length + porMaquina['_sin_asignar'].en_proceso.length > 0 ? `
+        <div style="background:#fef2f2;border:1.5px solid #dc2626;border-radius:12px;overflow:hidden;">
+          <div style="padding:12px 16px;background:#fee2e2;border-bottom:1px solid #fecaca;">
+            <div style="font-weight:800;font-size:14px;color:#991b1b;">⚠️ Sin máquina asignada (${porMaquina['_sin_asignar'].en_cola.length + porMaquina['_sin_asignar'].en_proceso.length})</div>
+            <div style="font-size:11px;color:#7f1d1d;margin-top:2px;">Estas ODPs requieren asignación de máquina en Programación.</div>
+          </div>
+          <div style="padding:12px;display:flex;flex-wrap:wrap;gap:6px;">
+            ${[...porMaquina['_sin_asignar'].en_cola, ...porMaquina['_sin_asignar'].en_proceso].map(odp => _renderTarjetaKanban(odp, 'cola')).join('')}
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+// Tarjeta de ODP para Kanban
+function _renderTarjetaKanban(odp, columna) {
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procActual = getProc((odp.ruta_procesos || [])[idx]);
+  const um = (odp.um || 'kg').toLowerCase();
+  
+  // Calcular % completado del proceso actual
+  const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[idx]);
+  const totalProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
+  const pct = cantTotal > 0 ? Math.min(100, (totalProd / cantTotal) * 100) : 0;
+  
+  // Color del borde según columna
+  const borderColor = columna === 'cola' ? '#f59e0b' : (columna === 'proceso' ? '#3b82f6' : '#16a34a');
+  const bgColor = columna === 'cola' ? '#fffbeb' : (columna === 'proceso' ? '#eff6ff' : '#f0fdf4');
+  
+  // Cliente
+  const cliente = odp.cliente_nombre || 'STOCK';
+  
+  // Fecha estimada
+  const fechaEnt = odp.fecha_entrega_solicitada || odp.fecha_requerida || '';
+  
+  // Verificar si está vencida
+  const hoy = new Date().toISOString().split('T')[0];
+  const vencida = fechaEnt && fechaEnt < hoy && columna !== 'completada';
+  
+  return `
+    <div style="background:${bgColor};border:1px solid ${borderColor};border-left:3px solid ${borderColor};border-radius:6px;padding:8px 10px;font-size:11px;cursor:pointer;${vencida ? 'box-shadow: 0 0 0 2px #fca5a5;' : ''}" onclick="abrirDetalleODP('${odp.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:6px;">
+        <div class="text-mono" style="font-weight:800;font-size:11.5px;color:#0f172a;">${odp.folio || odp.id?.slice(0,6) || ''}</div>
+        ${vencida ? `<span style="font-size:9px;font-weight:800;color:#dc2626;">🔴 VENCIDA</span>` : ''}
+      </div>
+      <div style="font-weight:700;color:#475569;margin-top:3px;font-size:11px;">${odp.producto_codigo || ''}</div>
+      <div style="font-size:10px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${odp.producto_descripcion || ''}</div>
+      <div style="display:flex;justify-content:space-between;margin-top:5px;font-size:10px;">
+        <span style="color:#475569;"><strong>${fmtNum(cantTotal)}</strong> ${um}</span>
+        <span style="color:#64748b;">${cliente.length > 18 ? cliente.slice(0,17) + '…' : cliente}</span>
+      </div>
+      ${columna === 'proceso' && pct > 0 ? `
+        <div style="margin-top:6px;background:#e2e8f0;height:5px;border-radius:3px;overflow:hidden;">
+          <div style="background:#3b82f6;height:100%;width:${pct}%;"></div>
+        </div>
+        <div style="font-size:9px;color:#3b82f6;font-weight:700;margin-top:2px;text-align:right;">${pct.toFixed(0)}% · ${fmtNum(totalProd)} ${um}</div>
+      ` : ''}
+      ${columna === 'cola' && fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#64748b'};margin-top:4px;">📅 Entrega: ${fechaEnt}</div>` : ''}
+      ${procActual ? `<div style="font-size:9px;color:#475569;margin-top:3px;font-weight:600;">${procActual.icono} ${procActual.nombre}</div>` : ''}
+    </div>
+  `;
+}
+
+// Helper para abrir detalle desde tarjeta (placeholder por ahora)
+window.abrirDetalleODP = (odpId) => {
+  // Si existe modal de detalle de ODP, abrirlo; si no, ir a programación
+  state.vista = 'programacion';
+  state.odpDetalleId = odpId;
+  render();
+};
+
+
 function renderProgramacionPorProceso(odps, subTab) {
   // Agrupar ODPs por proceso y máquina
   // Cada ODP puede tener varios procesos (ruta_procesos) y máquinas (maquinas_asignadas)
@@ -22297,7 +22569,7 @@ window.confirmarCompletarProceso = async (odpId) => {
   let consumosMP = []; // para mostrar en toast y guardar registro
   let faltantesMP = []; // si alguna MP no alcanza
   
-  if (esExtrusion && producto) {
+  if (esExtrusion && producto && !MODO_SIMPLIFICADO_PROD) {
     // Verificar si tiene capas (formato nuevo) o formulación plana (formato antiguo)
     const capas = producto.capas || [];
     const tieneCapas = capas.length > 0 && capas.some(c => (c.ingredientes || []).length > 0);
