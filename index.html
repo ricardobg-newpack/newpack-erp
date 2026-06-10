@@ -5334,10 +5334,12 @@ function renderTarjetaODP(o, contexto) {
         ` : ''}
         ${o.estatus === 'programada' ? `
           <button class="btn-primary" onclick="abrirModal('capturar-turno','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📝 Capturar mi turno</button>
+          <button onclick="window.imprimirOrdenProduccionPDF('${o.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">📄 Imprimir ODP + Especif.</button>
           <button class="btn-secondary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Reprogramar</button>
         ` : ''}
         ${o.estatus === 'en_produccion' ? `
           <button class="btn-primary" onclick="abrirModal('capturar-turno','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📝 Capturar mi turno</button>
+          <button onclick="window.imprimirOrdenProduccionPDF('${o.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">📄 Reimprimir ODP</button>
           ${pctProcActual >= 95 ? `
             <button class="btn-primary" onclick="abrirModal('completar-proceso','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Cerrar ${getProc(procActual)?.nombre || procActual} (${pctProcActual}%)</button>
           ` : `
@@ -15951,6 +15953,567 @@ window.imprimirPreOrdenPDF = (ocId) => {
 };
 
 // ============================================================
+// PDF: ORDEN DE PRODUCCIÓN (formato manual de planta — replica Excel)
+// Se imprime junto con la HOJA DE ESPECIFICACIONES
+// ============================================================
+window.imprimirOrdenProduccionPDF = (odpId) => {
+  try {
+    const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+    if (!odp) { toast('ODP no encontrada', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    
+    const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
+    const pedido = (state.pedidos || []).find(p => p.id === odp.pedido_id);
+    
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'portrait' });
+    
+    // ============= PÁGINA 1: ORDEN DE PRODUCCIÓN =============
+    _renderHojaOrdenProduccion(docPDF, odp, producto, pedido);
+    
+    // ============= PÁGINA 2: HOJA DE ESPECIFICACIONES =============
+    docPDF.addPage('letter', 'portrait');
+    _renderHojaEspecificaciones(docPDF, odp, producto);
+    
+    // Mostrar preview en modal
+    const blob = docPDF.output('blob');
+    const url = URL.createObjectURL(blob);
+    state.pdfPreviewUrl = url;
+    state.pdfPreviewFilename = `Orden_Produccion_${odp.folio || odpId.slice(0,6)}.pdf`;
+    state.modal = 'pdf-preview';
+    render();
+  } catch (e) {
+    console.error('Error PDF Orden Producción:', e);
+    toast('Error generando PDF: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// HOJA 1: ORDEN DE PRODUCCIÓN — Replica el formato Excel manual
+// ============================================================
+function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
+  const W = 215.9;  // Letter ancho
+  const H = 279.4;  // Letter alto
+  const margen = 8;
+  
+  // -------- Logo + título --------
+  try {
+    if (window._logoNewPackBase64) {
+      docPDF.addImage(window._logoNewPackBase64, 'PNG', margen, 8, 22, 16);
+    }
+  } catch (e) {}
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(18);
+  docPDF.text('ORDEN DE PRODUCCIÓN', W/2, 14, { align: 'center' });
+  
+  // Cabecera: NUMERO OPE + STOCK/PEDIDO
+  let y = 22;
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('NÚMERO OPE:', 110, y);
+  docPDF.rect(135, y - 4, 35, 6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(odp.folio || '', 137, y);
+  
+  // STOCK / PEDIDO
+  const esStock = (pedido?.tipo_pi === 'stock_interno');
+  docPDF.setFontSize(7);
+  docPDF.rect(175, y - 4, 14, 6);
+  docPDF.rect(190, y - 4, 16, 6);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('STOCK', 182, y - 1, { align: 'center' });
+  docPDF.text('PEDIDO', 198, y - 1, { align: 'center' });
+  // Marca con X
+  docPDF.setFontSize(11);
+  if (esStock) docPDF.text('X', 182, y + 2.5, { align: 'center' });
+  else docPDF.text('X', 198, y + 2.5, { align: 'center' });
+  
+  // Fecha inicio / Fecha entrega
+  y += 10;
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('FECHA DE INICIO:', margen, y);
+  docPDF.rect(margen + 32, y - 4, 35, 6);
+  docPDF.text('FECHA DE ENTREGA:', 90, y);
+  docPDF.rect(125, y - 4, 35, 6);
+  docPDF.setFont('helvetica', 'normal');
+  if (odp.fecha_entrega_solicitada) docPDF.text(odp.fecha_entrega_solicitada, 127, y);
+  
+  // Cliente y ODC (extra al Excel original — datos útiles)
+  y += 8;
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('CLIENTE:', margen, y);
+  docPDF.setFont('helvetica', 'normal');
+  const cli = (odp.cliente_nombre || pedido?.cliente_nombre || 'STOCK INTERNO').substring(0, 50);
+  docPDF.text(cli, margen + 16, y);
+  if (pedido?.odc_cliente) {
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('ODC:', 130, y);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(String(pedido.odc_cliente), 140, y);
+  }
+  
+  // -------- Tabla principal: Cantidad / Unidad / Especificaciones / Línea de Proceso --------
+  y += 5;
+  const xCant = margen, wCant = 18;
+  const xUnid = xCant + wCant, wUnid = 14;
+  const xEspe = xUnid + wUnid, wEspe = 75;
+  const xLP = xEspe + wEspe, wLP = W - margen*2 - wCant - wUnid - wEspe;
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(220, 220, 220);
+  docPDF.rect(xCant, y, wCant, 5, 'FD');
+  docPDF.text('CANTIDAD', xCant + wCant/2, y + 3.5, { align: 'center' });
+  docPDF.rect(xUnid, y, wUnid, 5, 'FD');
+  docPDF.text('UNIDAD', xUnid + wUnid/2, y + 3.5, { align: 'center' });
+  docPDF.rect(xEspe, y, wEspe, 5, 'FD');
+  docPDF.text('ESPECIFICACIONES', xEspe + wEspe/2, y + 3.5, { align: 'center' });
+  docPDF.rect(xLP, y, wLP, 5, 'FD');
+  docPDF.text('LÍNEA DE PROCESO', xLP + wLP/2, y + 3.5, { align: 'center' });
+  y += 5;
+  
+  // Filas de cantidad/UM
+  const hFila = 7;
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.rect(xCant, y, wCant, hFila * 2);  // celda cantidad (combinada)
+  docPDF.rect(xUnid, y, wUnid, hFila);       // KG
+  docPDF.rect(xUnid, y + hFila, wUnid, hFila); // MILLAR
+  docPDF.rect(xEspe, y, wEspe, hFila * 2);   // especificaciones
+  
+  // Cantidad
+  docPDF.setFontSize(10);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(fmtNum(odp.cantidad_kg || odp.cantidad || 0), xCant + wCant/2, y + hFila, { align: 'center' });
+  
+  // KG / MILLAR
+  docPDF.setFontSize(8);
+  docPDF.text('KG', xUnid + wUnid/2, y + hFila/2 + 1, { align: 'center' });
+  docPDF.text('MILLAR', xUnid + wUnid/2, y + hFila + hFila/2 + 1, { align: 'center' });
+  
+  // Especificaciones del producto
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'normal');
+  const espec = (odp.producto_descripcion || producto?.descripcion || odp.producto_codigo || '').substring(0, 100);
+  const especLines = docPDF.splitTextToSize(espec, wEspe - 4);
+  docPDF.text(especLines.slice(0, 3), xEspe + 2, y + 4);
+  // Codigo del producto
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(9);
+  docPDF.text(odp.producto_codigo || '', xEspe + 2, y + hFila * 2 - 2);
+  
+  // Línea de proceso: EXT / IMP / BOLSEO (con máquinas asignadas)
+  const subLP = wLP / 3;
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(240, 240, 240);
+  docPDF.rect(xLP, y, subLP, hFila, 'FD');
+  docPDF.rect(xLP + subLP, y, subLP, hFila, 'FD');
+  docPDF.rect(xLP + subLP*2, y, subLP, hFila, 'FD');
+  docPDF.text('EXT.', xLP + subLP/2, y + hFila/2 + 1, { align: 'center' });
+  docPDF.text('IMP.', xLP + subLP + subLP/2, y + hFila/2 + 1, { align: 'center' });
+  docPDF.text('BOLSEO', xLP + subLP*2 + subLP/2, y + hFila/2 + 1, { align: 'center' });
+  
+  // Máquinas asignadas (autocompletadas según programación)
+  const maqs = odp.maquinas_asignadas || {};
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.rect(xLP, y + hFila, subLP, hFila);
+  docPDF.rect(xLP + subLP, y + hFila, subLP, hFila);
+  docPDF.rect(xLP + subLP*2, y + hFila, subLP, hFila);
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(maqs['P1-EXT'] || '', xLP + subLP/2, y + hFila + hFila/2 + 1, { align: 'center' });
+  docPDF.text(maqs['P2-IMP'] || '', xLP + subLP + subLP/2, y + hFila + hFila/2 + 1, { align: 'center' });
+  docPDF.text(maqs['P3-BS'] || maqs['P4-BR'] || '', xLP + subLP*2 + subLP/2, y + hFila + hFila/2 + 1, { align: 'center' });
+  
+  y += hFila * 2;
+  
+  // -------- FÓRMULA AUTORIZADA (en blanco para llenar a mano) --------
+  y += 2;
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(220, 220, 220);
+  docPDF.rect(xLP, y, wLP, 5, 'FD');
+  docPDF.text('FÓRMULA AUTORIZADA', xLP + wLP/2, y + 3.5, { align: 'center' });
+  y += 5;
+  
+  const colResina = wLP * 0.40;
+  const colPct = wLP * 0.15;
+  const colKg = wLP * 0.20;
+  const colLote = wLP * 0.25;
+  
+  docPDF.setFontSize(7);
+  docPDF.rect(xLP, y, colResina, 4, 'FD');
+  docPDF.rect(xLP + colResina, y, colPct, 4, 'FD');
+  docPDF.rect(xLP + colResina + colPct, y, colKg, 4, 'FD');
+  docPDF.rect(xLP + colResina + colPct + colKg, y, colLote, 4, 'FD');
+  docPDF.text('RESINA', xLP + colResina/2, y + 3, { align: 'center' });
+  docPDF.text('%', xLP + colResina + colPct/2, y + 3, { align: 'center' });
+  docPDF.text('KG', xLP + colResina + colPct + colKg/2, y + 3, { align: 'center' });
+  docPDF.text('LOTE', xLP + colResina + colPct + colKg + colLote/2, y + 3, { align: 'center' });
+  y += 4;
+  
+  // 4 filas vacías
+  docPDF.setFont('helvetica', 'normal');
+  const hFormula = 5;
+  for (let i = 0; i < 4; i++) {
+    docPDF.rect(xLP, y, colResina, hFormula);
+    docPDF.rect(xLP + colResina, y, colPct, hFormula);
+    docPDF.rect(xLP + colResina + colPct, y, colKg, hFormula);
+    docPDF.rect(xLP + colResina + colPct + colKg, y, colLote, hFormula);
+    y += hFormula;
+  }
+  
+  // Resetear y para columna izquierda — captura turnos EXT
+  let yIzq = y - 5 - 4 - hFormula*4 - 2;
+  
+  // -------- TABLA CAPTURA EXTRUSIÓN (manual) --------
+  const xIzq = margen;
+  const wIzq = xLP - margen - 2;  // ancho columna izquierda
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(7);
+  docPDF.setFillColor(220, 220, 220);
+  
+  const cFecha = wIzq * 0.18;
+  const cTurno = wIzq * 0.12;
+  const cOper = wIzq * 0.30;
+  const cProd = wIzq * 0.22;
+  const cMerm = wIzq * 0.18;
+  
+  docPDF.rect(xIzq, yIzq, cFecha, 5, 'FD');
+  docPDF.rect(xIzq + cFecha, yIzq, cTurno, 5, 'FD');
+  docPDF.rect(xIzq + cFecha + cTurno, yIzq, cOper, 5, 'FD');
+  docPDF.rect(xIzq + cFecha + cTurno + cOper, yIzq, cProd, 5, 'FD');
+  docPDF.rect(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 5, 'FD');
+  docPDF.text('FECHA', xIzq + cFecha/2, yIzq + 3.5, { align: 'center' });
+  docPDF.text('TURNO', xIzq + cFecha + cTurno/2, yIzq + 3.5, { align: 'center' });
+  docPDF.text('OPERADOR', xIzq + cFecha + cTurno + cOper/2, yIzq + 3.5, { align: 'center' });
+  docPDF.text('PRODUCCIÓN KG', xIzq + cFecha + cTurno + cOper + cProd/2, yIzq + 3.5, { align: 'center' });
+  docPDF.text('MERMA KG', xIzq + cFecha + cTurno + cOper + cProd + cMerm/2, yIzq + 3.5, { align: 'center' });
+  yIzq += 5;
+  
+  // 12 filas vacías para captura
+  const hExtr = 5;
+  for (let i = 0; i < 12; i++) {
+    docPDF.rect(xIzq, yIzq, cFecha, hExtr);
+    docPDF.rect(xIzq + cFecha, yIzq, cTurno, hExtr);
+    docPDF.rect(xIzq + cFecha + cTurno, yIzq, cOper, hExtr);
+    docPDF.rect(xIzq + cFecha + cTurno + cOper, yIzq, cProd, hExtr);
+    docPDF.rect(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, hExtr);
+    yIzq += hExtr;
+  }
+  
+  // Total EXT
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.rect(xIzq, yIzq, cFecha + cTurno + cOper, 6, 'FD');
+  docPDF.text('TOTAL EN KG :', xIzq + 2, yIzq + 4);
+  docPDF.rect(xIzq + cFecha + cTurno + cOper, yIzq, cProd, 6);
+  docPDF.rect(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 6);
+  yIzq += 6;
+  
+  // -------- OBSERVACIONES (recuadro derecho) --------
+  let yObs = y;
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(220, 220, 220);
+  docPDF.rect(xLP, yObs, wLP, 5, 'FD');
+  docPDF.text('OBSERVACIONES', xLP + wLP/2, yObs + 3.5, { align: 'center' });
+  yObs += 5;
+  // Caja grande de observaciones
+  const altoObs = yIzq - yObs - 1;
+  docPDF.rect(xLP, yObs, wLP, altoObs);
+  
+  y = yIzq + 3;
+  
+  // -------- SUB-PROCESO BOLSEO --------
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(220, 220, 220);
+  docPDF.rect(margen, y, W - margen*2, 5, 'FD');
+  docPDF.text('SUB - PROCESO (BOLSEO / SUB-PROCESO)', W/2, y + 3.5, { align: 'center' });
+  y += 5;
+  
+  // Tabla bolseo (mismo formato + columna Especificaciones)
+  const wBol = W - margen*2;
+  const bFecha = wBol * 0.12;
+  const bTurno = wBol * 0.08;
+  const bOper = wBol * 0.22;
+  const bProd = wBol * 0.16;
+  const bMerm = wBol * 0.12;
+  const bEsp = wBol - bFecha - bTurno - bOper - bProd - bMerm;
+  
+  docPDF.setFontSize(7);
+  docPDF.rect(margen, y, bFecha, 5, 'FD');
+  docPDF.rect(margen + bFecha, y, bTurno, 5, 'FD');
+  docPDF.rect(margen + bFecha + bTurno, y, bOper, 5, 'FD');
+  docPDF.rect(margen + bFecha + bTurno + bOper, y, bProd, 5, 'FD');
+  docPDF.rect(margen + bFecha + bTurno + bOper + bProd, y, bMerm, 5, 'FD');
+  docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm, y, bEsp, 5, 'FD');
+  docPDF.text('FECHA', margen + bFecha/2, y + 3.5, { align: 'center' });
+  docPDF.text('TURNO', margen + bFecha + bTurno/2, y + 3.5, { align: 'center' });
+  docPDF.text('OPERADOR', margen + bFecha + bTurno + bOper/2, y + 3.5, { align: 'center' });
+  docPDF.text('PRODUCCIÓN', margen + bFecha + bTurno + bOper + bProd/2, y + 3.5, { align: 'center' });
+  docPDF.text('MERMA', margen + bFecha + bTurno + bOper + bProd + bMerm/2, y + 3.5, { align: 'center' });
+  docPDF.text('ESPECIFICACIONES DE EMPAQUE', margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp/2, y + 3.5, { align: 'center' });
+  y += 5;
+  
+  // 12 filas vacías
+  for (let i = 0; i < 12; i++) {
+    docPDF.rect(margen, y, bFecha, 5);
+    docPDF.rect(margen + bFecha, y, bTurno, 5);
+    docPDF.rect(margen + bFecha + bTurno, y, bOper, 5);
+    docPDF.rect(margen + bFecha + bTurno + bOper, y, bProd, 5);
+    docPDF.rect(margen + bFecha + bTurno + bOper + bProd, y, bMerm, 5);
+    docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm, y, bEsp, 5);
+    y += 5;
+  }
+  
+  // -------- MERMA BOLSEO + TOTAL PRODUCCION --------
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.rect(margen, y, bFecha + bTurno, 12, 'FD');
+  docPDF.text('MERMA', margen + (bFecha + bTurno)/2, y + 5, { align: 'center' });
+  docPDF.text('BOLSEO', margen + (bFecha + bTurno)/2, y + 9, { align: 'center' });
+  
+  docPDF.rect(margen + bFecha + bTurno, y, bOper, 12);
+  
+  docPDF.rect(margen + bFecha + bTurno + bOper, y, bProd, 12, 'FD');
+  docPDF.text('TOTAL DE', margen + bFecha + bTurno + bOper + bProd/2, y + 5, { align: 'center' });
+  docPDF.text('PRODUCCIÓN FINAL', margen + bFecha + bTurno + bOper + bProd/2, y + 9, { align: 'center' });
+  
+  docPDF.rect(margen + bFecha + bTurno + bOper + bProd, y, bMerm + bEsp - 16, 12);
+  // KG y PZS
+  docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 16, y, 16, 6, 'FD');
+  docPDF.text('KG', margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 8, y + 4, { align: 'center' });
+  docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 16, y + 6, 16, 6, 'FD');
+  docPDF.text('PZS', margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 8, y + 10, { align: 'center' });
+  y += 12;
+  
+  // Fecha término
+  y += 3;
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(9);
+  docPDF.text('FECHA DE TÉRMINO DE ORDEN:', margen, y + 4);
+  docPDF.rect(margen + 60, y, 50, 6);
+  
+  // Firmas
+  y += 18;
+  const firmaAncho = 60;
+  docPDF.setFontSize(8);
+  docPDF.line(margen + 5, y, margen + 5 + firmaAncho, y);
+  docPDF.text('LIBERACIÓN DE PRODUCTO', margen + 5 + firmaAncho/2, y + 4, { align: 'center' });
+  
+  docPDF.line(W/2 - firmaAncho/2, y, W/2 + firmaAncho/2, y);
+  docPDF.text('AUTORIZÓ', W/2, y + 4, { align: 'center' });
+  
+  docPDF.line(W - margen - 5 - firmaAncho, y, W - margen - 5, y);
+  docPDF.text('RECEPCIÓN DE ALMACÉN', W - margen - 5 - firmaAncho/2, y + 4, { align: 'center' });
+  
+  // Footer
+  docPDF.setFontSize(6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(120, 120, 120);
+  const ahora = new Date().toLocaleString('es-MX');
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 1/2`, W/2, H - 5, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+}
+
+// ============================================================
+// HOJA 2: ESPECIFICACIONES DEL PRODUCTO + MEZCLA POR CAPAS
+// ============================================================
+function _renderHojaEspecificaciones(docPDF, odp, producto) {
+  const W = 215.9, H = 279.4, margen = 8;
+  
+  // Logo + título
+  try {
+    if (window._logoNewPackBase64) {
+      docPDF.addImage(window._logoNewPackBase64, 'PNG', margen, 8, 22, 16);
+    }
+  } catch (e) {}
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(18);
+  docPDF.text('HOJA DE ESPECIFICACIONES', W/2, 14, { align: 'center' });
+  docPDF.setFontSize(10);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(`ODP: ${odp.folio || ''}`, W/2, 21, { align: 'center' });
+  
+  let y = 30;
+  
+  // ============ DATOS DEL PRODUCTO ============
+  docPDF.setFillColor(31, 178, 75); // verde NewPack
+  docPDF.rect(margen, y, W - margen*2, 6, 'F');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  docPDF.text('DATOS DEL PRODUCTO', margen + 3, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  y += 6;
+  
+  const colA = margen, colB = W/2 + 5;
+  const wCol = (W - margen*2 - 5)/2;
+  
+  function _campo(x, yy, label, valor, ancho) {
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(7);
+    docPDF.text(label.toUpperCase(), x + 1, yy + 3);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(9);
+    docPDF.rect(x, yy + 4, ancho, 6);
+    docPDF.text(String(valor || '').substring(0, 50), x + 2, yy + 8.5);
+  }
+  
+  _campo(colA, y, 'Código de producto', odp.producto_codigo || '', wCol);
+  _campo(colB, y, 'ODC Cliente', odp.odc_cliente || '', wCol);
+  y += 12;
+  
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(7);
+  docPDF.text('DESCRIPCIÓN COMPLETA', colA + 1, y + 3);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(9);
+  docPDF.rect(colA, y + 4, W - margen*2, 8);
+  const desc = (odp.producto_descripcion || producto?.descripcion || '');
+  const descLines = docPDF.splitTextToSize(desc, W - margen*2 - 4);
+  docPDF.text(descLines.slice(0,2), colA + 2, y + 8);
+  y += 14;
+  
+  // Medidas
+  const m1 = wCol/3, m2 = wCol*2/3;
+  _campo(colA, y, 'Ancho (cm)', producto?.ancho || '', m1 - 1);
+  _campo(colA + m1, y, 'Fuelle (cm)', producto?.fuelle || '', m1 - 1);
+  _campo(colA + m1*2, y, 'Largo (cm)', producto?.largo || '', m1 - 1);
+  _campo(colB, y, 'Calibre (μ)', producto?.calibre || '', m1 - 1);
+  _campo(colB + m1, y, 'Color', producto?.color || '', m1 - 1);
+  _campo(colB + m1*2, y, 'Aditivo', producto?.aditivo || '', m1 - 1);
+  y += 12;
+  
+  // Empaque
+  _campo(colA, y, 'Tipo de empaque', producto?.tipo_empaque || '— SELECCIONAR —', wCol);
+  _campo(colB, y, 'Piezas por empaque', producto?.cant_empaque ? `${producto.cant_empaque} ${producto.um_empaque || ''}` : '', wCol);
+  y += 12;
+  
+  // Impresión / Sellado
+  const wTer = (W - margen*2 - 5*2)/3;
+  _campo(colA, y, 'Impresión', producto?.impresion || '', wTer);
+  _campo(colA + wTer + 5, y, 'Núm. tintas', producto?.num_tintas || '', wTer);
+  _campo(colA + (wTer + 5)*2, y, 'Tipo de sellado', producto?.tipo_sellado || '', wTer);
+  y += 12;
+  
+  // Observaciones técnicas
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(7);
+  docPDF.text('OBSERVACIONES TÉCNICAS', colA + 1, y + 3);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(8);
+  docPDF.rect(colA, y + 4, W - margen*2, 10);
+  if (producto?.obs_tecnicas) {
+    const obsLines = docPDF.splitTextToSize(producto.obs_tecnicas, W - margen*2 - 4);
+    docPDF.text(obsLines.slice(0,3), colA + 2, y + 8);
+  }
+  y += 16;
+  
+  // ============ MEZCLA / FÓRMULA ============
+  docPDF.setFillColor(31, 178, 75);
+  docPDF.rect(margen, y, W - margen*2, 6, 'F');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  docPDF.text('MEZCLA / FÓRMULA POR CAPAS', margen + 3, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  y += 8;
+  
+  // Determinar # capas según máquina asignada en EXT
+  const maqExt = odp.maquinas_asignadas?.['P1-EXT'] || '';
+  const maqData = (state.maquinas || []).find(m => m.codigo === maqExt);
+  const numCapas = Number(maqData?.coex_capas) || 3;  // por defecto 3 capas si no se sabe
+  
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(8);
+  docPDF.text(`Máquina EXT asignada: ${maqExt || '— sin asignar —'}  ·  ${numCapas} capa(s) de extrusión`, margen, y);
+  y += 5;
+  
+  // Tabla por cada capa con 6 filas para materiales
+  const letrasCapas = ['A', 'B', 'C', 'D', 'E'];
+  
+  for (let i = 0; i < numCapas; i++) {
+    const letra = letrasCapas[i] || `Capa${i+1}`;
+    
+    // Header de capa
+    docPDF.setFillColor(220, 235, 240);
+    docPDF.rect(margen, y, W - margen*2, 6, 'FD');
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    docPDF.text(`CAPA ${letra}`, margen + 3, y + 4);
+    docPDF.text('% del total:', margen + 60, y + 4);
+    docPDF.rect(margen + 80, y + 1, 18, 4);
+    y += 6;
+    
+    // Sub-tabla: Material / % capa / Kg / Lote
+    const cMat = (W - margen*2) * 0.45;
+    const cPctC = (W - margen*2) * 0.15;
+    const cKgC = (W - margen*2) * 0.20;
+    const cLoteC = (W - margen*2) * 0.20;
+    
+    docPDF.setFillColor(245, 245, 245);
+    docPDF.rect(margen, y, cMat, 5, 'FD');
+    docPDF.rect(margen + cMat, y, cPctC, 5, 'FD');
+    docPDF.rect(margen + cMat + cPctC, y, cKgC, 5, 'FD');
+    docPDF.rect(margen + cMat + cPctC + cKgC, y, cLoteC, 5, 'FD');
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(7);
+    docPDF.text('MATERIAL / RESINA', margen + cMat/2, y + 3.5, { align: 'center' });
+    docPDF.text('%', margen + cMat + cPctC/2, y + 3.5, { align: 'center' });
+    docPDF.text('KG', margen + cMat + cPctC + cKgC/2, y + 3.5, { align: 'center' });
+    docPDF.text('LOTE', margen + cMat + cPctC + cKgC + cLoteC/2, y + 3.5, { align: 'center' });
+    y += 5;
+    
+    // 6 filas en blanco para materiales
+    docPDF.setFont('helvetica', 'normal');
+    for (let r = 0; r < 6; r++) {
+      docPDF.rect(margen, y, cMat, 5);
+      docPDF.rect(margen + cMat, y, cPctC, 5);
+      docPDF.rect(margen + cMat + cPctC, y, cKgC, 5);
+      docPDF.rect(margen + cMat + cPctC + cKgC, y, cLoteC, 5);
+      y += 5;
+    }
+    y += 2;
+    
+    // Si nos pasamos de la página, saltar
+    if (y > H - 40 && i < numCapas - 1) {
+      docPDF.addPage('letter', 'portrait');
+      y = 20;
+    }
+  }
+  
+  // Firmas
+  y = Math.max(y + 10, H - 35);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  const firmaAncho2 = 70;
+  docPDF.line(margen + 10, y, margen + 10 + firmaAncho2, y);
+  docPDF.text('FORMULADO POR', margen + 10 + firmaAncho2/2, y + 4, { align: 'center' });
+  
+  docPDF.line(W - margen - 10 - firmaAncho2, y, W - margen - 10, y);
+  docPDF.text('AUTORIZÓ (CALIDAD)', W - margen - 10 - firmaAncho2/2, y + 4, { align: 'center' });
+  
+  // Footer
+  docPDF.setFontSize(6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(120, 120, 120);
+  const ahora = new Date().toLocaleString('es-MX');
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 2/2`, W/2, H - 5, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+}
+
+
+// ============================================================
 // PDF: HOJA DE ESTANDARIZACIÓN DE EXTRUSIÓN (NPA-PRO-AV-06)
 // ============================================================
 window.imprimirEstandarizacionPDF = (productoCodigo) => {
@@ -22602,6 +23165,10 @@ window.crearProductoPT = async () => {
       color: f.color, aditivo: f.aditivo,
       um: f.um,
       tipo_empaque: tipoEmp, cant_empaque: cantEmp, um_empaque: umEmp,
+      impresion: f.impresion || '',
+      num_tintas: Number(f.num_tintas) || 0,
+      tipo_sellado: f.tipo_sellado || '',
+      obs_tecnicas: f.obs_tecnicas || '',
       presentacion,
       num_capas: Number(f.num_capas) || 1,
       capas: capasLimpias,
@@ -22708,6 +23275,10 @@ window.guardarProductoPT = async (codigo) => {
       tipo_empaque: f.tipo_empaque,
       cant_empaque: Number(f.cant_empaque) || 0,
       um_empaque: f.um_empaque,
+      impresion: f.impresion || '',
+      num_tintas: Number(f.num_tintas) || 0,
+      tipo_sellado: f.tipo_sellado || '',
+      obs_tecnicas: f.obs_tecnicas || '',
       num_capas: Number(f.num_capas) || 1,
       capas: capasLimpias,
       estandarizacion_extrusion: estLimpia,
