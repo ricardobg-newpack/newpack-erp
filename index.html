@@ -4424,6 +4424,127 @@ window.archivarTodasODPsViejas = async () => {
 };
 
 // ============================================================
+// 🗄️ ARCHIVAR PIs SIN ODPs (huérfanos de pruebas viejas)
+// ============================================================
+window.archivarPIsSinODP = async () => {
+  const u = state.user || {};
+  if (u.rol !== 'admin' && u.depto !== 'CEO' && u.depto !== 'ADMIN') {
+    toast('⛔ Solo CEO/Admin pueden hacer esta limpieza', 'error');
+    return;
+  }
+  
+  // Encontrar PIs activos sin ODPs
+  const pisSinODP = (state.pedidos || []).filter(p => 
+    !p.archivada && 
+    p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado' &&
+    !(state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada)
+  );
+  
+  if (pisSinODP.length === 0) {
+    toast('No hay PIs sin ODPs para archivar', 'info');
+    return;
+  }
+  
+  // OVs asociadas a esos PIs
+  const pisIds = pisSinODP.map(p => p.id);
+  const ovsAsociadas = (state.ordenes_venta || []).filter(o => 
+    !o.archivada && pisIds.includes(o.pedido_id)
+  );
+  
+  // Tarimas asociadas (si las hay)
+  const folios = pisSinODP.map(p => p.folio);
+  const tarimasAsociadas = (state.tarimas || []).filter(t => folios.includes(t.pedido_folio));
+  
+  const ok = confirm(
+    `🗄️ ARCHIVAR ${pisSinODP.length} PIs sin ODPs\n\n` +
+    `Estos pedidos están aprobados pero nunca recibieron órdenes de producción (probablemente datos de prueba).\n\n` +
+    `Se archivarán:\n` +
+    `• ${pisSinODP.length} Pedido(s) Interno(s)\n` +
+    `• ${ovsAsociadas.length} OV(s) hija(s)\n` +
+    `• Se liberarán ${tarimasAsociadas.length} tarima(s) asociada(s) a stock libre\n\n` +
+    `Los datos NO se borran, solo se ocultan.\n\n` +
+    `¿Continuar?`
+  );
+  if (!ok) return;
+  
+  const conf = prompt(`Para confirmar, escribe exactamente: ARCHIVAR ${pisSinODP.length}`);
+  if (conf !== `ARCHIVAR ${pisSinODP.length}`) {
+    toast('Cancelado: confirmación incorrecta', 'info');
+    return;
+  }
+  
+  try {
+    state.loadingAccion = true; render();
+    
+    const ahora = serverTimestamp();
+    const meta = {
+      archivada: true,
+      archivada_at: ahora,
+      archivada_por: state.user?.nombre || state.user?.email || 'sistema',
+      archivada_motivo: 'Limpieza: PI sin ODPs asignadas'
+    };
+    
+    // Archivar PIs en batches de 400
+    const lotesPI = [];
+    for (let i = 0; i < pisSinODP.length; i += 400) lotesPI.push(pisSinODP.slice(i, i + 400));
+    for (const lote of lotesPI) {
+      const b = writeBatch(db);
+      lote.forEach(p => {
+        b.update(doc(db, 'pedidos', p.id), { 
+          ...meta, 
+          estatus: 'cancelado', 
+          updated_at: ahora 
+        });
+      });
+      await b.commit();
+    }
+    
+    // Archivar OVs hijas
+    if (ovsAsociadas.length > 0) {
+      const lotesOV = [];
+      for (let i = 0; i < ovsAsociadas.length; i += 400) lotesOV.push(ovsAsociadas.slice(i, i + 400));
+      for (const lote of lotesOV) {
+        const b = writeBatch(db);
+        lote.forEach(o => {
+          b.update(doc(db, 'ordenes_venta', o.id), { 
+            ...meta, 
+            estatus: 'cancelada', 
+            updated_at: ahora 
+          });
+        });
+        await b.commit();
+      }
+    }
+    
+    // Liberar tarimas asociadas
+    if (tarimasAsociadas.length > 0) {
+      const lotesT = [];
+      for (let i = 0; i < tarimasAsociadas.length; i += 400) lotesT.push(tarimasAsociadas.slice(i, i + 400));
+      for (const lote of lotesT) {
+        const b = writeBatch(db);
+        lote.forEach(t => {
+          b.update(doc(db, 'tarimas', t.id), { 
+            pedido_folio_anterior: t.pedido_folio,
+            pedido_folio: '',
+            liberada_por_cancelacion: true,
+            updated_at: ahora 
+          });
+        });
+        await b.commit();
+      }
+    }
+    
+    toast(`✅ ${pisSinODP.length} PIs archivados · ${ovsAsociadas.length} OVs · ${tarimasAsociadas.length} tarimas liberadas`, 'success');
+  } catch (e) {
+    console.error('Error archivar PIs:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false;
+    render();
+  }
+};
+
+// ============================================================
 // 🔀 MIGRACIÓN CAL → ALP (fusión de departamentos)
 // ============================================================
 window.migrarUsuariosCALaALP = async () => {
@@ -4763,13 +4884,17 @@ window.reiniciarParaPruebas = async () => {
 // y permite a CS responderle al cliente con confianza
 function renderSeguimientoPedidos() {
   const u = state.user || {};
+  const esAdmin = u.rol === 'admin' || u.depto === 'CEO' || u.depto === 'ADMIN';
+  const puedeCancelar = esAdmin || u.depto === 'CS' || u.depto === 'KAM';
   
   // Filtros UI
   const filtroTexto = (state.filtros.seguimiento || '').toLowerCase();
   const filtroEstado = state.filtros.seguimiento_estado || 'activos';
   
-  // PIs activos (no cancelados ni archivados)
-  let pedidos = (state.pedidos || []).filter(p => !p.archivada && p.estatus !== 'cancelado');
+  // PIs no archivados
+  const pedidosBase = (state.pedidos || []).filter(p => !p.archivada);
+  // PIs no cancelados ni archivados
+  let pedidos = pedidosBase.filter(p => p.estatus !== 'cancelado');
   
   // Filtros por texto
   if (filtroTexto) {
@@ -4783,28 +4908,62 @@ function renderSeguimientoPedidos() {
     pedidos = pedidos.filter(p => p.estatus !== 'completado' && p.estatus !== 'entregado');
   } else if (filtroEstado === 'completados') {
     pedidos = pedidos.filter(p => p.estatus === 'completado' || p.estatus === 'entregado');
+  } else if (filtroEstado === 'sin_odp') {
+    // PIs sin ODPs asignadas (huérfanos)
+    pedidos = pedidos.filter(p => {
+      const odps = (state.ordenes_produccion || []).filter(o => o.pedido_id === p.id && !o.archivada);
+      return odps.length === 0;
+    });
   }
   
   // Ordenar por más reciente
   pedidos.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
   
+  // PIs sin ODPs (para botón de limpieza masiva)
+  const pisSinODP = pedidosBase.filter(p => 
+    p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado' &&
+    !(state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada)
+  );
+  
   // KPIs
-  const totalActivos = (state.pedidos || []).filter(p => !p.archivada && p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado').length;
+  const activosConODP = pedidosBase.filter(p => 
+    p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado' &&
+    (state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada)
+  ).length;
   const odpsCorriendo = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso').length;
   const odpsEsperando = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'esperando').length;
   const odpsCalidad = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'pendiente_calidad').length;
   
   return `
-    <div style="padding:14px;background:linear-gradient(135deg,#1e40af 0%,#3b82f6 100%);color:#fff;border-radius:10px;margin-bottom:14px;">
-      <div style="font-weight:800;font-size:14px;">📍 Seguimiento de Pedidos en Vivo</div>
-      <div style="font-size:11px;opacity:0.9;margin-top:2px;">Estado actualizado en tiempo real para responder a clientes con seguridad.</div>
+    <div style="padding:14px;background:linear-gradient(135deg,#1e40af 0%,#3b82f6 100%);color:#fff;border-radius:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div style="font-weight:800;font-size:14px;">📍 Seguimiento de Pedidos en Vivo</div>
+        <div style="font-size:11px;opacity:0.9;margin-top:2px;">Estado actualizado en tiempo real para responder a clientes con seguridad.</div>
+      </div>
+      ${esAdmin && pisSinODP.length > 0 ? `
+        <button onclick="window.archivarPIsSinODP()" style="padding:8px 14px;background:#fff;color:#dc2626;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;white-space:nowrap;">
+          🗄️ Archivar ${pisSinODP.length} PIs sin ODPs
+        </button>
+      ` : ''}
     </div>
+    
+    ${pisSinODP.length > 0 && esAdmin ? `
+      <div style="padding:12px 14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;margin-bottom:12px;">
+        <div style="display:flex;align-items:flex-start;gap:10px;">
+          <div style="font-size:20px;">⚠️</div>
+          <div style="flex:1;font-size:12px;color:#78350f;">
+            <strong>Hay ${pisSinODP.length} PIs aprobados sin ODPs asignadas.</strong> Son pedidos que se aprobaron pero nunca se les generaron órdenes de producción. Si son datos de prueba, archívalos con el botón de arriba. Si son reales, créales sus ODPs.
+          </div>
+        </div>
+      </div>
+    ` : ''}
     
     <!-- KPIs RÁPIDOS -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
       <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #1e40af;border-radius:8px;">
-        <div style="font-size:10px;color:#64748b;font-weight:700;">PEDIDOS ACTIVOS</div>
-        <div style="font-size:24px;font-weight:800;color:#1e40af;">${totalActivos}</div>
+        <div style="font-size:10px;color:#64748b;font-weight:700;">PEDIDOS CON ODP</div>
+        <div style="font-size:24px;font-weight:800;color:#1e40af;">${activosConODP}</div>
+        ${pisSinODP.length > 0 ? `<div style="font-size:9px;color:#dc2626;margin-top:2px;font-weight:700;">+ ${pisSinODP.length} sin ODPs</div>` : ''}
       </div>
       <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #3b82f6;border-radius:8px;">
         <div style="font-size:10px;color:#64748b;font-weight:700;">⚙️ EN PROCESO AHORA</div>
@@ -4829,6 +4988,11 @@ function renderSeguimientoPedidos() {
       <button onclick="state.filtros.seguimiento_estado='completados';render();" style="padding:6px 14px;background:${filtroEstado === 'completados' ? '#16a34a' : '#fff'};color:${filtroEstado === 'completados' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'completados' ? '#16a34a' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
         ✅ Completados
       </button>
+      ${pisSinODP.length > 0 ? `
+        <button onclick="state.filtros.seguimiento_estado='sin_odp';render();" style="padding:6px 14px;background:${filtroEstado === 'sin_odp' ? '#dc2626' : '#fff'};color:${filtroEstado === 'sin_odp' ? '#fff' : '#dc2626'};border:1.5px solid #dc2626;border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+          ⚠ Sin ODPs (${pisSinODP.length})
+        </button>
+      ` : ''}
       <button onclick="state.filtros.seguimiento_estado='todos';render();" style="padding:6px 14px;background:${filtroEstado === 'todos' ? '#475569' : '#fff'};color:${filtroEstado === 'todos' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'todos' ? '#475569' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
         Todos
       </button>
@@ -4841,14 +5005,14 @@ function renderSeguimientoPedidos() {
       </div>
     ` : `
       <div style="display:flex;flex-direction:column;gap:12px;">
-        ${pedidos.map(p => _renderTimelinePedido(p)).join('')}
+        ${pedidos.map(p => _renderTimelinePedido(p, puedeCancelar)).join('')}
       </div>
     `}
   `;
 }
 
 // Timeline visual de un pedido con todas sus ODPs
-function _renderTimelinePedido(pedido) {
+function _renderTimelinePedido(pedido, puedeCancelar) {
   // ODPs hijas de este pedido (no archivadas)
   const odps = (state.ordenes_produccion || []).filter(o => 
     o.pedido_id === pedido.id && !o.archivada
@@ -4879,10 +5043,11 @@ function _renderTimelinePedido(pedido) {
       <!-- Header del pedido -->
       <div style="padding:14px 18px;background:${colorEst}11;border-bottom:1px solid #e2e8f0;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
-          <div>
+          <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
               <span class="text-mono" style="font-weight:800;font-size:16px;color:#0f172a;">${pedido.folio}</span>
               <span style="padding:3px 10px;background:${colorEst};color:#fff;border-radius:99px;font-size:11px;font-weight:800;">${lblEst}</span>
+              ${odps.length === 0 && pedido.estatus === 'aprobado' ? `<span style="padding:3px 10px;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:99px;font-size:10.5px;font-weight:800;">⚠ Sin ODPs</span>` : ''}
             </div>
             <div style="font-size:13px;font-weight:700;color:#475569;margin-top:4px;">${pedido.cliente_nombre || '—'}</div>
             <div style="font-size:11px;color:#64748b;margin-top:2px;">
@@ -4891,6 +5056,11 @@ function _renderTimelinePedido(pedido) {
               ${odps.length} ODP(s) · ${tarimas.length} tarima(s)
             </div>
           </div>
+          ${puedeCancelar && pedido.estatus !== 'cancelado' && pedido.estatus !== 'completado' && pedido.estatus !== 'entregado' ? `
+            <button onclick="window.cancelarPedidoConDevolucion('${pedido.id}','${pedido.folio}')" style="padding:6px 12px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;">
+              ✗ Cancelar
+            </button>
+          ` : ''}
         </div>
       </div>
       
