@@ -160,6 +160,11 @@ const state = {
   tarimas: [],
   packing_lists: [],
   oti: [],
+  // 🆕 LOGÍSTICA — catálogos y remisiones auto-generadas
+  transportistas: [],
+  operadores_logistica: [],
+  unidades_logistica: [],
+  remisiones: [],
   comentarios_pedidos: [],
   notificaciones: [],
   maquinas: [],
@@ -230,6 +235,45 @@ const ODP_ESTATUS = {
   TERMINAL_NEGATIVO: ['cancelada', 'rechazada']
 };
 window.ODP_ESTATUS = ODP_ESTATUS;
+
+// 🆕 LOGÍSTICA — Tipos de transportista, unidades y licencias
+// Transportistas: INTERNO (NewPack Logística, para planta→CEDIS) o EXTERNO (para CEDIS→cliente)
+const TIPOS_TRANSPORTISTA = [
+  { codigo: 'interno', nombre: 'NewPack Logística (interno)', icono: '🏠', color: '#16a34a' },
+  { codigo: 'externo', nombre: 'Proveedor Externo', icono: '🚛', color: '#0891b2' }
+];
+
+const TIPOS_UNIDAD = [
+  { codigo: 'camion', nombre: 'Camión', icono: '🚛' },
+  { codigo: 'tractocamion', nombre: 'Tractocamión', icono: '🚚' },
+  { codigo: 'caja_seca', nombre: 'Caja Seca', icono: '📦' },
+  { codigo: 'caja_refrigerada', nombre: 'Caja Refrigerada', icono: '❄️' },
+  { codigo: 'tres_y_medio', nombre: '3.5 toneladas', icono: '🚐' },
+  { codigo: 'rabon', nombre: 'Rabón', icono: '🚛' },
+  { codigo: 'torton', nombre: 'Tortón', icono: '🚛' },
+  { codigo: 'pickup', nombre: 'Camioneta / Pickup', icono: '🛻' },
+  { codigo: 'otro', nombre: 'Otro', icono: '🚐' }
+];
+
+const TIPOS_LICENCIA = [
+  { codigo: 'A', nombre: 'Tipo A (motociclista)' },
+  { codigo: 'B', nombre: 'Tipo B (automovilista)' },
+  { codigo: 'C', nombre: 'Tipo C (chofer)' },
+  { codigo: 'D', nombre: 'Tipo D (chofer servicio público)' },
+  { codigo: 'E', nombre: 'Tipo E (chofer trailer)' },
+  { codigo: 'F', nombre: 'Tipo F (camión carga)' },
+  { codigo: 'fed_a', nombre: 'Federal A' },
+  { codigo: 'fed_b', nombre: 'Federal B' },
+  { codigo: 'fed_c', nombre: 'Federal C' },
+  { codigo: 'fed_d', nombre: 'Federal D' },
+  { codigo: 'fed_e', nombre: 'Federal E' }
+];
+
+function _tipoTransportista(cod) { return TIPOS_TRANSPORTISTA.find(t => t.codigo === cod) || TIPOS_TRANSPORTISTA[1]; }
+function _tipoUnidad(cod) { return TIPOS_UNIDAD.find(t => t.codigo === cod) || TIPOS_UNIDAD[0]; }
+window.TIPOS_TRANSPORTISTA = TIPOS_TRANSPORTISTA;
+window.TIPOS_UNIDAD = TIPOS_UNIDAD;
+window.TIPOS_LICENCIA = TIPOS_LICENCIA;
 
 // Helper: ¿esta ODP ya pasó producción? (ya está en calidad, logística o terminal)
 function odpYaTerminoProduccion(odp) {
@@ -1238,6 +1282,23 @@ async function cargarTodo() {
         state.oti = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       }),
+      // 🆕 LOGÍSTICA — catálogos y remisiones
+      onSnapshot(collection(db, 'transportistas'), (snap) => {
+        state.transportistas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'operadores_logistica'), (snap) => {
+        state.operadores_logistica = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'unidades_logistica'), (snap) => {
+        state.unidades_logistica = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(query(collection(db, 'remisiones'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.remisiones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
       onSnapshot(query(collection(db, 'comentarios_pedidos'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.comentarios_pedidos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
@@ -1614,12 +1675,16 @@ function renderApp() {
         ` : ''}
         ${esCEDMTY ? `
           <button class="nav-item ${state.vista === 'cedis_mty' ? 'active' : ''}" data-vista="cedis_mty">📦 CEDIS-MTY</button>
+          <button class="nav-item ${state.vista === 'recepcion_cedis' ? 'active' : ''}" data-vista="recepcion_cedis">📥 Recepción OTIs</button>
         ` : ''}
         ${esCS || esCEDMTY || esCEDMEX || esALP ? `
           <button class="nav-item ${state.vista === 'stock_producto' ? 'active' : ''}" data-vista="stock_producto">📊 Inventario CEDIS-MTY</button>
         ` : ''}
         ${esCS || esCEDMTY || esCEDMEX ? `
           <button class="nav-item ${state.vista === 'embarques' ? 'active' : ''}" data-vista="embarques">🚚 Embarques (OV)</button>
+        ` : ''}
+        ${esALP || esCEDMTY || esCEDMEX || esCS ? `
+          <button class="nav-item ${state.vista === 'catalogo_logistica' ? 'active' : ''}" data-vista="catalogo_logistica">🚛 Catálogo Logística</button>
         ` : ''}
         
         ${(esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS) ? `
@@ -1716,6 +1781,8 @@ function tituloVista() {
     almacen_planta: '🏭 Almacén Planta-MTY',
     oti_planta: '🚚 OTI Planta → CEDIS-MTY',
     cedis_mty: '📦 CEDIS-MTY',
+    recepcion_cedis: '📥 Recepción de OTIs en CEDIS-MTY',
+    catalogo_logistica: '🚛 Catálogo de Logística',
     embarques: '🚚 Embarques (Órdenes de Venta)',
     stock_producto: '📊 Inventario CEDIS-MTY',
     maquinas: '🛠️ Máquinas de Producción',
@@ -1754,6 +1821,8 @@ function renderVista() {
   if (v === 'almacen_planta') return renderAlmacenPlanta();
   if (v === 'oti_planta') return renderOTIPlanta();
   if (v === 'cedis_mty') return renderCedisMTY();
+  if (v === 'recepcion_cedis') return renderRecepcionCedis();
+  if (v === 'catalogo_logistica') return renderCatalogoLogistica();
   if (v === 'embarques') return renderEmbarques();
   if (v === 'stock_producto') return renderStockProducto();
   if (v === 'maquinas') return renderMaquinas();
@@ -7508,6 +7577,10 @@ function renderModal() {
   if (m === 'liberar-calidad') return modalLiberarCalidad();
   if (m === 'ver-capturas') return modalVerCapturas();
   if (m === 'crear-oti') return modalCrearOTI();
+  if (m === 'transportista') return modalTransportista();
+  if (m === 'operador-logistica') return modalOperadorLogistica();
+  if (m === 'unidad-logistica') return modalUnidadLogistica();
+  if (m === 'conciliacion-oti') return modalConciliacionOTI();
   if (m === 'asignar-tarimas-ov') return modalAsignarTarimasOV();
   if (m === 'generar-remision-ov') return modalGenerarRemisionOV();
   if (m === 'detalle-ov') return modalDetalleOV();
@@ -8821,6 +8894,362 @@ function renderCedisMTY() {
 }
 
 window.setSubTabCedis = (tab) => { state.subTabCedis = tab; render(); };
+
+// ============================================================
+// VISTA: CATÁLOGO DE LOGÍSTICA (Transportistas / Operadores / Unidades)
+// ============================================================
+function renderCatalogoLogistica() {
+  if (!state.catLogTab) state.catLogTab = 'transportistas';
+  const tab = state.catLogTab;
+  
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const puedeEditar = esCEO || ['ALP','CEDMTY','CEDMEX'].includes(u.depto);
+  
+  const transportistas = state.transportistas || [];
+  const operadores = state.operadores_logistica || [];
+  const unidades = state.unidades_logistica || [];
+  
+  return `
+    <div class="container" style="max-width:1400px;">
+      <div style="background:#fff;border-radius:12px;padding:18px;margin-bottom:14px;">
+        <h2 style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:6px;">🚛 Catálogo de Logística</h2>
+        <p style="font-size:12.5px;color:#64748b;margin-bottom:14px;">
+          Catálogo único para trazabilidad de embarques. Incluye <strong>NewPack Logística</strong> (interno, planta→CEDIS) y <strong>proveedores externos</strong> (CEDIS→cliente).
+        </p>
+        
+        <div style="display:flex;gap:6px;border-bottom:2px solid #e2e8f0;flex-wrap:wrap;">
+          ${[
+            { id: 'transportistas', label: '🚚 Transportistas', n: transportistas.length },
+            { id: 'operadores', label: '👤 Operadores', n: operadores.length },
+            { id: 'unidades', label: '🚛 Unidades', n: unidades.length },
+          ].map(t => `
+            <button onclick="window.catLogTab('${t.id}')" style="padding:10px 16px;background:${tab===t.id?'#16a34a':'transparent'};color:${tab===t.id?'#fff':'#475569'};border:none;border-bottom:3px solid ${tab===t.id?'#16a34a':'transparent'};cursor:pointer;font-weight:700;font-size:13px;border-radius:6px 6px 0 0;">
+              ${t.label} <span style="background:${tab===t.id?'rgba(255,255,255,0.25)':'#e2e8f0'};padding:1px 8px;border-radius:99px;font-size:11px;margin-left:4px;">${t.n}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      
+      ${tab === 'transportistas' ? _renderTabTransportistas(transportistas, puedeEditar) : ''}
+      ${tab === 'operadores' ? _renderTabOperadoresLog(operadores, transportistas, puedeEditar) : ''}
+      ${tab === 'unidades' ? _renderTabUnidades(unidades, transportistas, puedeEditar) : ''}
+    </div>
+  `;
+}
+
+function _renderTabTransportistas(transportistas, puedeEditar) {
+  const internos = transportistas.filter(t => t.tipo === 'interno');
+  const externos = transportistas.filter(t => t.tipo === 'externo');
+  
+  return `
+    <div style="background:#fff;border-radius:12px;padding:18px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <h3 style="font-size:16px;font-weight:800;">Transportistas (${transportistas.length})</h3>
+        ${puedeEditar ? `<button class="btn-primary" onclick="abrirModal('transportista',null)" style="background:#16a34a;">${ICONS.plus} Nuevo Transportista</button>` : ''}
+      </div>
+      
+      ${transportistas.length === 0 ? `
+        <div style="background:#f8fafc;border:2.5px dashed #cbd5e1;border-radius:12px;padding:40px;text-align:center;color:#64748b;">
+          <div style="font-size:48px;margin-bottom:12px;">🚛</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:6px;">Sin transportistas registrados</div>
+          <div style="font-size:12px;">Crea "NewPack Logística" (interno) y los proveedores externos que uses.</div>
+          ${puedeEditar ? `<button class="btn-primary" onclick="abrirModal('transportista',null)" style="background:#16a34a;margin-top:14px;">${ICONS.plus} Crear primero</button>` : ''}
+        </div>
+      ` : `
+        ${internos.length > 0 ? `
+          <div style="margin-bottom:18px;">
+            <div style="font-size:13px;font-weight:800;color:#16a34a;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #dcfce7;">
+              🏠 NEWPACK LOGÍSTICA (INTERNO) — ${internos.length}
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;">
+              ${internos.map(t => _tarjetaTransportista(t, puedeEditar)).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        ${externos.length > 0 ? `
+          <div>
+            <div style="font-size:13px;font-weight:800;color:#0891b2;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #cffafe;">
+              🚛 PROVEEDORES EXTERNOS — ${externos.length}
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;">
+              ${externos.map(t => _tarjetaTransportista(t, puedeEditar)).join('')}
+            </div>
+          </div>
+        ` : ''}
+      `}
+    </div>
+  `;
+}
+
+function _tarjetaTransportista(t, puedeEditar) {
+  const tipo = _tipoTransportista(t.tipo);
+  const operadores = (state.operadores_logistica || []).filter(o => o.transportista_id === t.id && o.activo !== false);
+  const unidades = (state.unidades_logistica || []).filter(u => u.transportista_id === t.id && u.activo !== false);
+  return `
+    <div style="background:${t.activo === false ? '#f8fafc' : '#fff'};border:1.5px solid ${t.activo === false ? '#cbd5e1' : tipo.color};border-radius:10px;padding:14px;opacity:${t.activo === false ? 0.6 : 1};">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:20px;">${tipo.icono}</span>
+            <strong style="font-size:14px;color:#0f172a;">${t.nombre || '—'}</strong>
+            ${t.activo === false ? `<span style="background:#fee2e2;color:#991b1b;padding:1px 8px;border-radius:99px;font-size:9px;font-weight:800;">INACTIVO</span>` : ''}
+          </div>
+          ${t.razon_social ? `<div style="font-size:11px;color:#64748b;margin-top:3px;">${t.razon_social}</div>` : ''}
+          <div style="display:flex;gap:8px;font-size:10.5px;color:#475569;margin-top:6px;flex-wrap:wrap;">
+            ${t.rfc ? `<span><strong>RFC:</strong> ${t.rfc}</span>` : ''}
+            ${t.telefono ? `<span><strong>Tel:</strong> ${t.telefono}</span>` : ''}
+            ${t.contacto ? `<span><strong>Contacto:</strong> ${t.contacto}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">
+        <span style="background:#dbeafe;color:#1e40af;padding:3px 8px;border-radius:6px;font-size:10.5px;font-weight:700;">👤 ${operadores.length} oper.</span>
+        <span style="background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:6px;font-size:10.5px;font-weight:700;">🚛 ${unidades.length} unid.</span>
+      </div>
+      ${puedeEditar ? `
+        <div style="display:flex;gap:6px;margin-top:10px;border-top:1px solid #f1f5f9;padding-top:10px;">
+          <button onclick="abrirModal('transportista','${t.id}')" style="flex:1;padding:6px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
+          <button onclick="window.toggleActivoTransportista('${t.id}')" style="flex:1;padding:6px;background:${t.activo===false?'#16a34a':'#64748b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${t.activo===false?'✓ Activar':'⏸ Desactivar'}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function _renderTabOperadoresLog(operadores, transportistas, puedeEditar) {
+  const grupos = {};
+  operadores.forEach(o => {
+    const tid = o.transportista_id || '_sin';
+    if (!grupos[tid]) grupos[tid] = [];
+    grupos[tid].push(o);
+  });
+  
+  return `
+    <div style="background:#fff;border-radius:12px;padding:18px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <h3 style="font-size:16px;font-weight:800;">Operadores (${operadores.length})</h3>
+        ${puedeEditar ? `<button class="btn-primary" onclick="abrirModal('operador-logistica',null)" style="background:#16a34a;" ${transportistas.length===0?'disabled title="Primero registra transportistas"':''}>${ICONS.plus} Nuevo Operador</button>` : ''}
+      </div>
+      
+      ${transportistas.length === 0 ? `
+        <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;padding:14px;color:#92400e;font-size:12px;font-weight:700;">
+          ⚠ Primero registra al menos un transportista en la pestaña anterior.
+        </div>
+      ` : operadores.length === 0 ? `
+        <div style="background:#f8fafc;border:2.5px dashed #cbd5e1;border-radius:12px;padding:40px;text-align:center;color:#64748b;">
+          <div style="font-size:48px;margin-bottom:12px;">👤</div>
+          <div style="font-size:15px;font-weight:700;">Sin operadores registrados</div>
+        </div>
+      ` : `
+        ${Object.keys(grupos).map(tid => {
+          const opers = grupos[tid];
+          const t = transportistas.find(x => x.id === tid);
+          const tipo = t ? _tipoTransportista(t.tipo) : { icono: '❓', color: '#94a3b8' };
+          return `
+            <div style="margin-bottom:18px;">
+              <div style="font-size:13px;font-weight:800;color:${tipo.color};margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:6px;">
+                ${tipo.icono} ${t?.nombre || 'Sin transportista'} — ${opers.length} operador(es)
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+                ${opers.map(o => _tarjetaOperadorLog(o, t, puedeEditar)).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      `}
+    </div>
+  `;
+}
+
+function _tarjetaOperadorLog(o, t, puedeEditar) {
+  return `
+    <div style="background:${o.activo === false ? '#f8fafc' : '#fff'};border:1px solid #e2e8f0;border-radius:10px;padding:12px;opacity:${o.activo === false ? 0.6 : 1};">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:18px;">👤</span>
+        <strong style="font-size:13px;">${o.nombre || '—'}</strong>
+        ${o.activo === false ? `<span style="background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:99px;font-size:9px;font-weight:800;">INACTIVO</span>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:#475569;">
+        ${o.licencia_tipo ? `<div><strong>Lic:</strong> ${o.licencia_tipo}${o.licencia_numero ? ' — ' + o.licencia_numero : ''}</div>` : ''}
+        ${o.telefono ? `<div>📞 ${o.telefono}</div>` : ''}
+        ${o.rfc ? `<div><strong>RFC:</strong> ${o.rfc}</div>` : ''}
+      </div>
+      ${puedeEditar ? `
+        <div style="display:flex;gap:5px;margin-top:8px;">
+          <button onclick="abrirModal('operador-logistica','${o.id}')" style="flex:1;padding:5px;background:#3b82f6;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:10.5px;font-weight:700;">${ICONS.edit} Editar</button>
+          <button onclick="window.toggleActivoOperadorLog('${o.id}')" style="flex:1;padding:5px;background:${o.activo===false?'#16a34a':'#64748b'};color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:10.5px;font-weight:700;">${o.activo===false?'✓ Activar':'⏸ Desactivar'}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function _renderTabUnidades(unidades, transportistas, puedeEditar) {
+  const grupos = {};
+  unidades.forEach(u => {
+    const tid = u.transportista_id || '_sin';
+    if (!grupos[tid]) grupos[tid] = [];
+    grupos[tid].push(u);
+  });
+  
+  return `
+    <div style="background:#fff;border-radius:12px;padding:18px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <h3 style="font-size:16px;font-weight:800;">Unidades (${unidades.length})</h3>
+        ${puedeEditar ? `<button class="btn-primary" onclick="abrirModal('unidad-logistica',null)" style="background:#16a34a;" ${transportistas.length===0?'disabled title="Primero registra transportistas"':''}>${ICONS.plus} Nueva Unidad</button>` : ''}
+      </div>
+      
+      ${transportistas.length === 0 ? `
+        <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;padding:14px;color:#92400e;font-size:12px;font-weight:700;">
+          ⚠ Primero registra al menos un transportista en la pestaña Transportistas.
+        </div>
+      ` : unidades.length === 0 ? `
+        <div style="background:#f8fafc;border:2.5px dashed #cbd5e1;border-radius:12px;padding:40px;text-align:center;color:#64748b;">
+          <div style="font-size:48px;margin-bottom:12px;">🚛</div>
+          <div style="font-size:15px;font-weight:700;">Sin unidades registradas</div>
+        </div>
+      ` : `
+        ${Object.keys(grupos).map(tid => {
+          const uds = grupos[tid];
+          const t = transportistas.find(x => x.id === tid);
+          const tipo = t ? _tipoTransportista(t.tipo) : { icono: '❓', color: '#94a3b8' };
+          return `
+            <div style="margin-bottom:18px;">
+              <div style="font-size:13px;font-weight:800;color:${tipo.color};margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:6px;">
+                ${tipo.icono} ${t?.nombre || 'Sin transportista'} — ${uds.length} unidad(es)
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+                ${uds.map(u => _tarjetaUnidad(u, t, puedeEditar)).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      `}
+    </div>
+  `;
+}
+
+function _tarjetaUnidad(u, t, puedeEditar) {
+  const tipo = _tipoUnidad(u.tipo_unidad);
+  return `
+    <div style="background:${u.activo === false ? '#f8fafc' : '#fff'};border:1px solid #e2e8f0;border-radius:10px;padding:12px;opacity:${u.activo === false ? 0.6 : 1};">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:20px;">${tipo.icono}</span>
+        <strong style="font-size:14px;font-family:monospace;letter-spacing:0.05em;color:#0f172a;">${u.placas || '—'}</strong>
+        ${u.activo === false ? `<span style="background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:99px;font-size:9px;font-weight:800;">INACTIVO</span>` : ''}
+      </div>
+      <div style="font-size:11.5px;font-weight:600;color:#64748b;margin-bottom:4px;">${tipo.nombre}</div>
+      <div style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:#475569;">
+        ${u.marca || u.modelo ? `<div>${u.marca || ''} ${u.modelo || ''} ${u.año ? '· ' + u.año : ''}</div>` : ''}
+        ${u.capacidad_kg ? `<div><strong>Capacidad:</strong> ${fmtNum(u.capacidad_kg)} kg</div>` : ''}
+        ${u.num_serie ? `<div><strong>Serie:</strong> ${u.num_serie}</div>` : ''}
+      </div>
+      ${puedeEditar ? `
+        <div style="display:flex;gap:5px;margin-top:8px;">
+          <button onclick="abrirModal('unidad-logistica','${u.id}')" style="flex:1;padding:5px;background:#3b82f6;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:10.5px;font-weight:700;">${ICONS.edit} Editar</button>
+          <button onclick="window.toggleActivoUnidad('${u.id}')" style="flex:1;padding:5px;background:${u.activo===false?'#16a34a':'#64748b'};color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:10.5px;font-weight:700;">${u.activo===false?'✓ Activar':'⏸ Desactivar'}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+window.catLogTab = (tab) => { state.catLogTab = tab; render(); };
+
+
+// ============================================================
+// VISTA: RECEPCIÓN DE OTIs EN CEDIS-MTY (conciliación)
+// ============================================================
+function renderRecepcionCedis() {
+  const otis = (state.oti || []).filter(o => 
+    o.destino === 'CEDIS-MTY' && 
+    ['en_transito', 'recibido', 'recibido_con_diferencias'].includes(o.estatus)
+  );
+  
+  const enTransito = otis.filter(o => o.estatus === 'en_transito');
+  const recibidos = otis.filter(o => ['recibido', 'recibido_con_diferencias'].includes(o.estatus));
+  
+  return `
+    <div class="container" style="max-width:1400px;">
+      <div style="background:#fff;border-radius:12px;padding:18px;margin-bottom:14px;">
+        <h2 style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:6px;">📥 Recepción de OTIs en CEDIS-MTY</h2>
+        <p style="font-size:12.5px;color:#64748b;">
+          Documento de recepción con conciliación: lo que llega vs lo esperado. Marca diferencias antes de confirmar.
+        </p>
+      </div>
+      
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:18px;">
+        <div style="background:#dbeafe;border:1.5px solid #3b82f6;padding:14px;border-radius:10px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;color:#1e40af;letter-spacing:0.05em;">🚚 EN TRÁNSITO</div>
+          <div style="font-size:32px;font-weight:900;color:#1e40af;line-height:1;margin-top:4px;">${enTransito.length}</div>
+        </div>
+        <div style="background:#dcfce7;border:1.5px solid #16a34a;padding:14px;border-radius:10px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;color:#15803d;letter-spacing:0.05em;">✅ RECIBIDOS</div>
+          <div style="font-size:32px;font-weight:900;color:#15803d;line-height:1;margin-top:4px;">${recibidos.length}</div>
+        </div>
+      </div>
+      
+      ${enTransito.length > 0 ? `
+        <div style="background:#fff;border:2.5px solid #3b82f6;border-radius:12px;padding:18px;margin-bottom:18px;">
+          <h3 style="font-size:16px;font-weight:800;color:#1e40af;margin-bottom:12px;">🚚 OTIs en tránsito — esperando recepción (${enTransito.length})</h3>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            ${enTransito.map(o => _tarjetaOTIRecepcion(o, true)).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      ${recibidos.length > 0 ? `
+        <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:12px;padding:18px;">
+          <h3 style="font-size:16px;font-weight:800;color:#15803d;margin-bottom:12px;">✅ Recibidos recientemente (${recibidos.length})</h3>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            ${recibidos.slice(0, 20).map(o => _tarjetaOTIRecepcion(o, false)).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      ${otis.length === 0 ? `
+        <div style="background:#fff;border:2.5px dashed #cbd5e1;border-radius:14px;padding:60px 20px;text-align:center;">
+          <div style="font-size:64px;margin-bottom:12px;">📥</div>
+          <div style="font-size:18px;font-weight:800;color:#475569;">Sin OTIs por recibir</div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:6px;">Aún no hay OTIs en tránsito hacia CEDIS-MTY.</div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function _tarjetaOTIRecepcion(o, requiereAccion) {
+  const tieneDif = o.estatus === 'recibido_con_diferencias';
+  return `
+    <div style="background:${requiereAccion ? '#eff6ff' : '#fff'};border:1.5px solid ${requiereAccion ? '#3b82f6' : (tieneDif ? '#f59e0b' : '#16a34a')};border-radius:10px;padding:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="font-size:14px;font-family:monospace;color:#0f172a;">${o.folio}</strong>
+            ${o.remision_folio ? `<span style="background:#f1f5f9;color:#475569;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;font-family:monospace;">Rem ${o.remision_folio}</span>` : ''}
+            ${requiereAccion ? `<span style="background:#3b82f6;color:#fff;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:800;">🚚 EN TRÁNSITO</span>`
+              : tieneDif ? `<span style="background:#f59e0b;color:#fff;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:800;">⚠ CON DIFERENCIAS</span>`
+              : `<span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:800;">✅ RECIBIDO</span>`}
+          </div>
+          <div style="font-size:11.5px;color:#475569;margin-top:4px;">
+            ${o.num_tarimas} tarima(s) · ${fmtNum(o.peso_total_kg || 0)} kg · ${o.transportista_nombre || o.transportista || '—'}${o.unidad_placas || o.placas ? ' · ' + (o.unidad_placas || o.placas) : ''}
+          </div>
+          ${o.operador_nombre || o.conductor ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">👤 ${o.operador_nombre || o.conductor}</div>` : ''}
+          ${o.recibido_at && o.recibido_por_nombre ? `<div style="font-size:10.5px;color:#64748b;margin-top:2px;">Recibido por ${o.recibido_por_nombre}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${requiereAccion ? `
+            <button onclick="window.abrirConciliacionOTI('${o.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Conciliar y Recibir</button>
+          ` : ''}
+          <button onclick="window.imprimirRecepcionOTI('${o.id}')" style="padding:8px 12px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">📄 PDF Recepción</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 
 // ============================================================
 // VISTA: EMBARQUES (Órdenes de Venta) - CS/KAM/CEDMTY/CEDMEX/CEO/ADMIN
@@ -21619,11 +22048,25 @@ window.confirmarCrearOTI = async () => {
   if (!f || !f.tarimas_seleccionadas || f.tarimas_seleccionadas.length === 0) {
     toast('Selecciona al menos 1 tarima', 'error'); return;
   }
-  const transportista = ($('#oti-transportista')?.value || '').trim();
-  const conductor = ($('#oti-conductor')?.value || '').trim();
-  const placas = ($('#oti-placas')?.value || '').trim();
+  
+  // 🆕 Usar catálogos: obtener transportista/operador/unidad por ID
+  const transportistasInternos = (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
+  if (transportistasInternos.length === 0) {
+    toast('Registra primero NewPack Logística en el catálogo', 'error'); return;
+  }
+  const transportistaSelId = f.transportista_id || ($('#oti-transp-id')?.value || transportistasInternos[0]?.id);
+  const transportista = (state.transportistas || []).find(t => t.id === transportistaSelId);
+  if (!transportista) { toast('Selecciona un transportista', 'error'); return; }
+  
+  const operadorId = ($('#oti-operador-id')?.value || '');
+  const operador = (state.operadores_logistica || []).find(o => o.id === operadorId);
+  if (!operador) { toast('Selecciona el operador', 'error'); return; }
+  
+  const unidadId = ($('#oti-unidad-id')?.value || '');
+  const unidad = (state.unidades_logistica || []).find(u => u.id === unidadId);
+  if (!unidad) { toast('Selecciona la unidad', 'error'); return; }
+  
   const observaciones = ($('#oti-obs')?.value || '').trim();
-  if (!transportista) { toast('Captura el transportista', 'error'); return; }
   
   state.loadingAccion = true; render();
   try {
@@ -21638,18 +22081,29 @@ window.confirmarCrearOTI = async () => {
     });
     const folio = `OTI-2026-${String(folioNum).padStart(5, '0')}`;
     
+    // 🆕 Generar folio de REMISIÓN automático (folio único por embarque)
+    const remContadorRef = doc(db, 'contadores', 'remisiones');
+    const remNum = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(remContadorRef);
+      const actual = snap.exists() ? (snap.data().valor || 0) : 0;
+      const nuevo = actual + 1;
+      tx.set(remContadorRef, { valor: nuevo }, { merge: true });
+      return nuevo;
+    });
+    const remFolio = `REM-${String(remNum).padStart(5, '0')}`;
+    
     const tarimasSel = state.tarimas.filter(t => f.tarimas_seleccionadas.includes(t.id));
     const totalCant = tarimasSel.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
     const totalKg = tarimasSel.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
     
-    // Resúmenes únicos (para búsqueda rápida)
     const pedidosUnicos = [...new Set(tarimasSel.map(t => t.pedido_folio).filter(Boolean))];
     const odpsUnicas = [...new Set(tarimasSel.map(t => t.odp_folio).filter(Boolean))];
     const clientesUnicos = [...new Set(tarimasSel.map(t => t.cliente_nombre).filter(Boolean))];
     
-    // 2. Crear OTI (sanitizando undefined → string vacío o 0)
+    // 2. Crear OTI con datos del catálogo
     const otiRef = await addDoc(collection(db, 'oti'), {
       folio,
+      remision_folio: remFolio,
       origen: 'PLANTA-MTY',
       destino: 'CEDIS-MTY',
       estatus: 'en_transito',
@@ -21673,9 +22127,24 @@ window.confirmarCrearOTI = async () => {
       num_tarimas: tarimasSel.length,
       peso_total_kg: Number(totalKg) || 0,
       cantidad_total: Number(totalCant) || 0,
-      transportista: transportista || '',
-      conductor: conductor || '',
-      placas: placas || '',
+      // 🆕 Datos del catálogo (referencias + denormalizadas)
+      transportista_id: transportista.id,
+      transportista_nombre: transportista.nombre,
+      transportista_tipo: transportista.tipo,
+      transportista_rfc: transportista.rfc || '',
+      operador_id: operador.id,
+      operador_nombre: operador.nombre,
+      operador_licencia: operador.licencia_tipo ? `${operador.licencia_tipo} ${operador.licencia_numero || ''}`.trim() : '',
+      operador_telefono: operador.telefono || '',
+      unidad_id: unidad.id,
+      unidad_placas: unidad.placas,
+      unidad_tipo: unidad.tipo_unidad,
+      unidad_marca: unidad.marca || '',
+      unidad_modelo: unidad.modelo || '',
+      // Backward compat
+      transportista: transportista.nombre,
+      conductor: operador.nombre,
+      placas: unidad.placas,
       observaciones: observaciones || '',
       creado_por: state.user.id || '',
       creado_por_nombre: state.user.nombre || '',
@@ -21683,7 +22152,33 @@ window.confirmarCrearOTI = async () => {
       updated_at: serverTimestamp()
     });
     
-    // 3. Actualizar tarimas
+    // 3. Crear REMISIÓN (auto-folio único por embarque)
+    await addDoc(collection(db, 'remisiones'), {
+      folio: remFolio,
+      tipo: 'planta_a_cedis',
+      origen: 'PLANTA-MTY',
+      destino: 'CEDIS-MTY',
+      oti_id: otiRef.id,
+      oti_folio: folio,
+      pedidos_folios: pedidosUnicos,
+      tarimas_ids: f.tarimas_seleccionadas,
+      num_tarimas: tarimasSel.length,
+      kg_total: Number(totalKg) || 0,
+      transportista_id: transportista.id,
+      transportista_nombre: transportista.nombre,
+      transportista_tipo: transportista.tipo,
+      operador_id: operador.id,
+      operador_nombre: operador.nombre,
+      unidad_id: unidad.id,
+      unidad_placas: unidad.placas,
+      fecha_salida: serverTimestamp(),
+      estatus: 'en_transito',
+      creado_por: state.user.id,
+      creado_por_nombre: state.user.nombre,
+      created_at: serverTimestamp()
+    });
+    
+    // 4. Actualizar tarimas
     const batch = writeBatch(db);
     tarimasSel.forEach(t => {
       batch.update(doc(db, 'tarimas', t.id), {
@@ -21691,17 +22186,18 @@ window.confirmarCrearOTI = async () => {
         almacen_actual: 'EN_TRANSITO',
         oti_id: otiRef.id,
         oti_folio: folio,
+        remision_folio: remFolio,
         salida_planta_at: serverTimestamp(),
         updated_at: serverTimestamp()
       });
     });
-    // Notificar a CEDMTY
     ['CEDMTY', 'CEO', 'CS'].forEach(depto => {
       const ref = doc(collection(db, 'notificaciones'));
       batch.set(ref, {
-        titulo: `🚚 OTI ${folio} en tránsito a CEDIS-MTY`,
-        mensaje: `${tarimasSel.length} tarima(s) · ${fmtNum(totalKg)} kg · ${transportista}`,
+        titulo: `🚚 ${folio} en tránsito a CEDIS-MTY (Rem ${remFolio})`,
+        mensaje: `${tarimasSel.length} tarima(s) · ${fmtNum(totalKg)} kg · ${transportista.nombre} · Op: ${operador.nombre} · ${unidad.placas}`,
         depto_destino: depto, tipo: 'info', folio_ref: folio,
+        vista_destino: 'recepcion_cedis',
         created_at: serverTimestamp()
       });
     });
@@ -21709,9 +22205,9 @@ window.confirmarCrearOTI = async () => {
     
     state.formOTI = null;
     state.modal = null;
-    toast(`✅ ${folio} creado · ${tarimasSel.length} tarima(s) en tránsito`);
+    toast(`✅ ${folio} · Remisión ${remFolio} · ${tarimasSel.length} tarima(s) en tránsito`);
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos' : e.message), 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -22118,34 +22614,87 @@ function modalCrearOTI() {
   const seleccionadas = state.tarimas.filter(t => f.tarimas_seleccionadas.includes(t.id));
   const totalKg = seleccionadas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
   
+  // 🆕 Para planta → CEDIS solo se usa transportista INTERNO (NewPack Logística)
+  const transportistasInternos = (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
+  const transportistaSelId = f.transportista_id || (transportistasInternos[0]?.id || '');
+  
+  const operadoresDisp = (state.operadores_logistica || []).filter(o => 
+    o.transportista_id === transportistaSelId && o.activo !== false
+  );
+  const unidadesDisp = (state.unidades_logistica || []).filter(u => 
+    u.transportista_id === transportistaSelId && u.activo !== false
+  );
+  
+  const noHayInterno = transportistasInternos.length === 0;
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:560px;">
+      <div class="modal" style="max-width:620px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">🚚 Crear OTI Planta → CEDIS-MTY</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
           <div style="padding:12px;background:#dbeafe;border-radius:10px;margin-bottom:14px;">
-            <div style="font-size:11px;color:#1e40af;font-weight:700;text-transform:uppercase;">Resumen</div>
+            <div style="font-size:11px;color:#1e40af;font-weight:700;text-transform:uppercase;">Resumen del embarque</div>
             <div style="font-size:16px;font-weight:800;color:#1e40af;">${seleccionadas.length} tarima(s) · ${fmtNum(totalKg)} kg netos</div>
             <div style="font-size:11px;color:#475569;margin-top:4px;">Origen: PLANTA-MTY → Destino: CEDIS-MTY</div>
+            <div style="font-size:10.5px;color:#64748b;margin-top:3px;">💡 Se generará automáticamente un folio de Remisión (REM-XXXXX)</div>
           </div>
           
-          <div class="field">
-            <label class="field-label">Transportista *</label>
-            <input class="input" id="oti-transportista" placeholder="Ej: Transportes López" autocomplete="off" />
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div class="field">
-              <label class="field-label">Conductor</label>
-              <input class="input" id="oti-conductor" placeholder="Nombre del conductor" autocomplete="off" />
+          ${noHayInterno ? `
+            <div style="background:#fee2e2;border:2px solid #dc2626;border-radius:10px;padding:14px;margin-bottom:14px;">
+              <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:4px;">⚠ No hay transportista interno registrado</div>
+              <div style="font-size:11.5px;color:#7f1d1d;margin-bottom:8px;">Como este es un embarque interno (planta → CEDIS), debe usar la flota de <strong>NewPack Logística</strong>.</div>
+              <button onclick="cerrarModal();state.vista='catalogo_logistica';render();" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">→ Ir al Catálogo de Logística</button>
             </div>
+          ` : `
             <div class="field">
-              <label class="field-label">Placas</label>
-              <input class="input" id="oti-placas" placeholder="Placas del vehículo" autocomplete="off" />
+              <label class="field-label">Transportista (NewPack Logística) *</label>
+              ${transportistasInternos.length === 1 ? `
+                <div style="padding:10px;background:#dcfce7;border:1.5px solid #16a34a;border-radius:8px;display:flex;align-items:center;gap:8px;">
+                  <span style="font-size:18px;">🏠</span>
+                  <strong style="color:#15803d;">${transportistasInternos[0].nombre}</strong>
+                </div>
+              ` : `
+                <select class="input" id="oti-transp-id" onchange="state.formOTI.transportista_id=this.value;render()">
+                  ${transportistasInternos.map(t => `<option value="${t.id}" ${transportistaSelId===t.id?'selected':''}>🏠 ${t.nombre}</option>`).join('')}
+                </select>
+              `}
             </div>
-          </div>
+            
+            <div class="field">
+              <label class="field-label">Operador (chofer) *</label>
+              ${operadoresDisp.length === 0 ? `
+                <div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;">
+                  ⚠ No hay operadores registrados para este transportista. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='operadores';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar operador →</a>
+                </div>
+              ` : `
+                <select class="input" id="oti-operador-id">
+                  <option value="">— Selecciona operador —</option>
+                  ${operadoresDisp.map(o => `<option value="${o.id}">${o.nombre}${o.licencia_tipo ? ' · Lic. ' + o.licencia_tipo : ''}</option>`).join('')}
+                </select>
+              `}
+            </div>
+            
+            <div class="field">
+              <label class="field-label">Unidad (camión) *</label>
+              ${unidadesDisp.length === 0 ? `
+                <div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;">
+                  ⚠ No hay unidades registradas. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='unidades';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar unidad →</a>
+                </div>
+              ` : `
+                <select class="input" id="oti-unidad-id">
+                  <option value="">— Selecciona unidad —</option>
+                  ${unidadesDisp.map(u => {
+                    const tu = _tipoUnidad(u.tipo_unidad);
+                    return `<option value="${u.id}">${tu.icono} ${u.placas}${u.marca ? ' · ' + u.marca : ''}${u.capacidad_kg ? ' · ' + fmtNum(u.capacidad_kg) + ' kg' : ''}</option>`;
+                  }).join('')}
+                </select>
+              `}
+            </div>
+          `}
+          
           <div class="field">
             <label class="field-label">Observaciones</label>
             <textarea class="input" id="oti-obs" style="min-height:60px;" placeholder="Notas, instrucciones especiales, etc."></textarea>
@@ -22167,7 +22716,7 @@ function modalCrearOTI() {
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="confirmarCrearOTI()" style="background:#16a34a;">${ICONS.check} Crear OTI y enviar</button>
+          ${!noHayInterno ? `<button class="btn-primary" onclick="confirmarCrearOTI()" style="background:#16a34a;">${ICONS.check} Crear OTI y enviar</button>` : ''}
         </div>
       </div>
     </div>
@@ -28637,6 +29186,813 @@ onAuthStateChanged(auth, async (firebaseUser) => {
     render();
   }
 });
+
+// ============================================================
+// 🚛 LOGÍSTICA — MODALES Y HANDLERS DE LOS CATÁLOGOS
+// ============================================================
+
+// ─── TRANSPORTISTA ───────────────────────────────────────────
+function modalTransportista() {
+  const id = state.modalData;
+  const editing = !!id;
+  const t = editing ? (state.transportistas || []).find(x => x.id === id) : null;
+  if (editing && !t) { cerrarModal(); return ''; }
+  
+  if (!state.modalForm) {
+    state.modalForm = editing ? { ...t } : {
+      tipo: 'externo', nombre: '', razon_social: '', rfc: '', telefono: '', contacto: '', notas: '', activo: true
+    };
+  }
+  const f = state.modalForm;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:580px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">🚚 ${editing ? 'Editar' : 'Nuevo'} Transportista</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="field-label">Tipo *</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              ${TIPOS_TRANSPORTISTA.map(t2 => `
+                <label style="display:flex;align-items:center;gap:8px;padding:10px;background:${f.tipo===t2.codigo?t2.color+'22':'#f8fafc'};border:2px solid ${f.tipo===t2.codigo?t2.color:'#e2e8f0'};border-radius:8px;cursor:pointer;">
+                  <input type="radio" name="tr-tipo" value="${t2.codigo}" ${f.tipo===t2.codigo?'checked':''} onchange="state.modalForm.tipo='${t2.codigo}';render()" />
+                  <span style="font-size:18px;">${t2.icono}</span>
+                  <strong style="font-size:11.5px;color:${t2.color};">${t2.nombre}</strong>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">Nombre comercial *</label>
+            <input class="input" id="tr-nombre" placeholder="${f.tipo === 'interno' ? 'Ej: NewPack Logística' : 'Ej: Transportes López'}" value="${f.nombre || ''}" />
+          </div>
+          ${f.tipo === 'externo' ? `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div class="field">
+                <label class="field-label">Razón social</label>
+                <input class="input" id="tr-razon" value="${f.razon_social || ''}" />
+              </div>
+              <div class="field">
+                <label class="field-label">RFC</label>
+                <input class="input" id="tr-rfc" value="${f.rfc || ''}" />
+              </div>
+            </div>
+          ` : ''}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Teléfono</label>
+              <input class="input" id="tr-tel" value="${f.telefono || ''}" />
+            </div>
+            <div class="field">
+              <label class="field-label">Contacto</label>
+              <input class="input" id="tr-cont" value="${f.contacto || ''}" placeholder="Nombre de contacto" />
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">Notas</label>
+            <textarea class="input" id="tr-notas" style="min-height:50px;">${f.notas || ''}</textarea>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.guardarTransportista('${id || ''}')" style="background:#16a34a;">${ICONS.check} ${editing ? 'Actualizar' : 'Crear'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.guardarTransportista = async (id) => {
+  const f = state.modalForm || {};
+  const tipo = f.tipo || 'externo';
+  const nombre = ($('#tr-nombre')?.value || '').trim();
+  if (!nombre) { toast('Captura el nombre', 'error'); return; }
+  
+  const datos = {
+    tipo,
+    nombre,
+    razon_social: ($('#tr-razon')?.value || '').trim(),
+    rfc: ($('#tr-rfc')?.value || '').trim().toUpperCase(),
+    telefono: ($('#tr-tel')?.value || '').trim(),
+    contacto: ($('#tr-cont')?.value || '').trim(),
+    notas: ($('#tr-notas')?.value || '').trim(),
+    activo: f.activo !== false,
+    updated_at: serverTimestamp()
+  };
+  
+  try {
+    if (id) {
+      await updateDoc(doc(db, 'transportistas', id), datos);
+      toast('✅ Transportista actualizado');
+    } else {
+      datos.created_at = serverTimestamp();
+      datos.creado_por = state.user.id;
+      await addDoc(collection(db, 'transportistas'), datos);
+      toast('✅ Transportista creado');
+    }
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos para gestionar transportistas' : e.message), 'error');
+  }
+};
+
+window.toggleActivoTransportista = async (id) => {
+  const t = (state.transportistas || []).find(x => x.id === id);
+  if (!t) return;
+  if (!confirm(`¿${t.activo === false ? 'Activar' : 'Desactivar'} ${t.nombre}?`)) return;
+  try {
+    await updateDoc(doc(db, 'transportistas', id), { activo: t.activo === false, updated_at: serverTimestamp() });
+    toast(`✅ ${t.activo === false ? 'Activado' : 'Desactivado'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+
+// ─── OPERADOR DE LOGÍSTICA ───────────────────────────────────
+function modalOperadorLogistica() {
+  const id = state.modalData;
+  const editing = !!id;
+  const o = editing ? (state.operadores_logistica || []).find(x => x.id === id) : null;
+  if (editing && !o) { cerrarModal(); return ''; }
+  
+  if (!state.modalForm) {
+    state.modalForm = editing ? { ...o } : {
+      transportista_id: '', nombre: '', licencia_tipo: '', licencia_numero: '',
+      telefono: '', rfc: '', notas: '', activo: true
+    };
+  }
+  const f = state.modalForm;
+  const transportistasActivos = (state.transportistas || []).filter(t => t.activo !== false);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:580px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">👤 ${editing ? 'Editar' : 'Nuevo'} Operador (chofer)</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="field-label">Transportista *</label>
+            <select class="input" id="op-trans" onchange="state.modalForm.transportista_id=this.value;render()">
+              <option value="">— Selecciona transportista —</option>
+              ${transportistasActivos.map(t => {
+                const tipo = _tipoTransportista(t.tipo);
+                return `<option value="${t.id}" ${f.transportista_id === t.id ? 'selected' : ''}>${tipo.icono} ${t.nombre}</option>`;
+              }).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre completo *</label>
+            <input class="input" id="op-nombre" value="${f.nombre || ''}" placeholder="Ej: Juan Pérez García" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Tipo de licencia</label>
+              <select class="input" id="op-lic-tipo">
+                <option value="">— Selecciona —</option>
+                ${TIPOS_LICENCIA.map(l => `<option value="${l.codigo}" ${f.licencia_tipo === l.codigo ? 'selected' : ''}>${l.nombre}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Número de licencia</label>
+              <input class="input" id="op-lic-num" value="${f.licencia_numero || ''}" />
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Teléfono</label>
+              <input class="input" id="op-tel" value="${f.telefono || ''}" />
+            </div>
+            <div class="field">
+              <label class="field-label">RFC (opcional)</label>
+              <input class="input" id="op-rfc" value="${f.rfc || ''}" />
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">Notas</label>
+            <textarea class="input" id="op-notas" style="min-height:50px;">${f.notas || ''}</textarea>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.guardarOperadorLog('${id || ''}')" style="background:#16a34a;">${ICONS.check} ${editing ? 'Actualizar' : 'Crear'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.guardarOperadorLog = async (id) => {
+  const f = state.modalForm || {};
+  const transportista_id = f.transportista_id || ($('#op-trans')?.value || '');
+  const nombre = ($('#op-nombre')?.value || '').trim();
+  if (!transportista_id) { toast('Selecciona el transportista', 'error'); return; }
+  if (!nombre) { toast('Captura el nombre', 'error'); return; }
+  
+  const t = (state.transportistas || []).find(x => x.id === transportista_id);
+  const datos = {
+    transportista_id,
+    transportista_nombre: t?.nombre || '',
+    transportista_tipo: t?.tipo || '',
+    nombre,
+    licencia_tipo: ($('#op-lic-tipo')?.value || ''),
+    licencia_numero: ($('#op-lic-num')?.value || '').trim(),
+    telefono: ($('#op-tel')?.value || '').trim(),
+    rfc: ($('#op-rfc')?.value || '').trim().toUpperCase(),
+    notas: ($('#op-notas')?.value || '').trim(),
+    activo: f.activo !== false,
+    updated_at: serverTimestamp()
+  };
+  
+  try {
+    if (id) {
+      await updateDoc(doc(db, 'operadores_logistica', id), datos);
+      toast('✅ Operador actualizado');
+    } else {
+      datos.created_at = serverTimestamp();
+      datos.creado_por = state.user.id;
+      await addDoc(collection(db, 'operadores_logistica'), datos);
+      toast('✅ Operador creado');
+    }
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos' : e.message), 'error');
+  }
+};
+
+window.toggleActivoOperadorLog = async (id) => {
+  const o = (state.operadores_logistica || []).find(x => x.id === id);
+  if (!o) return;
+  if (!confirm(`¿${o.activo === false ? 'Activar' : 'Desactivar'} ${o.nombre}?`)) return;
+  try {
+    await updateDoc(doc(db, 'operadores_logistica', id), { activo: o.activo === false, updated_at: serverTimestamp() });
+    toast(`✅ ${o.activo === false ? 'Activado' : 'Desactivado'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+
+// ─── UNIDAD DE LOGÍSTICA ─────────────────────────────────────
+function modalUnidadLogistica() {
+  const id = state.modalData;
+  const editing = !!id;
+  const u = editing ? (state.unidades_logistica || []).find(x => x.id === id) : null;
+  if (editing && !u) { cerrarModal(); return ''; }
+  
+  if (!state.modalForm) {
+    state.modalForm = editing ? { ...u } : {
+      transportista_id: '', placas: '', tipo_unidad: 'camion',
+      marca: '', modelo: '', anio: '', capacidad_kg: '', num_serie: '', notas: '', activo: true
+    };
+  }
+  const f = state.modalForm;
+  const transportistasActivos = (state.transportistas || []).filter(t => t.activo !== false);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:620px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">🚛 ${editing ? 'Editar' : 'Nueva'} Unidad</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="field-label">Transportista *</label>
+            <select class="input" id="un-trans" onchange="state.modalForm.transportista_id=this.value;render()">
+              <option value="">— Selecciona transportista —</option>
+              ${transportistasActivos.map(t => {
+                const tipo = _tipoTransportista(t.tipo);
+                return `<option value="${t.id}" ${f.transportista_id === t.id ? 'selected' : ''}>${tipo.icono} ${t.nombre}</option>`;
+              }).join('')}
+            </select>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Placas *</label>
+              <input class="input" id="un-placas" value="${f.placas || ''}" style="font-family:monospace;font-weight:800;letter-spacing:0.05em;" placeholder="AB-12-345" />
+            </div>
+            <div class="field">
+              <label class="field-label">Tipo de unidad *</label>
+              <select class="input" id="un-tipo">
+                ${TIPOS_UNIDAD.map(t => `<option value="${t.codigo}" ${f.tipo_unidad === t.codigo ? 'selected' : ''}>${t.icono} ${t.nombre}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Marca</label>
+              <input class="input" id="un-marca" value="${f.marca || ''}" placeholder="Ej: Kenworth" />
+            </div>
+            <div class="field">
+              <label class="field-label">Modelo</label>
+              <input class="input" id="un-modelo" value="${f.modelo || ''}" placeholder="Ej: T680" />
+            </div>
+            <div class="field">
+              <label class="field-label">Año</label>
+              <input class="input" id="un-anio" type="number" value="${f.anio || ''}" />
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="field">
+              <label class="field-label">Capacidad (kg)</label>
+              <input class="input" id="un-cap" type="number" value="${f.capacidad_kg || ''}" placeholder="Ej: 30000" />
+            </div>
+            <div class="field">
+              <label class="field-label">Número de serie / Eco</label>
+              <input class="input" id="un-serie" value="${f.num_serie || ''}" />
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">Notas</label>
+            <textarea class="input" id="un-notas" style="min-height:50px;">${f.notas || ''}</textarea>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.guardarUnidadLog('${id || ''}')" style="background:#16a34a;">${ICONS.check} ${editing ? 'Actualizar' : 'Crear'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.guardarUnidadLog = async (id) => {
+  const f = state.modalForm || {};
+  const transportista_id = f.transportista_id || ($('#un-trans')?.value || '');
+  const placas = ($('#un-placas')?.value || '').trim().toUpperCase();
+  if (!transportista_id) { toast('Selecciona el transportista', 'error'); return; }
+  if (!placas) { toast('Captura las placas', 'error'); return; }
+  
+  const t = (state.transportistas || []).find(x => x.id === transportista_id);
+  const datos = {
+    transportista_id,
+    transportista_nombre: t?.nombre || '',
+    transportista_tipo: t?.tipo || '',
+    placas,
+    tipo_unidad: ($('#un-tipo')?.value || 'camion'),
+    marca: ($('#un-marca')?.value || '').trim(),
+    modelo: ($('#un-modelo')?.value || '').trim(),
+    anio: Number(($('#un-anio')?.value || '').trim()) || null,
+    capacidad_kg: Number(($('#un-cap')?.value || '').trim()) || null,
+    num_serie: ($('#un-serie')?.value || '').trim(),
+    notas: ($('#un-notas')?.value || '').trim(),
+    activo: f.activo !== false,
+    updated_at: serverTimestamp()
+  };
+  
+  try {
+    if (id) {
+      await updateDoc(doc(db, 'unidades_logistica', id), datos);
+      toast('✅ Unidad actualizada');
+    } else {
+      datos.created_at = serverTimestamp();
+      datos.creado_por = state.user.id;
+      await addDoc(collection(db, 'unidades_logistica'), datos);
+      toast('✅ Unidad creada');
+    }
+    cerrarModal();
+  } catch (e) {
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos' : e.message), 'error');
+  }
+};
+
+window.toggleActivoUnidad = async (id) => {
+  const u = (state.unidades_logistica || []).find(x => x.id === id);
+  if (!u) return;
+  if (!confirm(`¿${u.activo === false ? 'Activar' : 'Desactivar'} ${u.placas}?`)) return;
+  try {
+    await updateDoc(doc(db, 'unidades_logistica', id), { activo: u.activo === false, updated_at: serverTimestamp() });
+    toast(`✅ ${u.activo === false ? 'Activada' : 'Desactivada'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+
+// ─── CONCILIACIÓN DE OTI EN CEDIS-MTY ────────────────────────
+function modalConciliacionOTI() {
+  const otiId = state.modalData;
+  const oti = (state.oti || []).find(o => o.id === otiId);
+  if (!oti) { cerrarModal(); return ''; }
+  
+  if (!state.modalForm || state.modalForm._otiId !== otiId) {
+    state.modalForm = {
+      _otiId: otiId,
+      tarimas_conciliacion: (oti.tarimas_resumen || []).map(t => ({
+        tarima_id: t.id,
+        numero: t.numero_tarima,
+        producto: t.producto_codigo,
+        cliente: t.cliente_nombre || t.cliente_codigo,
+        cantidad_esperada: t.cantidad,
+        cantidad_recibida: t.cantidad,
+        um: t.um,
+        condicion: 'ok',
+        notas: ''
+      })),
+      notas_recepcion: ''
+    };
+  }
+  const f = state.modalForm;
+  
+  const conDiferencias = f.tarimas_conciliacion.filter(tc => 
+    tc.condicion !== 'ok' || Number(tc.cantidad_recibida) !== Number(tc.cantidad_esperada)
+  );
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:960px;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📋 Conciliación de OTI ${oti.folio}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;">
+          <div style="background:#dbeafe;border:1.5px solid #3b82f6;border-radius:10px;padding:12px;margin-bottom:14px;">
+            <div style="font-size:11px;color:#1e40af;font-weight:800;letter-spacing:0.05em;">DATOS DEL EMBARQUE</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:6px;font-size:11.5px;">
+              <div><strong>Folio OTI:</strong><br>${oti.folio}</div>
+              ${oti.remision_folio ? `<div><strong>Remisión:</strong><br>${oti.remision_folio}</div>` : ''}
+              <div><strong>Transportista:</strong><br>${oti.transportista_nombre || oti.transportista || '—'}</div>
+              <div><strong>Operador:</strong><br>${oti.operador_nombre || oti.conductor || '—'}</div>
+              <div><strong>Placas:</strong><br>${oti.unidad_placas || oti.placas || '—'}</div>
+              <div><strong>Total esperado:</strong><br>${oti.num_tarimas} tarimas · ${fmtNum(oti.peso_total_kg || 0)} kg</div>
+            </div>
+          </div>
+          
+          <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:10px;margin-bottom:12px;font-size:11.5px;color:#92400e;">
+            <strong>📋 Instrucciones:</strong> Verifica cada tarima. Captura la cantidad recibida y marca su condición. Si hay diferencias, escribe notas.
+          </div>
+          
+          <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;overflow:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:780px;">
+              <thead style="background:#f1f5f9;">
+                <tr>
+                  <th style="padding:8px;text-align:left;font-size:10px;color:#475569;">#</th>
+                  <th style="padding:8px;text-align:left;font-size:10px;color:#475569;">Producto / Cliente</th>
+                  <th style="padding:8px;text-align:right;font-size:10px;color:#475569;">Esperado</th>
+                  <th style="padding:8px;text-align:right;font-size:10px;color:#475569;">Recibido *</th>
+                  <th style="padding:8px;text-align:center;font-size:10px;color:#475569;">Condición *</th>
+                  <th style="padding:8px;text-align:left;font-size:10px;color:#475569;">Notas</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${f.tarimas_conciliacion.map((tc, idx) => {
+                  const dif = Number(tc.cantidad_recibida) !== Number(tc.cantidad_esperada);
+                  const malaCondicion = tc.condicion !== 'ok';
+                  return `
+                    <tr style="border-top:1px solid #e2e8f0;${dif || malaCondicion ? 'background:#fef3c7;' : ''}">
+                      <td style="padding:8px;font-weight:700;">T${String(tc.numero).padStart(2,'0')}</td>
+                      <td style="padding:8px;">
+                        <div style="font-weight:700;">${tc.producto}</div>
+                        <div style="font-size:10px;color:#64748b;">${tc.cliente}</div>
+                      </td>
+                      <td style="padding:8px;text-align:right;font-weight:700;color:#475569;">${fmtNum(tc.cantidad_esperada)} ${tc.um}</td>
+                      <td style="padding:8px;text-align:right;">
+                        <input type="number" min="0" step="any" value="${tc.cantidad_recibida}" 
+                          onchange="state.modalForm.tarimas_conciliacion[${idx}].cantidad_recibida=Number(this.value)||0;render()" 
+                          style="width:90px;padding:4px;border:1.5px solid ${dif?'#f59e0b':'#cbd5e1'};border-radius:5px;font-weight:800;text-align:right;font-size:12px;" />
+                      </td>
+                      <td style="padding:8px;text-align:center;">
+                        <select onchange="state.modalForm.tarimas_conciliacion[${idx}].condicion=this.value;render()" 
+                          style="padding:4px 6px;border:1.5px solid ${malaCondicion?'#f59e0b':'#cbd5e1'};border-radius:5px;font-size:11px;font-weight:700;">
+                          <option value="ok" ${tc.condicion==='ok'?'selected':''}>✅ OK</option>
+                          <option value="dañada" ${tc.condicion==='dañada'?'selected':''}>⚠ Dañada</option>
+                          <option value="faltante" ${tc.condicion==='faltante'?'selected':''}>✗ Faltante</option>
+                          <option value="sobrante" ${tc.condicion==='sobrante'?'selected':''}>+ Sobrante</option>
+                          <option value="otro" ${tc.condicion==='otro'?'selected':''}>? Otro</option>
+                        </select>
+                      </td>
+                      <td style="padding:8px;">
+                        <input type="text" value="${tc.notas || ''}" 
+                          onchange="state.modalForm.tarimas_conciliacion[${idx}].notas=this.value" 
+                          placeholder="Describe..." style="width:100%;padding:4px;border:1px solid #cbd5e1;border-radius:5px;font-size:11px;" />
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+          
+          <div style="margin-top:12px;padding:10px;background:${conDiferencias.length>0?'#fef3c7':'#dcfce7'};border-radius:8px;border:1.5px solid ${conDiferencias.length>0?'#f59e0b':'#16a34a'};font-size:12px;font-weight:700;color:${conDiferencias.length>0?'#92400e':'#15803d'};">
+            ${conDiferencias.length === 0 
+              ? '✅ Todas las tarimas coinciden con lo esperado · Recepción sin diferencias'
+              : `⚠ ${conDiferencias.length} tarima(s) con diferencias detectadas`}
+          </div>
+          
+          <div class="field" style="margin-top:12px;">
+            <label class="field-label">Notas generales de recepción</label>
+            <textarea class="input" oninput="state.modalForm.notas_recepcion=this.value" style="min-height:50px;" placeholder="Observaciones del proceso de descarga, condición del transporte, etc.">${f.notas_recepcion || ''}</textarea>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.confirmarRecepcionConciliada('${otiId}')" style="background:#16a34a;">${ICONS.check} Confirmar Recepción</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.abrirConciliacionOTI = (otiId) => {
+  state.modalForm = null;
+  abrirModal('conciliacion-oti', otiId);
+};
+
+window.confirmarRecepcionConciliada = async (otiId) => {
+  const oti = (state.oti || []).find(o => o.id === otiId);
+  if (!oti) return;
+  const f = state.modalForm;
+  if (!f || f._otiId !== otiId) return;
+  
+  const conDiferencias = f.tarimas_conciliacion.filter(tc => 
+    tc.condicion !== 'ok' || Number(tc.cantidad_recibida) !== Number(tc.cantidad_esperada)
+  );
+  const hayDif = conDiferencias.length > 0;
+  
+  if (hayDif) {
+    if (!confirm(`Hay ${conDiferencias.length} tarima(s) con diferencias. ¿Confirmar recepción con esas diferencias registradas?`)) return;
+  } else {
+    if (!confirm(`Confirmar recepción de ${oti.folio} sin diferencias?`)) return;
+  }
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    
+    batch.update(doc(db, 'oti', otiId), {
+      estatus: hayDif ? 'recibido_con_diferencias' : 'recibido',
+      recibido_at: serverTimestamp(),
+      recibido_por: state.user.id,
+      recibido_por_nombre: state.user.nombre,
+      conciliacion: f.tarimas_conciliacion,
+      notas_recepcion: f.notas_recepcion || '',
+      tiene_diferencias: hayDif,
+      num_diferencias: conDiferencias.length,
+      updated_at: serverTimestamp()
+    });
+    
+    f.tarimas_conciliacion.forEach(tc => {
+      const updates = {
+        estatus: tc.condicion === 'faltante' ? 'no_recibida' : 'en_cedis_mty',
+        almacen_actual: tc.condicion === 'faltante' ? 'NO_RECIBIDA' : 'CEDIS-MTY',
+        recibido_cedis_mty_at: serverTimestamp(),
+        recibido_cedis_mty_por: state.user.id,
+        condicion_recepcion: tc.condicion,
+        cantidad_recibida_cedis: Number(tc.cantidad_recibida) || 0,
+        updated_at: serverTimestamp()
+      };
+      if (tc.notas) updates.notas_recepcion = tc.notas;
+      if (Number(tc.cantidad_recibida) !== Number(tc.cantidad_esperada)) {
+        updates.cantidad_original_oti = tc.cantidad_esperada;
+      }
+      batch.update(doc(db, 'tarimas', tc.tarima_id), updates);
+    });
+    
+    const deptos = hayDif ? ['CS','KAM','CEO','ALP','CEDMTY'] : ['CS','KAM','CEO','ALP'];
+    deptos.forEach(depto => {
+      const ref = doc(collection(db, 'notificaciones'));
+      batch.set(ref, {
+        titulo: hayDif 
+          ? `⚠ OTI ${oti.folio} recibida CON DIFERENCIAS (${conDiferencias.length})`
+          : `✅ OTI ${oti.folio} recibida sin diferencias`,
+        mensaje: `${oti.num_tarimas} tarima(s) · Recibido por ${state.user.nombre}`,
+        depto_destino: depto, 
+        tipo: hayDif ? 'warning' : 'success', 
+        folio_ref: oti.folio,
+        vista_destino: 'recepcion_cedis',
+        created_at: serverTimestamp()
+      });
+    });
+    
+    // Activar OVs en espera
+    const piIdsAfectados = new Set();
+    const piFoliosAfectados = new Set();
+    (oti.tarimas_ids || []).forEach(tid => {
+      const t = state.tarimas.find(x => x.id === tid);
+      if (t) {
+        if (t.pedido_id) piIdsAfectados.add(t.pedido_id);
+        if (t.pedido_folio) piFoliosAfectados.add(t.pedido_folio);
+      }
+    });
+    const ovsActivar = (state.ordenes_venta || []).filter(ov => 
+      ov.estatus === 'esperando_produccion' &&
+      (piIdsAfectados.has(ov.pedido_id) || piFoliosAfectados.has(ov.pedido_folio))
+    );
+    ovsActivar.forEach(ov => {
+      batch.update(doc(db, 'ordenes_venta', ov.id), {
+        estatus: 'pendiente_asignar',
+        material_disponible_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    });
+    
+    await batch.commit();
+    
+    state.modalForm = null;
+    state.modal = null;
+    toast(hayDif 
+      ? `⚠ ${oti.folio} recibido con ${conDiferencias.length} diferencia(s)`
+      : `✅ ${oti.folio} recibido sin diferencias`);
+  } catch (e) {
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos' : e.message), 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+
+// ─── PDF: DOCUMENTO DE RECEPCIÓN PARA CEDIS-MTY ──────────────
+window.imprimirRecepcionOTI = (otiId) => {
+  const oti = (state.oti || []).find(o => o.id === otiId);
+  if (!oti) { toast('OTI no encontrada', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó', 'error'); return; }
+  
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'portrait' });
+  const W = 215.9, margen = 8;
+  
+  try {
+    if (DATOS_EMPRESA?.logo_url) {
+      doc.addImage(DATOS_EMPRESA.logo_url, 'JPEG', margen, 8, 22, 16);
+    }
+  } catch (e) {}
+  
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text('DOCUMENTO DE RECEPCION', W/2, 14, { align: 'center' });
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`CEDIS-MTY · ${oti.folio}${oti.remision_folio ? ' · Rem ' + oti.remision_folio : ''}`, W/2, 21, { align: 'center' });
+  
+  let y = 30;
+  
+  doc.setFillColor(31, 178, 75);
+  doc.rect(margen, y, W - margen*2, 6, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text('DATOS DEL EMBARQUE', margen + 3, y + 4);
+  doc.setTextColor(0, 0, 0);
+  y += 8;
+  
+  function _f(label, val, x, yy, ancho) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(70, 70, 70);
+    doc.text(label.toUpperCase(), x + 1, yy + 3);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(0, 0, 0);
+    doc.rect(x, yy + 4, ancho, 6);
+    doc.text(String(val || '—').substring(0, 50), x + 2, yy + 8.5);
+  }
+  
+  const wCol = (W - margen*2 - 5) / 2;
+  _f('Folio OTI', oti.folio, margen, y, wCol);
+  _f('Fecha embarque', oti.created_at?.toDate ? oti.created_at.toDate().toLocaleDateString('es-MX') : '—', margen + wCol + 5, y, wCol);
+  y += 12;
+  
+  _f('Transportista', oti.transportista_nombre || oti.transportista, margen, y, wCol);
+  _f('Tipo', oti.transportista_tipo === 'interno' ? 'NEWPACK LOGISTICA' : 'PROVEEDOR EXTERNO', margen + wCol + 5, y, wCol);
+  y += 12;
+  
+  _f('Operador', oti.operador_nombre || oti.conductor, margen, y, wCol);
+  _f('Placas / Unidad', oti.unidad_placas || oti.placas, margen + wCol + 5, y, wCol);
+  y += 14;
+  
+  doc.setFillColor(56, 182, 255);
+  doc.rect(margen, y, W - margen*2, 6, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.text('TARIMAS A RECIBIR', margen + 3, y + 4);
+  doc.setTextColor(0, 0, 0);
+  y += 8;
+  
+  const cT = (W - margen*2);
+  const c1 = cT*0.08, c2 = cT*0.34, c3 = cT*0.16, c4 = cT*0.16, c5 = cT*0.14, c6 = cT*0.12;
+  doc.setFillColor(240, 240, 240);
+  doc.rect(margen, y, cT, 6, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  let xx = margen;
+  ['#', 'PRODUCTO / CLIENTE', 'ESPERADO', 'RECIBIDO', 'CONDICION', 'OK/X'].forEach((h, i) => {
+    const w = [c1, c2, c3, c4, c5, c6][i];
+    doc.text(h, xx + w/2, y + 4, { align: 'center' });
+    xx += w;
+  });
+  y += 6;
+  
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  
+  const conciliacion = oti.conciliacion || (oti.tarimas_resumen || []).map(t => ({
+    tarima_id: t.id,
+    numero: t.numero_tarima,
+    producto: t.producto_codigo,
+    cliente: t.cliente_nombre || t.cliente_codigo,
+    cantidad_esperada: t.cantidad,
+    cantidad_recibida: t.cantidad,
+    um: t.um,
+    condicion: 'ok',
+    notas: ''
+  }));
+  
+  conciliacion.forEach(tc => {
+    if (y > 250) { doc.addPage('letter', 'portrait'); y = 20; }
+    const dif = Number(tc.cantidad_recibida) !== Number(tc.cantidad_esperada);
+    const malaCondicion = tc.condicion && tc.condicion !== 'ok';
+    
+    if (dif || malaCondicion) {
+      doc.setFillColor(255, 248, 220);
+      doc.rect(margen, y, cT, 6, 'F');
+    }
+    
+    xx = margen;
+    doc.rect(margen, y, c1, 6);
+    doc.text(`T${String(tc.numero).padStart(2,'0')}`, xx + c1/2, y + 4, { align: 'center' });
+    xx += c1;
+    doc.rect(xx, y, c2, 6);
+    doc.text(`${tc.producto || '—'} / ${tc.cliente || '—'}`.substring(0, 38), xx + 1.5, y + 4);
+    xx += c2;
+    doc.rect(xx, y, c3, 6);
+    doc.text(`${tc.cantidad_esperada} ${tc.um || 'kg'}`, xx + c3/2, y + 4, { align: 'center' });
+    xx += c3;
+    doc.rect(xx, y, c4, 6);
+    const isRecibido = oti.estatus === 'recibido' || oti.estatus === 'recibido_con_diferencias';
+    doc.text(isRecibido ? `${tc.cantidad_recibida} ${tc.um || 'kg'}` : '__________', xx + c4/2, y + 4, { align: 'center' });
+    xx += c4;
+    doc.rect(xx, y, c5, 6);
+    const condTxt = { ok: 'OK', 'dañada': 'DANADA', faltante: 'FALTANTE', sobrante: 'SOBRANTE', otro: 'OTRO' }[tc.condicion] || (isRecibido ? 'OK' : '_______');
+    doc.text(condTxt, xx + c5/2, y + 4, { align: 'center' });
+    xx += c5;
+    doc.rect(xx, y, c6, 6);
+    doc.text(isRecibido ? (tc.condicion === 'ok' ? 'OK' : 'X') : '[ ]', xx + c6/2, y + 4.5, { align: 'center' });
+    y += 6;
+    
+    if (tc.notas) {
+      doc.setFontSize(7);
+      doc.setTextColor(120, 80, 0);
+      doc.text(`  Nota T${tc.numero}: ${String(tc.notas).substring(0, 110)}`, margen + 2, y + 3);
+      doc.setTextColor(0, 0, 0);
+      doc.setFontSize(8);
+      y += 4;
+    }
+  });
+  
+  y += 4;
+  const totalEsp = conciliacion.reduce((s, t) => s + (Number(t.cantidad_esperada) || 0), 0);
+  const totalRec = conciliacion.reduce((s, t) => s + (Number(t.cantidad_recibida) || 0), 0);
+  doc.setFillColor(220, 230, 245);
+  doc.rect(margen, y, cT, 6, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.text(`TOTALES: ${conciliacion.length} tarimas`, margen + 3, y + 4);
+  doc.text(`Esperado: ${fmtNum(totalEsp)}`, margen + cT * 0.45, y + 4);
+  doc.text(`Recibido: ${oti.estatus === 'en_transito' ? '________' : fmtNum(totalRec)}`, margen + cT * 0.65, y + 4);
+  y += 10;
+  
+  if (oti.notas_recepcion || oti.estatus === 'en_transito') {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.text('NOTAS DE RECEPCION:', margen, y + 3);
+    doc.setFont('helvetica', 'normal');
+    doc.rect(margen, y + 4, cT, 16);
+    if (oti.notas_recepcion) {
+      const lines = doc.splitTextToSize(oti.notas_recepcion, cT - 4);
+      doc.text(lines.slice(0, 4), margen + 2, y + 8);
+    }
+    y += 22;
+  }
+  
+  y = Math.max(y, 245);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  const fW = 70;
+  doc.line(margen + 10, y, margen + 10 + fW, y);
+  doc.text('OPERADOR (entrega)', margen + 10 + fW/2, y + 4, { align: 'center' });
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'normal');
+  doc.text(oti.operador_nombre || oti.conductor || '', margen + 10 + fW/2, y - 1, { align: 'center' });
+  
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.line(W - margen - 10 - fW, y, W - margen - 10, y);
+  doc.text('CEDIS-MTY (recibe)', W - margen - 10 - fW/2, y + 4, { align: 'center' });
+  if (oti.recibido_por_nombre) {
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.text(oti.recibido_por_nombre, W - margen - 10 - fW/2, y - 1, { align: 'center' });
+  }
+  
+  doc.setFontSize(6);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(120, 120, 120);
+  doc.text(`Generado: ${new Date().toLocaleString('es-MX')} · NewPack ERP · ${oti.folio}`, W/2, 275, { align: 'center' });
+  
+  doc.save(`Recepcion_${oti.folio}.pdf`);
+};
+
 
 // Verificación inicial
 if (firebaseConfig.apiKey === 'TU_API_KEY') {
