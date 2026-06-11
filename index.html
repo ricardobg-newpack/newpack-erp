@@ -4117,7 +4117,7 @@ function renderKanbanMaquinas() {
         <div style="font-size:11px;opacity:0.9;margin-top:2px;">
           Filtro: ${procFiltro === 'todos' ? 'Todos los procesos' : (getProc(procFiltro)?.nombre || procFiltro)}
           ${cantArchivadas > 0 ? ` · ${cantArchivadas} archivadas (ocultas)` : ''}
-          ${puedeEditarOrden ? ' · 🖱️ Arrastra tarjetas en COLA para reordenar' : ''}
+          ${puedeEditarOrden ? ' · 🖱️ Arrastra tarjetas o usa ▲▼ para reordenar' : ''}
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -4297,7 +4297,7 @@ function renderKanbanMaquinas() {
                 >
                   ${datos.en_cola.length === 0 
                     ? `<div style="padding:24px 12px;text-align:center;color:${puedeEditarOrden?'#a16207':'#cbd5e1'};font-size:11px;${puedeEditarOrden?'font-weight:700;':'font-style:italic;'}">${puedeEditarOrden ? '⬇ Suelta aquí una ODP para asignarla a ' + m.codigo : 'vacío'}</div>` 
-                    : datos.en_cola.map((odp, idx) => _renderTarjetaKanban(odp, 'cola', { draggable: puedeEditarOrden, idx, maquina: m.codigo })).join('')}
+                    : datos.en_cola.map((odp, idx) => _renderTarjetaKanban(odp, 'cola', { draggable: puedeEditarOrden, idx, maquina: m.codigo, totalEnCola: datos.en_cola.length, puedeReordenar: puedeEditarOrden })).join('')}
                 </div>
               </div>
               
@@ -4396,7 +4396,25 @@ function _renderTarjetaKanban(odp, columna, opts) {
   ` : '';
   
   const cursorStyle = draggable ? 'cursor:grab;' : '';
-  const dragHint = draggable ? `<span style="font-size:9px;color:#94a3b8;margin-left:4px;">⠿</span>` : '';
+  const dragHint = draggable ? `<span style="font-size:9px;color:#94a3b8;margin-left:4px;" title="Arrastra para reordenar">⠿</span>` : '';
+  
+  // 🆕 Botones para mover ↑↓ (más confiables que drag&drop en cualquier dispositivo)
+  const totalEnCola = opts.totalEnCola || 0;
+  const puedeReordenar = opts.puedeReordenar === true && columna === 'cola';
+  const esPrimera = idx === 0;
+  const esUltima = idx === totalEnCola - 1;
+  const botonesReordenar = puedeReordenar && totalEnCola > 1 ? `
+    <div style="display:flex;gap:3px;margin-top:5px;align-items:center;">
+      <span style="font-size:9px;color:#475569;font-weight:800;background:#fef3c7;padding:2px 6px;border-radius:4px;">📋 ${idx + 1} de ${totalEnCola}</span>
+      <div style="flex:1;"></div>
+      <button onclick="event.stopPropagation();window.moverODPCola('${odp.id}','arriba')" 
+        style="background:${esPrimera?'#e2e8f0':'#3b82f6'};color:${esPrimera?'#94a3b8':'#fff'};border:none;padding:3px 8px;border-radius:4px;cursor:${esPrimera?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
+        ${esPrimera?'disabled':''} title="Mover arriba (entra antes)">▲</button>
+      <button onclick="event.stopPropagation();window.moverODPCola('${odp.id}','abajo')" 
+        style="background:${esUltima?'#e2e8f0':'#3b82f6'};color:${esUltima?'#94a3b8':'#fff'};border:none;padding:3px 8px;border-radius:4px;cursor:${esUltima?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
+        ${esUltima?'disabled':''} title="Mover abajo (entra después)">▼</button>
+    </div>
+  ` : '';
   
   return `
     <div ${dragAttrs} style="background:${bgColor};border:1px solid ${borderColor};border-left:3px solid ${borderColor};border-radius:6px;padding:8px 10px;font-size:11px;${cursorStyle}${vencida ? 'box-shadow: 0 0 0 2px #fca5a5;' : ''}">
@@ -4411,6 +4429,7 @@ function _renderTarjetaKanban(odp, columna, opts) {
         <span style="color:#475569;"><strong>${fmtNum(cantTotal)}</strong> ${um}</span>
         <span style="color:#64748b;">${cliente.length > 18 ? cliente.slice(0,17) + '…' : cliente}</span>
       </div>
+      ${botonesReordenar}
       ${(columna === 'proceso' || (procEst === 'en_proceso' && pct > 0)) ? `
         <div style="margin-top:6px;background:#e2e8f0;height:5px;border-radius:3px;overflow:hidden;">
           <div style="background:#3b82f6;height:100%;width:${pct}%;"></div>
@@ -4603,6 +4622,94 @@ window.onKanbanDrop = async (event, maqDestino) => {
     window._kanbanDrag = null;
     state.loadingAccion = false;
     render();
+  }
+};
+
+// 🆕 Mover ODP arriba/abajo en la cola de su máquina (botones ↑↓)
+// Más confiable que drag&drop. Funciona en cualquier dispositivo (móvil/tablet/desktop).
+window.moverODPCola = async (odpId, direccion) => {
+  const u = state.user || {};
+  const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
+  if (!puedeEditar) {
+    toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden reordenar. Tu depto: ${u.depto || '?'}`, 'error');
+    return;
+  }
+  
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  // Encontrar la máquina asignada a esta ODP en su proceso actual
+  const idxProc = odp.proceso_actual_idx ?? 0;
+  const procCodigo = (odp.ruta_procesos || [])[idxProc];
+  const maqs = odp.maquinas_asignadas || {};
+  let maqAsignada = null;
+  if (typeof maqs === 'object' && !Array.isArray(maqs)) maqAsignada = maqs[procCodigo];
+  else if (Array.isArray(maqs)) maqAsignada = maqs[idxProc];
+  else if (typeof maqs === 'string') maqAsignada = maqs;
+  
+  if (!maqAsignada) {
+    toast('Esta ODP no tiene máquina asignada', 'error'); return;
+  }
+  
+  // Obtener todas las ODPs en cola de la misma máquina (mismo conjunto que ve en el Kanban)
+  const odpsEnCola = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada) return false;
+    const idx2 = o.proceso_actual_idx ?? 0;
+    const maqs2 = o.maquinas_asignadas || {};
+    const proc2 = (o.ruta_procesos || [])[idx2];
+    let maq2 = null;
+    if (typeof maqs2 === 'object' && !Array.isArray(maqs2)) maq2 = maqs2[proc2];
+    else if (Array.isArray(maqs2)) maq2 = maqs2[idx2];
+    else if (typeof maqs2 === 'string') maq2 = maqs2;
+    if (maq2 !== maqAsignada) return false;
+    const est = o.estatus || '';
+    return est === 'aprobada' || est === 'pendiente' || est === 'programada' || est === 'pendiente_planeacion';
+  }).sort((a, b) => {
+    const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    return (a.fecha_entrega_solicitada || '').localeCompare(b.fecha_entrega_solicitada || '');
+  });
+  
+  const idxActual = odpsEnCola.findIndex(o => o.id === odpId);
+  if (idxActual < 0) { toast('ODP no está en cola de esta máquina', 'error'); return; }
+  
+  // Calcular nueva posición
+  let idxNueva;
+  if (direccion === 'arriba') {
+    if (idxActual === 0) { toast('Ya está en la primera posición', 'info'); return; }
+    idxNueva = idxActual - 1;
+  } else if (direccion === 'abajo') {
+    if (idxActual === odpsEnCola.length - 1) { toast('Ya está en la última posición', 'info'); return; }
+    idxNueva = idxActual + 1;
+  } else {
+    return;
+  }
+  
+  // Intercambiar las dos ODPs
+  const arrNueva = odpsEnCola.slice();
+  [arrNueva[idxActual], arrNueva[idxNueva]] = [arrNueva[idxNueva], arrNueva[idxActual]];
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    arrNueva.forEach((o, i) => {
+      batch.update(doc(db, 'ordenes_produccion', o.id), {
+        prioridad_cola: (i + 1) * 10,
+        updated_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    const flecha = direccion === 'arriba' ? '▲' : '▼';
+    toast(`${flecha} ${odp.folio || odpId.slice(0,6)} → posición ${idxNueva + 1} de ${odpsEnCola.length}`, 'success');
+  } catch (e) {
+    console.error('[moverODPCola] error:', e);
+    const msgErr = e.message?.includes('PERMISSION_DENIED')
+      ? `🔒 Sin permisos para actualizar la ODP. Tu depto: ${state.user?.depto || '?'}`
+      : `Error: ${e.message}`;
+    toast(msgErr, 'error');
+  } finally {
+    state.loadingAccion = false; render();
   }
 };
 
