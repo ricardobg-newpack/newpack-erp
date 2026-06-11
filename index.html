@@ -156,6 +156,8 @@ const state = {
   ordenes_venta: [],
   ordenes_produccion: [],
   capturas_produccion: [],
+  // 🆕 EXTRUSIÓN: registro rollo por rollo durante el turno (sustituye hoja física)
+  rollos_extrusion: [],
   lotes: [],
   tarimas: [],
   packing_lists: [],
@@ -1266,6 +1268,11 @@ async function cargarTodo() {
         state.capturas_produccion = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       }),
+      // 🆕 Rollos de extrusión (captura granular durante el turno)
+      onSnapshot(query(collection(db, 'rollos_extrusion'), orderBy('created_at', 'desc'), limit(1000)), (snap) => {
+        state.rollos_extrusion = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
       onSnapshot(query(collection(db, 'lotes'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.lotes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
@@ -1685,6 +1692,7 @@ function renderApp() {
         ` : ''}
         ${esALP || esCEDMTY || esCEDMEX || esCS ? `
           <button class="nav-item ${state.vista === 'catalogo_logistica' ? 'active' : ''}" data-vista="catalogo_logistica">🚛 Catálogo Logística</button>
+          <button class="nav-item ${state.vista === 'historico_remisiones' ? 'active' : ''}" data-vista="historico_remisiones">📋 Histórico Remisiones</button>
         ` : ''}
         
         ${(esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS) ? `
@@ -1782,6 +1790,7 @@ function tituloVista() {
     oti_planta: '🚚 OTI Planta → CEDIS-MTY',
     cedis_mty: '📦 CEDIS-MTY',
     recepcion_cedis: '📥 Recepción de OTIs en CEDIS-MTY',
+    historico_remisiones: '📋 Histórico de Remisiones',
     catalogo_logistica: '🚛 Catálogo de Logística',
     embarques: '🚚 Embarques (Órdenes de Venta)',
     stock_producto: '📊 Inventario CEDIS-MTY',
@@ -1822,6 +1831,7 @@ function renderVista() {
   if (v === 'oti_planta') return renderOTIPlanta();
   if (v === 'cedis_mty') return renderCedisMTY();
   if (v === 'recepcion_cedis') return renderRecepcionCedis();
+  if (v === 'historico_remisiones') return renderHistoricoRemisiones();
   if (v === 'catalogo_logistica') return renderCatalogoLogistica();
   if (v === 'embarques') return renderEmbarques();
   if (v === 'stock_producto') return renderStockProducto();
@@ -6542,13 +6552,21 @@ function renderPanelOperador() {
     }
   });
   
-  // Ordenar: primero por prioridad (urgentes primero), luego por fecha de entrega
+  // 🆕 SINCRONIZADO CON KANBAN:
+  // El orden respeta el arrastre del Kanban (prioridad_cola)
+  // 1. Urgentes arriba siempre (etiqueta cliente)
+  // 2. prioridad_cola del Kanban (10, 20, 30... lo que el supervisor arrastra)
+  // 3. Fecha entrega como desempate (si dos tienen la misma prioridad_cola)
   const ordenarPorEntrega = (a, b) => {
-    // Urgentes arriba
+    // 1. Urgentes siempre arriba
     const urgA = a.prioridad === 'urgente' ? 0 : 1;
     const urgB = b.prioridad === 'urgente' ? 0 : 1;
     if (urgA !== urgB) return urgA - urgB;
-    // Luego fecha entrega
+    // 2. Orden del Kanban (lo que se arrastró)
+    const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.POSITIVE_INFINITY;
+    const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.POSITIVE_INFINITY;
+    if (pcA !== pcB) return pcA - pcB;
+    // 3. Fecha entrega como desempate
     const fA = a.fecha_entrega_solicitada || a.fecha_entrega_programada || '9999';
     const fB = b.fecha_entrega_solicitada || b.fecha_entrega_programada || '9999';
     return fA.localeCompare(fB);
@@ -6713,7 +6731,7 @@ function renderPanelOperador() {
           <div style="font-size:18px;font-weight:900;color:#92400e;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             📋 EN COLA <span style="background:#f59e0b;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enColaFiltradas.length}</span>
             ${busq ? `<span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">(filtrado de ${enCola.length})</span>` : ''}
-            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— por prioridad / fecha de entrega</span>
+            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— urgentes primero · luego orden del Kanban</span>
             <div style="margin-left:auto;display:flex;gap:4px;background:#fff;padding:2px;border-radius:6px;border:1px solid #f59e0b;">
               <button onclick="window.vistaPanelOp('lista')" style="padding:4px 10px;background:${(state.panelOpVista||'lista')==='lista'?'#f59e0b':'transparent'};color:${(state.panelOpVista||'lista')==='lista'?'#fff':'#92400e'};border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">📃 Lista</button>
               <button onclick="window.vistaPanelOp('tarjetas')" style="padding:4px 10px;background:${state.panelOpVista==='tarjetas'?'#f59e0b':'transparent'};color:${state.panelOpVista==='tarjetas'?'#fff':'#92400e'};border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">🗂 Tarjetas</button>
@@ -6784,14 +6802,14 @@ function renderPanelOperador() {
                     <span style="background:${proc.color};color:#fff;padding:2px 8px;border-radius:99px;font-size:11px;">${odps.length} ODP${odps.length>1?'s':''} en cola</span>
                   </div>
                   <div style="display:grid;grid-template-columns:1fr;gap:10px;">
-                    ${odps.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
+                    ${odps.map((o, idx) => _tarjetaOperador(o, procSel, 'cola', idx + 1)).join('')}
                   </div>
                 </div>
               `;
             }).join('')}
           ` : `
             <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-              ${enColaFiltradas.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
+              ${enColaFiltradas.map((o, idx) => _tarjetaOperador(o, procSel, 'cola', idx + 1)).join('')}
             </div>
           `)}
         </div>
@@ -6812,7 +6830,7 @@ function renderPanelOperador() {
 }
 
 // Helper: tarjeta grande de una ODP para el panel operador
-function _tarjetaOperador(o, procSel, modo) {
+function _tarjetaOperador(o, procSel, modo, posicion) {
   const proc = PROCESOS.find(p => p.codigo === procSel) || {};
   const um = (o.um || 'kg').toLowerCase();
   const cantTxt = fmtCantidadUM(o.cantidad, um);
@@ -6874,6 +6892,7 @@ function _tarjetaOperador(o, procSel, modo) {
   return `
     <div style="background:#fff;border:${urgente ? '3px solid #dc2626' : '1.5px solid #e2e8f0'};border-radius:12px;padding:16px;position:relative;${urgente ? 'box-shadow:0 4px 12px rgba(220,38,38,0.2);' : ''}">
       ${urgente ? `<div style="position:absolute;top:-12px;left:14px;background:#dc2626;color:#fff;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:900;letter-spacing:0.1em;">🔥 URGENTE</div>` : ''}
+      ${!urgente && modo === 'cola' && posicion ? `<div style="position:absolute;top:-12px;left:14px;background:${proc.color || '#0f172a'};color:#fff;padding:3px 12px;border-radius:6px;font-size:11px;font-weight:900;letter-spacing:0.08em;">📋 POSICIÓN ${posicion}</div>` : ''}
       ${estaPausada ? `<div style="position:absolute;top:-12px;right:14px;background:#a16207;color:#fff;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:900;">⏸ PAUSADA: ${o.pausa_motivo || ''}</div>` : ''}
       
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
@@ -7988,6 +8007,11 @@ function modalCapturarTurno() {
   const mermKg = Number(f.mermas_kg) || 0;
   const camposListos = f.fecha && f.turno && f.grupo && f.operador_id && f.supervisor_id && prodKg > 0;
   
+  // 🆕 EXTRUSIÓN: si es P1-EXT, usar la vista rollo por rollo en vez del turno completo
+  if (procCodigo === 'P1-EXT') {
+    return modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada, metaKg, totalProducidoKg, totalMermasKg, faltaKg, pctAvance, operadoresFiltrados, supervisoresFiltrados, f);
+  }
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:680px;">
@@ -8166,6 +8190,243 @@ function modalCapturarTurno() {
   `;
 }
 
+// ============================================================
+// 🆕 MODAL: CAPTURA TURNO EXTRUSIÓN (rollo por rollo)
+// ============================================================
+// Sustituye la hoja física donde se anota cada rollo (peso, hora, operador).
+// Durante el turno, el operador agrega rollos uno por uno con un solo click.
+// Al final del turno, presiona "Cerrar turno" y se consolida en capturas_produccion.
+function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada, metaKg, totalProducidoKg, totalMermasKg, faltaKg, pctAvance, operadoresFiltrados, supervisoresFiltrados, f) {
+  const procCodigo = ruta[idx];
+  
+  // Rollos del turno actual (mismo odp + mismo proceso + mismo turno + grupo + fecha + no anulado)
+  const rollosDelTurno = (state.rollos_extrusion || []).filter(r => 
+    r.odp_id === odp.id && 
+    r.proceso === procCodigo &&
+    r.fecha === f.fecha &&
+    r.turno === f.turno &&
+    r.grupo === f.grupo &&
+    !r.anulado &&
+    !r.consolidado_en_turno  // si ya pertenece a un turno cerrado, no contar
+  ).sort((a, b) => {
+    const ha = a.hora_captura || a.created_at?.seconds || 0;
+    const hb = b.hora_captura || b.created_at?.seconds || 0;
+    return (typeof ha === 'string' && typeof hb === 'string') ? ha.localeCompare(hb) : (ha - hb);
+  });
+  
+  const totalKgTurno = rollosDelTurno.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  const totalMermasTurno = rollosDelTurno.reduce((s, r) => s + (Number(r.mermas_kg) || 0), 0);
+  const numRollos = rollosDelTurno.length;
+  
+  // Próximo número de rollo (por ODP, considerando TODOS los rollos no anulados)
+  const todosRollosODP = (state.rollos_extrusion || []).filter(r => 
+    r.odp_id === odp.id && !r.anulado
+  );
+  const proxNumRollo = todosRollosODP.length + 1;
+  
+  // Hora actual auto-sugerida
+  const ahora = new Date();
+  const hh = String(ahora.getHours()).padStart(2, '0');
+  const mm = String(ahora.getMinutes()).padStart(2, '0');
+  const horaAhora = `${hh}:${mm}`;
+  
+  // Pre-llenar próximo rollo
+  if (!f.proxRollo) {
+    f.proxRollo = { peso_kg: '', hora: horaAhora, mermas_kg: '0' };
+  }
+  
+  const procEst = odp.proceso_estatus_actual || 'esperando';
+  const yaIniciado = procEst === 'en_proceso' || procEst === 'pausado' || (odp.proceso_actual_idx ?? 0) > 0 || odp.estatus === 'en_produccion';
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:760px;max-height:92vh;display:flex;flex-direction:column;">
+        <div class="modal-header" style="background:#dc2626;color:#fff;">
+          <h2 style="font-size:18px;font-weight:800;">🔥 EXTRUSIÓN — Captura rollo por rollo</h2>
+          <button class="icon-btn" onclick="cerrarModal()" style="color:#fff;">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;padding:18px 22px;">
+          
+          <!-- Header ODP -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;margin-bottom:12px;">
+            <div>
+              <div style="font-size:11px;color:#991b1b;font-weight:800;">ODP</div>
+              <div style="font-family:monospace;font-size:18px;font-weight:900;color:#0f172a;">${odp.folio}</div>
+              <div style="font-size:11.5px;color:#475569;font-weight:600;margin-top:2px;">${odp.descripcion || odp.producto_codigo}</div>
+              <div style="font-size:10.5px;color:#64748b;font-family:monospace;margin-top:2px;">${odp.producto_codigo}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:11px;color:#991b1b;font-weight:800;">META</div>
+              <div style="font-size:24px;font-weight:900;color:#dc2626;">${fmtNum(metaKg)} kg</div>
+              <div style="font-size:11px;color:#64748b;">🛠️ ${maquinaAsignada || 'sin asignar'}</div>
+              <div style="font-size:11px;color:#475569;margin-top:2px;">Acumulado ODP: <strong>${fmtNum(totalProducidoKg)} kg</strong> · Falta: <strong>${fmtNum(faltaKg)} kg</strong></div>
+            </div>
+          </div>
+          
+          <!-- Datos del turno -->
+          <div style="padding:10px;background:#f0fdf4;border:1.5px solid #16a34a;border-radius:10px;margin-bottom:12px;">
+            <div style="font-size:11px;font-weight:800;color:#15803d;margin-bottom:6px;">📅 DATOS DEL TURNO</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Fecha</label>
+                <input class="input" type="date" id="ext-fecha" value="${f.fecha}" onchange="window.modalFormSet('fecha', this.value)" />
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Turno</label>
+                <div style="display:flex;gap:6px;">
+                  <button onclick="window.modalFormSet('turno','dia')" style="flex:1;padding:6px;border:2px solid ${f.turno==='dia'?'#f59e0b':'#cbd5e1'};background:${f.turno==='dia'?'#f59e0b':'#fff'};color:${f.turno==='dia'?'#fff':'#475569'};border-radius:6px;font-weight:800;font-size:11px;cursor:pointer;">☀️ Día</button>
+                  <button onclick="window.modalFormSet('turno','noche')" style="flex:1;padding:6px;border:2px solid ${f.turno==='noche'?'#1e3a8a':'#cbd5e1'};background:${f.turno==='noche'?'#1e3a8a':'#fff'};color:${f.turno==='noche'?'#fff':'#475569'};border-radius:6px;font-weight:800;font-size:11px;cursor:pointer;">🌙 Noche</button>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top:8px;">
+              <label class="field-label" style="font-size:10.5px;">Grupo *</label>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${TURNOS.map(t => `
+                  <button onclick="window.modalFormSetGrupo('${t.codigo}')" style="flex:1;min-width:50px;padding:10px;border:2px solid ${f.grupo === t.codigo ? t.color : '#cbd5e1'};background:${f.grupo === t.codigo ? t.color : '#fff'};color:${f.grupo === t.codigo ? '#fff' : t.color};border-radius:6px;font-weight:800;font-size:15px;cursor:pointer;">${t.codigo}</button>
+                `).join('')}
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Operador del turno *</label>
+                <select class="input" id="ext-operador" onchange="window.modalFormSet('operador_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
+                  <option value="">${f.grupo ? '— Selecciona —' : 'Elige grupo'}</option>
+                  ${operadoresFiltrados.map(o => `<option value="${o.id}" ${f.operador_id === o.id ? 'selected' : ''}>${o.nombre}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Supervisor *</label>
+                <select class="input" id="ext-supervisor" onchange="window.modalFormSet('supervisor_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
+                  <option value="">${f.grupo ? '— Selecciona —' : 'Elige grupo'}</option>
+                  ${supervisoresFiltrados.map(s => `<option value="${s.id}" ${f.supervisor_id === s.id ? 'selected' : ''}>${s.nombre}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Resumen del turno actual -->
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;">
+            <div style="background:#dbeafe;border:1.5px solid #3b82f6;border-radius:8px;padding:10px;text-align:center;">
+              <div style="font-size:10px;font-weight:800;color:#1e40af;">ROLLOS DEL TURNO</div>
+              <div style="font-size:26px;font-weight:900;color:#1e40af;line-height:1;">${numRollos}</div>
+            </div>
+            <div style="background:#dcfce7;border:1.5px solid #16a34a;border-radius:8px;padding:10px;text-align:center;">
+              <div style="font-size:10px;font-weight:800;color:#15803d;">KG ACUMULADOS</div>
+              <div style="font-size:22px;font-weight:900;color:#15803d;line-height:1;">${fmtNum(totalKgTurno)}</div>
+            </div>
+            <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:10px;text-align:center;">
+              <div style="font-size:10px;font-weight:800;color:#92400e;">MERMAS TURNO</div>
+              <div style="font-size:22px;font-weight:900;color:#92400e;line-height:1;">${fmtNum(totalMermasTurno)}</div>
+            </div>
+          </div>
+          
+          <!-- AGREGAR ROLLO -->
+          <div style="background:#fff;border:2px solid #dc2626;border-radius:10px;padding:12px;margin-bottom:12px;">
+            <div style="font-size:13px;font-weight:800;color:#dc2626;margin-bottom:8px;">➕ Capturar rollo #${proxNumRollo}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;">
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Peso del rollo (kg) *</label>
+                <input class="input" id="rollo-peso" type="number" min="0" step="0.1" value="${f.proxRollo.peso_kg || ''}" 
+                  oninput="state.modalForm.proxRollo.peso_kg=this.value" 
+                  placeholder="0.0" style="font-size:18px;font-weight:800;text-align:center;" />
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Hora</label>
+                <input class="input" id="rollo-hora" type="time" value="${f.proxRollo.hora || horaAhora}" 
+                  oninput="state.modalForm.proxRollo.hora=this.value" style="font-size:15px;font-weight:700;text-align:center;" />
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="font-size:10.5px;">Merma rollo (kg)</label>
+                <input class="input" id="rollo-mermas" type="number" min="0" step="0.1" value="${f.proxRollo.mermas_kg || '0'}" 
+                  oninput="state.modalForm.proxRollo.mermas_kg=this.value" 
+                  placeholder="0" style="font-size:15px;font-weight:700;text-align:center;color:#dc2626;" />
+              </div>
+              <button onclick="window.agregarRolloExtrusion('${odp.id}')" 
+                style="background:#dc2626;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:900;font-size:13px;cursor:pointer;height:38px;white-space:nowrap;" 
+                ${!f.grupo || !f.operador_id ? 'disabled title="Captura grupo y operador primero"' : ''}>
+                ➕ AGREGAR
+              </button>
+            </div>
+            ${!f.grupo || !f.operador_id ? `<div style="font-size:10.5px;color:#dc2626;margin-top:6px;font-weight:700;">⚠ Primero elige grupo y operador del turno</div>` : ''}
+          </div>
+          
+          <!-- LISTA DE ROLLOS DEL TURNO -->
+          ${rollosDelTurno.length > 0 ? `
+            <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:12px;">
+              <div style="background:#f8fafc;padding:8px 12px;font-size:11.5px;font-weight:800;color:#475569;border-bottom:1px solid #e2e8f0;">
+                📋 Rollos capturados en este turno (${rollosDelTurno.length})
+              </div>
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead style="background:#f1f5f9;">
+                  <tr>
+                    <th style="padding:6px;text-align:center;font-size:10px;color:#475569;">#</th>
+                    <th style="padding:6px;text-align:center;font-size:10px;color:#475569;">HORA</th>
+                    <th style="padding:6px;text-align:right;font-size:10px;color:#475569;">PESO (kg)</th>
+                    <th style="padding:6px;text-align:right;font-size:10px;color:#475569;">MERMA (kg)</th>
+                    <th style="padding:6px;text-align:left;font-size:10px;color:#475569;">OPERADOR</th>
+                    <th style="padding:6px;text-align:center;font-size:10px;color:#475569;">✕</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rollosDelTurno.map(r => `
+                    <tr style="border-top:1px solid #f1f5f9;">
+                      <td style="padding:6px;text-align:center;font-weight:800;color:#0f172a;">#${r.numero_rollo}</td>
+                      <td style="padding:6px;text-align:center;font-family:monospace;">${r.hora_captura || '—'}</td>
+                      <td style="padding:6px;text-align:right;font-weight:800;color:#15803d;">${fmtNum(r.peso_kg || 0)}</td>
+                      <td style="padding:6px;text-align:right;font-weight:700;color:${r.mermas_kg ? '#dc2626' : '#94a3b8'};">${r.mermas_kg ? fmtNum(r.mermas_kg) : '—'}</td>
+                      <td style="padding:6px;font-size:11px;color:#475569;">${r.operador_nombre || '—'}</td>
+                      <td style="padding:6px;text-align:center;">
+                        <button onclick="window.anularRolloExtrusion('${r.id}')" style="background:transparent;border:none;color:#dc2626;cursor:pointer;font-size:14px;font-weight:800;" title="Anular rollo">✕</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+                <tfoot style="background:#0f172a;color:#fff;">
+                  <tr>
+                    <td colspan="2" style="padding:8px;font-weight:800;font-size:11px;">TOTALES TURNO:</td>
+                    <td style="padding:8px;text-align:right;font-weight:900;font-size:13px;">${fmtNum(totalKgTurno)} kg</td>
+                    <td style="padding:8px;text-align:right;font-weight:900;font-size:13px;color:#fca5a5;">${fmtNum(totalMermasTurno)} kg</td>
+                    <td colspan="2"></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          ` : `
+            <div style="background:#f8fafc;border:2px dashed #cbd5e1;border-radius:10px;padding:30px;text-align:center;color:#64748b;margin-bottom:12px;">
+              <div style="font-size:36px;margin-bottom:6px;">📋</div>
+              <div style="font-size:13px;font-weight:700;">Aún no hay rollos capturados en este turno</div>
+              <div style="font-size:11px;margin-top:3px;">Captura el primer rollo con el formulario de arriba</div>
+            </div>
+          `}
+          
+          <!-- Notas finales del turno -->
+          <div class="field" style="margin-top:6px;">
+            <label class="field-label">📝 Notas del turno <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <textarea class="input" id="ext-notas" style="min-height:50px;" 
+              oninput="window.modalFormSetSilent('notas', this.value)" 
+              placeholder="Paros, eventos, observaciones del turno...">${f.notas || ''}</textarea>
+          </div>
+          
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;background:#f8fafc;">
+          <div style="font-size:11px;color:#64748b;">
+            💡 Cierra el turno cuando termines tu jornada. Esto sumará los rollos a la producción total de la ODP.
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn-secondary" onclick="cerrarModal()">Salir sin cerrar</button>
+            <button class="btn-primary" onclick="window.cerrarTurnoExtrusion('${odp.id}')" 
+              style="background:#16a34a;${rollosDelTurno.length === 0 ? 'opacity:0.5;cursor:not-allowed;' : ''}" 
+              ${rollosDelTurno.length === 0 ? 'disabled' : ''}>
+              🔒 CERRAR TURNO (${numRollos} rollos · ${fmtNum(totalKgTurno)} kg)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // Silenciosa: para inputs (no provoca render, no pierde cursor)
 window.modalFormSetSilent = (key, val) => {
   if (!state.modalForm) state.modalForm = {};
@@ -8318,6 +8579,256 @@ window.guardarCapturaTurno = async (odpId) => {
       mensaje = '🔒 Sin permisos para guardar capturas. Tu depto: ' + (state.user?.depto || '?') + '. Publica las reglas firestore.rules en Firebase Console.';
     }
     toast('Error: ' + mensaje, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// 🆕 HANDLERS: ROLLOS DE EXTRUSIÓN
+// ============================================================
+
+// Agregar un rollo durante el turno
+window.agregarRolloExtrusion = async (odpId) => {
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  const f = state.modalForm || {};
+  
+  if (!f.grupo) { toast('Selecciona el grupo del turno', 'error'); return; }
+  if (!f.operador_id) { toast('Selecciona el operador del turno', 'error'); return; }
+  
+  // Leer del DOM si no está en state
+  const pesoDom = ($('#rollo-peso')?.value || '').trim();
+  const horaDom = ($('#rollo-hora')?.value || '').trim();
+  const mermasDom = ($('#rollo-mermas')?.value || '0').trim();
+  
+  const peso = Number(pesoDom || f.proxRollo?.peso_kg || 0);
+  const hora = horaDom || f.proxRollo?.hora || '';
+  const mermas = Number(mermasDom || f.proxRollo?.mermas_kg || 0);
+  
+  if (!peso || peso <= 0) { toast('Captura el peso del rollo', 'error'); return; }
+  if (peso > 5000) { toast('Peso sospechosamente alto (>5000 kg). Verifica.', 'error'); return; }
+  
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procCodigo = ruta[idx] || 'P1-EXT';
+  
+  // Calcular número de rollo (consecutivo por ODP)
+  const todosRollosODP = (state.rollos_extrusion || []).filter(r => 
+    r.odp_id === odpId && !r.anulado
+  );
+  const proxNum = todosRollosODP.length + 1;
+  
+  // Operador y supervisor (denormalizar nombres)
+  const operador = (state.operadores || []).find(o => o.id === f.operador_id);
+  const supervisor = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+  
+  state.loadingAccion = true; render();
+  try {
+    await addDoc(collection(db, 'rollos_extrusion'), {
+      odp_id: odpId,
+      odp_folio: odp.folio || '',
+      producto_codigo: odp.producto_codigo || '',
+      maquina_codigo: odp.maquinas_asignadas?.[procCodigo] || odp.maquina_codigo || '',
+      proceso: procCodigo,
+      numero_rollo: proxNum,
+      peso_kg: Number(peso) || 0,
+      mermas_kg: Number(mermas) || 0,
+      hora_captura: hora || '',
+      fecha: f.fecha || new Date().toISOString().split('T')[0],
+      turno: f.turno || '',
+      grupo: f.grupo || '',
+      operador_id: f.operador_id || '',
+      operador_nombre: operador?.nombre || '',
+      supervisor_id: f.supervisor_id || '',
+      supervisor_nombre: supervisor?.nombre || '',
+      anulado: false,
+      consolidado_en_turno: false,  // se marca true cuando se cierra el turno
+      captura_id_consolidado: '',
+      capturado_por: state.user.id,
+      capturado_por_nombre: state.user.nombre || state.user.email,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    // 🆕 Auto-iniciar producción si la ODP estaba en cola (primer rollo)
+    if (odp.estatus === 'programada' || odp.proceso_estatus_actual === 'esperando') {
+      try {
+        await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+          estatus: 'en_produccion',
+          proceso_estatus_actual: 'en_proceso',
+          iniciado_at: odp.iniciado_at || serverTimestamp(),
+          iniciado_por: odp.iniciado_por || state.user.id,
+          updated_at: serverTimestamp()
+        });
+      } catch (e) {
+        console.warn('No se pudo auto-iniciar la ODP:', e.message);
+      }
+    }
+    
+    // Reset el form del próximo rollo
+    if (state.modalForm) {
+      const ahora = new Date();
+      const hh = String(ahora.getHours()).padStart(2, '0');
+      const mm = String(ahora.getMinutes()).padStart(2, '0');
+      state.modalForm.proxRollo = { peso_kg: '', hora: `${hh}:${mm}`, mermas_kg: '0' };
+    }
+    
+    toast(`✅ Rollo #${proxNum}: ${fmtNum(peso)} kg agregado`);
+  } catch (e) {
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos para registrar rollos' : e.message), 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Anular un rollo (en caso de error)
+window.anularRolloExtrusion = async (rolloId) => {
+  const r = (state.rollos_extrusion || []).find(x => x.id === rolloId);
+  if (!r) return;
+  if (r.consolidado_en_turno) {
+    toast('Este rollo ya pertenece a un turno cerrado. Anula la captura del turno.', 'error');
+    return;
+  }
+  const motivo = prompt(`Anular rollo #${r.numero_rollo} (${fmtNum(r.peso_kg)} kg)?\n\nMotivo (opcional):`);
+  if (motivo === null) return;
+  try {
+    await updateDoc(doc(db, 'rollos_extrusion', rolloId), {
+      anulado: true,
+      anulado_at: serverTimestamp(),
+      anulado_por: state.user.id,
+      anulado_por_nombre: state.user.nombre || state.user.email,
+      motivo_anulacion: motivo || '',
+      updated_at: serverTimestamp()
+    });
+    toast(`✓ Rollo #${r.numero_rollo} anulado`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+// Cerrar el turno: consolidar todos los rollos en una captura_produccion
+window.cerrarTurnoExtrusion = async (odpId) => {
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  const f = state.modalForm || {};
+  
+  if (!f.grupo || !f.operador_id || !f.supervisor_id) {
+    toast('Completa grupo, operador y supervisor antes de cerrar', 'error'); return;
+  }
+  
+  // Notas del turno (leer del DOM)
+  const notasDom = ($('#ext-notas')?.value || '').trim();
+  if (notasDom) f.notas = notasDom;
+  
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procCodigo = ruta[idx] || 'P1-EXT';
+  
+  // Encontrar rollos pendientes de consolidar de este turno
+  const rollosPendientes = (state.rollos_extrusion || []).filter(r => 
+    r.odp_id === odpId && 
+    r.proceso === procCodigo &&
+    r.fecha === f.fecha &&
+    r.turno === f.turno &&
+    r.grupo === f.grupo &&
+    !r.anulado &&
+    !r.consolidado_en_turno
+  );
+  
+  if (rollosPendientes.length === 0) {
+    toast('No hay rollos para cerrar en este turno', 'error'); return;
+  }
+  
+  const totalKg = rollosPendientes.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  const totalMermas = rollosPendientes.reduce((s, r) => s + (Number(r.mermas_kg) || 0), 0);
+  
+  if (!confirm(`Cerrar turno con ${rollosPendientes.length} rollos?\n\nTotal: ${fmtNum(totalKg)} kg producidos · ${fmtNum(totalMermas)} kg mermas\n\nSe sumarán a la producción total de ${odp.folio}.`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    // Operador y supervisor nombres
+    const operador = (state.operadores || []).find(o => o.id === f.operador_id);
+    const supervisor = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+    const maquina = odp.maquinas_asignadas?.[procCodigo] || odp.maquina_codigo || '';
+    
+    // 1. Crear captura consolidada
+    const capturaRef = await addDoc(collection(db, 'capturas_produccion'), {
+      odp_id: odpId,
+      odp_folio: odp.folio || '',
+      producto_codigo: odp.producto_codigo || '',
+      proceso: procCodigo,
+      maquina_codigo: maquina,
+      fecha: f.fecha,
+      turno: f.turno,
+      grupo: f.grupo,
+      operador_id: f.operador_id,
+      operador: operador?.nombre || '',
+      supervisor_id: f.supervisor_id,
+      supervisor: supervisor?.nombre || '',
+      producido_kg: Number(totalKg) || 0,
+      mermas_kg: Number(totalMermas) || 0,
+      notas: f.notas || '',
+      // 🆕 Trazabilidad: marcar como consolidada de rollos
+      tipo_captura: 'extrusion_rollos',
+      num_rollos: rollosPendientes.length,
+      rollos_ids: rollosPendientes.map(r => r.id),
+      anulada: false,
+      capturado_por: state.user.id,
+      capturado_por_nombre: state.user.nombre || state.user.email,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    // 2. Marcar todos los rollos como consolidados
+    const batch = writeBatch(db);
+    rollosPendientes.forEach(r => {
+      batch.update(doc(db, 'rollos_extrusion', r.id), {
+        consolidado_en_turno: true,
+        captura_id_consolidado: capturaRef.id,
+        updated_at: serverTimestamp()
+      });
+    });
+    
+    // 3. Recalcular cantidad_producida_final de la ODP (suma todas las capturas válidas del proceso)
+    const todasCapturasOdp = capturasValidas(state.capturas_produccion)
+      .filter(c => c.odp_id === odpId && c.proceso === procCodigo)
+      .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+    const totalConNueva = todasCapturasOdp + totalKg;
+    
+    const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+    const umODP = (odp.um || 'kg').toLowerCase();
+    let prodEnUM = totalConNueva;
+    if (umODP !== 'kg' && producto) {
+      // Convertir kg a la UM de la ODP usando el peso del producto
+      const pesoMillar = window.calcularPesoMillar ? window.calcularPesoMillar(producto) : null;
+      if (pesoMillar && pesoMillar > 0) {
+        prodEnUM = umODP === 'millar' ? (totalConNueva / pesoMillar) : (totalConNueva / pesoMillar * 1000);
+      }
+    }
+    
+    batch.update(doc(db, 'ordenes_produccion', odpId), {
+      cantidad_producida_kg_total: Number(totalConNueva) || 0,
+      cantidad_producida_final: Number(prodEnUM) || 0,
+      proceso_estatus_actual: 'en_proceso',
+      updated_at: serverTimestamp()
+    });
+    
+    await batch.commit();
+    
+    // 4. Reset form (mantener grupo/turno/fecha por si captura siguiente turno)
+    if (state.modalForm) {
+      const ahora = new Date();
+      const hh = String(ahora.getHours()).padStart(2, '0');
+      const mm = String(ahora.getMinutes()).padStart(2, '0');
+      state.modalForm.proxRollo = { peso_kg: '', hora: `${hh}:${mm}`, mermas_kg: '0' };
+      state.modalForm.notas = '';
+    }
+    
+    state.modal = null;
+    toast(`✅ Turno cerrado: ${rollosPendientes.length} rollos · ${fmtNum(totalKg)} kg`);
+  } catch (e) {
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos para cerrar turno' : e.message), 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -9249,6 +9760,275 @@ function _tarjetaOTIRecepcion(o, requiereAccion) {
     </div>
   `;
 }
+
+
+// ============================================================
+// VISTA: HISTÓRICO DE REMISIONES
+// Lista todas las remisiones generadas (planta→CEDIS y CEDIS→cliente)
+// con búsqueda, filtros y descarga de PDFs.
+// ============================================================
+function renderHistoricoRemisiones() {
+  // Estado de filtros
+  if (!state.histRemTab) state.histRemTab = 'todas';
+  if (state.histRemBusq === undefined) state.histRemBusq = '';
+  if (!state.histRemTransp) state.histRemTransp = '';
+  if (!state.histRemFechaDesde) state.histRemFechaDesde = '';
+  if (!state.histRemFechaHasta) state.histRemFechaHasta = '';
+  
+  const tab = state.histRemTab;
+  const busq = (state.histRemBusq || '').toLowerCase().trim();
+  const transpFiltro = state.histRemTransp;
+  const fechaDesde = state.histRemFechaDesde;
+  const fechaHasta = state.histRemFechaHasta;
+  
+  // Todas las remisiones
+  let rems = (state.remisiones || []).slice();
+  
+  // Filtro por tipo
+  if (tab === 'planta_cedis') rems = rems.filter(r => r.tipo === 'planta_a_cedis');
+  else if (tab === 'cedis_cliente') rems = rems.filter(r => r.tipo === 'cedis_a_cliente');
+  
+  // Filtro por búsqueda (folio, transportista, cliente, OTI, OV)
+  if (busq) {
+    rems = rems.filter(r => 
+      (r.folio || '').toLowerCase().includes(busq) ||
+      (r.transportista_nombre || '').toLowerCase().includes(busq) ||
+      (r.cliente_nombre || '').toLowerCase().includes(busq) ||
+      (r.operador_nombre || '').toLowerCase().includes(busq) ||
+      (r.unidad_placas || '').toLowerCase().includes(busq) ||
+      (r.oti_folio || '').toLowerCase().includes(busq) ||
+      (r.ov_folio || '').toLowerCase().includes(busq) ||
+      (r.factura || '').toLowerCase().includes(busq)
+    );
+  }
+  
+  // Filtro por transportista
+  if (transpFiltro) {
+    rems = rems.filter(r => r.transportista_id === transpFiltro);
+  }
+  
+  // Filtro por rango de fechas (usa created_at)
+  if (fechaDesde || fechaHasta) {
+    rems = rems.filter(r => {
+      const fechaRem = r.created_at?.toDate ? r.created_at.toDate() : null;
+      if (!fechaRem) return false;
+      const fechaStr = fechaRem.toISOString().split('T')[0];
+      if (fechaDesde && fechaStr < fechaDesde) return false;
+      if (fechaHasta && fechaStr > fechaHasta) return false;
+      return true;
+    });
+  }
+  
+  // Conteos
+  const todas = state.remisiones || [];
+  const cntPlanta = todas.filter(r => r.tipo === 'planta_a_cedis').length;
+  const cntCedis = todas.filter(r => r.tipo === 'cedis_a_cliente').length;
+  
+  // Stats
+  const totalKg = rems.reduce((s, r) => s + (Number(r.kg_total) || 0), 0);
+  const totalTarimas = rems.reduce((s, r) => s + (Number(r.num_tarimas) || 0), 0);
+  
+  // Transportistas distintos (para el dropdown)
+  const transportistas = state.transportistas || [];
+  
+  return `
+    <div class="container" style="max-width:1400px;">
+      <div style="background:#fff;border-radius:12px;padding:18px;margin-bottom:14px;">
+        <h2 style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:6px;">📋 Histórico de Remisiones</h2>
+        <p style="font-size:12.5px;color:#64748b;margin-bottom:14px;">
+          Todas las remisiones generadas (REM-XXXXX) con sus datos de transporte. Filtra y descarga el PDF.
+        </p>
+        
+        <!-- Tabs por tipo -->
+        <div style="display:flex;gap:6px;border-bottom:2px solid #e2e8f0;flex-wrap:wrap;">
+          ${[
+            { id: 'todas', label: '📋 Todas', n: todas.length, color: '#475569' },
+            { id: 'planta_cedis', label: '🏭 Planta → CEDIS', n: cntPlanta, color: '#16a34a' },
+            { id: 'cedis_cliente', label: '📦 CEDIS → Cliente', n: cntCedis, color: '#0891b2' },
+          ].map(t => `
+            <button onclick="window.histRemTab('${t.id}')" style="padding:10px 16px;background:${tab===t.id?t.color:'transparent'};color:${tab===t.id?'#fff':'#475569'};border:none;border-bottom:3px solid ${tab===t.id?t.color:'transparent'};cursor:pointer;font-weight:700;font-size:13px;border-radius:6px 6px 0 0;">
+              ${t.label} <span style="background:${tab===t.id?'rgba(255,255,255,0.25)':'#e2e8f0'};padding:1px 8px;border-radius:99px;font-size:11px;margin-left:4px;">${t.n}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      
+      <!-- Filtros -->
+      <div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:14px;">
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;align-items:end;">
+          <div>
+            <label style="font-size:10.5px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:0.05em;">🔍 Buscar</label>
+            <input type="text" value="${busq}" oninput="window.histRemBusq(this.value)" 
+              placeholder="Folio REM, transportista, cliente, OTI, OV, factura, placas..." 
+              style="width:100%;padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:13px;margin-top:3px;" />
+          </div>
+          <div>
+            <label style="font-size:10.5px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:0.05em;">🚛 Transportista</label>
+            <select onchange="state.histRemTransp=this.value;render()" style="width:100%;padding:8px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:12px;margin-top:3px;">
+              <option value="">— Todos —</option>
+              ${transportistas.map(t => `<option value="${t.id}" ${transpFiltro===t.id?'selected':''}>${t.tipo==='interno'?'🏠':'🚛'} ${t.nombre}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:10.5px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:0.05em;">📅 Desde</label>
+            <input type="date" value="${fechaDesde}" onchange="state.histRemFechaDesde=this.value;render()" 
+              style="width:100%;padding:8px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:12px;margin-top:3px;" />
+          </div>
+          <div>
+            <label style="font-size:10.5px;font-weight:800;color:#475569;text-transform:uppercase;letter-spacing:0.05em;">📅 Hasta</label>
+            <input type="date" value="${fechaHasta}" onchange="state.histRemFechaHasta=this.value;render()" 
+              style="width:100%;padding:8px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:12px;margin-top:3px;" />
+          </div>
+        </div>
+        ${busq || transpFiltro || fechaDesde || fechaHasta ? `
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+            <button onclick="window.histRemReset()" style="background:#f1f5f9;color:#475569;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">✗ Limpiar filtros</button>
+            <span style="font-size:11px;color:#64748b;">${rems.length} de ${todas.length} remisiones</span>
+          </div>
+        ` : ''}
+      </div>
+      
+      <!-- Stats agregadas -->
+      ${rems.length > 0 ? `
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px;">
+          <div style="background:#dcfce7;border:1.5px solid #16a34a;padding:12px;border-radius:10px;text-align:center;">
+            <div style="font-size:10.5px;font-weight:800;color:#15803d;letter-spacing:0.05em;">📋 REMISIONES</div>
+            <div style="font-size:26px;font-weight:900;color:#15803d;line-height:1;margin-top:3px;">${rems.length}</div>
+          </div>
+          <div style="background:#dbeafe;border:1.5px solid #3b82f6;padding:12px;border-radius:10px;text-align:center;">
+            <div style="font-size:10.5px;font-weight:800;color:#1e40af;letter-spacing:0.05em;">📦 TARIMAS</div>
+            <div style="font-size:26px;font-weight:900;color:#1e40af;line-height:1;margin-top:3px;">${totalTarimas}</div>
+          </div>
+          <div style="background:#fef3c7;border:1.5px solid #f59e0b;padding:12px;border-radius:10px;text-align:center;">
+            <div style="font-size:10.5px;font-weight:800;color:#92400e;letter-spacing:0.05em;">⚖️ KG TOTALES</div>
+            <div style="font-size:26px;font-weight:900;color:#92400e;line-height:1;margin-top:3px;">${fmtNum(Math.round(totalKg))}</div>
+          </div>
+        </div>
+      ` : ''}
+      
+      <!-- Tabla de remisiones -->
+      ${rems.length === 0 ? `
+        <div style="background:#fff;border:2.5px dashed #cbd5e1;border-radius:14px;padding:60px 20px;text-align:center;">
+          <div style="font-size:64px;margin-bottom:12px;">📋</div>
+          <div style="font-size:18px;font-weight:800;color:#475569;">
+            ${busq || transpFiltro || fechaDesde || fechaHasta ? 'Sin resultados con los filtros aplicados' : 'Aún no hay remisiones generadas'}
+          </div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:6px;">
+            ${busq || transpFiltro || fechaDesde || fechaHasta ? 'Prueba ajustando los filtros.' : 'Genera la primera remisión desde OTI Planta o desde Embarques.'}
+          </div>
+        </div>
+      ` : `
+        <div style="background:#fff;border-radius:12px;overflow:hidden;border:1.5px solid #e2e8f0;">
+          <div style="overflow:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:1100px;">
+              <thead style="background:#0f172a;color:#fff;position:sticky;top:0;">
+                <tr>
+                  <th style="padding:10px;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">REMISIÓN</th>
+                  <th style="padding:10px;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">FECHA</th>
+                  <th style="padding:10px;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">TIPO</th>
+                  <th style="padding:10px;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">ORIGEN → DESTINO</th>
+                  <th style="padding:10px;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">TRANSPORTISTA</th>
+                  <th style="padding:10px;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">OPERADOR / UNIDAD</th>
+                  <th style="padding:10px;text-align:right;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">TARIMAS</th>
+                  <th style="padding:10px;text-align:right;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">KG</th>
+                  <th style="padding:10px;text-align:center;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">REF</th>
+                  <th style="padding:10px;text-align:center;font-size:10.5px;font-weight:800;letter-spacing:0.05em;">PDF</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rems.map(r => _filaHistoricoRemision(r)).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function _filaHistoricoRemision(r) {
+  const fechaTxt = r.created_at?.toDate ? r.created_at.toDate().toLocaleDateString('es-MX') : '—';
+  const esInterno = r.transportista_tipo === 'interno';
+  const tipoInfo = r.tipo === 'planta_a_cedis' 
+    ? { label: '🏭 Planta→CEDIS', color: '#16a34a', bgColor: '#dcfce7' }
+    : { label: '📦 CEDIS→Cliente', color: '#0891b2', bgColor: '#cffafe' };
+  
+  return `
+    <tr style="border-bottom:1px solid #f1f5f9;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+      <td style="padding:10px;font-family:monospace;font-weight:800;color:#0f172a;">${r.folio || '—'}</td>
+      <td style="padding:10px;font-size:11.5px;color:#475569;">${fechaTxt}</td>
+      <td style="padding:10px;">
+        <span style="background:${tipoInfo.bgColor};color:${tipoInfo.color};padding:3px 8px;border-radius:6px;font-size:10.5px;font-weight:800;">${tipoInfo.label}</span>
+      </td>
+      <td style="padding:10px;font-size:11.5px;">
+        <strong>${r.origen || '—'}</strong> → <strong>${r.destino || '—'}</strong>
+        ${r.ov_folio ? `<br><span style="font-size:10px;color:#64748b;font-family:monospace;">OV: ${r.ov_folio}</span>` : ''}
+        ${r.oti_folio ? `<br><span style="font-size:10px;color:#64748b;font-family:monospace;">OTI: ${r.oti_folio}</span>` : ''}
+      </td>
+      <td style="padding:10px;font-size:11.5px;">
+        <span style="font-size:13px;">${esInterno ? '🏠' : '🚛'}</span>
+        <strong>${r.transportista_nombre || '—'}</strong>
+        ${r.factura ? `<br><span style="font-size:10px;color:#7c3aed;font-weight:700;">💰 ${r.factura}</span>` : ''}
+      </td>
+      <td style="padding:10px;font-size:11px;">
+        ${r.operador_nombre ? `👤 ${r.operador_nombre}` : '—'}
+        ${r.unidad_placas ? `<br><span style="font-family:monospace;font-weight:700;color:#0f172a;">🚛 ${r.unidad_placas}</span>` : ''}
+      </td>
+      <td style="padding:10px;text-align:right;font-weight:800;">${r.num_tarimas || 0}</td>
+      <td style="padding:10px;text-align:right;font-weight:800;color:#16a34a;">${fmtNum(Math.round(Number(r.kg_total) || 0))}</td>
+      <td style="padding:10px;text-align:center;font-size:10.5px;">
+        ${r.oti_id ? `<button onclick="state.vista='recepcion_cedis';render();" style="background:transparent;border:none;color:#3b82f6;cursor:pointer;text-decoration:underline;font-weight:700;font-size:10.5px;">Ver OTI</button>` : ''}
+        ${r.ov_id ? `<button onclick="state.vista='embarques';render();" style="background:transparent;border:none;color:#3b82f6;cursor:pointer;text-decoration:underline;font-weight:700;font-size:10.5px;">Ver OV</button>` : ''}
+      </td>
+      <td style="padding:10px;text-align:center;">
+        <button onclick="window.imprimirRemisionDirecta('${r.id}')" style="background:#0891b2;color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;" title="Descargar PDF de remisión">📄 PDF</button>
+      </td>
+    </tr>
+  `;
+}
+
+window.histRemTab = (tab) => { state.histRemTab = tab; render(); };
+window.histRemBusq = (val) => { 
+  state.histRemBusq = val; 
+  // Re-render con throttle suave
+  if (state._histRemTimer) clearTimeout(state._histRemTimer);
+  state._histRemTimer = setTimeout(() => { render(); }, 250);
+};
+window.histRemReset = () => {
+  state.histRemBusq = '';
+  state.histRemTransp = '';
+  state.histRemFechaDesde = '';
+  state.histRemFechaHasta = '';
+  render();
+};
+
+// Wrapper: imprime el PDF correcto según el tipo de remisión
+// - planta_a_cedis  → usa el PDF de recepción OTI
+// - cedis_a_cliente → usa el PDF dedicado de remisión (imprimirRemisionClientePDF)
+window.imprimirRemisionDirecta = (remId) => {
+  const r = (state.remisiones || []).find(x => x.id === remId);
+  if (!r) { toast('Remisión no encontrada', 'error'); return; }
+  
+  if (r.tipo === 'planta_a_cedis' && r.oti_id) {
+    if (typeof window.imprimirRecepcionOTI === 'function') {
+      window.imprimirRecepcionOTI(r.oti_id);
+    } else {
+      toast('PDF de recepción no disponible', 'error');
+    }
+  } else if (r.tipo === 'cedis_a_cliente') {
+    // PDF dedicado de remisión (lee de la colección remisiones)
+    if (typeof window.imprimirRemisionClientePDF === 'function') {
+      window.imprimirRemisionClientePDF(remId);
+    } else if (r.ov_id && typeof window.imprimirRemisionPDF === 'function') {
+      // Fallback: usar PDF de remisión por OV
+      window.imprimirRemisionPDF(r.ov_id);
+    } else {
+      toast('PDF de remisión no disponible', 'error');
+    }
+  } else {
+    toast('Tipo de remisión no reconocido', 'error');
+  }
+};
 
 
 // ============================================================
@@ -18106,6 +18886,613 @@ window.imprimirPreOrdenPDF = (ocId) => {
 // PDF: ORDEN DE PRODUCCIÓN (formato manual de planta — replica Excel)
 // Se imprime junto con la HOJA DE ESPECIFICACIONES
 // ============================================================
+// ============================================================
+// 🆕 PDF: ORDEN DE PASE AL SIGUIENTE PROCESO
+// Se genera al cerrar un proceso, incluye el detalle de rollos
+// producidos (para EXT) o los turnos (otros procesos).
+// El operador lo imprime y lo entrega físicamente al operador
+// del siguiente proceso.
+// ============================================================
+window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
+  try {
+    const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+    if (!odp) { toast('ODP no encontrada', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    
+    const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
+    const ruta = odp.ruta_procesos || [];
+    
+    // Resolver el proceso que se acaba de cerrar
+    const procCerrado = getProc(procesoCerradoCodigo);
+    if (!procCerrado) { toast('No se pudo identificar el proceso cerrado', 'error'); return; }
+    
+    // Identificar siguiente proceso si lo hay
+    const idxCerrado = ruta.indexOf(procesoCerradoCodigo);
+    const siguienteCodigo = idxCerrado >= 0 && idxCerrado < ruta.length - 1 ? ruta[idxCerrado + 1] : null;
+    const siguienteProc = siguienteCodigo ? getProc(siguienteCodigo) : null;
+    
+    // Capturas del proceso cerrado (las usadas para totales)
+    const capturasProc = capturasValidas(state.capturas_produccion).filter(c => 
+      c.odp_id === odp.id && c.proceso === procesoCerradoCodigo
+    );
+    const totalKgProc = capturasProc.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+    const totalMermasProc = capturasProc.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+    
+    // Rollos de extrusión (solo si el proceso cerrado fue EXT)
+    const esExt = procesoCerradoCodigo === 'P1-EXT';
+    const rollos = esExt ? (state.rollos_extrusion || [])
+      .filter(r => r.odp_id === odp.id && r.proceso === 'P1-EXT' && !r.anulado)
+      .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0)) : [];
+    
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'portrait' });
+    const W = 215.9, margen = 10;
+    
+    // ====== HEADER ======
+    let y = _pdfHeaderEmpresa(docPDF, 'PASE A SIGUIENTE PROCESO', odp.folio);
+    y += 2;
+    
+    // Banner con proceso cerrado → siguiente
+    docPDF.setFillColor(15, 23, 42);
+    docPDF.rect(margen, y, W - margen*2, 14, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(10);
+    docPDF.text(`✓ ${procCerrado.nombre.toUpperCase()} COMPLETADO`, margen + 4, y + 6);
+    docPDF.setFontSize(11);
+    if (siguienteProc) {
+      docPDF.text(`→ PASA A: ${siguienteProc.nombre.toUpperCase()}`, margen + 4, y + 11);
+    } else {
+      docPDF.text(`→ ÚLTIMO PROCESO: PASA A CALIDAD / EMPAQUE`, margen + 4, y + 11);
+    }
+    docPDF.setTextColor(0, 0, 0);
+    y += 18;
+    
+    // ====== DATOS DE LA ODP ======
+    docPDF.setFillColor(241, 245, 249);
+    docPDF.rect(margen, y, W - margen*2, 7, 'F');
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(15, 23, 42);
+    docPDF.text('DATOS DE LA ORDEN DE PRODUCCIÓN', margen + 3, y + 4.8);
+    docPDF.setTextColor(0, 0, 0);
+    y += 9;
+    
+    const wCol = (W - margen*2 - 6) / 3;
+    function _campo(label, val, x, yy, ancho) {
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7);
+      docPDF.setTextColor(100, 100, 100);
+      docPDF.text(label.toUpperCase(), x + 1.5, yy + 2.8);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(9);
+      docPDF.setTextColor(0, 0, 0);
+      docPDF.rect(x, yy + 3.5, ancho, 7);
+      docPDF.text(String(val || '—').substring(0, 45), x + 2, yy + 8);
+    }
+    
+    _campo('Folio ODP', odp.folio, margen, y, wCol);
+    _campo('Cliente', odp.cliente_codigo || odp.cliente_nombre || '—', margen + wCol + 3, y, wCol);
+    _campo('Cantidad solicitada', `${fmtNum(odp.cantidad || 0)} ${odp.um || 'kg'}`, margen + (wCol+3)*2, y, wCol);
+    y += 13;
+    
+    _campo('Producto', odp.producto_codigo, margen, y, wCol * 2 + 3);
+    _campo('Máquina', (odp.maquinas_asignadas?.[procesoCerradoCodigo] || odp.maquina_codigo || '—'), margen + (wCol+3)*2, y, wCol);
+    y += 13;
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(7);
+    docPDF.setTextColor(100, 100, 100);
+    docPDF.text('DESCRIPCIÓN DEL PRODUCTO', margen + 1.5, y + 2.8);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.rect(margen, y + 3.5, W - margen*2, 7);
+    docPDF.text(String(odp.descripcion || producto?.descripcion || '—').substring(0, 100), margen + 2, y + 8);
+    y += 14;
+    
+    // ====== RESUMEN DE PRODUCCIÓN ======
+    docPDF.setFillColor(22, 163, 74);
+    docPDF.rect(margen, y, W - margen*2, 7, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    docPDF.text(`PRODUCCIÓN DE ${procCerrado.nombre.toUpperCase()}`, margen + 3, y + 4.8);
+    docPDF.setTextColor(0, 0, 0);
+    y += 9;
+    
+    // KPIs en 3 columnas
+    const wK = (W - margen*2 - 6) / 3;
+    function _kpi(label, valor, color, x, yy) {
+      docPDF.setFillColor(color[0], color[1], color[2]);
+      docPDF.rect(x, yy, wK, 14, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7);
+      docPDF.text(label.toUpperCase(), x + wK/2, yy + 4, { align: 'center' });
+      docPDF.setFontSize(13);
+      docPDF.text(String(valor), x + wK/2, yy + 11, { align: 'center' });
+    }
+    
+    _kpi(esExt ? 'Rollos producidos' : 'Turnos capturados', String(esExt ? rollos.length : capturasProc.length), [37, 99, 235], margen, y);
+    _kpi('Kg producidos', fmtNum(totalKgProc.toFixed(1)), [22, 163, 74], margen + wK + 3, y);
+    _kpi('Kg de mermas', fmtNum(totalMermasProc.toFixed(1)), [245, 158, 11], margen + (wK + 3)*2, y);
+    docPDF.setTextColor(0, 0, 0);
+    y += 18;
+    
+    // ====== DETALLE: ROLLOS (si es EXT) o TURNOS (otros) ======
+    if (esExt && rollos.length > 0) {
+      docPDF.setFillColor(56, 182, 255);
+      docPDF.rect(margen, y, W - margen*2, 7, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(9);
+      docPDF.text(`DETALLE ROLLO POR ROLLO (${rollos.length})`, margen + 3, y + 4.8);
+      docPDF.setTextColor(0, 0, 0);
+      y += 9;
+      
+      // Tabla de rollos: # | HORA | PESO | MERMA | OPERADOR | TURNO
+      const cT = W - margen*2;
+      const c1 = cT*0.08, c2 = cT*0.10, c3 = cT*0.14, c4 = cT*0.12, c5 = cT*0.34, c6 = cT*0.22;
+      
+      docPDF.setFillColor(240, 240, 240);
+      docPDF.rect(margen, y, cT, 6, 'FD');
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7.5);
+      let xx = margen;
+      ['#', 'HORA', 'PESO (kg)', 'MERMA', 'OPERADOR', 'TURNO/FECHA'].forEach((h, i) => {
+        const w = [c1, c2, c3, c4, c5, c6][i];
+        docPDF.text(h, xx + w/2, y + 4, { align: 'center' });
+        xx += w;
+      });
+      y += 6;
+      
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7.5);
+      rollos.forEach(r => {
+        if (y > 255) { docPDF.addPage('letter', 'portrait'); y = 20; }
+        xx = margen;
+        docPDF.rect(margen, y, c1, 5);
+        docPDF.text(`#${r.numero_rollo}`, xx + c1/2, y + 3.5, { align: 'center' });
+        xx += c1;
+        docPDF.rect(xx, y, c2, 5);
+        docPDF.text(String(r.hora_captura || '—'), xx + c2/2, y + 3.5, { align: 'center' });
+        xx += c2;
+        docPDF.rect(xx, y, c3, 5);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.text(fmtNum(Number(r.peso_kg) || 0), xx + c3/2, y + 3.5, { align: 'center' });
+        docPDF.setFont('helvetica', 'normal');
+        xx += c3;
+        docPDF.rect(xx, y, c4, 5);
+        if (Number(r.mermas_kg) > 0) {
+          docPDF.setTextColor(220, 38, 38);
+          docPDF.text(fmtNum(Number(r.mermas_kg) || 0), xx + c4/2, y + 3.5, { align: 'center' });
+          docPDF.setTextColor(0, 0, 0);
+        } else {
+          docPDF.text('—', xx + c4/2, y + 3.5, { align: 'center' });
+        }
+        xx += c4;
+        docPDF.rect(xx, y, c5, 5);
+        docPDF.text(String(r.operador_nombre || '—').substring(0, 42), xx + 1.5, y + 3.5);
+        xx += c5;
+        docPDF.rect(xx, y, c6, 5);
+        const turnoFecha = `${r.turno === 'dia' ? 'D' : 'N'}-${r.grupo || ''} ${r.fecha ? r.fecha.substring(5) : ''}`;
+        docPDF.text(turnoFecha, xx + c6/2, y + 3.5, { align: 'center' });
+        y += 5;
+      });
+      
+      // Totales fila
+      docPDF.setFillColor(15, 23, 42);
+      docPDF.rect(margen, y, cT, 6, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(8);
+      docPDF.text(`TOTALES: ${rollos.length} rollos`, margen + 3, y + 4);
+      docPDF.text(`${fmtNum(totalKgProc.toFixed(1))} kg`, margen + c1 + c2 + c3/2, y + 4, { align: 'center' });
+      docPDF.text(`${fmtNum(totalMermasProc.toFixed(1))} kg`, margen + c1 + c2 + c3 + c4/2, y + 4, { align: 'center' });
+      docPDF.setTextColor(0, 0, 0);
+      y += 10;
+    } else if (capturasProc.length > 0) {
+      // Tabla de turnos (para procesos no-EXT)
+      docPDF.setFillColor(56, 182, 255);
+      docPDF.rect(margen, y, W - margen*2, 7, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(9);
+      docPDF.text(`DETALLE POR TURNO (${capturasProc.length})`, margen + 3, y + 4.8);
+      docPDF.setTextColor(0, 0, 0);
+      y += 9;
+      
+      const cT = W - margen*2;
+      const c1 = cT*0.16, c2 = cT*0.10, c3 = cT*0.10, c4 = cT*0.30, c5 = cT*0.17, c6 = cT*0.17;
+      
+      docPDF.setFillColor(240, 240, 240);
+      docPDF.rect(margen, y, cT, 6, 'FD');
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7.5);
+      let xx = margen;
+      ['FECHA', 'TURNO', 'GRUPO', 'OPERADOR', 'PROD (kg)', 'MERMA (kg)'].forEach((h, i) => {
+        const w = [c1, c2, c3, c4, c5, c6][i];
+        docPDF.text(h, xx + w/2, y + 4, { align: 'center' });
+        xx += w;
+      });
+      y += 6;
+      
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7.5);
+      const capturasOrd = capturasProc.slice().sort((a, b) => {
+        const fA = (a.fecha || '') + (a.turno || '');
+        const fB = (b.fecha || '') + (b.turno || '');
+        return fA.localeCompare(fB);
+      });
+      capturasOrd.forEach(c => {
+        if (y > 255) { docPDF.addPage('letter', 'portrait'); y = 20; }
+        xx = margen;
+        docPDF.rect(margen, y, c1, 5);
+        docPDF.text(String(c.fecha || '—'), xx + c1/2, y + 3.5, { align: 'center' });
+        xx += c1;
+        docPDF.rect(xx, y, c2, 5);
+        docPDF.text(c.turno === 'dia' ? '☀️ Día' : (c.turno === 'noche' ? '🌙 Noche' : '—'), xx + c2/2, y + 3.5, { align: 'center' });
+        xx += c2;
+        docPDF.rect(xx, y, c3, 5);
+        docPDF.text(String(c.grupo || '—'), xx + c3/2, y + 3.5, { align: 'center' });
+        xx += c3;
+        docPDF.rect(xx, y, c4, 5);
+        docPDF.text(String(c.operador || '—').substring(0, 38), xx + 1.5, y + 3.5);
+        xx += c4;
+        docPDF.rect(xx, y, c5, 5);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.text(fmtNum(Number(c.producido_kg) || 0), xx + c5/2, y + 3.5, { align: 'center' });
+        docPDF.setFont('helvetica', 'normal');
+        xx += c5;
+        docPDF.rect(xx, y, c6, 5);
+        if (Number(c.mermas_kg) > 0) {
+          docPDF.setTextColor(220, 38, 38);
+          docPDF.text(fmtNum(Number(c.mermas_kg) || 0), xx + c6/2, y + 3.5, { align: 'center' });
+          docPDF.setTextColor(0, 0, 0);
+        } else {
+          docPDF.text('—', xx + c6/2, y + 3.5, { align: 'center' });
+        }
+        y += 5;
+      });
+      y += 4;
+    }
+    
+    // ====== INDICACIONES PARA EL SIGUIENTE OPERADOR ======
+    if (siguienteProc && y < 230) {
+      y += 4;
+      docPDF.setFillColor(254, 243, 199);
+      docPDF.rect(margen, y, W - margen*2, 26, 'FD');
+      docPDF.setDrawColor(245, 158, 11);
+      docPDF.setLineWidth(0.5);
+      docPDF.rect(margen, y, W - margen*2, 26);
+      docPDF.setDrawColor(0, 0, 0);
+      docPDF.setLineWidth(0.2);
+      
+      docPDF.setTextColor(146, 64, 14);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(9);
+      docPDF.text(`📋 INDICACIONES PARA ${siguienteProc.nombre.toUpperCase()}`, margen + 3, y + 5);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(8);
+      docPDF.text(`• Entrada esperada: ${fmtNum(totalKgProc.toFixed(1))} kg de ${odp.producto_codigo}`, margen + 3, y + 10);
+      docPDF.text(`• Máquina destino: ${odp.maquinas_asignadas?.[siguienteCodigo] || 'por asignar'}`, margen + 3, y + 14);
+      docPDF.text(`• Revisa la hoja de especificaciones del producto antes de iniciar`, margen + 3, y + 18);
+      docPDF.text(`• Reporta inmediatamente cualquier anomalía al supervisor`, margen + 3, y + 22);
+      docPDF.setTextColor(0, 0, 0);
+      y += 30;
+    }
+    
+    // ====== FIRMAS ======
+    y = Math.max(y, 252);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8);
+    const fW = 70;
+    docPDF.line(margen + 10, y, margen + 10 + fW, y);
+    docPDF.text(`OPERADOR ${procCerrado.nombre.toUpperCase()} (entrega)`, margen + 10 + fW/2, y + 4, { align: 'center' });
+    
+    docPDF.line(W - margen - 10 - fW, y, W - margen - 10, y);
+    docPDF.text(siguienteProc ? `OPERADOR ${siguienteProc.nombre.toUpperCase()} (recibe)` : 'CALIDAD / EMPAQUE (recibe)', W - margen - 10 - fW/2, y + 4, { align: 'center' });
+    
+    // Footer
+    docPDF.setFontSize(6);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(120, 120, 120);
+    docPDF.text(`Generado: ${new Date().toLocaleString('es-MX')} · NewPack ERP · ${odp.folio} · Pase de ${procCerrado.nombre} → ${siguienteProc?.nombre || 'Calidad'}`, W/2, 273, { align: 'center' });
+    
+    const filename = `Pase_${odp.folio}_${procCerrado.codigo.replace('-','')}.pdf`;
+    
+    if (typeof _mostrarVistaPreviaPDF === 'function') {
+      _mostrarVistaPreviaPDF(docPDF, filename, `Pase ${procCerrado.nombre} → ${siguienteProc?.nombre || 'Calidad'} · ${odp.folio}`);
+    } else {
+      docPDF.save(filename);
+    }
+  } catch (e) {
+    console.error('Error generando PDF de pase:', e);
+    toast('Error generando PDF: ' + e.message, 'error');
+  }
+};
+
+
+// ============================================================
+// 🆕 PDF: REMISIÓN CEDIS → CLIENTE (documento formal)
+// Lee de la colección "remisiones" y genera un PDF dedicado
+// con formato de carta de porte / remisión de carga.
+// ============================================================
+window.imprimirRemisionClientePDF = (remId) => {
+  try {
+    const rem = (state.remisiones || []).find(r => r.id === remId);
+    if (!rem) { toast('Remisión no encontrada', 'error'); return; }
+    if (rem.tipo !== 'cedis_a_cliente') { toast('Esta función es solo para remisiones CEDIS → Cliente', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    
+    // Buscar la OV asociada para detalle de tarimas/productos
+    const ov = rem.ov_id ? (state.ordenes_venta || []).find(o => o.id === rem.ov_id) : null;
+    const cliente = ov?.cliente_id ? (state.clientes || []).find(c => c.id === ov.cliente_id) : null;
+    
+    // Tarimas de la remisión
+    const tarimas = (state.tarimas || []).filter(t => (rem.tarimas_ids || []).includes(t.id));
+    
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'portrait' });
+    const W = 215.9, margen = 10;
+    
+    // ====== HEADER ======
+    let y = _pdfHeaderEmpresa(docPDF, 'REMISIÓN', rem.folio);
+    y += 4;
+    
+    // Banner con OV/Factura
+    docPDF.setFillColor(8, 145, 178);
+    docPDF.rect(margen, y, W - margen*2, 10, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(10);
+    let textoHeader = `📦 EMBARQUE A CLIENTE`;
+    if (ov?.folio) textoHeader += `  ·  OV: ${ov.folio}`;
+    if (rem.factura) textoHeader += `  ·  Factura: ${rem.factura}`;
+    docPDF.text(textoHeader, margen + 4, y + 6.5);
+    docPDF.setTextColor(0, 0, 0);
+    y += 14;
+    
+    // ====== DATOS CLIENTE / DESTINATARIO ======
+    docPDF.setFillColor(241, 245, 249);
+    docPDF.rect(margen, y, W - margen*2, 7, 'F');
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(15, 23, 42);
+    docPDF.text('DATOS DEL DESTINATARIO', margen + 3, y + 4.8);
+    docPDF.setTextColor(0, 0, 0);
+    y += 9;
+    
+    function _campoR(label, val, x, yy, ancho) {
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7);
+      docPDF.setTextColor(100, 100, 100);
+      docPDF.text(label.toUpperCase(), x + 1.5, yy + 2.8);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(9);
+      docPDF.setTextColor(0, 0, 0);
+      docPDF.rect(x, yy + 3.5, ancho, 7);
+      docPDF.text(String(val || '—').substring(0, 50), x + 2, yy + 8);
+    }
+    
+    const wCol = (W - margen*2 - 3) / 2;
+    _campoR('Cliente', rem.cliente_nombre || cliente?.razon_social || '—', margen, y, wCol);
+    _campoR('Código cliente', rem.cliente_codigo || cliente?.codigo || '—', margen + wCol + 3, y, wCol);
+    y += 12;
+    
+    if (cliente?.rfc) {
+      _campoR('RFC', cliente.rfc, margen, y, wCol);
+      _campoR('Teléfono', cliente.telefono || '—', margen + wCol + 3, y, wCol);
+      y += 12;
+    }
+    
+    if (cliente?.direccion_entrega || cliente?.direccion) {
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7);
+      docPDF.setTextColor(100, 100, 100);
+      docPDF.text('DIRECCIÓN DE ENTREGA', margen + 1.5, y + 2.8);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(9);
+      docPDF.setTextColor(0, 0, 0);
+      docPDF.rect(margen, y + 3.5, W - margen*2, 10);
+      const dir = cliente.direccion_entrega || cliente.direccion || '';
+      const dirLines = docPDF.splitTextToSize(dir, W - margen*2 - 4);
+      docPDF.text(dirLines.slice(0, 2), margen + 2, y + 8);
+      y += 15;
+    }
+    
+    // ====== DATOS DEL TRANSPORTE ======
+    docPDF.setFillColor(241, 245, 249);
+    docPDF.rect(margen, y, W - margen*2, 7, 'F');
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(15, 23, 42);
+    docPDF.text('DATOS DEL TRANSPORTE', margen + 3, y + 4.8);
+    docPDF.setTextColor(0, 0, 0);
+    y += 9;
+    
+    _campoR('Transportista', rem.transportista_nombre || '—', margen, y, wCol);
+    _campoR('Tipo', rem.transportista_tipo === 'interno' ? 'NEWPACK LOGÍSTICA' : 'PROVEEDOR EXTERNO', margen + wCol + 3, y, wCol);
+    y += 12;
+    
+    _campoR('Operador (chofer)', rem.operador_nombre || '—', margen, y, wCol);
+    _campoR('Licencia', rem.operador_licencia || '—', margen + wCol + 3, y, wCol);
+    y += 12;
+    
+    _campoR('Unidad / Placas', rem.unidad_placas || '—', margen, y, wCol);
+    _campoR('Origen', rem.origen || '—', margen + wCol + 3, y, wCol);
+    y += 12;
+    
+    if (rem.fecha_salida_programada) {
+      _campoR('Fecha programada', rem.fecha_salida_programada, margen, y, wCol);
+      _campoR('RFC Transportista', rem.transportista_rfc || '—', margen + wCol + 3, y, wCol);
+      y += 12;
+    }
+    
+    // ====== DETALLE DE TARIMAS / MERCANCÍA ======
+    docPDF.setFillColor(8, 145, 178);
+    docPDF.rect(margen, y, W - margen*2, 7, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    docPDF.text(`MERCANCÍA A ENTREGAR (${tarimas.length} TARIMAS)`, margen + 3, y + 4.8);
+    docPDF.setTextColor(0, 0, 0);
+    y += 9;
+    
+    if (tarimas.length > 0) {
+      const cT = W - margen*2;
+      const c1 = cT*0.08, c2 = cT*0.16, c3 = cT*0.34, c4 = cT*0.16, c5 = cT*0.13, c6 = cT*0.13;
+      
+      docPDF.setFillColor(240, 240, 240);
+      docPDF.rect(margen, y, cT, 6, 'FD');
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7.5);
+      let xx = margen;
+      ['T#', 'LOTE', 'PRODUCTO / DESCRIPCIÓN', 'ODP', 'CANTIDAD', 'KG NETOS'].forEach((h, i) => {
+        const w = [c1, c2, c3, c4, c5, c6][i];
+        docPDF.text(h, xx + w/2, y + 4, { align: 'center' });
+        xx += w;
+      });
+      y += 6;
+      
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7.5);
+      
+      tarimas.slice().sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0)).forEach(t => {
+        if (y > 248) { docPDF.addPage('letter', 'portrait'); y = 20; }
+        xx = margen;
+        docPDF.rect(margen, y, c1, 5);
+        docPDF.text(`T${String(t.numero_tarima || 0).padStart(2,'0')}`, xx + c1/2, y + 3.5, { align: 'center' });
+        xx += c1;
+        docPDF.rect(xx, y, c2, 5);
+        docPDF.text(String(t.lote_codigo || '—').substring(0, 14), xx + c2/2, y + 3.5, { align: 'center' });
+        xx += c2;
+        docPDF.rect(xx, y, c3, 5);
+        const prodDesc = `${t.producto_codigo || ''} ${t.descripcion ? '· ' + t.descripcion : ''}`.substring(0, 55);
+        docPDF.text(prodDesc, xx + 1.5, y + 3.5);
+        xx += c3;
+        docPDF.rect(xx, y, c4, 5);
+        docPDF.text(String(t.odp_folio || '—'), xx + c4/2, y + 3.5, { align: 'center' });
+        xx += c4;
+        docPDF.rect(xx, y, c5, 5);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.text(`${fmtNum(t.cantidad || 0)} ${t.um || ''}`.substring(0, 14), xx + c5/2, y + 3.5, { align: 'center' });
+        docPDF.setFont('helvetica', 'normal');
+        xx += c5;
+        docPDF.rect(xx, y, c6, 5);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.text(fmtNum(Number(t.peso_neto_kg || t.peso_neto) || 0), xx + c6/2, y + 3.5, { align: 'center' });
+        docPDF.setFont('helvetica', 'normal');
+        y += 5;
+      });
+      
+      // Totales fila
+      docPDF.setFillColor(15, 23, 42);
+      docPDF.rect(margen, y, cT, 6, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(8);
+      docPDF.text(`TOTAL: ${tarimas.length} tarimas`, margen + 3, y + 4);
+      docPDF.text(`${fmtNum(Math.round(Number(rem.kg_total) || 0))} kg`, margen + cT - 25, y + 4, { align: 'left' });
+      docPDF.setTextColor(0, 0, 0);
+      y += 10;
+    } else {
+      docPDF.setFont('helvetica', 'italic');
+      docPDF.setFontSize(9);
+      docPDF.setTextColor(150, 150, 150);
+      docPDF.text('Sin detalle de tarimas disponible.', margen + 3, y + 5);
+      docPDF.setTextColor(0, 0, 0);
+      y += 12;
+    }
+    
+    // ====== OBSERVACIONES ======
+    if (rem.observaciones) {
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(8);
+      docPDF.setTextColor(100, 100, 100);
+      docPDF.text('OBSERVACIONES:', margen, y + 3);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(0, 0, 0);
+      docPDF.rect(margen, y + 4, W - margen*2, 10);
+      const obs = docPDF.splitTextToSize(rem.observaciones, W - margen*2 - 4);
+      docPDF.text(obs.slice(0, 2), margen + 2, y + 8);
+      y += 16;
+    }
+    
+    // ====== AVISO LEGAL ======
+    y = Math.max(y, 235);
+    docPDF.setFillColor(254, 243, 199);
+    docPDF.rect(margen, y, W - margen*2, 12, 'FD');
+    docPDF.setDrawColor(245, 158, 11);
+    docPDF.setLineWidth(0.3);
+    docPDF.rect(margen, y, W - margen*2, 12);
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.setLineWidth(0.2);
+    
+    docPDF.setTextColor(146, 64, 14);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(7);
+    docPDF.text('AVISO:', margen + 3, y + 4);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(6.5);
+    docPDF.text('• El cliente debe revisar la mercancía al momento de la entrega y reportar inmediatamente cualquier diferencia o daño.', margen + 3, y + 7.5);
+    docPDF.text('• Esta remisión NO es factura. La factura se emite por separado según los términos comerciales acordados.', margen + 3, y + 10.5);
+    docPDF.setTextColor(0, 0, 0);
+    y += 16;
+    
+    // ====== FIRMAS ======
+    y = Math.max(y, 255);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8);
+    const fW = 60;
+    
+    // Firma 1: NewPack/CEDIS (entrega)
+    docPDF.line(margen + 5, y, margen + 5 + fW, y);
+    docPDF.text('NEWPACK (entrega)', margen + 5 + fW/2, y + 4, { align: 'center' });
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text('Nombre y firma', margen + 5 + fW/2, y + 7.5, { align: 'center' });
+    
+    // Firma 2: Operador
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8);
+    const x2 = (W - fW) / 2;
+    docPDF.line(x2, y, x2 + fW, y);
+    docPDF.text('OPERADOR (transporta)', x2 + fW/2, y + 4, { align: 'center' });
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(rem.operador_nombre || 'Nombre y firma', x2 + fW/2, y + 7.5, { align: 'center' });
+    
+    // Firma 3: Cliente
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8);
+    docPDF.line(W - margen - 5 - fW, y, W - margen - 5, y);
+    docPDF.text('CLIENTE (recibe)', W - margen - 5 - fW/2, y + 4, { align: 'center' });
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text('Nombre y firma', W - margen - 5 - fW/2, y + 7.5, { align: 'center' });
+    
+    // Footer
+    docPDF.setFontSize(6);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(120, 120, 120);
+    docPDF.text(`Remisión ${rem.folio} · Generado ${new Date().toLocaleString('es-MX')} · NewPack ERP`, W/2, 273, { align: 'center' });
+    
+    const filename = `Remision_${rem.folio}.pdf`;
+    
+    if (typeof _mostrarVistaPreviaPDF === 'function') {
+      _mostrarVistaPreviaPDF(docPDF, filename, `Remisión ${rem.folio} · ${rem.cliente_nombre || ''}`);
+    } else {
+      docPDF.save(filename);
+    }
+  } catch (e) {
+    console.error('Error PDF remisión cliente:', e);
+    toast('Error generando PDF: ' + e.message, 'error');
+  }
+};
+
+
 window.imprimirOrdenProduccionPDF = (odpId) => {
   try {
     const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
@@ -27770,6 +29157,13 @@ window.confirmarCompletarProceso = async (odpId) => {
       const totalMpConsumida = consumosMP.reduce((s, c) => s + c.kg_consumidos, 0);
       const msgMP = consumosMP.length > 0 ? ` · 🧪 ${fmtNum(totalMpConsumida.toFixed(0))} kg de MP descontados (FIFO)` : '';
       toast(`✅ ${proc.nombre} cerrado · ${fmtNum(prodKg)} kg de ${capturasProcActual.length} turno(s) pasan a ${siguienteProc?.nombre || ''}${msgMP}`);
+      
+      // 🆕 Generar PDF de pase al siguiente proceso automáticamente
+      // Le da al operador la hoja para entregar físicamente
+      setTimeout(() => {
+        try { window.imprimirPaseSiguienteProceso(odpId, ruta[idx]); }
+        catch (e) { console.error('Error generando PDF de pase:', e); }
+      }, 500);
     }
   } catch (e) {
     console.error('Error cerrar proceso:', e);
@@ -28446,6 +29840,12 @@ window._aplicarCierreExtrusionConMP = async () => {
       const sigProc = getProc(ruta[idx + 1]);
       toast(`✅ ${proc.nombre} cerrado · ${fmtNum(prodKg)} kg pasan a ${sigProc?.nombre || ''}${msgMP}${msgSubs}`);
     }
+    
+    // 🆕 Generar PDF de pase al siguiente proceso automáticamente (especialmente útil para EXT con rollos)
+    setTimeout(() => {
+      try { window.imprimirPaseSiguienteProceso(odpId, ruta[idx]); }
+      catch (e) { console.error('Error PDF pase:', e); }
+    }, 500);
   } catch (e) {
     console.error('Error cerrar Extrusión:', e);
     toast('Error: ' + e.message, 'error');
