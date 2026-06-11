@@ -22106,13 +22106,16 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
     // Construir filas dinámicas
     const filasCar = [];
 
-    // Piezas por paquete (con resultado)
+    // Piezas por paquete: solo si UM aplica (pz/pza/millar) Y hay valor capturado
     const piezasSpec = producto?.piezas_por_paq || med.piezas_por_paq;
-    filasCar.push([
-      'Piezas por paq.',
-      `${piezasSpec || '—'} pz`,
-      { content: `${med.piezas_por_paq} pz`, colSpan: 3, styles: { halign: 'center' } }
-    ]);
+    const aplicaPiezas = ['pz', 'pza', 'pieza', 'piezas', 'millar', 'millares'].includes(umOrig);
+    if (aplicaPiezas && (piezasSpec || med.piezas_por_paq)) {
+      filasCar.push([
+        'Piezas por paq.',
+        `${piezasSpec || '—'} pz`,
+        { content: `${med.piezas_por_paq || '—'} pz`, colSpan: 3, styles: { halign: 'center' } }
+      ]);
+    }
 
     // Ancho (cm)
     if (producto && Number(producto.ancho) > 0) {
@@ -25185,10 +25188,23 @@ function modalLiberarCalidad() {
                 </div>
               </div>
               
-              <div id="cal-empaque-info" style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;font-size:11px;">
+              <div id="cal-empaque-info" style="margin-top:10px;">
                 <!-- Modo CON paquetes -->
                 <div id="cal-empaque-conpaq" style="display:${contPaq > 0 ? 'block' : 'none'};">
-                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;">
+                  <!-- 🪄 BOTÓN PROMINENTE: LLENAR TODO AUTOMÁTICO -->
+                  <button onclick="autoDistribuir()" type="button" style="width:100%;padding:18px;background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:12px;cursor:pointer;font-weight:900;font-size:15px;box-shadow:0 4px 12px rgba(22,163,74,0.3);display:flex;align-items:center;justify-content:center;gap:10px;">
+                    <span style="font-size:24px;">🪄</span>
+                    <div style="text-align:left;">
+                      <div style="font-size:16px;font-weight:900;">LLENAR TODO AUTOMÁTICO</div>
+                      <div style="font-size:11px;font-weight:500;opacity:0.95;margin-top:2px;">
+                        ${paqTotalNec} paquetes en ${f.num_tarimas} tarima${f.num_tarimas > 1 ? 's' : ''} · paquetes/sueltos/pesos teóricos
+                      </div>
+                    </div>
+                  </button>
+                  <div style="margin-top:8px;padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:10.5px;color:#92400e;">
+                    💡 Después del botón mágico: solo <strong>ajusta el peso bruto real</strong> de cada tarima si tu báscula da diferente al teórico.
+                  </div>
+                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;margin-top:10px;padding:10px;background:#fff;border-radius:6px;border:1px solid #e2e8f0;">
                     <div>
                       <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Total a empacar</div>
                       <div id="cal-info-total" style="font-size:14px;font-weight:800;color:#1e40af;">${fmtCantidadUM(cantAceptada, um)}</div>
@@ -25202,18 +25218,21 @@ function modalLiberarCalidad() {
                       <div id="cal-info-suel" style="font-size:14px;font-weight:800;color:${sueltosTotal > 0 ? '#f59e0b' : '#16a34a'};">${um === 'millar' ? Math.round(sueltosTotal * 1000) + ' pza' : fmtNum(sueltosTotal) + ' ' + UM_LABELS[um]}</div>
                     </div>
                   </div>
-                  <button onclick="autoDistribuir()" type="button" style="width:100%;margin-top:10px;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
-                    🪄 Auto-distribuir entre <span id="cal-btn-numt-1">${f.num_tarimas}</span> tarima<span id="cal-btn-plur-1">${f.num_tarimas > 1 ? 's' : ''}</span>
-                  </button>
                 </div>
                 <!-- Modo SIN paquetes -->
                 <div id="cal-empaque-sinpaq" style="display:${contPaq > 0 ? 'none' : 'block'};">
-                  <div style="color:#475569;margin-bottom:6px;">
-                    💡 Si no usas paquetes, captura directamente la <strong>cantidad por tarima</strong> en la tabla. Para distribuir equitativo:
-                  </div>
-                  <button onclick="autoDistribuirSinPaquetes()" type="button" style="width:100%;padding:8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">
-                    🪄 Auto-distribuir <span id="cal-btn-cant">${fmtCantidadUM(cantAceptada, um)}</span> entre <span id="cal-btn-numt-2">${f.num_tarimas}</span> tarima<span id="cal-btn-plur-2">${f.num_tarimas > 1 ? 's' : ''}</span>
+                  <button onclick="autoDistribuirSinPaquetes()" type="button" style="width:100%;padding:18px;background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:12px;cursor:pointer;font-weight:900;font-size:15px;box-shadow:0 4px 12px rgba(22,163,74,0.3);display:flex;align-items:center;justify-content:center;gap:10px;">
+                    <span style="font-size:24px;">🪄</span>
+                    <div style="text-align:left;">
+                      <div style="font-size:16px;font-weight:900;">LLENAR TODO AUTOMÁTICO</div>
+                      <div style="font-size:11px;font-weight:500;opacity:0.95;margin-top:2px;">
+                        Distribuir <span id="cal-btn-cant">${fmtCantidadUM(cantAceptada, um)}</span> entre <span id="cal-btn-numt-2">${f.num_tarimas}</span> tarima<span id="cal-btn-plur-2">${f.num_tarimas > 1 ? 's' : ''}</span> + pesos teóricos
+                      </div>
+                    </div>
                   </button>
+                  <div style="margin-top:8px;padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:10.5px;color:#92400e;">
+                    💡 ¿No usas paquetes? El botón llena cantidad y pesos teóricos. Solo ajusta peso bruto real si la báscula difiere.
+                  </div>
                 </div>
               </div>
             </div>
@@ -25322,115 +25341,150 @@ function modalLiberarCalidad() {
               <div style="font-size:11px;color:#64748b;margin-bottom:12px;">Para Certificado de Calidad NPA-CAL-FR-02. Se valida contra ficha técnica del producto.</div>
               
               ${productoCal ? `
-                <div style="font-size:10px;color:#475569;background:#fff;padding:6px 10px;border-radius:6px;margin-bottom:10px;border:1px dashed #cbd5e1;">
-                  <strong>Especificaciones:</strong>
-                  Ancho ${productoCal.ancho}±${tolsCal.tol_ancho}cm
-                  ${tieneFuelle ? `· Fuelle ${productoCal.fuelle}±${tolsCal.tol_fuelle}cm` : ''}
-                  · Largo ${productoCal.largo}±${tolsCal.tol_largo}cm
-                  · Calibre ${productoCal.calibre} (±${tolsCal.tol_calibre_pct}%: ${tolsCal.calibre_min}-${tolsCal.calibre_max})
+                <div style="font-size:10px;color:#475569;background:#f0f9ff;padding:6px 10px;border-radius:6px;margin-bottom:10px;border:1px solid #bae6fd;">
+                  📋 <strong>Tolerancias del producto:</strong> Ancho ±${tolsCal.tol_ancho}cm ${tieneFuelle ? `· Fuelle ±${tolsCal.tol_fuelle}cm` : ''} · Largo ±${tolsCal.tol_largo}cm · Calibre ±${tolsCal.tol_calibre_pct}%
                 </div>
               ` : `<div style="color:#dc2626;font-size:11px;margin-bottom:8px;">⚠ Producto no encontrado en catálogo. Captura libre.</div>`}
               
-              <!-- Dimensiones -->
+              <!-- Dimensiones (con spec al lado) -->
               <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
                 <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Ancho real (cm) *</label>
-                  <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" style="${checkTol(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}" placeholder="ej. 123.4" />
+                  <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
+                    <span>Ancho real (cm) *</span>
+                    ${productoCal ? `<span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.ancho} ±${tolsCal.tol_ancho} (${tolsCal.ancho_min}-${tolsCal.ancho_max})</span>` : ''}
+                  </label>
+                  <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" style="${checkTol(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}" placeholder="${productoCal ? productoCal.ancho : 'ej. 30'}" />
                   <div style="margin-top:2px;">${dot(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}</div>
                 </div>
                 <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Largo real (cm) *</label>
-                  <input class="input form-cal" data-field="mediciones.largo" type="number" step="0.1" value="${med.largo}" style="${checkTol(med.largo, tolsCal.largo_min, tolsCal.largo_max)}" placeholder="ej. 223.2" />
+                  <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
+                    <span>Largo real (cm) *</span>
+                    ${productoCal ? `<span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.largo} ±${tolsCal.tol_largo} (${tolsCal.largo_min}-${tolsCal.largo_max})</span>` : ''}
+                  </label>
+                  <input class="input form-cal" data-field="mediciones.largo" type="number" step="0.1" value="${med.largo}" style="${checkTol(med.largo, tolsCal.largo_min, tolsCal.largo_max)}" placeholder="${productoCal ? productoCal.largo : 'ej. 40'}" />
                   <div style="margin-top:2px;">${dot(med.largo, tolsCal.largo_min, tolsCal.largo_max)}</div>
                 </div>
               </div>
               
               ${tieneFuelle ? `
                 <div style="margin-bottom:10px;">
-                  <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Fuelle real (cm) *</div>
+                  <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;display:flex;justify-content:space-between;">
+                    <span>Fuelle real (cm) *</span>
+                    <span style="color:#1e40af;font-weight:700;text-transform:none;letter-spacing:0;">Spec total: ${productoCal.fuelle} ±${tolsCal.tol_fuelle} (cada lado: ${(productoCal.fuelle/2).toFixed(1)} ±${(tolsCal.tol_fuelle/2).toFixed(1)})</span>
+                  </div>
                   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
                     <div>
-                      <input class="input form-cal" data-field="mediciones.fuelle_derecho" type="number" step="0.1" value="${med.fuelle_derecho}" style="${checkTol(med.fuelle_derecho, tolsCal.fuelle_min/2, tolsCal.fuelle_max/2)}" placeholder="Derecho" />
+                      <input class="input form-cal" data-field="mediciones.fuelle_derecho" type="number" step="0.1" value="${med.fuelle_derecho}" style="${checkTol(med.fuelle_derecho, tolsCal.fuelle_min/2, tolsCal.fuelle_max/2)}" placeholder="${(productoCal.fuelle/2).toFixed(1)}" />
                       <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">DERECHO</div>
                     </div>
                     <div>
-                      <input class="input form-cal" data-field="mediciones.fuelle_centro" type="number" step="0.1" value="${med.fuelle_centro}" placeholder="Centro (N/A si no aplica)" />
+                      <input class="input form-cal" data-field="mediciones.fuelle_centro" type="number" step="0.1" value="${med.fuelle_centro}" placeholder="N/A si no aplica" />
                       <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">CENTRO</div>
                     </div>
                     <div>
-                      <input class="input form-cal" data-field="mediciones.fuelle_izquierdo" type="number" step="0.1" value="${med.fuelle_izquierdo}" style="${checkTol(med.fuelle_izquierdo, tolsCal.fuelle_min/2, tolsCal.fuelle_max/2)}" placeholder="Izquierdo" />
+                      <input class="input form-cal" data-field="mediciones.fuelle_izquierdo" type="number" step="0.1" value="${med.fuelle_izquierdo}" style="${checkTol(med.fuelle_izquierdo, tolsCal.fuelle_min/2, tolsCal.fuelle_max/2)}" placeholder="${(productoCal.fuelle/2).toFixed(1)}" />
                       <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">IZQUIERDO</div>
                     </div>
                   </div>
                 </div>
               ` : ''}
               
-              <!-- Calibre -->
+              <!-- Calibre con spec -->
               <div style="margin-bottom:10px;">
-                <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Calibre real *</div>
+                <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;display:flex;justify-content:space-between;">
+                  <span>Calibre real *</span>
+                  ${productoCal ? `<span style="color:#1e40af;font-weight:700;text-transform:none;letter-spacing:0;">Spec: ${productoCal.calibre} ±${tolsCal.tol_calibre_pct}% (${tolsCal.calibre_min}-${tolsCal.calibre_max})</span>` : ''}
+                </div>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
                   <div>
-                    <input class="input form-cal" data-field="mediciones.calibre_max" type="number" step="any" value="${med.calibre_max}" style="${checkTol(med.calibre_max, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Máximo" />
+                    <input class="input form-cal" data-field="mediciones.calibre_max" type="number" step="any" value="${med.calibre_max}" style="${checkTol(med.calibre_max, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="${tolsCal.calibre_max || 'Máximo'}" />
                     <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MÁXIMO</div>
                   </div>
                   <div>
-                    <input class="input form-cal" data-field="mediciones.calibre_moda" type="number" step="any" value="${med.calibre_moda}" style="${checkTol(med.calibre_moda, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Moda" />
+                    <input class="input form-cal" data-field="mediciones.calibre_moda" type="number" step="any" value="${med.calibre_moda}" style="${checkTol(med.calibre_moda, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="${productoCal ? productoCal.calibre : 'Moda'}" />
                     <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MODA</div>
                   </div>
                   <div>
-                    <input class="input form-cal" data-field="mediciones.calibre_min" type="number" step="any" value="${med.calibre_min}" style="${checkTol(med.calibre_min, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="Mínimo" />
+                    <input class="input form-cal" data-field="mediciones.calibre_min" type="number" step="any" value="${med.calibre_min}" style="${checkTol(med.calibre_min, tolsCal.calibre_min, tolsCal.calibre_max)}" placeholder="${tolsCal.calibre_min || 'Mínimo'}" />
                     <div style="font-size:9px;color:#64748b;text-align:center;margin-top:2px;">MÍNIMO</div>
                   </div>
                 </div>
               </div>
               
-              <!-- Piezas por paquete -->
-              <div class="field" style="margin-bottom:10px;">
-                <label class="field-label" style="font-size:10px;">Piezas por paquete real *</label>
-                <input class="input form-cal" data-field="mediciones.piezas_por_paq" type="number" step="any" value="${med.piezas_por_paq}" placeholder="ej. 20" />
-              </div>
+              <!-- Piezas por paquete (solo si UM = pz / pza / millar) -->
+              ${(() => {
+                const umLib = (odp.um || 'kg').toLowerCase();
+                const aplicaPiezas = ['pz', 'pza', 'pieza', 'piezas', 'millar', 'millares'].includes(umLib);
+                if (!aplicaPiezas) return `
+                  <div style="padding:8px 10px;background:#eff6ff;border:1px dashed #93c5fd;border-radius:6px;margin-bottom:10px;font-size:11px;color:#1e40af;">
+                    ℹ️ Este producto se vende por <strong>${umLib.toUpperCase()}</strong>, no por piezas. No aplica "piezas por paquete".
+                  </div>
+                `;
+                const piezasSpec = productoCal?.piezas_por_paq;
+                return `
+                  <div class="field" style="margin-bottom:10px;">
+                    <label class="field-label" style="font-size:10px;">Piezas por paquete real * <span style="font-weight:400;color:#64748b;">${piezasSpec ? `(esperado: ${piezasSpec} pz)` : ''}</span></label>
+                    <input class="input form-cal" data-field="mediciones.piezas_por_paq" type="number" step="any" value="${med.piezas_por_paq}" placeholder="ej. 20" />
+                  </div>
+                `;
+              })()}
               
-              <!-- Resultados de cumplimiento -->
-              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px;">
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Tipo de resina</label>
-                  <select class="input form-cal" data-field="mediciones.resultado_resina">
-                    <option ${med.resultado_resina === 'Cumple con la especificación' ? 'selected' : ''}>Cumple con la especificación</option>
-                    <option ${med.resultado_resina === 'No cumple' ? 'selected' : ''}>No cumple</option>
-                    <option ${med.resultado_resina === 'N/A' ? 'selected' : ''}>N/A</option>
-                  </select>
-                </div>
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Aditivo</label>
-                  <select class="input form-cal" data-field="mediciones.resultado_aditivo">
-                    <option ${med.resultado_aditivo === 'Cumple con la especificación' ? 'selected' : ''}>Cumple con la especificación</option>
-                    <option ${med.resultado_aditivo === 'No cumple' ? 'selected' : ''}>No cumple</option>
-                    <option ${med.resultado_aditivo === 'N/A' ? 'selected' : ''}>N/A</option>
-                  </select>
-                </div>
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Pigmento</label>
-                  <select class="input form-cal" data-field="mediciones.resultado_pigmento">
-                    <option ${med.resultado_pigmento === 'Cumple con la especificación' ? 'selected' : ''}>Cumple con la especificación</option>
-                    <option ${med.resultado_pigmento === 'No cumple' ? 'selected' : ''}>No cumple</option>
-                    <option ${med.resultado_pigmento === 'N/A' ? 'selected' : ''}>N/A</option>
-                  </select>
-                </div>
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Limpieza</label>
-                  <select class="input form-cal" data-field="mediciones.resultado_limpieza">
-                    <option ${med.resultado_limpieza === 'Libre' ? 'selected' : ''}>Libre</option>
-                    <option ${med.resultado_limpieza === 'Contaminado' ? 'selected' : ''}>Contaminado</option>
-                  </select>
-                </div>
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;">Inocuidad</label>
-                  <select class="input form-cal" data-field="mediciones.resultado_inocuidad">
-                    <option ${med.resultado_inocuidad === 'Cumple' ? 'selected' : ''}>Cumple</option>
-                    <option ${med.resultado_inocuidad === 'No cumple' ? 'selected' : ''}>No cumple</option>
-                  </select>
-                </div>
-              </div>
+              <!-- Resultados de cumplimiento (botones táctiles grandes) -->
+              ${(() => {
+                // Helper: render botones de 3 opciones para Cumple/No cumple/N/A
+                const btnGrupo3 = (campo, valor, opciones) => {
+                  return `
+                    <div class="field" style="margin:0 0 10px 0;">
+                      <label class="field-label" style="font-size:10.5px;font-weight:700;color:#374151;margin-bottom:6px;">${opciones.label}</label>
+                      <div style="display:grid;grid-template-columns:${opciones.cols};gap:6px;">
+                        ${opciones.botones.map(b => `
+                          <button type="button" 
+                            onclick="window.setMedicionResultado('${campo}', '${b.val}')" 
+                            style="padding:12px 8px;background:${valor === b.val ? b.color : '#fff'};color:${valor === b.val ? '#fff' : b.color};border:2px solid ${b.color};border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:4px;min-height:44px;">
+                            <span style="font-size:14px;">${b.icono}</span> ${b.label}
+                          </button>
+                        `).join('')}
+                      </div>
+                    </div>
+                  `;
+                };
+                
+                const btnCumpleNoNA = (campo, valor, label) => btnGrupo3(campo, valor, {
+                  label, cols: 'repeat(3, 1fr)',
+                  botones: [
+                    { val: 'Cumple con la especificación', label: 'Cumple', icono: '✓', color: '#16a34a' },
+                    { val: 'No cumple',                    label: 'No cumple', icono: '✗', color: '#dc2626' },
+                    { val: 'N/A',                          label: 'N/A',       icono: '—', color: '#64748b' }
+                  ]
+                });
+                
+                return `
+                  <div style="margin-top:14px;padding:12px;background:#fafbfc;border:1px solid #e2e8f0;border-radius:10px;">
+                    <div style="font-size:11px;font-weight:800;color:#0f172a;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;">✓ Resultados de cumplimiento</div>
+                    
+                    ${btnCumpleNoNA('resultado_resina',   med.resultado_resina,   'Tipo de resina')}
+                    ${btnCumpleNoNA('resultado_aditivo',  med.resultado_aditivo,  'Aditivo')}
+                    ${btnCumpleNoNA('resultado_pigmento', med.resultado_pigmento, 'Pigmento')}
+                    
+                    ${btnGrupo3('resultado_limpieza', med.resultado_limpieza, {
+                      label: 'Limpieza', cols: 'repeat(2, 1fr)',
+                      botones: [
+                        { val: 'Libre',       label: 'Libre',       icono: '✓', color: '#16a34a' },
+                        { val: 'Contaminado', label: 'Contaminado', icono: '✗', color: '#dc2626' }
+                      ]
+                    })}
+                    
+                    ${btnGrupo3('resultado_inocuidad', med.resultado_inocuidad, {
+                      label: 'Inocuidad', cols: 'repeat(2, 1fr)',
+                      botones: [
+                        { val: 'Cumple',    label: 'Cumple',    icono: '✓', color: '#16a34a' },
+                        { val: 'No cumple', label: 'No cumple', icono: '✗', color: '#dc2626' }
+                      ]
+                    })}
+                  </div>
+                `;
+              })()}
+              <!-- (los selects viejos ya fueron reemplazados por botones táctiles) -->
               
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:10px;">Características solicitadas por el cliente</label>
@@ -30788,8 +30842,13 @@ window.confirmarLiberarCalidad = async (odpId) => {
     const med = f.mediciones || {};
     const productoCal = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
     const tieneFuelle = productoCal && Number(productoCal.fuelle) > 0;
-    const camposObligatorios = ['ancho', 'largo', 'calibre_max', 'calibre_moda', 'calibre_min', 'piezas_por_paq'];
+    const camposObligatorios = ['ancho', 'largo', 'calibre_max', 'calibre_moda', 'calibre_min'];
     if (tieneFuelle) camposObligatorios.push('fuelle_derecho', 'fuelle_izquierdo');
+    // 🆕 Piezas por paquete solo si UM aplica (pz/pza/millar)
+    const umVal = (odp.um || 'kg').toLowerCase();
+    if (['pz', 'pza', 'pieza', 'piezas', 'millar', 'millares'].includes(umVal)) {
+      camposObligatorios.push('piezas_por_paq');
+    }
     const faltantes = camposObligatorios.filter(c => !med[c] && med[c] !== 0);
     if (faltantes.length > 0) {
       const etiquetas = {
@@ -31179,10 +31238,40 @@ window.convertirKgMermasAUM = (um, productoCod) => {
 // ============================================================
 // AUTO-DISTRIBUCIÓN inteligente de paquetes + sueltos entre tarimas
 // ============================================================
+// Handler para botones táctiles de mediciones (Cumple/No cumple/N/A)
+window.setMedicionResultado = (campo, valor) => {
+  if (!state.modalForm) return;
+  if (!state.modalForm.mediciones) state.modalForm.mediciones = {};
+  // Capturar valores actuales de otros inputs antes de re-render
+  document.querySelectorAll('.form-cal').forEach(el => {
+    const k = el.dataset.field;
+    if (!k) return;
+    if (k.startsWith('mediciones.')) {
+      const sub = k.substring('mediciones.'.length);
+      state.modalForm.mediciones[sub] = el.value;
+    } else {
+      state.modalForm[k] = el.value;
+    }
+  });
+  // Capturar valores de las filas de tarimas
+  document.querySelectorAll('.tarima-row').forEach(el => {
+    const idx = Number(el.dataset.idx);
+    const field = el.dataset.field;
+    if (state.modalForm.tarimas_data && state.modalForm.tarimas_data[idx]) {
+      // Si es sueltos y UM=millar, convertir a millares
+      if (field === 'sueltos' && el.dataset.um === 'millar') {
+        state.modalForm.tarimas_data[idx][field] = (Number(el.value) || 0) / 1000;
+      } else {
+        state.modalForm.tarimas_data[idx][field] = Number(el.value) || 0;
+      }
+    }
+  });
+  // Setear el nuevo valor
+  state.modalForm.mediciones[campo] = valor;
+  render();
+};
+
 window.autoDistribuir = () => {
-  if (!state.modalForm || !state.modalForm.tarimas_data) return;
-  const numT = state.modalForm.tarimas_data.length;
-  if (numT === 0) return;
   
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return;
