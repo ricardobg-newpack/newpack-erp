@@ -5767,30 +5767,53 @@ function _renderTimelineODP(odp) {
   const um = (odp.um || 'kg').toLowerCase();
   const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
   
-  // Estado global de la ODP
+  // 🆕 Detección clara del estado de la ODP
+  // Si producción terminó, TODOS los procesos están completados visualmente
+  const produccionTerminada = ['pendiente_calidad', 'liberada_empaque', 
+    'pendiente_almacen', 'en_almacen_planta', 'en_transito_cedis', 
+    'en_transito_cedis_mty', 'en_cedis_mty', 'en_cedis_mex', 'embarcada', 
+    'entregada', 'completada', 'liberada'].includes(estatus);
+  
+  const odpEntregada = ['entregada', 'completada'].includes(estatus);
+  const odpEnLogistica = ['liberada_empaque', 'pendiente_almacen', 
+    'en_almacen_planta', 'en_transito_cedis', 'en_transito_cedis_mty', 
+    'en_cedis_mty', 'en_cedis_mex', 'embarcada'].includes(estatus);
+  const odpEnCalidad = estatus === 'pendiente_calidad';
+  
+  // Estado global de la ODP (badge superior)
   let estadoGlobal = '';
   let colorGlobal = '#64748b';
-  if (estatus === 'cancelada') { estadoGlobal = '✗ Cancelada'; colorGlobal = '#dc2626'; }
-  else if (estatus === 'completada' || estatus === 'liberada') { estadoGlobal = '🎉 Liberada para entrega'; colorGlobal = '#15803d'; }
-  else if (estatus === 'pendiente_calidad') { estadoGlobal = '🟡 Producida · esperando liberación de calidad'; colorGlobal = '#a16207'; }
+  if (estatus === 'cancelada' || estatus === 'rechazada') { 
+    estadoGlobal = '✗ ' + (estatus === 'rechazada' ? 'Rechazada por calidad' : 'Cancelada'); 
+    colorGlobal = '#dc2626'; 
+  }
+  else if (odpEntregada) { estadoGlobal = '✅ Entregada al cliente'; colorGlobal = '#15803d'; }
+  else if (odpEnLogistica) { estadoGlobal = '🚚 En logística / por entregar'; colorGlobal = '#0891b2'; }
+  else if (odpEnCalidad) { estadoGlobal = '🟡 Producida · esperando liberación de calidad'; colorGlobal = '#a16207'; }
   else if (procEst === 'en_proceso') {
     const procActual = getProc(ruta[procIdx]);
-    estadoGlobal = `⚙️ En ${procActual?.nombre || 'proceso'}`;
+    estadoGlobal = `⚙️ Trabajando en ${procActual?.nombre || 'proceso'}`;
     colorGlobal = '#1e40af';
+  }
+  else if (procEst === 'pausado') {
+    const procActual = getProc(ruta[procIdx]);
+    estadoGlobal = `⏸ Pausada en ${procActual?.nombre || ''}`;
+    colorGlobal = '#a16207';
   }
   else if (procEst === 'esperando' && procIdx > 0) {
     const procActual = getProc(ruta[procIdx]);
-    estadoGlobal = `⏳ Esperando iniciar ${procActual?.nombre || ''}`;
+    estadoGlobal = `⏳ En cola para ${procActual?.nombre || ''}`;
     colorGlobal = '#92400e';
   }
-  else if (estatus === 'programada' || estatus === 'aprobada') {
-    estadoGlobal = '📦 Programada para producir';
+  else if (estatus === 'programada') {
+    estadoGlobal = '📦 Programada · por iniciar';
     colorGlobal = '#92400e';
   }
   else if (estatus === 'pendiente_planeacion') {
     estadoGlobal = '📋 Esperando programación';
     colorGlobal = '#f59e0b';
   }
+  else { estadoGlobal = estatus || '—'; colorGlobal = '#64748b'; }
   
   return `
     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;">
@@ -5810,9 +5833,20 @@ function _renderTimelineODP(odp) {
       <div style="display:flex;align-items:center;gap:0;margin-top:8px;padding:4px;background:#fff;border-radius:6px;border:1px solid #e2e8f0;overflow-x:auto;">
         ${ruta.map((procCod, i) => {
           const proc = getProc(procCod);
-          const esCompletado = i < procIdx;
-          const esActual = i === procIdx;
-          const esFuturo = i > procIdx;
+          
+          // 🆕 LÓGICA CORREGIDA:
+          // - Si producción terminó → TODOS los procesos están completados visualmente
+          // - Si no, usar procesos_completados como fuente de verdad
+          // - Un proceso está completado si: i < procIdx (avanzó) O hay entry en procesos_completados O producción terminó
+          
+          const tieneEntradaCompletada = i < procesosCompletados.length && procesosCompletados[i];
+          const esCompletadoPorIndex = i < procIdx;
+          const esCompletadoFinal = produccionTerminada;
+          const esCompletado = esCompletadoPorIndex || tieneEntradaCompletada || esCompletadoFinal;
+          
+          // Es "actual" SOLO si no se ha completado y el procIdx coincide
+          const esActual = !esCompletado && i === procIdx && !produccionTerminada;
+          const esFuturo = !esCompletado && !esActual;
           
           let icono, bg, color, txt;
           if (esCompletado) {
@@ -5826,11 +5860,16 @@ function _renderTimelineODP(odp) {
               bg = '#dbeafe';
               color = '#1e40af';
               txt = 'En proceso';
+            } else if (procEst === 'pausado') {
+              icono = '⏸';
+              bg = '#fef3c7';
+              color = '#a16207';
+              txt = 'Pausado';
             } else if (procEst === 'esperando' && i > 0) {
               icono = '⏳';
               bg = '#fef3c7';
               color = '#92400e';
-              txt = 'Esperando iniciar';
+              txt = 'En cola';
             } else {
               icono = '📦';
               bg = '#fef3c7';
@@ -5844,16 +5883,24 @@ function _renderTimelineODP(odp) {
             txt = 'Pendiente';
           }
           
-          // Stats si está completado o en proceso
+          // Stats: usar procesos_completados[i] si existe, sino calcular de capturas
           let stats = '';
-          if (esCompletado && procesosCompletados[i]) {
+          if (tieneEntradaCompletada) {
             const pc = procesosCompletados[i];
-            stats = `${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida || 0)} ${um}`;
+            const kgProducido = Number(pc.cantidad_producida_kg) || Number(pc.cantidad_producida) || 0;
+            const maq = pc.maquina ? `🛠️ ${pc.maquina}` : '';
+            stats = `${fmtNum(kgProducido)} ${pc.mermas_kg ? `kg · ⚠ ${fmtNum(pc.mermas_kg)} kg merma` : (um === 'kg' ? 'kg' : um)}`;
+            if (maq) stats = `${maq} · ${stats}`;
           } else if (esActual && procEst === 'en_proceso') {
             const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === procCod);
             const prod = capturas.reduce((s,c) => s + (Number(c.producido_kg)||0), 0);
-            const pct = cantTotal > 0 ? Math.round((prod/cantTotal)*100) : 0;
-            stats = `${fmtNum(prod)} ${um} · ${pct}%`;
+            const kgMeta = Number(odp.cantidad_kg_produccion) || cantTotal;
+            const pct = kgMeta > 0 ? Math.round((prod/kgMeta)*100) : 0;
+            const maq = odp.maquinas_asignadas?.[procCod] || '';
+            stats = `${maq ? '🛠️ ' + maq + ' · ' : ''}${fmtNum(prod)} kg (${pct}%)`;
+          } else if (esActual && (procEst === 'esperando' || procEst === 'pausado')) {
+            const maq = odp.maquinas_asignadas?.[procCod] || '';
+            if (maq) stats = `🛠️ ${maq}`;
           }
           
           return `
@@ -5862,22 +5909,35 @@ function _renderTimelineODP(odp) {
                 <div style="font-size:18px;">${proc?.icono || icono}</div>
                 <div style="font-size:10px;font-weight:800;color:${color};margin-top:2px;">${proc?.nombre || procCod}</div>
                 <div style="font-size:9px;color:${color};margin-top:2px;font-weight:600;">${icono} ${txt}</div>
-                ${stats ? `<div style="font-size:10px;color:#475569;margin-top:3px;font-weight:700;">${stats}</div>` : ''}
+                ${stats ? `<div style="font-size:9.5px;color:#475569;margin-top:3px;font-weight:700;line-height:1.2;">${stats}</div>` : ''}
               </div>
               ${i < ruta.length - 1 ? `<div style="font-size:18px;color:${esCompletado ? '#16a34a' : '#cbd5e1'};padding:0 4px;">→</div>` : ''}
             </div>
           `;
         }).join('')}
-        ${ruta.length > 0 ? `
-          <div style="font-size:18px;color:#cbd5e1;padding:0 4px;">→</div>
-          <div style="flex:1;min-width:120px;padding:8px 6px;text-align:center;background:${estatus === 'completada' || estatus === 'liberada' ? '#dcfce7' : (estatus === 'pendiente_calidad' ? '#fef3c7' : '#f1f5f9')};border-radius:6px;border:1px solid ${estatus === 'completada' || estatus === 'liberada' ? '#15803d' : (estatus === 'pendiente_calidad' ? '#a16207' : '#cbd5e1')};">
-            <div style="font-size:18px;">${estatus === 'completada' || estatus === 'liberada' ? '🎉' : '🟡'}</div>
-            <div style="font-size:10px;font-weight:800;color:${estatus === 'completada' || estatus === 'liberada' ? '#15803d' : (estatus === 'pendiente_calidad' ? '#a16207' : '#94a3b8')};margin-top:2px;">Liberación</div>
-            <div style="font-size:9px;color:${estatus === 'completada' || estatus === 'liberada' ? '#15803d' : (estatus === 'pendiente_calidad' ? '#a16207' : '#94a3b8')};margin-top:2px;font-weight:600;">
-              ${estatus === 'completada' || estatus === 'liberada' ? '✅ Liberada' : (estatus === 'pendiente_calidad' ? '🟡 Pendiente' : '⚪ Por hacer')}
+        ${ruta.length > 0 ? (() => {
+          // Última columna: estado de calidad / logística / entregado
+          let lblFinal, bgFinal, colFinal, icoFinal;
+          if (odpEntregada) {
+            lblFinal = 'Entregada'; icoFinal = '✅'; bgFinal = '#dcfce7'; colFinal = '#15803d';
+          } else if (odpEnLogistica) {
+            lblFinal = 'En logística'; icoFinal = '🚚'; bgFinal = '#cffafe'; colFinal = '#0891b2';
+          } else if (odpEnCalidad) {
+            lblFinal = 'Liberación'; icoFinal = '🟡'; bgFinal = '#fef3c7'; colFinal = '#a16207';
+          } else {
+            lblFinal = 'Liberación'; icoFinal = '⚪'; bgFinal = '#f1f5f9'; colFinal = '#94a3b8';
+          }
+          return `
+            <div style="font-size:18px;color:#cbd5e1;padding:0 4px;">→</div>
+            <div style="flex:1;min-width:120px;padding:8px 6px;text-align:center;background:${bgFinal};border-radius:6px;border:1px solid ${colFinal};">
+              <div style="font-size:18px;">${icoFinal}</div>
+              <div style="font-size:10px;font-weight:800;color:${colFinal};margin-top:2px;">${lblFinal}</div>
+              <div style="font-size:9px;color:${colFinal};margin-top:2px;font-weight:600;">
+                ${odpEntregada ? '✅ Entregada' : (odpEnLogistica ? '🚚 En camino' : (odpEnCalidad ? '🟡 Pendiente' : '⚪ Por hacer'))}
+              </div>
             </div>
-          </div>
-        ` : ''}
+          `;
+        })() : ''}
       </div>
       
       ${odp.fecha_entrega_solicitada ? `<div style="margin-top:8px;font-size:11px;color:#64748b;">🎯 Entrega solicitada: <strong>${odp.fecha_entrega_solicitada}</strong></div>` : ''}
@@ -18394,13 +18454,13 @@ window.imprimirEtiquetasPDF = (odpId) => {
     
     // Letter: 215.9 × 279.4 mm
     // 🆕 Configuración para HOJA PREFORMADA con etiquetas pre-troqueladas:
-    //   Margen superior:  13 mm (sube 2mm el contenido — antes 15)
+    //   Margen superior:  12.5 mm (espacio físico de la hoja)
     //   Margen izquierdo:  5 mm
     //   Gap entre columnas: 5 mm (centro)
     //   Margen derecho:    4 mm
-    //   Margen inferior:  15 mm (compensa 2mm — antes 13)
-    //   → Etiqueta resultante: 100.95 × 50.28 mm (sin cambio en alto, solo desplaza arriba)
-    const MARG_TOP = 13;
+    //   Margen inferior:  15 mm
+    //   → Etiqueta resultante: 100.95 × 50.38 mm
+    const MARG_TOP = 12.5;
     const MARG_LEFT = 5;
     const MARG_RIGHT = 4;
     const MARG_BOTTOM = 15;
@@ -18624,19 +18684,9 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   }
   yt += lineH;
   
-  // Lote: automático = folio de la ODP
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7);
-  doc.setTextColor(70, 70, 70);
-  doc.text('Lote:', xLabel, yt);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.setTextColor(0, 0, 0);
-  doc.text(d.lote_auto || d.odp_folio || '—', xVal, yt);
-  yt += lineH;
-  
   // 🆕 NÚMERO DE EMPAQUE (trazabilidad): "BULTO #5 de 10", "ROLLO #3/8", etc.
   // Usa el tipo_empaque del producto. Fallback: "PAQUETE"
+  // Nota: "Lote" se omite porque es el mismo número que ODP (redundante en espacio limitado)
   const tipoEmp = (d.tipo_empaque || 'PAQUETE').toUpperCase();
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
@@ -18648,7 +18698,7 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   doc.text(`${numEtiq} de ${totalEtiq}`, xVal, yt);
   doc.setTextColor(0, 0, 0);
   
-  // Numerador discreto en esquina inferior derecha (ya no es la única referencia)
+  // Numerador discreto en esquina inferior derecha
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(5.5);
   doc.setTextColor(150, 150, 150);
