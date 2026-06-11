@@ -863,6 +863,13 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 window.$ = $;
 window.$$ = $$;
 
+// 🆕 Filtrar capturas excluyendo las anuladas (soft-delete)
+// Cualquier consulta a capturas debe usar este helper para evitar contar duplicados anulados
+function capturasValidas(arr) {
+  return (arr || []).filter(c => c.anulada !== true);
+}
+window.capturasValidas = capturasValidas;
+
 function fmtFecha(f) {
   if (!f) return '';
   const d = f.toDate ? f.toDate() : new Date(f);
@@ -1503,6 +1510,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
         ` : ''}
         ${esPRO ? `
+          <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador</button>
           <button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>
         ` : ''}
         ${esPLN || esPRO ? `
@@ -1656,6 +1664,7 @@ function renderVista() {
   if (v === 'kanban_maquinas') return renderKanbanMaquinas();
   if (v === 'seguimiento_pedidos') return renderSeguimientoPedidos();
   if (v === 'captura_produccion') return renderCapturaProduccion();
+  if (v === 'panel_operador') return renderPanelOperador();
   if (v === 'calidad') return renderCalidad();
   if (v === 'seguimiento') return renderSeguimiento();
   if (v === 'almacen_planta') return renderAlmacenPlanta();
@@ -4032,7 +4041,7 @@ function renderKanbanMaquinas() {
     // ⚙️ EN PROCESO: el proceso tiene capturas activas
     else if (procEst === 'en_proceso' || estatus === 'en_produccion' && procEst !== 'esperando' && procEst !== 'completado') {
       // Si tiene capturas en este proceso = en proceso
-      const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === odp.proceso_actual);
+      const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === odp.proceso_actual);
       if (capturas.length > 0 || procEst === 'en_proceso') {
         porMaquina[key].en_proceso.push(odp);
       } else {
@@ -4177,7 +4186,7 @@ function _renderTarjetaKanban(odp, columna, opts) {
   const estatus = odp.estatus || '';
   const um = (odp.um || 'kg').toLowerCase();
   
-  const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[procIdx]);
+  const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[procIdx]);
   const totalProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
   const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
   const pct = cantTotal > 0 ? Math.min(100, (totalProd / cantTotal) * 100) : 0;
@@ -4631,6 +4640,260 @@ window.migrarUsuariosCALaALP = async () => {
 // ✗ CANCELAR DOCUMENTOS CON DEVOLUCIÓN DE STOCK
 // ============================================================
 
+// ============================================================
+// 🛡 GESTIÓN DE CAPTURAS DE PRODUCCIÓN (anular duplicados)
+// ============================================================
+
+// Anular una captura específica (soft-delete con auditoría)
+// Útil cuando se reportó dos veces lo mismo y la ODP se trabó por sobre-captura
+window.anularCaptura = async (capturaId) => {
+  const cap = (state.capturas_produccion || []).find(c => c.id === capturaId);
+  if (!cap) { toast('Captura no encontrada', 'error'); return; }
+  
+  if (cap.anulada) {
+    toast('Esta captura ya estaba anulada', 'info');
+    return;
+  }
+  
+  const u = state.user || {};
+  // Solo CEO, ADMIN, PLN, PRO o admin (rol) pueden anular
+  if (!(['CEO','ADMIN','PLN','PRO'].includes(u.depto) || u.rol === 'admin')) {
+    toast('Solo Producción, Planeación o Admin pueden anular capturas', 'error');
+    return;
+  }
+  
+  const motivo = prompt(`Anular esta captura:\n\nODP: ${cap.odp_folio}\nProceso: ${cap.proceso_nombre || cap.proceso}\nFecha: ${cap.fecha}\nTurno: ${cap.turno} (Grupo ${cap.grupo})\nOperador: ${cap.operador}\nProducido: ${cap.producido_kg} kg\n\n¿Por qué anulas? (obligatorio):`);
+  if (!motivo || !motivo.trim()) {
+    toast('Debes escribir el motivo de anulación', 'error');
+    return;
+  }
+  
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'capturas_produccion', capturaId), {
+      anulada: true,
+      anulada_motivo: motivo.trim(),
+      anulada_por: u.id,
+      anulada_por_nombre: u.nombre || u.email || '',
+      anulada_por_depto: u.depto || '',
+      anulada_at: serverTimestamp()
+    });
+    
+    // Recalcular cantidad_producida_final de la ODP (solo capturas válidas)
+    const odp = state.ordenes_produccion.find(o => o.id === cap.odp_id);
+    if (odp) {
+      const ruta = odp.ruta_procesos || [];
+      const idx = odp.proceso_actual_idx ?? 0;
+      const procActual = ruta[idx];
+      
+      // Sumar capturas válidas del proceso actual (excluyendo la recién anulada)
+      const capturasOdp = capturasValidas(state.capturas_produccion)
+        .filter(c => c.odp_id === cap.odp_id && c.id !== capturaId && c.proceso === procActual);
+      
+      const sumaProducidaKg = capturasOdp.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+      const sumaMermaKg = capturasOdp.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+      
+      // Convertir a UM original si es pza/millar
+      const um = (odp.um || 'kg').toLowerCase();
+      const producto = window.getProductoPT?.(odp.producto_codigo);
+      let prodEnUM = sumaProducidaKg;
+      if (um === 'pza' && producto) {
+        const pp = window.calcularPesoPieza(producto);
+        if (pp > 0) prodEnUM = sumaProducidaKg / pp;
+      } else if (um === 'millar' && producto) {
+        const pm = window.calcularPesoMillar(producto);
+        if (pm > 0) prodEnUM = sumaProducidaKg / pm;
+      }
+      
+      // Si todas las capturas se anularon, regresar la ODP a "esperando" para que puedan iniciar de nuevo
+      const actualizaciones = {
+        cantidad_producida_final: prodEnUM,
+        cantidad_producida_final_kg: sumaProducidaKg,
+        mermas_finales_kg: sumaMermaKg,
+        updated_at: serverTimestamp()
+      };
+      
+      // Si la ODP estaba en "pendiente_calidad" pero ya no hay capturas válidas, regresarla a "en_produccion"
+      if (sumaProducidaKg === 0 && odp.estatus === 'pendiente_calidad') {
+        actualizaciones.estatus = 'en_produccion';
+        actualizaciones.proceso_estatus_actual = 'esperando';
+      }
+      
+      await updateDoc(doc(db, 'ordenes_produccion', cap.odp_id), actualizaciones);
+    }
+    
+    toast(`✅ Captura anulada. Total recalculado.`, 'success');
+  } catch (e) {
+    console.error('Error anulando captura:', e);
+    let msg = e.message || String(e);
+    if (msg.includes('Missing or insufficient permissions') || msg.includes('PERMISSION_DENIED')) {
+      msg = '🔒 Sin permisos para anular capturas. Publica las reglas firestore.rules en Firebase Console.';
+    }
+    toast('Error: ' + msg, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Vista: capturas de una ODP (modal con lista y botón anular)
+window.verCapturasODP = (odpId) => {
+  state.modal = 'ver-capturas';
+  state.modalCapturasODPId = odpId;
+  render();
+};
+
+function modalVerCapturas() {
+  const odpId = state.modalCapturasODPId;
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) return '';
+  
+  const todasCapturas = (state.capturas_produccion || [])
+    .filter(c => c.odp_id === odpId)
+    .sort((a, b) => {
+      const fA = a.created_at?.toDate?.() || new Date(0);
+      const fB = b.created_at?.toDate?.() || new Date(0);
+      return fB - fA;
+    });
+  
+  const u = state.user || {};
+  const puedeAnular = ['CEO','ADMIN','PLN','PRO'].includes(u.depto) || u.rol === 'admin';
+  
+  const validas = todasCapturas.filter(c => !c.anulada);
+  const anuladas = todasCapturas.filter(c => c.anulada);
+  const totalValidoKg = validas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const totalMermaKg = validas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:900px;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📋 Capturas de ${odp.folio}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
+          <div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:8px;padding:12px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-size:11px;color:#15803d;font-weight:700;">Total válido producido</div>
+                <div style="font-size:22px;font-weight:800;color:#15803d;">${fmtNum(totalValidoKg)} kg</div>
+              </div>
+              <div>
+                <div style="font-size:11px;color:#15803d;font-weight:700;">Mermas válidas</div>
+                <div style="font-size:18px;font-weight:800;color:#dc2626;">${fmtNum(totalMermaKg)} kg</div>
+              </div>
+              <div>
+                <div style="font-size:11px;color:#15803d;font-weight:700;">Capturas</div>
+                <div style="font-size:14px;color:#15803d;"><strong>${validas.length}</strong> válidas · ${anuladas.length > 0 ? `<span style="color:#dc2626;font-weight:700;">${anuladas.length} anuladas</span>` : '0 anuladas'}</div>
+              </div>
+            </div>
+          </div>
+          
+          ${validas.length === 0 ? `<div style="text-align:center;padding:30px;color:#64748b;font-size:13px;">No hay capturas registradas en esta ODP</div>` : `
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead style="background:#f1f5f9;">
+                <tr>
+                  <th style="padding:8px;text-align:left;">Fecha</th>
+                  <th style="padding:8px;text-align:left;">Proceso</th>
+                  <th style="padding:8px;text-align:center;">Turno/Grupo</th>
+                  <th style="padding:8px;text-align:left;">Operador</th>
+                  <th style="padding:8px;text-align:right;">Producido kg</th>
+                  <th style="padding:8px;text-align:right;">Merma kg</th>
+                  ${puedeAnular ? '<th style="padding:8px;text-align:center;">Acción</th>' : ''}
+                </tr>
+              </thead>
+              <tbody>
+                ${validas.map(c => `
+                  <tr style="border-top:1px solid #e2e8f0;">
+                    <td style="padding:8px;">${c.fecha || '—'}</td>
+                    <td style="padding:8px;">${getProc(c.proceso)?.icono || ''} ${c.proceso_nombre || c.proceso}</td>
+                    <td style="padding:8px;text-align:center;">${c.turno || ''} / ${c.grupo || ''}</td>
+                    <td style="padding:8px;font-size:11px;">${c.operador || '—'}</td>
+                    <td style="padding:8px;text-align:right;font-weight:700;">${fmtNum(c.producido_kg)}</td>
+                    <td style="padding:8px;text-align:right;color:${(Number(c.mermas_kg)||0) > 0 ? '#dc2626' : '#94a3b8'};">${fmtNum(c.mermas_kg || 0)}</td>
+                    ${puedeAnular ? `<td style="padding:8px;text-align:center;">
+                      <button onclick="window.anularCaptura('${c.id}')" style="background:#dc2626;color:#fff;border:none;padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-weight:700;">🗑 Anular</button>
+                    </td>` : ''}
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `}
+          
+          ${anuladas.length > 0 ? `
+            <div style="margin-top:20px;">
+              <details>
+                <summary style="cursor:pointer;font-weight:700;color:#dc2626;padding:8px;background:#fee2e2;border-radius:6px;">⚠ Ver ${anuladas.length} captura(s) anulada(s)</summary>
+                <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;opacity:0.7;">
+                  <thead style="background:#fee2e2;">
+                    <tr>
+                      <th style="padding:6px;text-align:left;">Fecha</th>
+                      <th style="padding:6px;text-align:left;">Operador</th>
+                      <th style="padding:6px;text-align:right;">Kg</th>
+                      <th style="padding:6px;text-align:left;">Anulada por</th>
+                      <th style="padding:6px;text-align:left;">Motivo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${anuladas.map(c => `
+                      <tr style="border-top:1px solid #fca5a5;text-decoration:line-through;">
+                        <td style="padding:6px;">${c.fecha || '—'}</td>
+                        <td style="padding:6px;">${c.operador || '—'}</td>
+                        <td style="padding:6px;text-align:right;">${fmtNum(c.producido_kg)}</td>
+                        <td style="padding:6px;">${c.anulada_por_nombre || '—'}</td>
+                        <td style="padding:6px;font-style:italic;">${c.anulada_motivo || ''}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </details>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+window.modalVerCapturas = modalVerCapturas;
+
+// 🔧 Recalcular cantidad_kg de una ODP (para arreglar ODPs creadas con bug del cálculo)
+window.recalcularKgODP = async (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const producto = window.getProductoPT?.(odp.producto_codigo);
+  if (!producto) { toast('Producto no encontrado en catálogo', 'error'); return; }
+  
+  const um = (odp.um || 'kg').toLowerCase();
+  const cant = Number(odp.cantidad) || 0;
+  const kgNuevo = window.convertirAKg(cant, um, producto);
+  const pesoMillarNuevo = window.calcularPesoMillar(producto);
+  const pesoPiezaNuevo = window.calcularPesoPieza(producto);
+  
+  if (!kgNuevo || kgNuevo <= 0) {
+    toast(`⚠ No se puede calcular kg para ${odp.producto_codigo}. Verifica que tenga ancho/largo/calibre en el catálogo de Productos PT.`, 'error');
+    return;
+  }
+  
+  const kgActual = Number(odp.cantidad_kg_produccion) || 0;
+  if (!confirm(`Recalcular kg de ${odp.folio}:\n\nCantidad: ${cant} ${um.toUpperCase()}\nKg actual: ${kgActual.toFixed(2)} kg\nKg nuevo: ${kgNuevo.toFixed(2)} kg\n\n¿Continuar?`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      cantidad_kg_produccion: kgNuevo,
+      peso_teorico_millar: pesoMillarNuevo,
+      peso_teorico_pieza: pesoPiezaNuevo,
+      updated_at: serverTimestamp()
+    });
+    toast(`✅ ${odp.folio}: ${kgNuevo.toFixed(2)} kg`, 'success');
+  } catch (e) {
+    console.error('Error recalculando:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 // 🔧 Recalcular estatus del PI con base en sus ODPs reales
 window.recalcularEstatusPedido = async (pedidoId, folio) => {
   const p = (state.pedidos || []).find(x => x.id === pedidoId);
@@ -4964,7 +5227,7 @@ window.cancelarODPConDevolucion = async (odpId) => {
   if (odp.estatus === 'cancelada') { toast('Esta ODP ya está cancelada', 'info'); return; }
   
   // Tarimas/capturas asociadas
-  const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odpId);
+  const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odpId);
   const tarimas = (state.tarimas || []).filter(t => t.odp_folio === odp.folio && t.estatus !== 'cancelada');
   
   const motivo = prompt(
@@ -5485,7 +5748,7 @@ function _renderTimelineODP(odp) {
             const pc = procesosCompletados[i];
             stats = `${fmtNum(pc.cantidad_producida_kg || pc.cantidad_producida || 0)} ${um}`;
           } else if (esActual && procEst === 'en_proceso') {
-            const capturas = (state.capturas_produccion || []).filter(c => c.odp_id === odp.id && c.proceso === procCod);
+            const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === procCod);
             const prod = capturas.reduce((s,c) => s + (Number(c.producido_kg)||0), 0);
             const pct = cantTotal > 0 ? Math.round((prod/cantTotal)*100) : 0;
             stats = `${fmtNum(prod)} ${um} · ${pct}%`;
@@ -5693,7 +5956,7 @@ function renderTarjetaODP(o, contexto) {
   const color = colores[o.estatus] || '#64748b';
   
   // Capturas y avance global
-  const capturas = state.capturas_produccion.filter(c => c.odp_id === o.id);
+  const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === o.id);
   const lotesODP = state.lotes.filter(l => l.odp_id === o.id);
   const ruta = o.ruta_procesos || [];
   const procesosCompletados = o.procesos_completados || [];
@@ -5746,9 +6009,22 @@ function renderTarjetaODP(o, contexto) {
         </div>
         <div style="text-align:right;">
           <div style="font-size:18px;font-weight:800;">${fmtCantidadUM(o.cantidad, o.um)}</div>
-          ${o.cantidad_kg_produccion && (o.um === 'pza' || o.um === 'millar') ? `
-            <div style="font-size:11px;color:#059669;font-weight:700;margin-top:2px;">🏭 ${fmtNum(o.cantidad_kg_produccion)} kg producción</div>
-          ` : ''}
+          ${(() => {
+            // Si UM es pza/millar y kg está bien calculado, mostrar
+            const umLow = (o.um || '').toLowerCase();
+            const kg = Number(o.cantidad_kg_produccion) || 0;
+            const cant = Number(o.cantidad) || 0;
+            if (umLow !== 'pza' && umLow !== 'millar') return '';
+            // Bug: kg = cantidad (no se pudo calcular bien) o kg = 0
+            const kgEsBug = (kg === 0) || (umLow !== 'kg' && kg === cant);
+            if (kgEsBug) {
+              return `<div style="font-size:10.5px;color:#dc2626;font-weight:800;margin-top:2px;background:#fee2e2;padding:3px 7px;border-radius:5px;border:1px solid #fca5a5;">
+                ⚠ kg sin calcular
+                <button onclick="event.stopPropagation();window.recalcularKgODP('${o.id}')" style="margin-left:4px;background:#dc2626;color:#fff;border:none;padding:1px 6px;border-radius:3px;font-size:9px;cursor:pointer;font-weight:700;">🔧 Recalcular</button>
+              </div>`;
+            }
+            return `<div style="font-size:11px;color:#059669;font-weight:700;margin-top:2px;">🏭 ${fmtNum(kg)} kg producción</div>`;
+          })()}
           ${totalProducidoFinal > 0 ? `
             <div style="font-size:11px;color:#475569;margin-top:2px;">Producido: <strong>${fmtCantidadUM(totalProducidoFinal, o.um)}</strong> (${pct}%)</div>
             ${totalMermasFinal > 0 ? `<div style="font-size:10px;color:#dc2626;">Mermas: ${fmtCantidadUM(totalMermasFinal, o.um)}</div>` : ''}
@@ -5907,11 +6183,332 @@ function renderTarjetaODP(o, contexto) {
         ${o.estatus !== 'cancelada' && o.estatus !== 'completada' && (state.user.depto === 'PLN' || state.user.depto === 'CEO' || state.user.rol === 'admin') ? `
           <button onclick="window.cancelarODPConDevolucion('${o.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">✗ Cancelar ODP</button>
         ` : ''}
+        ${(['en_produccion','pendiente_calidad'].includes(o.estatus) || o.cantidad_producida_final > 0) ? `
+          <button onclick="window.verCapturasODP('${o.id}')" style="padding:8px 14px;background:#fff;color:#0284c7;border:1px solid #0284c7;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">📋 Ver capturas</button>
+        ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
     </div>
   `;
 }
+
+// ============================================================
+// 🎯 PANEL OPERADOR — Vista simplificada para terminales en planta
+// ============================================================
+// Diseño: 1 selector de proceso (ext, BS, BR, REF, PEL, IMP)
+// Muestra solo las ODPs ASIGNADAS a ese proceso, con botones grandes
+// El operador entra → elige su proceso/máquina → ve sus ODPs → captura
+// ============================================================
+function renderPanelOperador() {
+  const u = state.user || {};
+  
+  // Proceso seleccionado se guarda en state.panelOpProc (persiste vía localStorage)
+  if (!state.panelOpProc) {
+    state.panelOpProc = localStorage.getItem('newpack_panel_op_proc') || '';
+  }
+  if (!state.panelOpMaq) {
+    state.panelOpMaq = localStorage.getItem('newpack_panel_op_maq') || '';
+  }
+  const procSel = state.panelOpProc;
+  const maqSel = state.panelOpMaq;
+  
+  // -------- Si NO hay proceso elegido: pantalla de selección grande --------
+  if (!procSel) {
+    return `
+      <div style="padding:30px;max-width:1100px;margin:0 auto;">
+        <div style="text-align:center;margin-bottom:30px;">
+          <h1 style="font-size:32px;font-weight:900;color:#0f172a;margin-bottom:8px;">🎯 PANEL OPERADOR</h1>
+          <p style="font-size:16px;color:#64748b;">Selecciona tu área de trabajo para empezar</p>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;">
+          ${PROCESOS.map(p => `
+            <button onclick="window.seleccionarProcOperador('${p.codigo}')" style="background:${p.color};color:#fff;border:none;padding:30px 20px;border-radius:14px;cursor:pointer;font-weight:800;font-size:18px;display:flex;flex-direction:column;align-items:center;gap:10px;box-shadow:0 4px 12px rgba(0,0,0,0.1);transition:transform 0.15s;" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'">
+              <span style="font-size:48px;">${p.icono}</span>
+              <span>${p.nombre}</span>
+              <span style="font-size:11px;opacity:0.85;font-weight:600;">${p.codigo}</span>
+            </button>
+          `).join('')}
+        </div>
+        <div style="margin-top:24px;text-align:center;color:#94a3b8;font-size:11px;">
+          💡 Una vez que elijas tu área, también puedes filtrar por una máquina específica.
+        </div>
+      </div>
+    `;
+  }
+  
+  const proc = PROCESOS.find(p => p.codigo === procSel) || {};
+  
+  // Máquinas que pertenecen a este proceso
+  const maquinasProc = (state.maquinas || []).filter(m => 
+    m.activa !== false && m.proceso_codigo === procSel
+  );
+  
+  // ODPs visibles: solo las que están en producción/programadas Y cuyo proceso actual coincide
+  // O cuyo siguiente proceso es este (queue)
+  const todasODPs = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada) return false;
+    if (!['programada','en_produccion'].includes(o.estatus)) return false;
+    const ruta = o.ruta_procesos || [];
+    if (!ruta.includes(procSel)) return false;
+    
+    // Si maqSel está activo, solo mostrar ODPs asignadas a esa máquina específica
+    if (maqSel) {
+      const maqAsig = o.maquinas_asignadas?.[procSel];
+      if (maqAsig !== maqSel) return false;
+    }
+    
+    return true;
+  });
+  
+  // Clasificar ODPs por estado actual
+  const enProduccion = [];  // mi proceso está EN_PROCESO ahora mismo
+  const enCola = [];        // mi proceso aún no llega (esperando que termine el anterior)
+  const completadas = [];   // mi proceso ya completado
+  
+  todasODPs.forEach(o => {
+    const procIdx = (o.ruta_procesos || []).indexOf(procSel);
+    const idxActual = o.proceso_actual_idx ?? 0;
+    
+    if (procIdx === idxActual) {
+      if (o.estatus === 'en_produccion' && o.proceso_estatus_actual !== 'pausado') {
+        enProduccion.push(o);
+      } else if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'pausado') {
+        enProduccion.push(o); // sigue siendo "actual" pero pausada
+      } else if (o.estatus === 'programada') {
+        enCola.push(o);
+      } else {
+        enCola.push(o);
+      }
+    } else if (procIdx < idxActual) {
+      // Proceso ya pasó
+      completadas.push(o);
+    } else {
+      enCola.push(o);
+    }
+  });
+  
+  // Ordenar: primero por fecha de entrega (más urgente arriba)
+  const ordenarPorEntrega = (a, b) => {
+    const fA = a.fecha_entrega_solicitada || '9999';
+    const fB = b.fecha_entrega_solicitada || '9999';
+    return fA.localeCompare(fB);
+  };
+  enProduccion.sort(ordenarPorEntrega);
+  enCola.sort(ordenarPorEntrega);
+  
+  return `
+    <div style="padding:14px;max-width:1400px;margin:0 auto;">
+      <!-- HEADER GIGANTE: proceso actual + botón cambiar -->
+      <div style="background:${proc.color};color:#fff;border-radius:14px;padding:20px 24px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+        <div style="display:flex;align-items:center;gap:18px;">
+          <div style="font-size:54px;">${proc.icono}</div>
+          <div>
+            <div style="font-size:11px;font-weight:700;opacity:0.85;letter-spacing:0.1em;">ÁREA DE TRABAJO</div>
+            <div style="font-size:32px;font-weight:900;">${proc.nombre}</div>
+            ${maqSel ? `<div style="font-size:14px;font-weight:700;margin-top:4px;background:rgba(255,255,255,0.2);padding:3px 10px;border-radius:6px;display:inline-block;">🛠️ Máquina: ${maqSel}</div>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>
+          ${maquinasProc.length > 1 ? `
+            <select onchange="window.cambiarMaquinaOperador(this.value)" style="background:rgba(255,255,255,0.95);color:#0f172a;border:none;padding:7px 12px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer;">
+              <option value="">— Todas las máquinas (${maquinasProc.length}) —</option>
+              ${maquinasProc.map(m => `<option value="${m.codigo}" ${m.codigo === maqSel ? 'selected' : ''}>${m.codigo} ${m.nombre ? '· ' + m.nombre : ''}</option>`).join('')}
+            </select>
+          ` : ''}
+        </div>
+      </div>
+      
+      <!-- RESUMEN: cuántas ODPs hay -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
+        <div style="background:#16a34a;color:#fff;padding:14px;border-radius:10px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;">⚙️ TRABAJANDO AHORA</div>
+          <div style="font-size:36px;font-weight:900;line-height:1;margin-top:4px;">${enProduccion.length}</div>
+        </div>
+        <div style="background:#f59e0b;color:#fff;padding:14px;border-radius:10px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;">📋 EN COLA</div>
+          <div style="font-size:36px;font-weight:900;line-height:1;margin-top:4px;">${enCola.length}</div>
+        </div>
+        <div style="background:#64748b;color:#fff;padding:14px;border-radius:10px;text-align:center;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;">✓ TERMINADAS</div>
+          <div style="font-size:36px;font-weight:900;line-height:1;margin-top:4px;">${completadas.length}</div>
+        </div>
+      </div>
+      
+      <!-- SECCIÓN: TRABAJANDO AHORA -->
+      ${enProduccion.length > 0 ? `
+        <div style="background:#dcfce7;border:2.5px solid #16a34a;border-radius:14px;padding:18px;margin-bottom:18px;">
+          <div style="font-size:18px;font-weight:900;color:#15803d;margin-bottom:14px;display:flex;align-items:center;gap:8px;">
+            ⚙️ TRABAJANDO AHORA <span style="background:#16a34a;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enProduccion.length}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+            ${enProduccion.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      <!-- SECCIÓN: EN COLA -->
+      ${enCola.length > 0 ? `
+        <div style="background:#fef3c7;border:2.5px solid #f59e0b;border-radius:14px;padding:18px;margin-bottom:18px;">
+          <div style="font-size:18px;font-weight:900;color:#92400e;margin-bottom:14px;display:flex;align-items:center;gap:8px;">
+            📋 EN COLA <span style="background:#f59e0b;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enCola.length}</span>
+            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— pendientes por iniciar o esperando proceso anterior</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+            ${enCola.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      ${enProduccion.length === 0 && enCola.length === 0 ? `
+        <div style="background:#fff;border:2.5px dashed #cbd5e1;border-radius:14px;padding:60px 20px;text-align:center;">
+          <div style="font-size:64px;margin-bottom:12px;">${proc.icono}</div>
+          <div style="font-size:20px;font-weight:800;color:#475569;">Sin órdenes asignadas</div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:6px;">
+            No hay ODPs ${maqSel ? `en la máquina ${maqSel}` : `en ${proc.nombre}`} por ahora. 
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+// Helper: tarjeta grande de una ODP para el panel operador
+function _tarjetaOperador(o, procSel, modo) {
+  const proc = PROCESOS.find(p => p.codigo === procSel) || {};
+  const um = (o.um || 'kg').toLowerCase();
+  const cantTxt = fmtCantidadUM(o.cantidad, um);
+  const maqAsig = o.maquinas_asignadas?.[procSel] || '—';
+  const idxActual = o.proceso_actual_idx ?? 0;
+  const ruta = o.ruta_procesos || [];
+  const procIdx = ruta.indexOf(procSel);
+  const esMiTurnoAhora = procIdx === idxActual;
+  const estaPausada = o.proceso_estatus_actual === 'pausado';
+  
+  // Calcular kg producidos en mi proceso
+  const capturas = capturasValidas(state.capturas_produccion).filter(c => 
+    c.odp_id === o.id && c.proceso === procSel
+  );
+  const prodKg = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const kgMeta = Number(o.cantidad_kg_produccion) || 0;
+  const pct = kgMeta > 0 ? Math.min(100, Math.round(prodKg / kgMeta * 100)) : 0;
+  
+  // Botones según estado
+  let botonPrincipal = '';
+  if (modo === 'cola' && o.estatus === 'programada' && procIdx === 0) {
+    // Primer proceso, esperando iniciar
+    botonPrincipal = `<button onclick="window.iniciarProduccionODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR PRODUCCIÓN</button>`;
+  } else if (modo === 'cola' && procIdx > idxActual) {
+    // Mi proceso aún no llega, mostrar estado del anterior
+    const procAnt = ruta[idxActual];
+    const procAntInfo = PROCESOS.find(p => p.codigo === procAnt);
+    botonPrincipal = `<div style="background:#f1f5f9;color:#475569;padding:14px;border-radius:8px;text-align:center;font-weight:700;font-size:13px;border:1.5px dashed #cbd5e1;">⏳ Esperando ${procAntInfo?.icono || ''} ${procAntInfo?.nombre || procAnt}</div>`;
+  } else if (modo === 'trabajando' && estaPausada) {
+    botonPrincipal = `<button onclick="window.reanudarODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;width:100%;">▶️ REANUDAR</button>`;
+  } else if (modo === 'trabajando' && !estaPausada) {
+    botonPrincipal = `
+      <div style="display:flex;gap:8px;">
+        <button onclick="abrirModal('capturar-turno','${o.id}')" style="background:#3b82f6;color:#fff;border:none;padding:18px 24px;border-radius:10px;font-size:17px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(59,130,246,0.3);flex:2;">📝 CAPTURAR TURNO</button>
+        <button onclick="window.pausarODP('${o.id}')" style="background:#fff;color:#a16207;border:2px solid #a16207;padding:18px 16px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;flex:1;">⏸ PAUSAR</button>
+      </div>
+    `;
+    if (pct >= 95) {
+      botonPrincipal += `<button onclick="abrirModal('completar-proceso','${o.id}')" style="margin-top:8px;background:#0891b2;color:#fff;border:none;padding:14px 24px;border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;width:100%;">✓ CERRAR PROCESO (${pct}%)</button>`;
+    }
+  }
+  
+  const urgente = o.prioridad === 'urgente';
+  
+  return `
+    <div style="background:#fff;border:${urgente ? '3px solid #dc2626' : '1.5px solid #e2e8f0'};border-radius:12px;padding:16px;position:relative;${urgente ? 'box-shadow:0 4px 12px rgba(220,38,38,0.2);' : ''}">
+      ${urgente ? `<div style="position:absolute;top:-12px;left:14px;background:#dc2626;color:#fff;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:900;letter-spacing:0.1em;">🔥 URGENTE</div>` : ''}
+      ${estaPausada ? `<div style="position:absolute;top:-12px;right:14px;background:#a16207;color:#fff;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:900;">⏸ PAUSADA: ${o.pausa_motivo || ''}</div>` : ''}
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+        <!-- Columna 1: ODP / Producto -->
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <div style="font-size:24px;font-weight:900;color:#0f172a;font-family:monospace;">${o.folio}</div>
+            <div style="background:#0f172a;color:#fff;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:800;">🛠️ ${maqAsig}</div>
+          </div>
+          <div style="font-size:14px;font-weight:700;color:#475569;line-height:1.3;">${o.descripcion || o.producto_codigo}</div>
+          <div style="font-size:11px;color:#64748b;font-family:monospace;margin-top:2px;">${o.producto_codigo}</div>
+          ${o.cliente_codigo ? `<div style="margin-top:4px;font-size:11px;color:#94a3b8;">Cliente: <strong style="color:#475569;">${o.cliente_codigo}</strong></div>` : ''}
+        </div>
+        
+        <!-- Columna 2: Cantidades -->
+        <div style="text-align:right;">
+          <div style="font-size:13px;color:#64748b;font-weight:700;">CANTIDAD</div>
+          <div style="font-size:24px;font-weight:900;color:#0f172a;">${cantTxt}</div>
+          ${kgMeta > 0 && um !== 'kg' ? `<div style="font-size:12px;color:#475569;margin-top:2px;">≈ <strong>${fmtNum(kgMeta)} kg</strong> a producir</div>` : ''}
+          ${o.fecha_entrega_solicitada ? `<div style="margin-top:6px;font-size:11px;background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:5px;display:inline-block;font-weight:700;">📅 Entrega: ${o.fecha_entrega_solicitada}</div>` : ''}
+        </div>
+      </div>
+      
+      <!-- Progreso del proceso actual (solo si es mi turno) -->
+      ${esMiTurnoAhora && modo === 'trabajando' ? `
+        <div style="background:#f8fafc;padding:10px 12px;border-radius:8px;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="font-size:12px;font-weight:700;color:#475569;">Progreso en ${proc.nombre}</div>
+            <div style="font-size:14px;font-weight:800;color:${pct >= 95 ? '#16a34a' : pct >= 50 ? '#3b82f6' : '#64748b'};">${fmtNum(prodKg)} / ${fmtNum(kgMeta)} kg (${pct}%)</div>
+          </div>
+          <div style="background:#e2e8f0;height:10px;border-radius:6px;overflow:hidden;">
+            <div style="background:${pct >= 95 ? '#16a34a' : '#3b82f6'};height:100%;width:${pct}%;transition:width 0.3s;"></div>
+          </div>
+        </div>
+      ` : ''}
+      
+      <!-- Ruta de procesos visualizada -->
+      <div style="display:flex;gap:4px;margin-bottom:14px;align-items:center;flex-wrap:wrap;">
+        ${ruta.map((cod, i) => {
+          const p = PROCESOS.find(pr => pr.codigo === cod);
+          const completado = i < idxActual;
+          const enProceso = i === idxActual;
+          const futuro = i > idxActual;
+          const esMio = cod === procSel;
+          
+          let bg, fg, border;
+          if (completado) { bg = '#dcfce7'; fg = '#15803d'; border = '#16a34a'; }
+          else if (enProceso) { bg = p?.color || '#3b82f6'; fg = '#fff'; border = p?.color || '#3b82f6'; }
+          else { bg = '#f1f5f9'; fg = '#94a3b8'; border = '#cbd5e1'; }
+          
+          return `<span style="background:${bg};color:${fg};border:${esMio ? '2.5px solid '+border : '1px solid '+border};padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;${esMio ? 'transform:scale(1.05);' : ''}">${p?.icono || ''} ${p?.nombre || cod}${completado ? ' ✓' : ''}</span>`;
+        }).join('<span style="color:#cbd5e1;">→</span>')}
+      </div>
+      
+      <!-- Botón principal de acción -->
+      ${botonPrincipal}
+      
+      <!-- Botón secundario: ver capturas (para audit/anular) -->
+      <div style="margin-top:8px;text-align:right;">
+        <button onclick="window.verCapturasODP('${o.id}')" style="background:transparent;color:#64748b;border:none;font-size:11px;cursor:pointer;text-decoration:underline;">📋 Ver capturas</button>
+      </div>
+    </div>
+  `;
+}
+
+window.seleccionarProcOperador = (codProc) => {
+  state.panelOpProc = codProc;
+  state.panelOpMaq = '';
+  localStorage.setItem('newpack_panel_op_proc', codProc);
+  localStorage.removeItem('newpack_panel_op_maq');
+  render();
+};
+
+window.cambiarProcOperador = () => {
+  state.panelOpProc = '';
+  state.panelOpMaq = '';
+  localStorage.removeItem('newpack_panel_op_proc');
+  localStorage.removeItem('newpack_panel_op_maq');
+  render();
+};
+
+window.cambiarMaquinaOperador = (codMaq) => {
+  state.panelOpMaq = codMaq || '';
+  if (codMaq) localStorage.setItem('newpack_panel_op_maq', codMaq);
+  else localStorage.removeItem('newpack_panel_op_maq');
+  render();
+};
 
 // ============================================================
 // VISTA: CAPTURA DE PRODUCCIÓN (PRO/CEO/ADMIN)
@@ -6498,6 +7095,7 @@ function renderModal() {
   if (m === 'programar-odp') return modalProgramarODP();
   if (m === 'completar-proceso') return modalCompletarProceso();
   if (m === 'liberar-calidad') return modalLiberarCalidad();
+  if (m === 'ver-capturas') return modalVerCapturas();
   if (m === 'crear-oti') return modalCrearOTI();
   if (m === 'asignar-tarimas-ov') return modalAsignarTarimasOV();
   if (m === 'generar-remision-ov') return modalGenerarRemisionOV();
@@ -6837,7 +7435,7 @@ function modalCapturarTurno() {
   const maquinaAsignada = (odp.maquinas_asignadas && odp.maquinas_asignadas[ruta[idx]]) || odp.maquina_codigo || '';
   
   // Capturas previas de este proceso
-  const capturasProceso = (state.capturas_produccion || []).filter(c => 
+  const capturasProceso = capturasValidas(state.capturas_produccion).filter(c => 
     c.odp_id === odp.id && c.proceso === ruta[idx]
   );
   const totalProducidoKg = capturasProceso.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
@@ -7216,7 +7814,7 @@ function modalCompletarProceso() {
   const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
   
   // ⭐ ACUMULAR desde las capturas por turno del proceso actual
-  const capturasProcActual = (state.capturas_produccion || []).filter(c => 
+  const capturasProcActual = capturasValidas(state.capturas_produccion).filter(c => 
     c.odp_id === odp.id && c.proceso === ruta[idx]
   );
   
@@ -15799,7 +16397,7 @@ window.imprimirPackingListPDF = (odpId) => {
   
   // ===== PROCESOS DE PRODUCCIÓN =====
   // Buscar capturas de producción (proceso, máquina, mermas, operadores)
-  const capturasOdp = (state.capturas_produccion || []).filter(l => l.odp_id === odpId);
+  const capturasOdp = capturasValidas(state.capturas_produccion).filter(l => l.odp_id === odpId);
   if (capturasOdp.length > 0) {
     y = _pdfSeccionTitulo(docPDF, y, 'PROCESOS DE PRODUCCIÓN', _COL_AZUL);
     
@@ -16783,10 +17381,29 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   // 🧮 Cálculo de cantidades:
   // EXT siempre va por KG redondeado hacia arriba al múltiplo de 5
   // Sub-proceso (bolseo, etc) va en UM original (pza/millar/kg)
-  const cantKgRaw = Number(odp.cantidad_kg_produccion) || Number(odp.cantidad_kg) || Number(odp.cantidad) || 0;
-  const cantKgEXT = Math.ceil(cantKgRaw / 5) * 5; // redondear al múltiplo de 5 hacia arriba
-  const cantOriginal = Number(odp.cantidad) || 0;
   const umOriginal = (odp.um || 'kg').toLowerCase();
+  const cantOriginal = Number(odp.cantidad) || 0;
+  
+  // 🛡 Calcular kg correctamente, incluso si la ODP no tiene cantidad_kg_produccion guardado
+  // (por ODPs viejas creadas antes del cálculo, o por bug)
+  let cantKgRaw;
+  if (umOriginal === 'kg') {
+    // La cantidad ya está en kg
+    cantKgRaw = cantOriginal;
+  } else {
+    // Usar el valor guardado si existe Y es coherente
+    const kgGuardado = Number(odp.cantidad_kg_produccion) || Number(odp.cantidad_kg) || 0;
+    // Verificar si es coherente: si por ejemplo es pza y kg=cantidad, es bug
+    if (kgGuardado > 0 && kgGuardado !== cantOriginal) {
+      cantKgRaw = kgGuardado;
+    } else {
+      // Recalcular en el momento usando el producto
+      const recalc = window.convertirAKg ? window.convertirAKg(cantOriginal, umOriginal, producto) : null;
+      cantKgRaw = recalc && recalc > 0 ? recalc : 0;
+    }
+  }
+  
+  const cantKgEXT = cantKgRaw > 0 ? Math.ceil(cantKgRaw / 5) * 5 : 0; // redondear al múltiplo de 5 hacia arriba
   const umOrigLabel = { kg: 'KG', pza: 'PZA', millar: 'MILLAR', rollo: 'ROLLO', m: 'METRO' }[umOriginal] || umOriginal.toUpperCase();
   
   // Si la UM original es KG, ambas filas son lo mismo: solo mostrar la EXT (la celda de abajo queda vacía o se rellena con la misma cantidad)
@@ -16796,9 +17413,19 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   reset();
   docPDF.setFontSize(11);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text(fmtNum(cantKgEXT), xCant + wCant/2, y + hFila/2 + 1.5, { align: 'center' });
-  docPDF.setFontSize(8);
-  docPDF.text('KG', xUnid + wUnid/2, y + hFila/2 + 1, { align: 'center' });
+  if (cantKgEXT > 0) {
+    docPDF.text(fmtNum(cantKgEXT), xCant + wCant/2, y + hFila/2 + 1.5, { align: 'center' });
+    docPDF.setFontSize(8);
+    docPDF.text('KG', xUnid + wUnid/2, y + hFila/2 + 1, { align: 'center' });
+  } else {
+    // ⚠ No se pudo calcular: el producto no tiene calibre/ancho/largo configurados
+    docPDF.setFontSize(7);
+    docPDF.setTextColor(220, 38, 38);
+    docPDF.text('CALCULAR', xCant + wCant/2, y + hFila/2 + 1.5, { align: 'center' });
+    docPDF.setFontSize(8);
+    docPDF.text('KG', xUnid + wUnid/2, y + hFila/2 + 1, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+  }
   
   // Fila 2: Sub-proceso (UM original)
   reset();
@@ -19296,7 +19923,7 @@ window.imprimirReporteProduccionPDF = (odpId) => {
   const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
   const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
     .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
-  const capturas = (state.capturas_produccion || []).filter(l => l.odp_id === odpId)
+  const capturas = capturasValidas(state.capturas_produccion).filter(l => l.odp_id === odpId)
     .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0));
   const pkl = (state.packing_lists || []).find(p => p.odp_id === odpId);
   // Movimientos de MP consumidos por esta ODP (para la sección de consumo)
@@ -20155,7 +20782,12 @@ window.marcarOVEntregada = async (ovId) => {
     await batch.commit();
     toast(`🏁 ${ov.folio} ENTREGADA`);
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    console.error('Error marcando entregada:', e);
+    let mensaje = e.message || String(e);
+    if (mensaje.includes('Missing or insufficient permissions') || mensaje.includes('PERMISSION_DENIED')) {
+      mensaje = '🔒 Sin permisos. Tu depto (' + (state.user?.depto || '?') + ') no tiene update en tarimas/ordenes_venta/pedidos. Pide a admin publicar las reglas actualizadas en Firebase Console.';
+    }
+    toast('Error: ' + mensaje, 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -21378,7 +22010,7 @@ function modalDetalleODP() {
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return '';
   
-  const capturas = state.capturas_produccion.filter(c => c.odp_id === odp.id);
+  const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id);
   const lotes = state.lotes.filter(l => l.odp_id === odp.id);
   const totalProducido = capturas.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
   const totalMermas = capturas.reduce((s, c) => s + (Number(c.mermas) || 0), 0);
@@ -24687,7 +25319,12 @@ window.guardarProductoPT = async (codigo) => {
     cerrarModalPT();
     toast('✅ Producto actualizado' + (cambios > 0 ? ` (${cambios} relación(es) modificadas)` : ''));
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    console.error('Error guardando PT:', e);
+    let mensaje = e.message || String(e);
+    if (mensaje.includes('Missing or insufficient permissions') || mensaje.includes('PERMISSION_DENIED')) {
+      mensaje = '🔒 Sin permisos para editar productos PT desde tu depto (' + (state.user?.depto || '?') + '). Verifica que firestore.rules esté publicado con la versión actual.';
+    }
+    toast('Error: ' + mensaje, 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -24925,14 +25562,21 @@ window.aprobarPedido = async (pedidoId, folio) => {
         const cantidadKg = window.convertirAKg(cantProd, l.um, productoODP);
         const pesoMillar = window.calcularPesoMillar(productoODP);
         const pesoPieza = window.calcularPesoPieza(productoODP);
+        
+        // 🛡 Aviso si no se pudo calcular kg (producto sin medidas y UM ≠ kg)
+        const umLin = (l.um || 'kg').toLowerCase();
+        if (umLin !== 'kg' && (!cantidadKg || cantidadKg <= 0)) {
+          console.warn(`⚠ ODP ${folioODP}: no se pudo calcular kg para ${l.producto_codigo} (faltan ancho/largo/calibre).`);
+        }
+        
         await addDoc(collection(db, 'ordenes_produccion'), {
           folio: folioODP, pedido_id: pedidoId, pedido_folio: pedido.folio,
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
           cantidad: cantProd, um: l.um, estatus: 'pendiente_planeacion',
-          cantidad_kg_produccion: cantidadKg,
-          peso_teorico_millar: pesoMillar,
-          peso_teorico_pieza: pesoPieza,
+          cantidad_kg_produccion: cantidadKg || 0,  // 0 si no se pudo calcular, no null
+          peso_teorico_millar: pesoMillar || 0,
+          peso_teorico_pieza: pesoPieza || 0,
           fecha_entrega_programada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
           // ⭐ Marcar tipo origen para identificar stock interno
@@ -25226,9 +25870,35 @@ window.confirmarProgramarODP = async (odpId) => {
     // Máquina principal (la primera del flujo) para compatibilidad legacy
     const maquinaPrincipal = maquinas[ruta[0]] || '';
     
+    // 🛡 Recalcular cantidad_kg_produccion al momento de programar
+    // (por si el producto se actualizó o si la ODP venía con valor incorrecto)
+    const odpActual = state.ordenes_produccion.find(o => o.id === odpId);
+    let kgRecalculado = Number(odpActual?.cantidad_kg_produccion) || 0;
+    let pesoMillarRecalc = Number(odpActual?.peso_teorico_millar) || 0;
+    let pesoPiezaRecalc = Number(odpActual?.peso_teorico_pieza) || 0;
+    
+    if (odpActual) {
+      const prodAct = window.getProductoPT?.(odpActual.producto_codigo);
+      if (prodAct) {
+        const umAct = (odpActual.um || 'kg').toLowerCase();
+        const cantAct = Number(odpActual.cantidad) || 0;
+        const kgCalc = window.convertirAKg(cantAct, umAct, prodAct);
+        if (kgCalc && kgCalc > 0) {
+          kgRecalculado = kgCalc;
+          pesoMillarRecalc = window.calcularPesoMillar(prodAct);
+          pesoPiezaRecalc = window.calcularPesoPieza(prodAct);
+        } else if (umAct !== 'kg') {
+          // No se pudo calcular y la UM no es kg → producto sin medidas
+          toast(`⚠ El producto ${odpActual.producto_codigo} no tiene ancho/largo/calibre configurados. Edita el producto antes de programar.`, 'error');
+          state.loadingAccion = false; render();
+          return;
+        }
+      }
+    }
+    
     await updateDoc(doc(db, 'ordenes_produccion', odpId), {
       estatus: 'programada',
-      proceso_estatus_actual: 'esperando',  // 🆕 inicia en cola, no en proceso
+      proceso_estatus_actual: 'esperando',
       fecha_inicio_programada: fini,
       fecha_entrega_programada: $('#podp-fent').value || null,
       ruta_procesos: ruta,
@@ -25238,6 +25908,9 @@ window.confirmarProgramarODP = async (odpId) => {
       proceso_actual: ruta[0],
       prioridad: $('#podp-prioridad').value || 'normal',
       planeacion_notas: $('#podp-notas').value || '',
+      cantidad_kg_produccion: kgRecalculado,
+      peso_teorico_millar: pesoMillarRecalc,
+      peso_teorico_pieza: pesoPiezaRecalc,
       programada_por: state.user.id,
       programada_por_nombre: state.user.nombre,
       programada_at: serverTimestamp(),
@@ -25339,7 +26012,7 @@ window.confirmarCompletarProceso = async (odpId) => {
   const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
   
   // ⭐ Sumar acumulados desde las capturas por turno (NO pedir captura nueva)
-  const capturasProcActual = (state.capturas_produccion || []).filter(c => 
+  const capturasProcActual = capturasValidas(state.capturas_produccion).filter(c => 
     c.odp_id === odp.id && c.proceso === ruta[idx]
   );
   
@@ -26856,7 +27529,19 @@ window.confirmarLiberarCalidad = async (odpId) => {
       toast(`❌ ODP rechazada · PI nuevo generado por reposición completa`);
     }
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    console.error('Error liberando calidad:', e);
+    let mensaje = e.message || String(e);
+    
+    // Mensajes amigables según tipo de error
+    if (mensaje.includes('Missing or insufficient permissions') || mensaje.includes('PERMISSION_DENIED')) {
+      mensaje = '🔒 Sin permisos en Firestore. Tu departamento (' + (state.user?.depto || '?') + ') no tiene acceso a alguna colección. Verifica que las reglas estén publicadas en Firebase Console → Firestore Database → Rules con la última versión del archivo firestore.rules.';
+    } else if (mensaje.includes('quota')) {
+      mensaje = '📊 Cuota de Firestore excedida. Espera unos minutos.';
+    } else if (mensaje.includes('NetworkError') || mensaje.includes('Failed to fetch')) {
+      mensaje = '🌐 Sin conexión a internet.';
+    }
+    
+    toast('Error: ' + mensaje, 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -27223,8 +27908,9 @@ async function generarPIDesdeRechazo(odpOriginal, cantidad, motivo) {
     observaciones: motivo,
     es_reposicion: true,
     odp_origen_rechazo: odpOriginal.folio,
-    creado_por: state.user.id,
-    creado_por_nombre: state.user.nombre + ' (auto-rechazo CAL)',
+    creado_por: state.user?.id || '',
+    creado_por_nombre: (state.user?.nombre || 'sistema') + ' (auto-rechazo CAL)',
+    creado_por_depto: state.user?.depto || '',
     created_at: serverTimestamp(),
     updated_at: serverTimestamp()
   });
@@ -27328,3 +28014,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
