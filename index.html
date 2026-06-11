@@ -4090,8 +4090,25 @@ function renderKanbanMaquinas() {
   const procFiltro = state.kanban_proceso || 'todos';
   
   // Obtener ODPs activas (NO archivadas)
-  const todasODPs = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  let todasODPs = (state.ordenes_produccion || []).filter(o => !o.archivada);
   const cantArchivadas = (state.ordenes_produccion || []).filter(o => o.archivada).length;
+  
+  // 🆕 Si hay filtro por proceso, SOLO mostrar ODPs cuyo PROCESO ACTUAL sea el filtrado
+  // Esto evita confusión: si una ODP está en EXT, no debe aparecer en el Kanban de BS
+  if (procFiltro !== 'todos') {
+    todasODPs = todasODPs.filter(o => {
+      const ruta = o.ruta_procesos || [];
+      const idx = o.proceso_actual_idx ?? 0;
+      const procActual = ruta[idx];
+      // Solo mostrar si su proceso actual coincide con el filtro
+      // (excepto si está completada, que va en completadas)
+      if (['completada', 'liberada', 'pendiente_calidad'].includes(o.estatus)) {
+        // Para completadas, mostrar si la ruta incluye el proceso filtrado
+        return ruta.includes(procFiltro);
+      }
+      return procActual === procFiltro;
+    });
+  }
   
   // Obtener máquinas activas — múltiples campos posibles
   const todasMaquinas = (state.maquinas || []).filter(m => m && m.activa !== false);
@@ -4444,6 +4461,10 @@ function _renderTarjetaKanban(odp, columna, opts) {
         if (!opPro) return '';
         if (estatus === 'programada') {
           return `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${odp.id}')" style="margin-top:6px;width:100%;padding:5px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">▶️ INICIAR</button>`;
+        }
+        // 🆕 Proceso intermedio listo para iniciar (viene de proceso anterior cerrado)
+        if (estatus === 'en_produccion' && procEst === 'esperando') {
+          return `<button onclick="event.stopPropagation();abrirModal('capturar-turno','${odp.id}')" style="margin-top:6px;width:100%;padding:5px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">▶️ INICIAR (proceso anterior ya cerró)</button>`;
         }
         if (estatus === 'en_produccion' && procEst === 'pausado') {
           return `<button onclick="event.stopPropagation();window.reanudarODP('${odp.id}')" style="margin-top:6px;width:100%;padding:5px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">▶️ REANUDAR</button>`;
@@ -5361,8 +5382,13 @@ window._tiempoTranscurrido = _tiempoTranscurrido;
 window.iniciarProduccionODP = async (odpId) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
-  if (odp.estatus !== 'programada') {
-    toast('Solo se pueden iniciar ODPs programadas', 'error');
+  
+  // 🆕 Aceptar también procesos intermedios cuando están 'esperando' (después de cerrar el anterior)
+  const esProgramada = odp.estatus === 'programada';
+  const esProcesoEsperando = odp.estatus === 'en_produccion' && odp.proceso_estatus_actual === 'esperando';
+  
+  if (!esProgramada && !esProcesoEsperando) {
+    toast('Esta ODP no se puede iniciar en su estado actual', 'error');
     return;
   }
   
@@ -5382,17 +5408,28 @@ window.iniciarProduccionODP = async (odpId) => {
   
   try {
     state.loadingAccion = true; render();
-    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+    const updates = {
       estatus: 'en_produccion',
       proceso_estatus_actual: 'en_proceso',
-      inicio_real_at: serverTimestamp(),
-      inicio_real_por: state.user?.nombre || state.user?.email || 'sistema',
       updated_at: serverTimestamp()
-    });
+    };
+    // Solo poner inicio_real_at en la primera vez (primer proceso)
+    if (esProgramada && !odp.inicio_real_at) {
+      updates.inicio_real_at = serverTimestamp();
+      updates.inicio_real_por = state.user?.nombre || state.user?.email || 'sistema';
+    }
+    // Para procesos intermedios, marcar el inicio del proceso actual
+    if (esProcesoEsperando) {
+      updates.proceso_actual_inicio = serverTimestamp();
+    }
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     toast(`✅ ${odp.folio} iniciada en ${maqCodigo}`, 'success');
   } catch (e) {
     console.error('Error iniciar ODP:', e);
-    toast('Error: ' + e.message, 'error');
+    const msgErr = e.message?.includes('PERMISSION_DENIED')
+      ? `🔒 Sin permisos para iniciar la ODP. Tu depto: ${state.user?.depto || '?'}`
+      : 'Error: ' + e.message;
+    toast(msgErr, 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -6678,17 +6715,16 @@ function renderPanelOperador() {
         // Pausada pero activa (sigue siendo actual)
         enProduccion.push(o);
       } else {
-        // 'esperando' o cualquier otro → todavía no se ha empezado el turno
-        // 🆕 IMPORTANTE: cuando EXT termina y avanza al siguiente, llega aquí en 'esperando'
-        // Hay que ponerla en COLA para que el operador decida cuándo iniciar
+        // 'esperando' o cualquier otro → su turno, listo para iniciar
+        // Aquí llega cuando EXT cerró y avanzó a este proceso
         enCola.push(o);
       }
     } else if (procIdx < idxActual) {
       completadas.push(o);
-    } else {
-      // procIdx > idxActual → mi proceso aún no llega (proceso anterior trabajando)
-      enCola.push(o);
     }
+    // 🆕 IMPORTANTE: si procIdx > idxActual, el proceso anterior aún está trabajando
+    // NO mostrar al operador (antes confundía: aparecían ODPs "esperando extrusión" en BS)
+    // La ODP aparece automáticamente en cuanto EXT (u otro anterior) cierre.
   });
   
   // 🆕 SINCRONIZADO CON KANBAN:
