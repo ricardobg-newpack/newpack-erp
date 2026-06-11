@@ -4084,7 +4084,7 @@ function renderProgramacion() {
 // ============================================================
 function renderKanbanMaquinas() {
   const u = state.user || {};
-  const puedeEditarOrden = u.depto === 'PLN' || u.depto === 'CEO' || u.rol === 'admin';
+  const puedeEditarOrden = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
   
   // Filtro de proceso (con guard de seguridad)
   const procFiltro = state.kanban_proceso || 'todos';
@@ -4218,11 +4218,12 @@ function renderKanbanMaquinas() {
   }
   
   // 🔢 Ordenar cada cola por prioridad_cola (menor = más arriba). 
-  // ODPs sin prioridad_cola van al final (Infinity)
+  // ODPs sin prioridad_cola van al final
   Object.keys(porMaquina).forEach(k => {
     porMaquina[k].en_cola.sort((a, b) => {
-      const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Infinity;
-      const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Infinity;
+      // Usar MAX_SAFE_INTEGER en vez de Infinity para evitar NaN en restas
+      const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+      const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
       if (pa !== pb) return pa - pb;
       // Si empate, por fecha de entrega
       return (a.fecha_entrega_solicitada || '').localeCompare(b.fecha_entrega_solicitada || '');
@@ -4283,10 +4284,10 @@ function renderKanbanMaquinas() {
             <div style="display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:10px;padding:12px;background:#f8fafc;">
               <div>
                 <div style="font-weight:800;font-size:11px;color:#f59e0b;margin-bottom:8px;padding:6px 10px;background:#fef3c7;border-radius:6px;border-left:3px solid #f59e0b;">
-                  📦 EN COLA (${datos.en_cola.length})${puedeEditarOrden ? ' <span style="font-size:9px;font-weight:600;opacity:0.7;">· arrastra para reordenar</span>' : ''}
+                  📦 EN COLA (${datos.en_cola.length})${puedeEditarOrden ? ' <span style="font-size:9px;font-weight:600;opacity:0.7;">· arrastra ⠿ para reordenar</span>' : ''}
                 </div>
                 <div 
-                  style="display:flex;flex-direction:column;gap:6px;min-height:80px;padding:4px;border-radius:6px;border:2px dashed transparent;transition:all 0.15s;"
+                  style="display:flex;flex-direction:column;gap:6px;min-height:120px;padding:6px;border-radius:6px;${puedeEditarOrden ? 'border:2px dashed #fde68a;background:rgba(254,243,199,0.25);' : 'border:2px dashed transparent;'}transition:all 0.15s;"
                   ${puedeEditarOrden ? `
                     data-maquina-destino="${m.codigo}"
                     ondragover="window.onKanbanDragOver(event)"
@@ -4294,7 +4295,9 @@ function renderKanbanMaquinas() {
                     ondrop="window.onKanbanDrop(event, '${m.codigo}')"
                   ` : ''}
                 >
-                  ${datos.en_cola.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">vacío</div>` : datos.en_cola.map((odp, idx) => _renderTarjetaKanban(odp, 'cola', { draggable: puedeEditarOrden, idx, maquina: m.codigo })).join('')}
+                  ${datos.en_cola.length === 0 
+                    ? `<div style="padding:24px 12px;text-align:center;color:${puedeEditarOrden?'#a16207':'#cbd5e1'};font-size:11px;${puedeEditarOrden?'font-weight:700;':'font-style:italic;'}">${puedeEditarOrden ? '⬇ Suelta aquí una ODP para asignarla a ' + m.codigo : 'vacío'}</div>` 
+                    : datos.en_cola.map((odp, idx) => _renderTarjetaKanban(odp, 'cola', { draggable: puedeEditarOrden, idx, maquina: m.codigo })).join('')}
                 </div>
               </div>
               
@@ -4449,7 +4452,10 @@ window.onKanbanDragStart = (event) => {
   const odpId = card.dataset.odpId;
   const maqOrigen = card.dataset.maquinaOrigen;
   const idxOrigen = parseInt(card.dataset.idxOrigen, 10);
-  if (!odpId) return;
+  if (!odpId) { 
+    console.error('[Kanban] dragstart: tarjeta sin odpId');
+    return; 
+  }
   
   window._kanbanDrag = { odpId, maqOrigen, idxOrigen };
   event.dataTransfer.effectAllowed = 'move';
@@ -4457,6 +4463,7 @@ window.onKanbanDragStart = (event) => {
   
   card.style.opacity = '0.4';
   card.style.cursor = 'grabbing';
+  console.log('[Kanban] dragstart:', { odpId, maqOrigen, idxOrigen });
 };
 
 window.onKanbanDragEnd = (event) => {
@@ -4465,7 +4472,7 @@ window.onKanbanDragEnd = (event) => {
   card.style.cursor = 'grab';
   document.querySelectorAll('[data-maquina-destino]').forEach(el => {
     el.style.background = '';
-    el.style.borderColor = 'transparent';
+    el.style.borderColor = '';
   });
 };
 
@@ -4481,7 +4488,7 @@ window.onKanbanDragLeave = (event) => {
   const zone = event.currentTarget;
   if (!zone.contains(event.relatedTarget)) {
     zone.style.background = '';
-    zone.style.borderColor = 'transparent';
+    zone.style.borderColor = '';
   }
 };
 
@@ -4490,14 +4497,27 @@ window.onKanbanDrop = async (event, maqDestino) => {
   event.stopPropagation();
   
   const drag = window._kanbanDrag;
-  if (!drag) return;
+  if (!drag) {
+    console.warn('[Kanban] drop sin _kanbanDrag (¿arrastraste algo que no era una tarjeta?)');
+    return;
+  }
   
   const { odpId, maqOrigen } = drag;
+  console.log('[Kanban] drop:', { odpId, maqOrigen, maqDestino });
+  
+  // 🆕 Validar permiso ANTES de intentar guardar
+  const u = state.user || {};
+  const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
+  if (!puedeEditar) {
+    toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden reordenar el Kanban. Tu depto: ${u.depto || '?'}`, 'error');
+    window._kanbanDrag = null;
+    return;
+  }
   
   // Limpiar estilos
   document.querySelectorAll('[data-maquina-destino]').forEach(el => {
     el.style.background = '';
-    el.style.borderColor = 'transparent';
+    el.style.borderColor = '';
   });
   
   // Calcular el índice de inserción según posición Y del cursor
@@ -4518,7 +4538,11 @@ window.onKanbanDrop = async (event, maqDestino) => {
     render();
     
     const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
-    if (!odp) { toast('ODP no encontrada', 'error'); return; }
+    if (!odp) { 
+      toast('ODP no encontrada en el estado local', 'error'); 
+      console.error('[Kanban] ODP no encontrada:', odpId);
+      return; 
+    }
     
     // ODPs actuales en la máquina destino (excluyendo la que movemos)
     const odpsEnDestino = (state.ordenes_produccion || []).filter(o => {
@@ -4533,12 +4557,15 @@ window.onKanbanDrop = async (event, maqDestino) => {
       else if (typeof maqs === 'string') maq = maqs;
       if (maq !== maqDestino) return false;
       const est = o.estatus || '';
-      return est === 'aprobada' || est === 'pendiente' || est === 'programada';
+      return est === 'aprobada' || est === 'pendiente' || est === 'programada' || est === 'pendiente_planeacion';
     }).sort((a, b) => {
-      const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Infinity;
-      const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Infinity;
+      // Usar Number.MAX_SAFE_INTEGER como fallback (no Infinity para evitar NaN)
+      const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+      const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
       return pa - pb;
     });
+    
+    console.log('[Kanban] ODPs en destino:', odpsEnDestino.length, 'insertando en posición:', insertIdx);
     
     // Insertar la ODP movida en su nueva posición
     odpsEnDestino.splice(insertIdx, 0, odp);
@@ -4561,12 +4588,17 @@ window.onKanbanDrop = async (event, maqDestino) => {
       batch.update(doc(db, 'ordenes_produccion', o.id), updates);
     });
     
+    console.log('[Kanban] commit batch con', odpsEnDestino.length, 'updates');
     await batch.commit();
-    toast(`✅ ${odp.folio || odpId.slice(0,6)} reordenada${cambioMaquina ? ' a ' + maqDestino : ''}`, 'success');
+    console.log('[Kanban] commit OK');
+    toast(`✅ ${odp.folio || odpId.slice(0,6)} reordenada${cambioMaquina ? ' → ' + maqDestino : ' en ' + maqDestino} (posición ${insertIdx + 1})`, 'success');
     
   } catch (e) {
-    console.error('Error al reordenar:', e);
-    toast('Error al reordenar: ' + e.message, 'error');
+    console.error('[Kanban] Error al reordenar:', e);
+    const msgErr = e.message?.includes('PERMISSION_DENIED') 
+      ? `🔒 Sin permisos para actualizar la ODP. Tu depto: ${state.user?.depto || '?'} · Verifica que firestore.rules permita update en ordenes_produccion.`
+      : `Error: ${e.message}`;
+    toast(msgErr, 'error');
   } finally {
     window._kanbanDrag = null;
     state.loadingAccion = false;
