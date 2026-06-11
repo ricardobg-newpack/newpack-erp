@@ -1577,7 +1577,7 @@ function renderApp() {
         
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
-        ${esPLN || esCEO || u.rol === 'admin' ? `
+        ${esPLN || esPRO || esCEO || u.rol === 'admin' ? `
           <button class="nav-item ${state.vista === 'maquinas' ? 'active' : ''}" data-vista="maquinas">🛠️ Máquinas</button>
           <button class="nav-item ${state.vista === 'personal' ? 'active' : ''}" data-vista="personal">👷 Personal</button>
           <button class="nav-item ${state.vista === 'materias_primas' ? 'active' : ''}" data-vista="materias_primas">🧪 Materias Primas</button>
@@ -1865,7 +1865,10 @@ function renderProductosPT() {
   const matsOrdenados = [...materiales].sort();
   const tiposOrdenados = [...tipos].sort();
   
-  const puedeEditar = ['CS','CEO','COMP','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
+  // 🆕 Edición ampliada: CS/COMP crean productos; PRO/PLN/CAL/ALP pueden editar para fórmulas y estandarización
+  const puedeEditar = ['CS','KAM','CEO','COMP','ADMIN','PRO','PLN','CAL','ALP'].includes(state.user.depto) || state.user.rol === 'admin';
+  // Solo CS/COMP/CEO crean productos NUEVOS (los demás solo editan existentes)
+  const puedeCrear = ['CS','KAM','CEO','COMP','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
   
   return `
     <div class="toolbar" style="flex-wrap:wrap;gap:10px;">
@@ -1883,7 +1886,7 @@ function renderProductosPT() {
         ${UM_OPCIONES.map(um => `<option value="${um}" ${filtroUM === um ? 'selected' : ''}>${UM_LABELS[um]} (${statsUM[um] || 0})</option>`).join('')}
       </select>
       ${(filtro || filtroUM || filtroMat || filtroTipo) ? `<button class="btn-secondary" onclick="limpiarFiltrosProductos()" style="padding:8px 12px;font-size:12px;">${ICONS.x} Limpiar</button>` : ''}
-      ${puedeEditar ? `<button class="btn-primary" onclick="abrirModal('crear-producto-pt')">${ICONS.plus} Nuevo PT</button>` : ''}
+      ${puedeCrear ? `<button class="btn-primary" onclick="abrirModal('crear-producto-pt')">${ICONS.plus} Nuevo PT</button>` : ''}
       <span style="font-size:12px;color:#64748b;width:100%;">${arr.length} de ${state.productos_pt.length} productos</span>
     </div>
     <div class="table-wrap">
@@ -6872,9 +6875,29 @@ function modalCapturarTurno() {
   }
   const f = state.modalForm;
   
-  // Operadores y supervisores filtrados por grupo
-  const operadoresFiltrados = (state.operadores || []).filter(o => o.activo !== false && (!f.grupo || o.grupo === f.grupo));
-  const supervisoresFiltrados = (state.supervisores || []).filter(s => s.activo !== false && (!f.grupo || s.grupo === f.grupo));
+  // 🔀 Operadores y supervisores filtrados por proceso + grupo
+  // Cada operador/supervisor tiene `procesos_asignados` (array de códigos: ['P1-EXT'], ['P3-BS','P4-BR'], etc.)
+  // Si no tiene procesos asignados (registro antiguo), se acepta para cualquier proceso (legacy)
+  const procCodigo = ruta[idx];
+  const operadoresCompatibles = (state.operadores || []).filter(o => {
+    if (o.activo === false) return false;
+    if (f.grupo && o.grupo !== f.grupo) return false;
+    // Filtro por proceso: solo si el operador tiene procesos asignados
+    const procs = Array.isArray(o.procesos_asignados) ? o.procesos_asignados : [];
+    if (procs.length > 0 && !procs.includes(procCodigo)) return false;
+    return true;
+  });
+  const supervisoresCompatibles = (state.supervisores || []).filter(s => {
+    if (s.activo === false) return false;
+    if (f.grupo && s.grupo !== f.grupo) return false;
+    const procs = Array.isArray(s.procesos_asignados) ? s.procesos_asignados : [];
+    if (procs.length > 0 && !procs.includes(procCodigo)) return false;
+    return true;
+  });
+  
+  // Mantener nombres legacy para compatibilidad
+  const operadoresFiltrados = operadoresCompatibles;
+  const supervisoresFiltrados = supervisoresCompatibles;
   
   const sinPersonal = (state.operadores || []).length === 0 && (state.supervisores || []).length === 0;
   
@@ -6960,7 +6983,9 @@ function modalCapturarTurno() {
                 </button>
               `).join('')}
             </div>
-            ${f.grupo ? `<div style="font-size:10px;color:#16a34a;margin-top:4px;font-weight:700;">✓ Grupo ${f.grupo} seleccionado · ${operadoresFiltrados.length} operador(es) · ${supervisoresFiltrados.length} supervisor(es)</div>` : ''}
+            ${f.grupo ? `<div style="font-size:10px;color:#16a34a;margin-top:4px;font-weight:700;">✓ Grupo ${f.grupo} seleccionado · ${operadoresFiltrados.length} operador(es) · ${supervisoresFiltrados.length} supervisor(es) habilitado(s) para ${procActual.nombre}</div>` : ''}
+            ${f.grupo && operadoresFiltrados.length === 0 ? `<div style="margin-top:6px;padding:8px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;color:#92400e;">⚠ No hay operadores del grupo ${f.grupo} habilitados para ${procActual.nombre}. Ve a <strong>Personal → Editar operador</strong> y asígnale el proceso ${procActual.nombre}.</div>` : ''}
+            ${f.grupo && supervisoresFiltrados.length === 0 ? `<div style="margin-top:6px;padding:8px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;color:#92400e;">⚠ No hay supervisores del grupo ${f.grupo} habilitados para ${procActual.nombre}. Asígnaselo en <strong>Personal</strong>.</div>` : ''}
           </div>
           
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
@@ -8699,6 +8724,19 @@ function renderTarjetaPersonal(p, tipo, puedeEditar) {
           <div style="font-weight:800;font-size:14px;color:#1e293b;">${p.nombre}</div>
           ${grupo ? `<div style="display:inline-block;margin-top:4px;background:${grupo.color}22;color:${grupo.color};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;">${grupo.codigo}</div>` : ''}
           ${p.puesto ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">${p.puesto}</div>` : ''}
+          ${(() => {
+            const procs = Array.isArray(p.procesos_asignados) ? p.procesos_asignados : [];
+            if (procs.length === 0) {
+              return `<div style="font-size:10px;color:#dc2626;margin-top:6px;font-weight:700;">⚠ Sin procesos asignados</div>`;
+            }
+            return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
+              ${procs.map(pc => {
+                const proc = getProc(pc);
+                if (!proc) return '';
+                return `<span style="font-size:9.5px;background:${proc.color}22;color:${proc.color};padding:2px 6px;border-radius:4px;font-weight:700;">${proc.icono || ''} ${proc.nombre}</span>`;
+              }).join('')}
+            </div>`;
+          })()}
         </div>
         ${inactivo ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">INACTIVO</span>` : `<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">ACTIVO</span>`}
       </div>
@@ -8740,14 +8778,18 @@ function modalPersonal(esEdicion) {
   }
   
   if (!state.modalForm) {
-    state.modalForm = p ? { ...p } : { nombre: '', grupo: '', puesto: '', activo: true };
+    state.modalForm = p ? { 
+      ...p, 
+      procesos_asignados: Array.isArray(p.procesos_asignados) ? [...p.procesos_asignados] : []
+    } : { nombre: '', grupo: '', puesto: '', activo: true, procesos_asignados: [] };
   }
   const f = state.modalForm;
   const tituloTipo = tipo === 'operadores' ? 'operador' : 'supervisor';
+  const procesosAsign = Array.isArray(f.procesos_asignados) ? f.procesos_asignados : [];
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:520px;">
+      <div class="modal" style="max-width:580px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">${esEdicion ? '✏️ Editar' : '➕ Nuevo'} ${tituloTipo}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
@@ -8768,6 +8810,28 @@ function modalPersonal(esEdicion) {
             </div>
             <div style="font-size:10px;color:#94a3b8;margin-top:6px;">Los 4 grupos rotan en turnos de día (7AM-7PM) y noche (7PM-7AM)</div>
           </div>
+          
+          <!-- 🔀 PROCESOS ASIGNADOS (en qué procesos puede trabajar este ${tituloTipo}) -->
+          <div class="field">
+            <label class="field-label">🔧 Procesos en los que trabaja *</label>
+            <div style="font-size:11px;color:#64748b;margin-bottom:8px;">
+              ${tipo === 'operadores' 
+                ? 'Selecciona los procesos donde este operador puede trabajar. Por ejemplo, un operador de extrusión solo selecciona 🔥 Extrusión.'
+                : 'Selecciona los procesos que supervisa. Un supervisor puede cubrir varios procesos (ej. Bolsa Suelta + Bolsa Rollo).'}
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${PROCESOS.map(proc => {
+                const seleccionado = procesosAsign.includes(proc.codigo);
+                return `
+                  <button onclick="window.togglePersonalProceso('${proc.codigo}')" type="button" style="padding:8px 12px;background:${seleccionado ? (proc.color || '#3b82f6') : '#fff'};color:${seleccionado ? '#fff' : (proc.color || '#475569')};border:2px solid ${seleccionado ? (proc.color || '#3b82f6') : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    ${seleccionado ? '✓' : ''} ${proc.icono || ''} ${proc.nombre}
+                  </button>
+                `;
+              }).join('')}
+            </div>
+            ${procesosAsign.length === 0 ? `<div style="margin-top:6px;font-size:10px;color:#dc2626;font-weight:700;">⚠ Sin procesos asignados: este ${tituloTipo} no aparecerá en la captura de turnos</div>` : ''}
+          </div>
+          
           <div class="field">
             <label class="field-label">Puesto / función <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
             <input class="input" id="per-puesto" value="${f.puesto || ''}" placeholder="${tipo === 'operadores' ? 'Operador de extrusora, etc.' : 'Supervisor de planta, etc.'}" />
@@ -8788,17 +8852,39 @@ window.seleccionarGrupo = (g) => {
   render();
 };
 
+// 🔀 Toggle proceso asignado a un operador/supervisor
+window.togglePersonalProceso = (codProc) => {
+  if (!state.modalForm) state.modalForm = {};
+  if (!Array.isArray(state.modalForm.procesos_asignados)) {
+    state.modalForm.procesos_asignados = [];
+  }
+  const idx = state.modalForm.procesos_asignados.indexOf(codProc);
+  if (idx >= 0) {
+    state.modalForm.procesos_asignados.splice(idx, 1);
+  } else {
+    state.modalForm.procesos_asignados.push(codProc);
+  }
+  render();
+};
+
 window.confirmarPersonal = async (tipo, id) => {
   const nombre = ($('#per-nombre')?.value || '').trim();
   const grupo = state.modalForm?.grupo || '';
   const puesto = ($('#per-puesto')?.value || '').trim();
+  const procesos_asignados = Array.isArray(state.modalForm?.procesos_asignados) 
+    ? [...state.modalForm.procesos_asignados] 
+    : [];
   
   if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
   if (!grupo) { toast('Selecciona un grupo (A, B, C o D)', 'error'); return; }
+  if (procesos_asignados.length === 0) {
+    toast('Selecciona al menos un proceso donde trabaja', 'error');
+    return;
+  }
   
   state.loadingAccion = true; render();
   try {
-    const data = { nombre, grupo, puesto, updated_at: serverTimestamp() };
+    const data = { nombre, grupo, puesto, procesos_asignados, updated_at: serverTimestamp() };
     if (id) {
       await updateDoc(doc(db, tipo, id), data);
       toast(`${nombre} actualizado`);
@@ -16648,17 +16734,20 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   docPDF.setFont('helvetica', 'normal');
   if (odp.fecha_entrega_solicitada) docPDF.text(odp.fecha_entrega_solicitada, 127, y);
   
-  // -------- Cliente + ODC --------
+  // -------- Cliente (código) + ODC --------
   y += 8;
   reset();
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text('CLIENTE:', margen, y);
-  docPDF.setFont('helvetica', 'normal');
-  const cli = (odp.cliente_nombre || pedido?.cliente_nombre || 'STOCK INTERNO').substring(0, 50);
-  docPDF.text(cli, margen + 16, y);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  // 🔀 Solo el CÓDIGO del cliente (A002, etc.) — no el nombre completo
+  const codCli = odp.cliente_codigo || pedido?.cliente_codigo || 'STOCK';
+  docPDF.text(String(codCli), margen + 18, y);
   if (pedido?.odc_cliente) {
     docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8);
     docPDF.text('ODC:', 130, y);
     docPDF.setFont('helvetica', 'normal');
     docPDF.text(String(pedido.odc_cliente), 140, y);
@@ -16690,7 +16779,7 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   // 🧮 Cálculo de cantidades:
   // EXT siempre va por KG redondeado hacia arriba al múltiplo de 5
   // Sub-proceso (bolseo, etc) va en UM original (pza/millar/kg)
-  const cantKgRaw = Number(odp.cantidad_kg) || Number(odp.cantidad) || 0;
+  const cantKgRaw = Number(odp.cantidad_kg_produccion) || Number(odp.cantidad_kg) || Number(odp.cantidad) || 0;
   const cantKgEXT = Math.ceil(cantKgRaw / 5) * 5; // redondear al múltiplo de 5 hacia arriba
   const cantOriginal = Number(odp.cantidad) || 0;
   const umOriginal = (odp.um || 'kg').toLowerCase();
@@ -17156,7 +17245,7 @@ window.imprimirEtiquetasPDF = (odpId) => {
     
     // Calcular número de etiquetas
     const cantEmpaque = Number(producto?.cant_empaque) || 0;
-    const cantTotalKg = Number(odp.cantidad_kg || odp.cantidad_kg_produccion) || 0;
+    const cantTotalKg = Number(odp.cantidad_kg_produccion) || Number(odp.cantidad_kg) || 0;
     const cantTotalUM = Number(odp.cantidad) || 0;
     const umEmpaque = (producto?.um_empaque || '').toLowerCase();
     
@@ -17208,24 +17297,19 @@ window.imprimirEtiquetasPDF = (odpId) => {
     // Datos comunes a todas las etiquetas
     const datos = {
       tipo_etiqueta: producto?.tipo_etiqueta || 'SIN_LOGO',
-      codigo_cliente: '',  // se llena después si hay
+      codigo_cliente: pedido?.cliente_codigo || odp.cliente_codigo || '',  // 🆕 código directo del cliente (A002, etc.)
       pi_folio: pedido?.folio || odp.pedido_folio || '',
       odp_folio: odp.folio || '',
       medida: _medidaProductoTxt(producto),
-      color: _colorProductoTxt(producto),  // 🆕 color del producto (sin calibre)
+      color: _colorProductoTxt(producto),
       codigo_producto: odp.producto_codigo || '',
       densidad: _densidadProductoTxt(producto),
       cant_empaque: cantEtiquetaTxt,
       um_empaque: umEmpaque,
       cliente_nombre: pedido?.cliente_nombre || odp.cliente_nombre || '',
-      cliente_logo_base64: clienteObj?.logo_base64 || null,  // 🆕 logo del cliente
+      cliente_logo_base64: clienteObj?.logo_base64 || null,
+      lote_auto: odp.folio || '',  // 🆕 el lote es el folio de la ODP automáticamente
     };
-    
-    // Si el producto tiene código de cliente interno, usarlo
-    if (pedido?.cliente_codigo && producto?.clientes_asignados) {
-      const asign = (producto.clientes_asignados || []).find(c => c.codigo_cliente === pedido.cliente_codigo);
-      if (asign?.codigo_cliente_interno) datos.codigo_cliente = asign.codigo_cliente_interno;
-    }
     
     // Generar etiquetas
     for (let i = 0; i < numEtiquetas; i++) {
@@ -17408,14 +17492,15 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   }
   yt += lineH;
   
-  // Lote: dejar línea en blanco
+  // Lote: automático = folio de la ODP
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
   doc.setTextColor(70, 70, 70);
   doc.text('Lote:', xLabel, yt);
-  doc.setFont('helvetica', 'normal');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
-  doc.text('___________________', xVal, yt);
+  doc.text(d.lote_auto || d.odp_folio || '—', xVal, yt);
   
   // Numerador de etiqueta (esquina inferior derecha)
   doc.setFont('helvetica', 'normal');
