@@ -9479,6 +9479,7 @@ function renderTarjetaOV(o, subTab) {
             ${o.cedis ? ` · 📦 ${o.cedis}` : ''}
           </div>
           ${o.remision ? `<div style="font-size:12px;color:#475569;margin-top:3px;">📄 Remisión: <strong>${o.remision}</strong>${o.factura ? ` · 💰 Factura: <strong>${o.factura}</strong>` : ''}</div>` : ''}
+          ${o.transportista_nombre || o.transportista ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">🚛 ${o.transportista_nombre || o.transportista}${o.unidad_placas || o.placas ? ' · ' + (o.unidad_placas || o.placas) : ''}${o.operador_nombre || o.conductor ? ' · 👤 ' + (o.operador_nombre || o.conductor) : ''}</div>` : ''}
         </div>
         <div style="text-align:right;">
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Avance OV</div>
@@ -21692,28 +21693,67 @@ window.marcarOVLista = async (ovId) => {
 window.confirmarGenerarRemisionOV = async () => {
   const ov = state.ordenes_venta.find(x => x.id === state.modalData);
   if (!ov) return;
+  const f = state.modalForm || {};
   
-  const remision = ($('#ov-remision')?.value || '').trim();
+  // 🆕 Validar selección desde catálogo
+  const transportistaId = f.transportista_id || ($('#ov-transp-id')?.value || '');
+  const transportista = (state.transportistas || []).find(t => t.id === transportistaId);
+  if (!transportista) { toast('Selecciona un transportista', 'error'); return; }
+  
+  const operadorId = ($('#ov-operador-id')?.value || '');
+  const operador = (state.operadores_logistica || []).find(o => o.id === operadorId);
+  if (!operador) { toast('Selecciona el operador', 'error'); return; }
+  
+  const unidadId = ($('#ov-unidad-id')?.value || '');
+  const unidad = (state.unidades_logistica || []).find(u => u.id === unidadId);
+  if (!unidad) { toast('Selecciona la unidad', 'error'); return; }
+  
   const factura = ($('#ov-factura')?.value || '').trim();
-  const transportista = ($('#ov-transportista')?.value || '').trim();
-  const conductor = ($('#ov-conductor')?.value || '').trim();
-  const placas = ($('#ov-placas')?.value || '').trim();
   const fechaSalida = ($('#ov-fecha-salida')?.value || '').trim();
   const obs = ($('#ov-obs')?.value || '').trim();
   
-  if (!remision) { toast('Captura número de remisión', 'error'); return; }
-  if (!transportista) { toast('Captura transportista', 'error'); return; }
-  
   state.loadingAccion = true; render();
   try {
+    // 🆕 Generar folio de REMISIÓN automático (mismo contador que OTI: REM-NNNNN)
+    const remContadorRef = doc(db, 'contadores', 'remisiones');
+    const remNum = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(remContadorRef);
+      const actual = snap.exists() ? (snap.data().valor || 0) : 0;
+      const nuevo = actual + 1;
+      tx.set(remContadorRef, { valor: nuevo }, { merge: true });
+      return nuevo;
+    });
+    const remFolio = `REM-${String(remNum).padStart(5, '0')}`;
+    
+    const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id));
+    const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+    const origenCedis = ov.cedis || 'CEDIS-MTY';
+    
     const batch = writeBatch(db);
+    
+    // 1. Actualizar OV con remisión y datos del catálogo
     batch.update(doc(db, 'ordenes_venta', ov.id), {
       estatus: 'por_cargar',
-      remision: remision,
+      remision: remFolio,
+      remision_folio: remFolio,
       factura: factura || '',
-      transportista: transportista,
-      conductor: conductor || '',
-      placas: placas || '',
+      // 🆕 Datos del catálogo
+      transportista_id: transportista.id,
+      transportista_nombre: transportista.nombre,
+      transportista_tipo: transportista.tipo,
+      transportista_rfc: transportista.rfc || '',
+      operador_id: operador.id,
+      operador_nombre: operador.nombre,
+      operador_licencia: operador.licencia_tipo ? `${operador.licencia_tipo} ${operador.licencia_numero || ''}`.trim() : '',
+      operador_telefono: operador.telefono || '',
+      unidad_id: unidad.id,
+      unidad_placas: unidad.placas,
+      unidad_tipo: unidad.tipo_unidad,
+      unidad_marca: unidad.marca || '',
+      // Backward compat (campos viejos)
+      transportista: transportista.nombre,
+      conductor: operador.nombre,
+      placas: unidad.placas,
       fecha_salida_programada: fechaSalida || '',
       observaciones_embarque: obs || '',
       remision_at: serverTimestamp(),
@@ -21722,22 +21762,69 @@ window.confirmarGenerarRemisionOV = async () => {
       updated_at: serverTimestamp()
     });
     
-    // 🔔 NOTIFICAR a CEDIS, ALP y CEO (lo que pediste)
+    // 2. Actualizar tarimas con folio de remisión
+    (ov.tarimas_ids || []).forEach(tid => {
+      batch.update(doc(db, 'tarimas', tid), {
+        remision_folio: remFolio,
+        updated_at: serverTimestamp()
+      });
+    });
+    
+    await batch.commit();
+    
+    // 3. Crear doc en remisiones (fuera del batch para evitar conflicto con contador)
+    await addDoc(collection(db, 'remisiones'), {
+      folio: remFolio,
+      tipo: 'cedis_a_cliente',
+      origen: origenCedis,
+      destino: ov.cliente_nombre || 'Cliente',
+      ov_id: ov.id,
+      ov_folio: ov.folio,
+      pedido_folio: ov.pedido_folio || '',
+      cliente_id: ov.cliente_id || '',
+      cliente_nombre: ov.cliente_nombre || '',
+      cliente_codigo: ov.cliente_codigo || '',
+      factura: factura || '',
+      tarimas_ids: ov.tarimas_ids || [],
+      num_tarimas: tarimas.length,
+      kg_total: Number(totalKg) || 0,
+      transportista_id: transportista.id,
+      transportista_nombre: transportista.nombre,
+      transportista_tipo: transportista.tipo,
+      transportista_rfc: transportista.rfc || '',
+      operador_id: operador.id,
+      operador_nombre: operador.nombre,
+      operador_licencia: operador.licencia_tipo ? `${operador.licencia_tipo} ${operador.licencia_numero || ''}`.trim() : '',
+      operador_telefono: operador.telefono || '',
+      unidad_id: unidad.id,
+      unidad_placas: unidad.placas,
+      unidad_tipo: unidad.tipo_unidad,
+      fecha_salida_programada: fechaSalida || '',
+      observaciones: obs || '',
+      estatus: 'por_cargar',
+      creado_por: state.user.id,
+      creado_por_nombre: state.user.nombre,
+      created_at: serverTimestamp()
+    });
+    
+    // 4. Notificar CEDIS, ALP, CEO
     const deptoCedis = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
+    const notifBatch = writeBatch(db);
     [deptoCedis, 'ALP', 'CEO'].forEach(d => {
-      batch.set(doc(collection(db, 'notificaciones')), {
-        titulo: `📦 ${ov.folio} POR CARGAR — Remisión ${remision}`,
-        mensaje: `${ov.cliente_nombre} · ${ov.cedis} · ${transportista} ${placas?'· '+placas:''} · ${fmtCantidadUM(ov.cantidad_enviada || 0, ov.um)}`,
+      notifBatch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `📦 ${ov.folio} POR CARGAR — Remisión ${remFolio}`,
+        mensaje: `${ov.cliente_nombre} · ${origenCedis} · ${transportista.nombre} · ${unidad.placas} · Op: ${operador.nombre}`,
         depto_destino: d, tipo: 'warning', folio_ref: ov.folio,
         created_at: serverTimestamp()
       });
     });
-    await batch.commit();
+    await notifBatch.commit();
     
+    state.modalForm = null;
     state.modal = null;
-    toast(`✅ Remisión ${remision} generada. CEDIS notificado para cargar.`);
+    toast(`✅ Remisión ${remFolio} generada · ${transportista.nombre} · ${unidad.placas}`);
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos' : e.message), 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -22446,9 +22533,31 @@ function modalGenerarRemisionOV() {
   const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id));
   const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
   
+  // 🆕 Para CEDIS → cliente: filtrar EXTERNOS o ambos (interno también puede entregar a cliente)
+  // Permitir tanto internos como externos: el cliente puede recibir de cualquiera
+  const transportistasDisp = (state.transportistas || []).filter(t => t.activo !== false);
+  const externos = transportistasDisp.filter(t => t.tipo === 'externo');
+  const internos = transportistasDisp.filter(t => t.tipo === 'interno');
+  
+  // Inicializar form si no existe
+  if (!state.modalForm || state.modalForm._ovId !== ov.id) {
+    state.modalForm = { _ovId: ov.id, transportista_id: '' };
+  }
+  const f = state.modalForm;
+  
+  // Operadores y unidades del transportista seleccionado
+  const operadoresDisp = (state.operadores_logistica || []).filter(o => 
+    o.transportista_id === f.transportista_id && o.activo !== false
+  );
+  const unidadesDisp = (state.unidades_logistica || []).filter(u => 
+    u.transportista_id === f.transportista_id && u.activo !== false
+  );
+  
+  const noHayCatalogo = transportistasDisp.length === 0;
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:580px;">
+      <div class="modal" style="max-width:620px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">📄 Generar Remisión/Factura</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
@@ -22457,46 +22566,97 @@ function modalGenerarRemisionOV() {
           <div style="background:#dbeafe;padding:12px;border-radius:10px;margin-bottom:14px;">
             <div style="font-size:11px;color:#1e40af;font-weight:700;">${ov.folio} · ${ov.cliente_nombre}</div>
             <div style="font-size:14px;font-weight:700;color:#1e40af;margin-top:2px;">${tarimas.length} tarima(s) · ${fmtNum(totalKg)} kg · ${ov.cedis}</div>
+            <div style="font-size:10.5px;color:#475569;margin-top:3px;">💡 El folio de Remisión (REM-XXXXX) se genera automáticamente al guardar</div>
           </div>
           
-          <div class="field">
-            <label class="field-label">Número de Remisión *</label>
-            <input class="input" id="ov-remision" placeholder="Ej: REM-12345" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label class="field-label">Número de Factura</label>
-            <input class="input" id="ov-factura" placeholder="Ej: FAC-2026-001 (opcional, se puede agregar después)" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label class="field-label">Transportista *</label>
-            <input class="input" id="ov-transportista" placeholder="Nombre del transportista" autocomplete="off" />
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          ${noHayCatalogo ? `
+            <div style="background:#fee2e2;border:2px solid #dc2626;border-radius:10px;padding:14px;margin-bottom:14px;">
+              <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:4px;">⚠ No hay transportistas registrados</div>
+              <div style="font-size:11.5px;color:#7f1d1d;margin-bottom:8px;">Registra los <strong>proveedores externos</strong> de transporte que usa este CEDIS antes de generar la remisión.</div>
+              <button onclick="cerrarModal();state.vista='catalogo_logistica';render();" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">→ Ir al Catálogo de Logística</button>
+            </div>
+          ` : `
             <div class="field">
-              <label class="field-label">Conductor</label>
-              <input class="input" id="ov-conductor" placeholder="Nombre" autocomplete="off" />
+              <label class="field-label">Factura (opcional)</label>
+              <input class="input" id="ov-factura" placeholder="Ej: FAC-2026-001 (se puede agregar después)" autocomplete="off" />
+            </div>
+            
+            <div class="field">
+              <label class="field-label">Transportista *</label>
+              <select class="input" id="ov-transp-id" onchange="state.modalForm.transportista_id=this.value;render()">
+                <option value="">— Selecciona transportista —</option>
+                ${externos.length > 0 ? `
+                  <optgroup label="🚛 Proveedores externos">
+                    ${externos.map(t => `<option value="${t.id}" ${f.transportista_id===t.id?'selected':''}>🚛 ${t.nombre}</option>`).join('')}
+                  </optgroup>
+                ` : ''}
+                ${internos.length > 0 ? `
+                  <optgroup label="🏠 NewPack Logística (interno)">
+                    ${internos.map(t => `<option value="${t.id}" ${f.transportista_id===t.id?'selected':''}>🏠 ${t.nombre}</option>`).join('')}
+                  </optgroup>
+                ` : ''}
+              </select>
+              ${externos.length === 0 ? `
+                <div style="font-size:10.5px;color:#64748b;margin-top:4px;">
+                  💡 ¿Falta un proveedor externo? <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='transportistas';render();" style="color:#1d4ed8;font-weight:700;">Agrégalo →</a>
+                </div>
+              ` : ''}
+            </div>
+            
+            ${f.transportista_id ? `
+              <div class="field">
+                <label class="field-label">Operador (chofer) *</label>
+                ${operadoresDisp.length === 0 ? `
+                  <div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;">
+                    ⚠ No hay operadores registrados para este transportista. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='operadores';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar operador →</a>
+                  </div>
+                ` : `
+                  <select class="input" id="ov-operador-id">
+                    <option value="">— Selecciona operador —</option>
+                    ${operadoresDisp.map(o => `<option value="${o.id}">${o.nombre}${o.licencia_tipo ? ' · Lic. ' + o.licencia_tipo : ''}${o.telefono ? ' · 📞 ' + o.telefono : ''}</option>`).join('')}
+                  </select>
+                `}
+              </div>
+              
+              <div class="field">
+                <label class="field-label">Unidad (camión) *</label>
+                ${unidadesDisp.length === 0 ? `
+                  <div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;">
+                    ⚠ No hay unidades registradas para este transportista. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='unidades';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar unidad →</a>
+                  </div>
+                ` : `
+                  <select class="input" id="ov-unidad-id">
+                    <option value="">— Selecciona unidad —</option>
+                    ${unidadesDisp.map(u => {
+                      const tu = _tipoUnidad(u.tipo_unidad);
+                      return `<option value="${u.id}">${tu.icono} ${u.placas}${u.marca ? ' · ' + u.marca : ''}${u.capacidad_kg ? ' · ' + fmtNum(u.capacidad_kg) + ' kg' : ''}</option>`;
+                    }).join('')}
+                  </select>
+                `}
+              </div>
+            ` : `
+              <div style="padding:10px;background:#f1f5f9;border-radius:8px;font-size:11.5px;color:#64748b;text-align:center;">
+                👆 Selecciona un transportista para ver operadores y unidades disponibles
+              </div>
+            `}
+            
+            <div class="field" style="margin-top:10px;">
+              <label class="field-label">Fecha programada de salida</label>
+              <input class="input" type="date" id="ov-fecha-salida" />
             </div>
             <div class="field">
-              <label class="field-label">Placas</label>
-              <input class="input" id="ov-placas" placeholder="Ej: AB-12-345" autocomplete="off" />
+              <label class="field-label">Observaciones</label>
+              <textarea class="input" id="ov-obs" style="min-height:60px;" placeholder="Indicaciones especiales para CEDIS o transportista..."></textarea>
             </div>
-          </div>
-          <div class="field">
-            <label class="field-label">Fecha programada de salida</label>
-            <input class="input" type="date" id="ov-fecha-salida" />
-          </div>
-          <div class="field">
-            <label class="field-label">Observaciones</label>
-            <textarea class="input" id="ov-obs" style="min-height:60px;" placeholder="Indicaciones especiales para CEDIS o transportista..."></textarea>
-          </div>
-          
-          <div style="background:#fef3c7;padding:10px 12px;border-radius:8px;font-size:11px;color:#92400e;margin-top:10px;">
-            ⚠️ Al guardar, CEDIS-${ov.cedis === 'CEDIS-MEX' ? 'MEX' : 'MTY'} recibirá notificación inmediata para preparar la carga.
-          </div>
+            
+            <div style="background:#fef3c7;padding:10px 12px;border-radius:8px;font-size:11px;color:#92400e;margin-top:10px;">
+              ⚠️ Al guardar, CEDIS-${ov.cedis === 'CEDIS-MEX' ? 'MEX' : 'MTY'} recibirá notificación inmediata para preparar la carga.
+            </div>
+          `}
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button class="btn-primary" onclick="confirmarGenerarRemisionOV()" style="background:#3b82f6;">📄 Generar y notificar a CEDIS</button>
+          ${!noHayCatalogo ? `<button class="btn-primary" onclick="confirmarGenerarRemisionOV()" style="background:#3b82f6;">📄 Generar Remisión y notificar a CEDIS</button>` : ''}
         </div>
       </div>
     </div>
@@ -25988,7 +26148,7 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
-  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina','crear-com','editar-com','salida-com','ajuste-com','transfer-com'].includes(m)) state.modalForm = null;
+  if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina','crear-com','editar-com','salida-com','ajuste-com','transfer-com','generar-remision-ov','transportista','operador-logistica','unidad-logistica'].includes(m)) state.modalForm = null;
   render();
 };
 window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; render(); };
