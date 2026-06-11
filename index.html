@@ -822,6 +822,152 @@ function calcularPesoPieza(producto) {
 window.calcularPesoPieza = calcularPesoPieza;
 
 // ============================================================
+// 🔥 CONFIGURACIÓN DE EXTRUSIÓN POR TIPO DE SELLADO
+// ============================================================
+// Definir cómo se debe extruir el rollo según el tipo de bolsa final.
+// El sello FONDO se extruye al ANCHO; el sello LATERAL se extruye al LARGO.
+const TIPOS_SELLADO = [
+  { codigo: 'SELLO_FONDO',   nombre: 'Sello de fondo (BSF)',  icono: '🎒', dimensionExt: 'ancho' },
+  { codigo: 'SELLO_LATERAL', nombre: 'Sello lateral (BSL)',   icono: '🛍️', dimensionExt: 'largo' },
+  { codigo: 'BOLSA_ROLLO',   nombre: 'Bolsa en rollo (BR)',   icono: '🌀', dimensionExt: 'ancho' },
+  { codigo: 'PELICULA',      nombre: 'Película sin sellar',   icono: '📦', dimensionExt: 'ancho' }
+];
+window.TIPOS_SELLADO = TIPOS_SELLADO;
+
+// Estructuras posibles del rollo (variantes según tipo de sellado)
+// Para SELLO_FONDO y BOLSA_ROLLO:
+//   - tubular_simple: rollo tubular del ancho del producto
+//   - tubular_con_fuelle: tubular con fuelle integrado (ancho del producto, fuelle = fuelle del producto)
+// Para SELLO_LATERAL:
+//   - ax1l:           Rollo abierto por 1 lado, ancho = LARGO del producto
+//   - ax1c:           Rollo abierto por el centro, ancho = LARGO × 2
+//   - tubular_doble:  Rollo tubular, ancho = LARGO × 2 (se corta por centro en BS)
+// Para PELICULA:
+//   - tubular:        Rollo tubular del ancho del producto
+//   - lay_flat:       Rollo lay-flat (abierto)
+const ESTRUCTURAS_ROLLO = {
+  SELLO_FONDO: [
+    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple (sin fuelle)' },
+    { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle integrado' }
+  ],
+  SELLO_LATERAL: [
+    { codigo: 'ax1l',          nombre: '🔵 AX1L — Abierto por 1 lado (= largo)' },
+    { codigo: 'ax1c',          nombre: '🟣 AX1C — Abierto por el centro (= largo × 2)' },
+    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble (= largo × 2, se corta por centro)' }
+  ],
+  BOLSA_ROLLO: [
+    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple' },
+    { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle' }
+  ],
+  PELICULA: [
+    { codigo: 'tubular',  nombre: '🟢 Tubular' },
+    { codigo: 'lay_flat', nombre: '🟦 Lay-flat (abierto)' }
+  ]
+};
+window.ESTRUCTURAS_ROLLO = ESTRUCTURAS_ROLLO;
+
+function getTipoSellado(codigo) {
+  return TIPOS_SELLADO.find(t => t.codigo === codigo);
+}
+window.getTipoSellado = getTipoSellado;
+
+function getEstructuraRollo(tipoSelladoCodigo, estructuraCodigo) {
+  const lista = ESTRUCTURAS_ROLLO[tipoSelladoCodigo] || [];
+  return lista.find(e => e.codigo === estructuraCodigo);
+}
+window.getEstructuraRollo = getEstructuraRollo;
+
+// Calcula las medidas del rollo a extruir según producto + tipo sellado + estructura
+// Retorna { ancho_rollo, fuelle_rollo, descripcion_corta, observacion }
+function calcularMedidasRolloExt(producto) {
+  if (!producto) return null;
+  const ancho = Number(producto.ancho) || 0;
+  const fuelle = Number(producto.fuelle) || 0;
+  const largo = Number(producto.largo) || 0;
+  const calibre = Number(producto.calibre) || 0;
+  const tipo = producto.tipo_sellado || '';
+  const estructura = producto.estructura_rollo_ext || '';
+  
+  if (!ancho || !largo) return null;
+  
+  let ancho_rollo = 0, fuelle_rollo = 0, descripcion = '', observacion = '';
+  
+  // SELLO DE FONDO → extrusión al ANCHO
+  if (tipo === 'SELLO_FONDO') {
+    if (estructura === 'tubular_con_fuelle') {
+      ancho_rollo = ancho;
+      fuelle_rollo = fuelle;
+      descripcion = `Tubular ${ancho} mm con fuelle ${fuelle} mm`;
+      observacion = 'Extruir tubular con fuelle integrado por ambos lados';
+    } else {
+      ancho_rollo = ancho;
+      fuelle_rollo = 0;
+      descripcion = `Tubular simple ${ancho} mm`;
+      observacion = 'Extruir tubular simple (sin fuelle)';
+    }
+  }
+  // SELLO LATERAL → extrusión al LARGO
+  else if (tipo === 'SELLO_LATERAL') {
+    if (estructura === 'ax1l') {
+      ancho_rollo = largo;
+      fuelle_rollo = 0;
+      descripcion = `Abierto 1 lado · ${largo} mm`;
+      observacion = `Rollo AX1L de ${largo} mm de ancho (= largo de la bolsa). Abierto por un lado.`;
+    } else if (estructura === 'ax1c') {
+      ancho_rollo = largo * 2;
+      fuelle_rollo = 0;
+      descripcion = `Abierto centro · ${largo * 2} mm`;
+      observacion = `Rollo AX1C de ${largo * 2} mm (= largo × 2). Abierto por el centro.`;
+    } else if (estructura === 'tubular_doble') {
+      ancho_rollo = largo * 2;
+      fuelle_rollo = 0;
+      descripcion = `Tubular doble · ${largo * 2} mm`;
+      observacion = `Rollo tubular de ${largo * 2} mm (= largo × 2). Se corta por el centro en bolseo.`;
+    }
+  }
+  // BOLSA EN ROLLO → extrusión al ANCHO
+  else if (tipo === 'BOLSA_ROLLO') {
+    if (estructura === 'tubular_con_fuelle') {
+      ancho_rollo = ancho;
+      fuelle_rollo = fuelle;
+      descripcion = `Tubular ${ancho} mm con fuelle ${fuelle} mm`;
+      observacion = 'Extruir tubular con fuelle integrado';
+    } else {
+      ancho_rollo = ancho;
+      fuelle_rollo = 0;
+      descripcion = `Tubular simple ${ancho} mm`;
+      observacion = 'Extruir tubular simple';
+    }
+  }
+  // PELÍCULA → tubular o lay-flat
+  else if (tipo === 'PELICULA') {
+    if (estructura === 'lay_flat') {
+      ancho_rollo = ancho;
+      fuelle_rollo = 0;
+      descripcion = `Lay-flat ${ancho} mm`;
+      observacion = 'Película lay-flat (abierta)';
+    } else {
+      ancho_rollo = ancho;
+      fuelle_rollo = 0;
+      descripcion = `Tubular ${ancho} mm`;
+      observacion = 'Película tubular';
+    }
+  }
+  
+  return {
+    ancho_rollo,
+    fuelle_rollo,
+    calibre,
+    descripcion,
+    observacion,
+    tipo_sellado_nombre: getTipoSellado(tipo)?.nombre || '—',
+    estructura_nombre: getEstructuraRollo(tipo, estructura)?.nombre || '—'
+  };
+}
+window.calcularMedidasRolloExt = calcularMedidasRolloExt;
+
+
+// ============================================================
 // FICHA TÉCNICA / CERTIFICADO: HELPERS DE DEFAULTS INTELIGENTES
 // ============================================================
 // Densidad por tipo de material (LD=0.921, HD=0.950)
@@ -6229,6 +6375,11 @@ function _renderTimelineODP(odp) {
       </div>
       
       ${odp.fecha_entrega_solicitada ? `<div style="margin-top:8px;font-size:11px;color:#64748b;">🎯 Entrega solicitada: <strong>${odp.fecha_entrega_solicitada}</strong></div>` : ''}
+      ${odp.liberacion_calidad?.mediciones_calidad ? `
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+          <button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}')" style="padding:6px 12px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📄 Certificado de Calidad</button>
+        </div>
+      ` : ''}
     </div>
   `;
 }
@@ -7154,6 +7305,47 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
           return `<span style="background:${bg};color:${fg};border:${esMio ? '2.5px solid '+border : '1px solid '+border};padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;${esMio ? 'transform:scale(1.05);' : ''}">${p?.icono || ''} ${p?.nombre || cod}${completado ? ' ✓' : ''}</span>`;
         }).join('<span style="color:#cbd5e1;">→</span>')}
       </div>
+      
+      <!-- 🔥 INSTRUCCIONES DE EXTRUSIÓN (solo si este panel es de EXT) -->
+      ${procSel === 'P1-EXT' ? (() => {
+        const prod = state.productos_pt.find(p => p.codigo === o.producto_codigo);
+        if (!prod) return '';
+        const medidas = window.calcularMedidasRolloExt && window.calcularMedidasRolloExt(prod);
+        if (!medidas || !medidas.descripcion) {
+          if (!prod.tipo_sellado) {
+            return `<div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:12px;font-size:11.5px;color:#92400e;">
+              ⚠ <strong>${prod.codigo}</strong> no tiene configurada la estructura de extrusión. Pídele al área comercial que la configure.
+            </div>`;
+          }
+          return '';
+        }
+        return `
+          <div style="padding:12px;background:#0f172a;color:#fff;border-radius:10px;margin-bottom:12px;">
+            <div style="font-size:11px;font-weight:900;letter-spacing:0.05em;margin-bottom:6px;">📐 CÓMO EXTRUIR ESTE PRODUCTO</div>
+            <div style="font-size:11px;opacity:0.9;margin-bottom:6px;">${medidas.tipo_sellado_nombre} · ${medidas.estructura_nombre}</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px;background:rgba(251,191,36,0.15);border-radius:6px;border:1px solid #fbbf24;">
+              <div style="text-align:center;">
+                <div style="font-size:8.5px;opacity:0.85;font-weight:700;">ANCHO ROLLO</div>
+                <div style="font-size:18px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="font-size:8.5px;opacity:0.85;font-weight:700;">FUELLE</div>
+                <div style="font-size:18px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#64748b'};">${medidas.fuelle_rollo} mm</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="font-size:8.5px;opacity:0.85;font-weight:700;">CALIBRE</div>
+                <div style="font-size:18px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
+              </div>
+            </div>
+            <div style="margin-top:6px;font-size:10.5px;font-style:italic;opacity:0.9;">💡 ${medidas.observacion}</div>
+            ${prod.obs_extrusion ? `
+              <div style="margin-top:6px;padding:8px;background:#fef3c7;color:#92400e;border-radius:5px;border-left:3px solid #f59e0b;font-size:11px;line-height:1.4;">
+                <strong>📝 NOTA:</strong> ${prod.obs_extrusion}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      })() : ''}
       
       <!-- Botón principal de acción -->
       ${botonPrincipal}
@@ -8470,6 +8662,59 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
               <div style="font-size:11px;color:#475569;margin-top:2px;">Acumulado ODP: <strong>${fmtNum(totalProducidoKg)} kg</strong> · Falta: <strong>${fmtNum(faltaKg)} kg</strong></div>
             </div>
           </div>
+          
+          <!-- 🔥 INSTRUCCIONES DE EXTRUSIÓN (cómo extruir según el producto final) -->
+          ${(() => {
+            const prod = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
+            if (!prod) return '';
+            const medidas = window.calcularMedidasRolloExt && window.calcularMedidasRolloExt(prod);
+            if (!medidas || !medidas.descripcion) {
+              if (!prod.tipo_sellado) {
+                return `<div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:12px;font-size:11.5px;color:#92400e;">
+                  ⚠ Este producto no tiene configurada la <strong>estructura de extrusión</strong>. Pídele al área comercial que la configure en el catálogo de productos.
+                </div>`;
+              }
+              return '';
+            }
+            return `
+              <div style="padding:12px;background:#0f172a;color:#fff;border-radius:10px;margin-bottom:12px;">
+                <div style="font-size:12px;font-weight:900;letter-spacing:0.05em;margin-bottom:8px;">📐 INSTRUCCIONES DE EXTRUSIÓN</div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px;">
+                  <div>
+                    <div style="font-size:9px;opacity:0.7;font-weight:700;">PRODUCTO FINAL</div>
+                    <div style="font-size:11.5px;font-weight:700;">${medidas.tipo_sellado_nombre}</div>
+                  </div>
+                  <div style="grid-column:span 2;">
+                    <div style="font-size:9px;opacity:0.7;font-weight:700;">ESTRUCTURA DEL ROLLO</div>
+                    <div style="font-size:11.5px;font-weight:700;">${medidas.estructura_nombre}</div>
+                  </div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:10px;background:rgba(251,191,36,0.15);border-radius:6px;border:1px solid #fbbf24;">
+                  <div style="text-align:center;">
+                    <div style="font-size:9px;opacity:0.85;font-weight:700;">ANCHO ROLLO</div>
+                    <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+                  </div>
+                  <div style="text-align:center;">
+                    <div style="font-size:9px;opacity:0.85;font-weight:700;">FUELLE</div>
+                    <div style="font-size:22px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#64748b'};">${medidas.fuelle_rollo} mm</div>
+                  </div>
+                  <div style="text-align:center;">
+                    <div style="font-size:9px;opacity:0.85;font-weight:700;">CALIBRE</div>
+                    <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
+                  </div>
+                </div>
+                <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;line-height:1.4;">
+                  💡 ${medidas.observacion}
+                </div>
+                ${prod.obs_extrusion ? `
+                  <div style="margin-top:8px;padding:10px;background:#fef3c7;color:#92400e;border-radius:6px;border-left:4px solid #f59e0b;">
+                    <div style="font-size:10px;font-weight:800;letter-spacing:0.05em;margin-bottom:3px;">📝 NOTA TÉCNICA:</div>
+                    <div style="font-size:11.5px;line-height:1.4;">${prod.obs_extrusion}</div>
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          })()}
           
           <!-- Datos del turno -->
           <div style="padding:10px;background:#f0fdf4;border:1.5px solid #16a34a;border-radius:10px;margin-bottom:12px;">
@@ -19167,6 +19412,8 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
     y += 9;
     
     const wCol = (W - margen*2 - 6) / 3;
+    // 🆕 Campo con wrap vertical: si el texto es largo, baja a la siguiente línea
+    // en vez de cortarse. Retorna la altura usada.
     function _campo(label, val, x, yy, ancho) {
       docPDF.setFont('helvetica', 'bold');
       docPDF.setFontSize(7);
@@ -19175,19 +19422,29 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
       docPDF.setFont('helvetica', 'normal');
       docPDF.setFontSize(9);
       docPDF.setTextColor(0, 0, 0);
-      docPDF.rect(x, yy + 3.5, ancho, 7);
-      docPDF.text(String(val || '—').substring(0, 45), x + 2, yy + 8);
+      const valor = String(val == null || val === '' ? '—' : val);
+      const lines = docPDF.splitTextToSize(valor, ancho - 4);
+      const cajaH = Math.max(7, lines.length * 3.5 + 3);
+      docPDF.rect(x, yy + 3.5, ancho, cajaH);
+      lines.forEach((line, i) => {
+        docPDF.text(line, x + 2, yy + 3.5 + 4 + (i * 3.5));
+      });
+      return 3.5 + cajaH;
     }
     
-    _campo('Folio ODP', odp.folio, margen, y, wCol);
-    _campo('Cliente', odp.cliente_codigo || odp.cliente_nombre || '—', margen + wCol + 3, y, wCol);
-    _campo('Cantidad solicitada', `${fmtNum(odp.cantidad || 0)} ${odp.um || 'kg'}`, margen + (wCol+3)*2, y, wCol);
-    y += 13;
+    // Calcular alturas reales para alinear
+    let alturaFila1 = 0;
+    alturaFila1 = Math.max(alturaFila1, _campo('Folio ODP', odp.folio, margen, y, wCol));
+    alturaFila1 = Math.max(alturaFila1, _campo('Cliente', odp.cliente_codigo || odp.cliente_nombre || '—', margen + wCol + 3, y, wCol));
+    alturaFila1 = Math.max(alturaFila1, _campo('Cantidad solicitada', `${fmtNum(odp.cantidad || 0)} ${odp.um || 'kg'}`, margen + (wCol+3)*2, y, wCol));
+    y += alturaFila1 + 2;
     
-    _campo('Producto', odp.producto_codigo, margen, y, wCol * 2 + 3);
-    _campo('Máquina', (odp.maquinas_asignadas?.[procesoCerradoCodigo] || odp.maquina_codigo || '—'), margen + (wCol+3)*2, y, wCol);
-    y += 13;
+    let alturaFila2 = 0;
+    alturaFila2 = Math.max(alturaFila2, _campo('Producto', odp.producto_codigo, margen, y, wCol * 2 + 3));
+    alturaFila2 = Math.max(alturaFila2, _campo('Máquina', (odp.maquinas_asignadas?.[procesoCerradoCodigo] || odp.maquina_codigo || '—'), margen + (wCol+3)*2, y, wCol));
+    y += alturaFila2 + 2;
     
+    // Descripción con wrap
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(7);
     docPDF.setTextColor(100, 100, 100);
@@ -19195,9 +19452,14 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
     docPDF.setFont('helvetica', 'normal');
     docPDF.setFontSize(9);
     docPDF.setTextColor(0, 0, 0);
-    docPDF.rect(margen, y + 3.5, W - margen*2, 7);
-    docPDF.text(String(odp.descripcion || producto?.descripcion || '—').substring(0, 100), margen + 2, y + 8);
-    y += 14;
+    const desc = String(odp.descripcion || producto?.descripcion || '—');
+    const descLines = docPDF.splitTextToSize(desc, W - margen*2 - 4);
+    const descH = Math.max(7, descLines.length * 3.5 + 3);
+    docPDF.rect(margen, y + 3.5, W - margen*2, descH);
+    descLines.forEach((line, i) => {
+      docPDF.text(line, margen + 2, y + 3.5 + 4 + (i * 3.5));
+    });
+    y += 3.5 + descH + 2;
     
     // ====== RESUMEN DE PRODUCCIÓN ======
     docPDF.setFillColor(22, 163, 74);
@@ -19257,36 +19519,78 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
       
       docPDF.setFont('helvetica', 'normal');
       docPDF.setFontSize(7.5);
+      const lineH = 3.2;
+      const padCell = 1.5;
+      
       rollos.forEach(r => {
-        if (y > 255) { docPDF.addPage('letter', 'portrait'); y = 20; }
-        xx = margen;
-        docPDF.rect(margen, y, c1, 5);
-        docPDF.text(`#${r.numero_rollo}`, xx + c1/2, y + 3.5, { align: 'center' });
+        // Calcular líneas de cada celda
+        const sNum = `#${r.numero_rollo}`;
+        const sHora = String(r.hora_captura || '—');
+        const sPeso = fmtNum(Number(r.peso_kg) || 0);
+        const sMerma = Number(r.mermas_kg) > 0 ? fmtNum(Number(r.mermas_kg) || 0) : '—';
+        const sOpe = String(r.operador_nombre || '—');
+        const sTF = `${r.turno === 'dia' ? 'D' : 'N'}-${r.grupo || ''} ${r.fecha ? r.fecha.substring(5) : ''}`;
+        
+        const lOpe = docPDF.splitTextToSize(sOpe, c5 - padCell*2);
+        const lTF = docPDF.splitTextToSize(sTF, c6 - padCell*2);
+        const maxLn = Math.max(1, lOpe.length, lTF.length);
+        const rowH = Math.max(5, maxLn * lineH + padCell);
+        
+        // Salto de página
+        if (y + rowH > 255) {
+          docPDF.addPage('letter', 'portrait');
+          y = 20;
+          // Re-render header tabla
+          docPDF.setFillColor(240, 240, 240);
+          docPDF.rect(margen, y, cT, 6, 'FD');
+          docPDF.setFont('helvetica', 'bold');
+          docPDF.setFontSize(7.5);
+          let xxh = margen;
+          ['#', 'HORA', 'PESO (kg)', 'MERMA', 'OPERADOR', 'TURNO/FECHA'].forEach((h, i) => {
+            const w = [c1, c2, c3, c4, c5, c6][i];
+            docPDF.text(h, xxh + w/2, y + 4, { align: 'center' });
+            xxh += w;
+          });
+          y += 6;
+          docPDF.setFont('helvetica', 'normal');
+          docPDF.setFontSize(7.5);
+        }
+        
+        const cellY = y;
+        let xx = margen;
+        // # rollo
+        docPDF.rect(xx, cellY, c1, rowH);
+        docPDF.text(sNum, xx + c1/2, cellY + rowH/2 + 1, { align: 'center' });
         xx += c1;
-        docPDF.rect(xx, y, c2, 5);
-        docPDF.text(String(r.hora_captura || '—'), xx + c2/2, y + 3.5, { align: 'center' });
+        // Hora
+        docPDF.rect(xx, cellY, c2, rowH);
+        docPDF.text(sHora, xx + c2/2, cellY + rowH/2 + 1, { align: 'center' });
         xx += c2;
-        docPDF.rect(xx, y, c3, 5);
+        // Peso (bold)
+        docPDF.rect(xx, cellY, c3, rowH);
         docPDF.setFont('helvetica', 'bold');
-        docPDF.text(fmtNum(Number(r.peso_kg) || 0), xx + c3/2, y + 3.5, { align: 'center' });
+        docPDF.text(sPeso, xx + c3/2, cellY + rowH/2 + 1, { align: 'center' });
         docPDF.setFont('helvetica', 'normal');
         xx += c3;
-        docPDF.rect(xx, y, c4, 5);
-        if (Number(r.mermas_kg) > 0) {
-          docPDF.setTextColor(220, 38, 38);
-          docPDF.text(fmtNum(Number(r.mermas_kg) || 0), xx + c4/2, y + 3.5, { align: 'center' });
-          docPDF.setTextColor(0, 0, 0);
-        } else {
-          docPDF.text('—', xx + c4/2, y + 3.5, { align: 'center' });
-        }
+        // Merma
+        docPDF.rect(xx, cellY, c4, rowH);
+        if (Number(r.mermas_kg) > 0) docPDF.setTextColor(220, 38, 38);
+        docPDF.text(sMerma, xx + c4/2, cellY + rowH/2 + 1, { align: 'center' });
+        docPDF.setTextColor(0, 0, 0);
         xx += c4;
-        docPDF.rect(xx, y, c5, 5);
-        docPDF.text(String(r.operador_nombre || '—').substring(0, 42), xx + 1.5, y + 3.5);
+        // Operador (con wrap)
+        docPDF.rect(xx, cellY, c5, rowH);
+        lOpe.forEach((line, i) => {
+          docPDF.text(line, xx + padCell, cellY + padCell + lineH + (i * lineH) - 0.8);
+        });
         xx += c5;
-        docPDF.rect(xx, y, c6, 5);
-        const turnoFecha = `${r.turno === 'dia' ? 'D' : 'N'}-${r.grupo || ''} ${r.fecha ? r.fecha.substring(5) : ''}`;
-        docPDF.text(turnoFecha, xx + c6/2, y + 3.5, { align: 'center' });
-        y += 5;
+        // Turno/Fecha (con wrap)
+        docPDF.rect(xx, cellY, c6, rowH);
+        lTF.forEach((line, i) => {
+          docPDF.text(line, xx + c6/2, cellY + padCell + lineH + (i * lineH) - 0.8, { align: 'center' });
+        });
+        
+        y += rowH;
       });
       
       // Totales fila
@@ -19333,35 +19637,60 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
         const fB = (b.fecha || '') + (b.turno || '');
         return fA.localeCompare(fB);
       });
+      const lH2 = 3.2, pd2 = 1.5;
       capturasOrd.forEach(c => {
-        if (y > 255) { docPDF.addPage('letter', 'portrait'); y = 20; }
-        xx = margen;
-        docPDF.rect(margen, y, c1, 5);
-        docPDF.text(String(c.fecha || '—'), xx + c1/2, y + 3.5, { align: 'center' });
+        const sOp = String(c.operador || '—');
+        const lOp = docPDF.splitTextToSize(sOp, c4 - pd2*2);
+        const rowH = Math.max(5, lOp.length * lH2 + pd2);
+        
+        if (y + rowH > 255) {
+          docPDF.addPage('letter', 'portrait');
+          y = 20;
+          docPDF.setFillColor(240, 240, 240);
+          docPDF.rect(margen, y, cT, 6, 'FD');
+          docPDF.setFont('helvetica', 'bold');
+          docPDF.setFontSize(7.5);
+          let xxh = margen;
+          ['FECHA', 'TURNO', 'GRUPO', 'OPERADOR', 'PROD (kg)', 'MERMA (kg)'].forEach((h, i) => {
+            const w = [c1, c2, c3, c4, c5, c6][i];
+            docPDF.text(h, xxh + w/2, y + 4, { align: 'center' });
+            xxh += w;
+          });
+          y += 6;
+          docPDF.setFont('helvetica', 'normal');
+          docPDF.setFontSize(7.5);
+        }
+        
+        const cellY = y;
+        let xx = margen;
+        docPDF.rect(xx, cellY, c1, rowH);
+        docPDF.text(String(c.fecha || '—'), xx + c1/2, cellY + rowH/2 + 1, { align: 'center' });
         xx += c1;
-        docPDF.rect(xx, y, c2, 5);
-        docPDF.text(c.turno === 'dia' ? '☀️ Día' : (c.turno === 'noche' ? '🌙 Noche' : '—'), xx + c2/2, y + 3.5, { align: 'center' });
+        docPDF.rect(xx, cellY, c2, rowH);
+        docPDF.text(c.turno === 'dia' ? 'Dia' : (c.turno === 'noche' ? 'Noche' : '—'), xx + c2/2, cellY + rowH/2 + 1, { align: 'center' });
         xx += c2;
-        docPDF.rect(xx, y, c3, 5);
-        docPDF.text(String(c.grupo || '—'), xx + c3/2, y + 3.5, { align: 'center' });
+        docPDF.rect(xx, cellY, c3, rowH);
+        docPDF.text(String(c.grupo || '—'), xx + c3/2, cellY + rowH/2 + 1, { align: 'center' });
         xx += c3;
-        docPDF.rect(xx, y, c4, 5);
-        docPDF.text(String(c.operador || '—').substring(0, 38), xx + 1.5, y + 3.5);
+        docPDF.rect(xx, cellY, c4, rowH);
+        lOp.forEach((line, i) => {
+          docPDF.text(line, xx + pd2, cellY + pd2 + lH2 + (i * lH2) - 0.8);
+        });
         xx += c4;
-        docPDF.rect(xx, y, c5, 5);
+        docPDF.rect(xx, cellY, c5, rowH);
         docPDF.setFont('helvetica', 'bold');
-        docPDF.text(fmtNum(Number(c.producido_kg) || 0), xx + c5/2, y + 3.5, { align: 'center' });
+        docPDF.text(fmtNum(Number(c.producido_kg) || 0), xx + c5/2, cellY + rowH/2 + 1, { align: 'center' });
         docPDF.setFont('helvetica', 'normal');
         xx += c5;
-        docPDF.rect(xx, y, c6, 5);
+        docPDF.rect(xx, cellY, c6, rowH);
         if (Number(c.mermas_kg) > 0) {
           docPDF.setTextColor(220, 38, 38);
-          docPDF.text(fmtNum(Number(c.mermas_kg) || 0), xx + c6/2, y + 3.5, { align: 'center' });
+          docPDF.text(fmtNum(Number(c.mermas_kg) || 0), xx + c6/2, cellY + rowH/2 + 1, { align: 'center' });
           docPDF.setTextColor(0, 0, 0);
         } else {
-          docPDF.text('—', xx + c6/2, y + 3.5, { align: 'center' });
+          docPDF.text('—', xx + c6/2, cellY + rowH/2 + 1, { align: 'center' });
         }
-        y += 5;
+        y += rowH;
       });
       y += 4;
     }
@@ -19423,10 +19752,48 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
 
 
 // ============================================================
+// ============================================================
 // 🆕 PDF: REMISIÓN CEDIS → CLIENTE (documento formal)
 // Lee de la colección "remisiones" y genera un PDF dedicado
 // con formato de carta de porte / remisión de carga.
+// ✅ MANEJO DE OVERFLOW: texto largo se envuelve verticalmente
+//    en vez de cortarse o sobrescribirse.
 // ============================================================
+
+// Helper: dibuja un campo con label arriba y valor en caja.
+// El valor se envuelve en múltiples líneas si es largo.
+// Retorna la altura total ocupada (label + caja).
+function _pdfCampoFlex(doc, label, val, x, y, ancho, opts) {
+  opts = opts || {};
+  const minH = opts.minH || 7;
+  const lineH = opts.lineH || 3.5;
+  const padding = opts.padding || 2;
+  const fontSizeVal = opts.fontSize || 9;
+  
+  // Label arriba (fijo)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(100, 100, 100);
+  doc.text(String(label || '').toUpperCase(), x + 1.5, y + 2.8);
+  
+  // Calcular líneas del valor
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(fontSizeVal);
+  doc.setTextColor(0, 0, 0);
+  const valor = String(val == null || val === '' ? '—' : val);
+  const lines = doc.splitTextToSize(valor, ancho - padding * 2);
+  const cajaH = Math.max(minH, lines.length * lineH + padding * 2);
+  
+  // Caja
+  doc.rect(x, y + 3.5, ancho, cajaH);
+  // Texto adentro (línea por línea)
+  lines.forEach((line, i) => {
+    doc.text(line, x + padding, y + 3.5 + padding + lineH + (i * lineH) - 1);
+  });
+  
+  return 3.5 + cajaH; // total ocupado incluyendo el label
+}
+
 window.imprimirRemisionClientePDF = (remId) => {
   try {
     const rem = (state.remisiones || []).find(r => r.id === remId);
@@ -19434,35 +19801,46 @@ window.imprimirRemisionClientePDF = (remId) => {
     if (rem.tipo !== 'cedis_a_cliente') { toast('Esta función es solo para remisiones CEDIS → Cliente', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
     
-    // Buscar la OV asociada para detalle de tarimas/productos
     const ov = rem.ov_id ? (state.ordenes_venta || []).find(o => o.id === rem.ov_id) : null;
     const cliente = ov?.cliente_id ? (state.clientes || []).find(c => c.id === ov.cliente_id) : null;
-    
-    // Tarimas de la remisión
     const tarimas = (state.tarimas || []).filter(t => (rem.tarimas_ids || []).includes(t.id));
     
     const { jsPDF } = window.jspdf;
     const docPDF = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'portrait' });
-    const W = 215.9, margen = 10;
+    const W = 215.9, H = 279.4, margen = 10;
+    const contenidoMaxY = 250;  // hasta dónde puede llegar el contenido antes de salto de página
+    
+    // Helper: revisa si necesita salto de página
+    function _checkPageBreak(yActual, alturaNecesaria) {
+      if (yActual + alturaNecesaria > contenidoMaxY) {
+        docPDF.addPage('letter', 'portrait');
+        return 20; // nuevo y inicial
+      }
+      return yActual;
+    }
     
     // ====== HEADER ======
     let y = _pdfHeaderEmpresa(docPDF, 'REMISIÓN', rem.folio);
     y += 4;
     
-    // Banner con OV/Factura
+    // Banner con OV/Factura (multilinea si es largo)
     docPDF.setFillColor(8, 145, 178);
-    docPDF.rect(margen, y, W - margen*2, 10, 'F');
-    docPDF.setTextColor(255, 255, 255);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.setFontSize(10);
-    let textoHeader = `📦 EMBARQUE A CLIENTE`;
+    let textoHeader = `EMBARQUE A CLIENTE`;
     if (ov?.folio) textoHeader += `  ·  OV: ${ov.folio}`;
     if (rem.factura) textoHeader += `  ·  Factura: ${rem.factura}`;
-    docPDF.text(textoHeader, margen + 4, y + 6.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(10);
+    const linesBanner = docPDF.splitTextToSize(textoHeader, W - margen*2 - 8);
+    const bannerH = Math.max(10, linesBanner.length * 4.5 + 4);
+    docPDF.rect(margen, y, W - margen*2, bannerH, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    linesBanner.forEach((line, i) => {
+      docPDF.text(line, margen + 4, y + 5.5 + (i * 4.5));
+    });
     docPDF.setTextColor(0, 0, 0);
-    y += 14;
+    y += bannerH + 4;
     
-    // ====== DATOS CLIENTE / DESTINATARIO ======
+    // ====== DATOS CLIENTE ======
     docPDF.setFillColor(241, 245, 249);
     docPDF.rect(margen, y, W - margen*2, 7, 'F');
     docPDF.setFont('helvetica', 'bold');
@@ -19472,45 +19850,30 @@ window.imprimirRemisionClientePDF = (remId) => {
     docPDF.setTextColor(0, 0, 0);
     y += 9;
     
-    function _campoR(label, val, x, yy, ancho) {
-      docPDF.setFont('helvetica', 'bold');
-      docPDF.setFontSize(7);
-      docPDF.setTextColor(100, 100, 100);
-      docPDF.text(label.toUpperCase(), x + 1.5, yy + 2.8);
-      docPDF.setFont('helvetica', 'normal');
-      docPDF.setFontSize(9);
-      docPDF.setTextColor(0, 0, 0);
-      docPDF.rect(x, yy + 3.5, ancho, 7);
-      docPDF.text(String(val || '—').substring(0, 50), x + 2, yy + 8);
-    }
-    
     const wCol = (W - margen*2 - 3) / 2;
-    _campoR('Cliente', rem.cliente_nombre || cliente?.razon_social || '—', margen, y, wCol);
-    _campoR('Código cliente', rem.cliente_codigo || cliente?.codigo || '—', margen + wCol + 3, y, wCol);
-    y += 12;
     
-    if (cliente?.rfc) {
-      _campoR('RFC', cliente.rfc, margen, y, wCol);
-      _campoR('Teléfono', cliente.telefono || '—', margen + wCol + 3, y, wCol);
-      y += 12;
+    // Fila 1: Cliente | Código cliente
+    let h1 = _pdfCampoFlex(docPDF, 'Cliente', rem.cliente_nombre || cliente?.razon_social || '—', margen, y, wCol);
+    let h2 = _pdfCampoFlex(docPDF, 'Código cliente', rem.cliente_codigo || cliente?.codigo || '—', margen + wCol + 3, y, wCol);
+    y += Math.max(h1, h2) + 2;
+    
+    // Fila 2 (solo si hay RFC o teléfono)
+    if (cliente?.rfc || cliente?.telefono) {
+      y = _checkPageBreak(y, 16);
+      let h3 = _pdfCampoFlex(docPDF, 'RFC', cliente?.rfc || '—', margen, y, wCol);
+      let h4 = _pdfCampoFlex(docPDF, 'Teléfono', cliente?.telefono || '—', margen + wCol + 3, y, wCol);
+      y += Math.max(h3, h4) + 2;
     }
     
+    // Dirección de entrega (ancho completo)
     if (cliente?.direccion_entrega || cliente?.direccion) {
-      docPDF.setFont('helvetica', 'bold');
-      docPDF.setFontSize(7);
-      docPDF.setTextColor(100, 100, 100);
-      docPDF.text('DIRECCIÓN DE ENTREGA', margen + 1.5, y + 2.8);
-      docPDF.setFont('helvetica', 'normal');
-      docPDF.setFontSize(9);
-      docPDF.setTextColor(0, 0, 0);
-      docPDF.rect(margen, y + 3.5, W - margen*2, 10);
-      const dir = cliente.direccion_entrega || cliente.direccion || '';
-      const dirLines = docPDF.splitTextToSize(dir, W - margen*2 - 4);
-      docPDF.text(dirLines.slice(0, 2), margen + 2, y + 8);
-      y += 15;
+      y = _checkPageBreak(y, 20);
+      const h5 = _pdfCampoFlex(docPDF, 'Dirección de entrega', cliente.direccion_entrega || cliente.direccion, margen, y, W - margen*2, { minH: 10 });
+      y += h5 + 2;
     }
     
-    // ====== DATOS DEL TRANSPORTE ======
+    // ====== DATOS TRANSPORTE ======
+    y = _checkPageBreak(y, 30);
     docPDF.setFillColor(241, 245, 249);
     docPDF.rect(margen, y, W - margen*2, 7, 'F');
     docPDF.setFont('helvetica', 'bold');
@@ -19520,25 +19883,32 @@ window.imprimirRemisionClientePDF = (remId) => {
     docPDF.setTextColor(0, 0, 0);
     y += 9;
     
-    _campoR('Transportista', rem.transportista_nombre || '—', margen, y, wCol);
-    _campoR('Tipo', rem.transportista_tipo === 'interno' ? 'NEWPACK LOGÍSTICA' : 'PROVEEDOR EXTERNO', margen + wCol + 3, y, wCol);
-    y += 12;
+    // Transportista | Tipo
+    let ha = _pdfCampoFlex(docPDF, 'Transportista', rem.transportista_nombre || '—', margen, y, wCol);
+    let hb = _pdfCampoFlex(docPDF, 'Tipo', rem.transportista_tipo === 'interno' ? 'NEWPACK LOGÍSTICA' : 'PROVEEDOR EXTERNO', margen + wCol + 3, y, wCol);
+    y += Math.max(ha, hb) + 2;
     
-    _campoR('Operador (chofer)', rem.operador_nombre || '—', margen, y, wCol);
-    _campoR('Licencia', rem.operador_licencia || '—', margen + wCol + 3, y, wCol);
-    y += 12;
+    // Operador | Licencia
+    y = _checkPageBreak(y, 16);
+    let hc = _pdfCampoFlex(docPDF, 'Operador (chofer)', rem.operador_nombre || '—', margen, y, wCol);
+    let hd = _pdfCampoFlex(docPDF, 'Licencia', rem.operador_licencia || '—', margen + wCol + 3, y, wCol);
+    y += Math.max(hc, hd) + 2;
     
-    _campoR('Unidad / Placas', rem.unidad_placas || '—', margen, y, wCol);
-    _campoR('Origen', rem.origen || '—', margen + wCol + 3, y, wCol);
-    y += 12;
+    // Unidad | Origen
+    y = _checkPageBreak(y, 16);
+    let he = _pdfCampoFlex(docPDF, 'Unidad / Placas', rem.unidad_placas || '—', margen, y, wCol);
+    let hf = _pdfCampoFlex(docPDF, 'Origen', rem.origen || '—', margen + wCol + 3, y, wCol);
+    y += Math.max(he, hf) + 2;
     
-    if (rem.fecha_salida_programada) {
-      _campoR('Fecha programada', rem.fecha_salida_programada, margen, y, wCol);
-      _campoR('RFC Transportista', rem.transportista_rfc || '—', margen + wCol + 3, y, wCol);
-      y += 12;
+    if (rem.fecha_salida_programada || rem.transportista_rfc) {
+      y = _checkPageBreak(y, 16);
+      let hg = _pdfCampoFlex(docPDF, 'Fecha programada', rem.fecha_salida_programada || '—', margen, y, wCol);
+      let hh = _pdfCampoFlex(docPDF, 'RFC Transportista', rem.transportista_rfc || '—', margen + wCol + 3, y, wCol);
+      y += Math.max(hg, hh) + 2;
     }
     
-    // ====== DETALLE DE TARIMAS / MERCANCÍA ======
+    // ====== MERCANCÍA ======
+    y = _checkPageBreak(y, 20);
     docPDF.setFillColor(8, 145, 178);
     docPDF.rect(margen, y, W - margen*2, 7, 'F');
     docPDF.setTextColor(255, 255, 255);
@@ -19550,15 +19920,17 @@ window.imprimirRemisionClientePDF = (remId) => {
     
     if (tarimas.length > 0) {
       const cT = W - margen*2;
-      const c1 = cT*0.08, c2 = cT*0.16, c3 = cT*0.34, c4 = cT*0.16, c5 = cT*0.13, c6 = cT*0.13;
+      // Columnas: T# | LOTE | PRODUCTO | ODP | CANTIDAD | KG NETOS
+      const cw = { c1: cT*0.07, c2: cT*0.14, c3: cT*0.39, c4: cT*0.15, c5: cT*0.12, c6: cT*0.13 };
       
+      // Header de tabla
       docPDF.setFillColor(240, 240, 240);
       docPDF.rect(margen, y, cT, 6, 'FD');
       docPDF.setFont('helvetica', 'bold');
       docPDF.setFontSize(7.5);
       let xx = margen;
       ['T#', 'LOTE', 'PRODUCTO / DESCRIPCIÓN', 'ODP', 'CANTIDAD', 'KG NETOS'].forEach((h, i) => {
-        const w = [c1, c2, c3, c4, c5, c6][i];
+        const w = [cw.c1, cw.c2, cw.c3, cw.c4, cw.c5, cw.c6][i];
         docPDF.text(h, xx + w/2, y + 4, { align: 'center' });
         xx += w;
       });
@@ -19566,43 +19938,86 @@ window.imprimirRemisionClientePDF = (remId) => {
       
       docPDF.setFont('helvetica', 'normal');
       docPDF.setFontSize(7.5);
+      const lineH = 3.2;
+      const padCell = 1.5;
       
       tarimas.slice().sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0)).forEach(t => {
-        if (y > 248) { docPDF.addPage('letter', 'portrait'); y = 20; }
+        // Calcular cuántas líneas necesita cada celda
+        const sT = `T${String(t.numero_tarima || 0).padStart(2,'0')}`;
+        const sLote = String(t.lote_codigo || '—');
+        const sProd = `${t.producto_codigo || ''}${t.descripcion ? ' · ' + t.descripcion : ''}`;
+        const sOdp = String(t.odp_folio || '—');
+        const sCant = `${fmtNum(t.cantidad || 0)} ${t.um || ''}`.trim();
+        const sKg = fmtNum(Number(t.peso_neto_kg || t.peso_neto) || 0);
+        
+        const lT = docPDF.splitTextToSize(sT, cw.c1 - padCell*2);
+        const lLote = docPDF.splitTextToSize(sLote, cw.c2 - padCell*2);
+        const lProd = docPDF.splitTextToSize(sProd, cw.c3 - padCell*2);
+        const lOdp = docPDF.splitTextToSize(sOdp, cw.c4 - padCell*2);
+        const lCant = docPDF.splitTextToSize(sCant, cw.c5 - padCell*2);
+        const lKg = docPDF.splitTextToSize(sKg, cw.c6 - padCell*2);
+        
+        const maxLineas = Math.max(lT.length, lLote.length, lProd.length, lOdp.length, lCant.length, lKg.length);
+        const rowH = Math.max(5, maxLineas * lineH + padCell);
+        
+        // Si no cabe, salto de página
+        if (y + rowH > contenidoMaxY) {
+          docPDF.addPage('letter', 'portrait');
+          y = 20;
+          // Re-dibujar header de tabla en nueva página
+          docPDF.setFillColor(240, 240, 240);
+          docPDF.rect(margen, y, cT, 6, 'FD');
+          docPDF.setFont('helvetica', 'bold');
+          docPDF.setFontSize(7.5);
+          let xxh = margen;
+          ['T#', 'LOTE', 'PRODUCTO / DESCRIPCIÓN', 'ODP', 'CANTIDAD', 'KG NETOS'].forEach((h, i) => {
+            const w = [cw.c1, cw.c2, cw.c3, cw.c4, cw.c5, cw.c6][i];
+            docPDF.text(h, xxh + w/2, y + 4, { align: 'center' });
+            xxh += w;
+          });
+          y += 6;
+          docPDF.setFont('helvetica', 'normal');
+          docPDF.setFontSize(7.5);
+        }
+        
+        // Dibujar las celdas
         xx = margen;
-        docPDF.rect(margen, y, c1, 5);
-        docPDF.text(`T${String(t.numero_tarima || 0).padStart(2,'0')}`, xx + c1/2, y + 3.5, { align: 'center' });
-        xx += c1;
-        docPDF.rect(xx, y, c2, 5);
-        docPDF.text(String(t.lote_codigo || '—').substring(0, 14), xx + c2/2, y + 3.5, { align: 'center' });
-        xx += c2;
-        docPDF.rect(xx, y, c3, 5);
-        const prodDesc = `${t.producto_codigo || ''} ${t.descripcion ? '· ' + t.descripcion : ''}`.substring(0, 55);
-        docPDF.text(prodDesc, xx + 1.5, y + 3.5);
-        xx += c3;
-        docPDF.rect(xx, y, c4, 5);
-        docPDF.text(String(t.odp_folio || '—'), xx + c4/2, y + 3.5, { align: 'center' });
-        xx += c4;
-        docPDF.rect(xx, y, c5, 5);
-        docPDF.setFont('helvetica', 'bold');
-        docPDF.text(`${fmtNum(t.cantidad || 0)} ${t.um || ''}`.substring(0, 14), xx + c5/2, y + 3.5, { align: 'center' });
-        docPDF.setFont('helvetica', 'normal');
-        xx += c5;
-        docPDF.rect(xx, y, c6, 5);
-        docPDF.setFont('helvetica', 'bold');
-        docPDF.text(fmtNum(Number(t.peso_neto_kg || t.peso_neto) || 0), xx + c6/2, y + 3.5, { align: 'center' });
-        docPDF.setFont('helvetica', 'normal');
-        y += 5;
+        const cellY = y;
+        function _drawCell(lines, w, align, bold) {
+          docPDF.rect(xx, cellY, w, rowH);
+          if (bold) docPDF.setFont('helvetica', 'bold');
+          lines.forEach((line, i) => {
+            const textY = cellY + padCell + lineH + (i * lineH) - 0.8;
+            if (align === 'center') {
+              docPDF.text(line, xx + w/2, textY, { align: 'center' });
+            } else {
+              docPDF.text(line, xx + padCell, textY);
+            }
+          });
+          if (bold) docPDF.setFont('helvetica', 'normal');
+          xx += w;
+        }
+        
+        _drawCell(lT, cw.c1, 'center', false);
+        _drawCell(lLote, cw.c2, 'center', false);
+        _drawCell(lProd, cw.c3, 'left', false);
+        _drawCell(lOdp, cw.c4, 'center', false);
+        _drawCell(lCant, cw.c5, 'center', true);
+        _drawCell(lKg, cw.c6, 'center', true);
+        
+        y += rowH;
       });
       
-      // Totales fila
+      // Fila totales
+      y = _checkPageBreak(y, 8);
       docPDF.setFillColor(15, 23, 42);
       docPDF.rect(margen, y, cT, 6, 'F');
       docPDF.setTextColor(255, 255, 255);
       docPDF.setFont('helvetica', 'bold');
       docPDF.setFontSize(8);
       docPDF.text(`TOTAL: ${tarimas.length} tarimas`, margen + 3, y + 4);
-      docPDF.text(`${fmtNum(Math.round(Number(rem.kg_total) || 0))} kg`, margen + cT - 25, y + 4, { align: 'left' });
+      const sKgTotal = `${fmtNum(Math.round(Number(rem.kg_total) || 0))} kg`;
+      docPDF.text(sKgTotal, margen + cT - 5, y + 4, { align: 'right' });
       docPDF.setTextColor(0, 0, 0);
       y += 10;
     } else {
@@ -19616,25 +20031,21 @@ window.imprimirRemisionClientePDF = (remId) => {
     
     // ====== OBSERVACIONES ======
     if (rem.observaciones) {
-      docPDF.setFont('helvetica', 'bold');
-      docPDF.setFontSize(8);
-      docPDF.setTextColor(100, 100, 100);
-      docPDF.text('OBSERVACIONES:', margen, y + 3);
-      docPDF.setFont('helvetica', 'normal');
-      docPDF.setTextColor(0, 0, 0);
-      docPDF.rect(margen, y + 4, W - margen*2, 10);
-      const obs = docPDF.splitTextToSize(rem.observaciones, W - margen*2 - 4);
-      docPDF.text(obs.slice(0, 2), margen + 2, y + 8);
-      y += 16;
+      y = _checkPageBreak(y, 20);
+      const hObs = _pdfCampoFlex(docPDF, 'Observaciones', rem.observaciones, margen, y, W - margen*2, { minH: 10 });
+      y += hObs + 2;
     }
     
-    // ====== AVISO LEGAL ======
-    y = Math.max(y, 235);
+    // ====== AVISO LEGAL + FIRMAS al final ======
+    // Si no cabe, salto de página
+    y = _checkPageBreak(y, 35);
+    
+    // Aviso legal
     docPDF.setFillColor(254, 243, 199);
-    docPDF.rect(margen, y, W - margen*2, 12, 'FD');
+    docPDF.rect(margen, y, W - margen*2, 13, 'FD');
     docPDF.setDrawColor(245, 158, 11);
     docPDF.setLineWidth(0.3);
-    docPDF.rect(margen, y, W - margen*2, 12);
+    docPDF.rect(margen, y, W - margen*2, 13);
     docPDF.setDrawColor(0, 0, 0);
     docPDF.setLineWidth(0.2);
     
@@ -19647,22 +20058,20 @@ window.imprimirRemisionClientePDF = (remId) => {
     docPDF.text('• El cliente debe revisar la mercancía al momento de la entrega y reportar inmediatamente cualquier diferencia o daño.', margen + 3, y + 7.5);
     docPDF.text('• Esta remisión NO es factura. La factura se emite por separado según los términos comerciales acordados.', margen + 3, y + 10.5);
     docPDF.setTextColor(0, 0, 0);
-    y += 16;
+    y += 17;
     
-    // ====== FIRMAS ======
-    y = Math.max(y, 255);
+    // Firmas
+    y = _checkPageBreak(y, 16);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(8);
-    const fW = 60;
+    const fW = 55;
     
-    // Firma 1: NewPack/CEDIS (entrega)
     docPDF.line(margen + 5, y, margen + 5 + fW, y);
     docPDF.text('NEWPACK (entrega)', margen + 5 + fW/2, y + 4, { align: 'center' });
     docPDF.setFontSize(6.5);
     docPDF.setFont('helvetica', 'normal');
     docPDF.text('Nombre y firma', margen + 5 + fW/2, y + 7.5, { align: 'center' });
     
-    // Firma 2: Operador
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(8);
     const x2 = (W - fW) / 2;
@@ -19670,9 +20079,9 @@ window.imprimirRemisionClientePDF = (remId) => {
     docPDF.text('OPERADOR (transporta)', x2 + fW/2, y + 4, { align: 'center' });
     docPDF.setFontSize(6.5);
     docPDF.setFont('helvetica', 'normal');
-    docPDF.text(rem.operador_nombre || 'Nombre y firma', x2 + fW/2, y + 7.5, { align: 'center' });
+    const lOpe = docPDF.splitTextToSize(rem.operador_nombre || 'Nombre y firma', fW);
+    lOpe.slice(0, 2).forEach((l, i) => docPDF.text(l, x2 + fW/2, y + 7.5 + i*3, { align: 'center' }));
     
-    // Firma 3: Cliente
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(8);
     docPDF.line(W - margen - 5 - fW, y, W - margen - 5, y);
@@ -19681,14 +20090,17 @@ window.imprimirRemisionClientePDF = (remId) => {
     docPDF.setFont('helvetica', 'normal');
     docPDF.text('Nombre y firma', W - margen - 5 - fW/2, y + 7.5, { align: 'center' });
     
-    // Footer
-    docPDF.setFontSize(6);
-    docPDF.setFont('helvetica', 'normal');
-    docPDF.setTextColor(120, 120, 120);
-    docPDF.text(`Remisión ${rem.folio} · Generado ${new Date().toLocaleString('es-MX')} · NewPack ERP`, W/2, 273, { align: 'center' });
+    // Footer en cada página
+    const totalPages = docPDF.internal.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      docPDF.setPage(p);
+      docPDF.setFontSize(6);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(120, 120, 120);
+      docPDF.text(`Remisión ${rem.folio} · Pág ${p} de ${totalPages} · Generado ${new Date().toLocaleString('es-MX')} · NewPack ERP`, W/2, H - 6, { align: 'center' });
+    }
     
     const filename = `Remision_${rem.folio}.pdf`;
-    
     if (typeof _mostrarVistaPreviaPDF === 'function') {
       _mostrarVistaPreviaPDF(docPDF, filename, `Remisión ${rem.folio} · ${rem.cliente_nombre || ''}`);
     } else {
@@ -19699,7 +20111,6 @@ window.imprimirRemisionClientePDF = (remId) => {
     toast('Error generando PDF: ' + e.message, 'error');
   }
 };
-
 
 window.imprimirOrdenProduccionPDF = (odpId) => {
   try {
@@ -19852,8 +20263,23 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   headerCell(xLP, y, wLP, 5, 'LÍNEA DE PROCESO');
   y += 5;
   
-  // Filas de cantidad/UM/especificaciones
-  const hFila = 7;
+  // 🆕 Calcular altura dinámica de la fila según lo que necesita la descripción
+  // Especificaciones: descripción + código producto
+  const espec = String(odp.producto_descripcion || producto?.descripcion || odp.producto_codigo || '');
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(8);
+  const especLines = docPDF.splitTextToSize(espec, wEspe - 4);
+  
+  // Altura mínima de la celda de especificaciones
+  const lineH_espec = 3.3;
+  const padding_espec = 3;
+  const codProdAltura = 4; // espacio para el código abajo
+  const hEspecNecesaria = especLines.length * lineH_espec + padding_espec * 2 + codProdAltura;
+  
+  // Fila total: cantidad/UM en 2 sub-filas (la fila de espec ocupa toda la altura)
+  const hFila = Math.max(7, Math.ceil(hEspecNecesaria / 2));
+  
+  // Dibujar celdas con la altura ajustada
   reset();
   cellEmpty(xCant, y, wCant, hFila);            // fila 1 (EXT en kg)
   cellEmpty(xCant, y + hFila, wCant, hFila);    // fila 2 (sub-proceso UM original)
@@ -19927,12 +20353,15 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
     docPDF.setTextColor(0, 0, 0);
   }
   
-  // Especificaciones del producto
+  // Especificaciones del producto (descripción + código)
+  // Con wrap automático: la celda ya tiene altura suficiente
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'normal');
-  const espec = (odp.producto_descripcion || producto?.descripcion || odp.producto_codigo || '').substring(0, 100);
-  const especLines = docPDF.splitTextToSize(espec, wEspe - 4);
-  docPDF.text(especLines.slice(0, 3), xEspe + 2, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  especLines.forEach((line, i) => {
+    docPDF.text(line, xEspe + 2, y + padding_espec + lineH_espec + (i * lineH_espec) - 0.8);
+  });
+  // Código de producto al final de la celda
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(9);
   docPDF.text(odp.producto_codigo || '', xEspe + 2, y + hFila * 2 - 2);
@@ -21550,6 +21979,74 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
     const lotes = (state.lotes || []).filter(l => l.odp_id === odpId);
     const totalPaquetes = tarimas.reduce((s, t) => s + (Number(t.paquetes) || 0), 0);
     const totalPiezas = totalPaquetes * (Number(med.piezas_por_paq) || 0);
+    
+    // 🆕 Total dinámico según UM original del producto
+    // Si la UM es:
+    //  - kg     → mostrar kg totales (suma de tarimas peso_neto_kg, o calculado)
+    //  - pz     → mostrar piezas totales
+    //  - millar → mostrar millares (piezas/1000)
+    //  - rollo  → mostrar # de rollos / kg
+    //  - m      → mostrar metros (igual que kg, depende)
+    const umOrig = (odp.um || 'kg').toLowerCase();
+    let totalEnUM = 0;
+    let labelTotal = 'Pz Totales:';
+    let textoTotal = '';
+    
+    if (umOrig === 'pz' || umOrig === 'pza' || umOrig === 'pieza' || umOrig === 'piezas') {
+      totalEnUM = totalPiezas;
+      labelTotal = 'Piezas Totales:';
+      textoTotal = `${fmtNum(totalEnUM)} pz`;
+    } else if (umOrig === 'millar' || umOrig === 'millares') {
+      totalEnUM = totalPiezas / 1000;
+      labelTotal = 'Millares Totales:';
+      textoTotal = `${fmtNum(totalEnUM.toFixed(3))} millares`;
+    } else if (umOrig === 'kg') {
+      // Usar suma real de tarimas si están disponibles
+      const kgTarimas = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg) || Number(t.peso_neto) || 0), 0);
+      if (kgTarimas > 0) {
+        totalEnUM = kgTarimas;
+      } else {
+        // Fallback: usar cantidad producida final o cantidad ODP
+        totalEnUM = Number(odp.cantidad_producida_final) || Number(odp.cantidad_kg_produccion) || Number(odp.cantidad) || 0;
+      }
+      labelTotal = 'Kg Totales:';
+      textoTotal = `${fmtNum(Math.round(totalEnUM * 100) / 100)} kg`;
+    } else if (umOrig === 'rollo' || umOrig === 'rollos') {
+      // Usar número de rollos producidos (tarimas o capturas)
+      totalEnUM = tarimas.length;
+      labelTotal = 'Rollos Totales:';
+      textoTotal = `${fmtNum(totalEnUM)} rollos`;
+    } else if (umOrig === 'm' || umOrig === 'metro' || umOrig === 'metros') {
+      // Por defecto, mostrar kg (los metros lineales no se calculan automáticamente)
+      const kgTarimas = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg) || Number(t.peso_neto) || 0), 0);
+      totalEnUM = kgTarimas > 0 ? kgTarimas : (Number(odp.cantidad_kg_produccion) || 0);
+      labelTotal = 'Kg Totales:';
+      textoTotal = `${fmtNum(Math.round(totalEnUM * 100) / 100)} kg`;
+    } else {
+      // Fallback genérico
+      totalEnUM = totalPiezas;
+      labelTotal = 'Total:';
+      textoTotal = `${fmtNum(totalEnUM)} ${umOrig}`;
+    }
+    
+    // 🆕 Buscar remisión asociada (por tarimas o por OV)
+    let remisionFolio = '';
+    if (tarimas.length > 0) {
+      const tarimasIds = tarimas.map(t => t.id);
+      const rem = (state.remisiones || []).find(r => 
+        (r.tarimas_ids || []).some(tid => tarimasIds.includes(tid))
+      );
+      if (rem) remisionFolio = rem.folio || '';
+    }
+    if (!remisionFolio && odp.pedido_id) {
+      // Buscar por OV asociada al pedido
+      const ov = (state.ordenes_venta || []).find(o => o.pedido_id === odp.pedido_id);
+      if (ov) {
+        const rem = (state.remisiones || []).find(r => r.ov_id === ov.id);
+        if (rem) remisionFolio = rem.folio || '';
+      }
+    }
+    
     // Lote padre (el primer lote, ya que todas las tarimas comparten el padre conceptualmente)
     const lotePadre = lotes.length > 0 ? lotes[0].codigo : (odp.folio || '');
     const fechaFab = odp.liberacion_calidad?.liberado_at
@@ -21581,11 +22078,12 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
         ['Cliente:', codigoCliente],
         ['Producto:', tipoDesc],
         ['Factura:', factura || ''],
+        ['Remisión:', remisionFolio || '—'],
         ['Código:', odp.producto_codigo],
         ['Lote:', lotePadre],
         ['Fecha de fabricación:', fechaFab],
         ['# de paquetes:', String(totalPaquetes)],
-        ['Pz Totales:', `${totalPiezas} pz`],
+        [labelTotal, textoTotal],
       ],
       theme: 'grid',
       styles: { fontSize: 8.5, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
@@ -25879,7 +26377,11 @@ function modalEditarProductoPT() {
       clientesAsignados: relacionesExistentes,
       relacionesOriginales: { ...relacionesExistentes },
       num_capas: numCapasInicial,
-      capas: JSON.parse(JSON.stringify(capasInicial))
+      capas: JSON.parse(JSON.stringify(capasInicial)),
+      // 🔥 Config extrusión (nuevos campos)
+      tipo_sellado: p.tipo_sellado || '',
+      estructura_rollo_ext: p.estructura_rollo_ext || '',
+      obs_extrusion: p.obs_extrusion || ''
     };
   }
   const f = state.modalForm;
@@ -25987,6 +26489,9 @@ function modalEditarProductoPT() {
             </div>
           </div>
           
+          <!-- 🔥 CONFIGURACIÓN PARA EXTRUSIÓN -->
+          ${renderBloqueConfigExtrusion(f, p)}
+          
           <!-- FORMULACIÓN / RECETA -->
           ${renderBloqueFormulacion(f)}
           
@@ -26004,6 +26509,134 @@ function modalEditarProductoPT() {
       </div>
     </div>
   `;
+}
+
+function renderBloqueConfigExtrusion(f, p) {
+  // Resolver tipo y estructura actuales
+  const tipoSel = f.tipo_sellado || p?.tipo_sellado || '';
+  const estructura = f.estructura_rollo_ext !== undefined ? f.estructura_rollo_ext : (p?.estructura_rollo_ext || '');
+  const obs = f.obs_extrusion !== undefined ? f.obs_extrusion : (p?.obs_extrusion || '');
+  
+  // Pre-cargar en form si no está
+  if (f.tipo_sellado === undefined) f.tipo_sellado = tipoSel;
+  if (f.estructura_rollo_ext === undefined) f.estructura_rollo_ext = estructura;
+  if (f.obs_extrusion === undefined) f.obs_extrusion = obs;
+  
+  // Calcular medidas previstas usando los datos del producto + selección actual
+  const productoTmp = {
+    ancho: p?.ancho || 0,
+    fuelle: p?.fuelle || 0,
+    largo: p?.largo || 0,
+    calibre: p?.calibre || 0,
+    tipo_sellado: tipoSel,
+    estructura_rollo_ext: estructura
+  };
+  const medidas = calcularMedidasRolloExt(productoTmp);
+  
+  // Lista de estructuras según el tipo seleccionado
+  const estructurasDisp = tipoSel ? (ESTRUCTURAS_ROLLO[tipoSel] || []) : [];
+  
+  return `
+    <div style="margin-top:18px;padding:14px;background:#fef2f2;border:2px solid #dc2626;border-radius:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <strong style="font-size:14px;color:#991b1b;">🔥 Configuración para Extrusión</strong>
+        <span style="font-size:10px;color:#7f1d1d;background:#fee2e2;padding:3px 8px;border-radius:4px;">Le dice al operador cómo extruir el rollo</span>
+      </div>
+      <div style="font-size:11px;color:#7f1d1d;margin-bottom:12px;line-height:1.4;">
+        Define el tipo de sellado del producto final y la estructura del rollo a extruir.
+        Las medidas del rollo se calculan automáticamente a partir de las medidas del producto.
+      </div>
+      
+      <!-- Tipo de sellado -->
+      <div class="field" style="margin-bottom:10px;">
+        <label class="field-label" style="color:#991b1b;font-weight:800;">Tipo de sellado del producto final *</label>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;">
+          ${TIPOS_SELLADO.map(t => `
+            <button type="button" onclick="window.setTipoSellado('${t.codigo}')" style="text-align:left;padding:10px;background:${tipoSel === t.codigo ? '#dc2626' : '#fff'};color:${tipoSel === t.codigo ? '#fff' : '#0f172a'};border:1.5px solid ${tipoSel === t.codigo ? '#dc2626' : '#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+              ${t.icono} ${t.nombre}
+              <div style="font-size:9.5px;font-weight:500;opacity:0.85;margin-top:2px;">Extrusión al ${t.dimensionExt}</div>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      
+      <!-- Estructura del rollo (depende del tipo) -->
+      ${tipoSel ? `
+        <div class="field" style="margin-bottom:10px;">
+          <label class="field-label" style="color:#991b1b;font-weight:800;">Estructura del rollo a extruir *</label>
+          <div style="display:flex;flex-direction:column;gap:5px;">
+            ${estructurasDisp.map(e => `
+              <button type="button" onclick="window.setEstructuraRollo('${e.codigo}')" style="text-align:left;padding:9px 12px;background:${estructura === e.codigo ? '#fef3c7' : '#fff'};color:#0f172a;border:1.5px solid ${estructura === e.codigo ? '#f59e0b' : '#cbd5e1'};border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;">
+                ${e.nombre}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+      ` : `
+        <div style="padding:10px;background:#fff;border:1px dashed #fca5a5;border-radius:6px;color:#991b1b;font-size:11px;font-style:italic;">
+          ⬆ Primero selecciona el tipo de sellado
+        </div>
+      `}
+      
+      <!-- Medidas calculadas del rollo -->
+      ${medidas && medidas.descripcion ? `
+        <div style="margin-top:12px;padding:12px;background:#0f172a;color:#fff;border-radius:8px;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.05em;opacity:0.85;margin-bottom:8px;">📐 MEDIDAS A EXTRUIR (CALCULADAS AUTOMÁTICAMENTE)</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+            <div>
+              <div style="font-size:9.5px;opacity:0.75;font-weight:700;">ANCHO DEL ROLLO</div>
+              <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+            </div>
+            <div>
+              <div style="font-size:9.5px;opacity:0.75;font-weight:700;">FUELLE</div>
+              <div style="font-size:22px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#94a3b8'};">${medidas.fuelle_rollo} mm</div>
+            </div>
+            <div>
+              <div style="font-size:9.5px;opacity:0.75;font-weight:700;">CALIBRE</div>
+              <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
+            </div>
+          </div>
+          <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;">
+            💡 ${medidas.observacion}
+          </div>
+        </div>
+      ` : ''}
+      
+      <!-- Notas técnicas libres -->
+      <div class="field" style="margin-top:10px;">
+        <label class="field-label" style="color:#991b1b;font-weight:800;">📝 Notas técnicas para el operador de extrusión</label>
+        <textarea class="input" data-field="obs_extrusion" rows="2" placeholder="Ej: Verificar tensión del IBC. Usar enfriamiento extra. Cuidado con la limpieza entre lotes." style="font-size:12px;">${obs}</textarea>
+        <div style="font-size:10px;color:#7f1d1d;margin-top:3px;">Estas notas se muestran al operador cuando abre la ODP y se imprimen en el PDF.</div>
+      </div>
+    </div>
+  `;
+}
+
+// Handlers de selección
+window.setTipoSellado = (codigo) => {
+  if (!state.modalForm) return;
+  state.modalForm.tipo_sellado = codigo;
+  // Limpiar estructura si cambió de tipo (las opciones son distintas)
+  state.modalForm.estructura_rollo_ext = '';
+  // Capturar valores actuales de los inputs antes del re-render
+  _capturarFormPT();
+  render();
+};
+window.setEstructuraRollo = (codigo) => {
+  if (!state.modalForm) return;
+  state.modalForm.estructura_rollo_ext = codigo;
+  _capturarFormPT();
+  render();
+};
+
+// Helper: captura valores de inputs del modal PT antes de re-render
+function _capturarFormPT() {
+  document.querySelectorAll('.form-pt-edit').forEach(el => {
+    const k = el.dataset.field;
+    if (k && state.modalForm) state.modalForm[k] = el.value;
+  });
+  const obsEl = document.querySelector('[data-field="obs_extrusion"]');
+  if (obsEl && state.modalForm) state.modalForm.obs_extrusion = obsEl.value;
 }
 
 function renderBloqueFormulacion(f) {
@@ -28079,6 +28712,8 @@ window.crearProductoPT = async () => {
       impresion: f.impresion || '',
       num_tintas: Number(f.num_tintas) || 0,
       tipo_sellado: f.tipo_sellado || '',
+      estructura_rollo_ext: f.estructura_rollo_ext || '',
+      obs_extrusion: f.obs_extrusion || '',
       obs_tecnicas: f.obs_tecnicas || '',
       presentacion,
       num_capas: Number(f.num_capas) || 1,
@@ -28190,6 +28825,8 @@ window.guardarProductoPT = async (codigo) => {
       impresion: f.impresion || '',
       num_tintas: Number(f.num_tintas) || 0,
       tipo_sellado: f.tipo_sellado || '',
+      estructura_rollo_ext: f.estructura_rollo_ext || '',
+      obs_extrusion: f.obs_extrusion || '',
       obs_tecnicas: f.obs_tecnicas || '',
       num_capas: Number(f.num_capas) || 1,
       capas: capasLimpias,
