@@ -3854,12 +3854,16 @@ function renderProgramacion() {
       <button onclick="cambiarVistaProgramacion('lista')" style="padding:6px 12px;background:${vistaModo==='lista'?'#3b82f6':'#fff'};color:${vistaModo==='lista'?'#fff':'#475569'};border:2px solid ${vistaModo==='lista'?'#3b82f6':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
         📋 Lista
       </button>
+      <button onclick="cambiarVistaProgramacion('kanban')" style="padding:6px 12px;background:${vistaModo==='kanban'?'#3b82f6':'#fff'};color:${vistaModo==='kanban'?'#fff':'#475569'};border:2px solid ${vistaModo==='kanban'?'#3b82f6':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+        📋 Kanban por Máquina
+      </button>
       <button onclick="cambiarVistaProgramacion('proceso')" style="padding:6px 12px;background:${vistaModo==='proceso'?'#3b82f6':'#fff'};color:${vistaModo==='proceso'?'#fff':'#475569'};border:2px solid ${vistaModo==='proceso'?'#3b82f6':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
         🔥 Por proceso → máquina
       </button>
       ${kpiAtrasadas > 0 ? `<span style="background:#fef2f2;color:#dc2626;padding:4px 10px;border-radius:6px;font-weight:700;font-size:11px;border:1px solid #fecaca;margin-left:auto;">⚠ ${kpiAtrasadas} atrasada(s)</span>` : ''}
     </div>
     
+    ${vistaModo === 'kanban' ? renderKanbanMaquinas() : `
     <!-- FILTROS -->
     <div class="toolbar" style="flex-wrap:wrap;">
       <input class="input" id="filtro-programacion" style="max-width:280px;flex:1;min-width:200px;" placeholder="🔍 Folio, cliente, producto..." value="${filtro}" autocomplete="off" />
@@ -3887,6 +3891,7 @@ function renderProgramacion() {
         ${arr.map(o => renderTarjetaODP(o, subTab)).join('')}
       </div>
     `)}
+    `}
   `;
 }
 
@@ -4174,11 +4179,12 @@ function _renderTarjetaKanban(odp, columna, opts) {
     estadoBadge = { txt: '🎉 LIBERADA', color: '#15803d', bg: '#dcfce7' };
   } else if (estatus === 'pendiente_calidad') {
     estadoBadge = { txt: '🟡 ESPERANDO CALIDAD', color: '#a16207', bg: '#fef3c7' };
+  } else if (procEst === 'pausado') {
+    estadoBadge = { txt: '⏸ PAUSADA', color: '#991b1b', bg: '#fee2e2' };
   } else if (procEst === 'en_proceso' || capturas.length > 0) {
     estadoBadge = { txt: '⚙️ EN ' + (procActual?.nombre || 'PROCESO').toUpperCase(), color: '#1e40af', bg: '#dbeafe' };
   } else if (procEst === 'esperando' && procIdx > 0) {
     // Proceso anterior cerrado, esperando inicio del actual
-    const procAnt = getProc(ruta[procIdx - 1]);
     estadoBadge = { txt: `⏳ ESPERANDO ${procActual?.nombre?.toUpperCase() || ''}`, color: '#92400e', bg: '#fef3c7' };
   } else if (estatus === 'programada' || estatus === 'aprobada' || procIdx === 0 && !capturas.length) {
     estadoBadge = { txt: '📦 POR INICIAR', color: '#92400e', bg: '#fef3c7' };
@@ -4225,6 +4231,25 @@ function _renderTarjetaKanban(odp, columna, opts) {
         <div style="font-size:9px;color:#3b82f6;font-weight:700;margin-top:2px;text-align:right;">${pct.toFixed(0)}% · ${fmtNum(totalProd)} ${um}</div>
       ` : ''}
       ${columna === 'cola' && fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#64748b'};margin-top:4px;">📅 Entrega: ${fechaEnt}</div>` : ''}
+      
+      ${(() => {
+        // 🎯 Botón de acción rápida según estado
+        const opPro = ['PRO', 'CEO', 'ADMIN'].includes(state.user?.depto) || state.user?.rol === 'admin';
+        if (!opPro) return '';
+        if (estatus === 'programada') {
+          return `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${odp.id}')" style="margin-top:6px;width:100%;padding:5px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">▶️ INICIAR</button>`;
+        }
+        if (estatus === 'en_produccion' && procEst === 'pausado') {
+          return `<button onclick="event.stopPropagation();window.reanudarODP('${odp.id}')" style="margin-top:6px;width:100%;padding:5px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">▶️ REANUDAR</button>`;
+        }
+        if (estatus === 'en_produccion' && procEst === 'en_proceso') {
+          return `<div style="display:flex;gap:4px;margin-top:6px;">
+            <button onclick="event.stopPropagation();abrirModal('capturar-turno','${odp.id}')" style="flex:1;padding:5px;background:#3b82f6;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">📝 Turno</button>
+            <button onclick="event.stopPropagation();window.pausarODP('${odp.id}')" style="padding:5px 8px;background:#fff;color:#a16207;border:1px solid #a16207;border-radius:4px;cursor:pointer;font-weight:800;font-size:10px;">⏸</button>
+          </div>`;
+        }
+        return '';
+      })()}
     </div>
   `;
 }
@@ -4727,6 +4752,193 @@ window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
     toast(`✅ PI ${folio} cancelado. ${tarimasRelacionadas.length} tarima(s) regresaron a stock libre.`, 'success');
   } catch (e) {
     console.error('Error cancelar PI:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// ▶️ INICIO / ⏸ PAUSA / ▶️ REANUDAR de producción ODP
+// ============================================================
+
+// Helper: tiempo transcurrido legible desde un Timestamp de Firestore o ms
+function _tiempoTranscurrido(ts) {
+  if (!ts) return '';
+  const ms = typeof ts === 'object' ? (ts.seconds || ts.toMillis?.()/1000 || 0) * 1000 : Number(ts);
+  if (!ms) return '';
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return 'menos de 1 min';
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  const minRest = mins % 60;
+  if (hrs < 24) return `${hrs}h ${minRest}min`;
+  const dias = Math.floor(hrs / 24);
+  const hrsRest = hrs % 24;
+  return `${dias}d ${hrsRest}h`;
+}
+window._tiempoTranscurrido = _tiempoTranscurrido;
+
+// ▶️ INICIAR producción explícitamente (marca el inicio real)
+window.iniciarProduccionODP = async (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (odp.estatus !== 'programada') {
+    toast('Solo se pueden iniciar ODPs programadas', 'error');
+    return;
+  }
+  
+  const procActual = odp.ruta_procesos?.[odp.proceso_actual_idx || 0] || '';
+  const maqCodigo = odp.maquinas_asignadas?.[procActual] || '';
+  
+  const ok = confirm(
+    `▶️ INICIAR PRODUCCIÓN — ${odp.folio}\n\n` +
+    `Producto: ${odp.producto_codigo}\n` +
+    `Cantidad: ${fmtNum(odp.cantidad_kg || odp.cantidad)} ${odp.um}\n` +
+    `Proceso: ${getProc(procActual)?.nombre || procActual}\n` +
+    `Máquina: ${maqCodigo}\n\n` +
+    `Esto marca que la máquina YA INICIÓ. Después podrás capturar turnos.\n\n` +
+    `¿Confirmar inicio?`
+  );
+  if (!ok) return;
+  
+  try {
+    state.loadingAccion = true; render();
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      estatus: 'en_produccion',
+      proceso_estatus_actual: 'en_proceso',
+      inicio_real_at: serverTimestamp(),
+      inicio_real_por: state.user?.nombre || state.user?.email || 'sistema',
+      updated_at: serverTimestamp()
+    });
+    toast(`✅ ${odp.folio} iniciada en ${maqCodigo}`, 'success');
+  } catch (e) {
+    console.error('Error iniciar ODP:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ⏸ PAUSAR producción con motivo
+window.pausarODP = async (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (odp.estatus !== 'en_produccion' || odp.proceso_estatus_actual !== 'en_proceso') {
+    toast('Solo se pueden pausar ODPs en proceso', 'error');
+    return;
+  }
+  
+  // Pedir motivo con dropdown
+  const motivos = [
+    '1) Cambio de prioridad (parar para adelantar otra)',
+    '2) Falta de materia prima',
+    '3) Mantenimiento / paro mecánico',
+    '4) Cambio de medida / formato',
+    '5) Fin de turno',
+    '6) Falta de personal',
+    '7) Problema de calidad detectado',
+    '8) Otro'
+  ];
+  const seleccion = prompt(
+    `⏸ PAUSAR ${odp.folio}\n\n` +
+    `Selecciona el motivo (escribe el número):\n\n` +
+    motivos.join('\n') + '\n\n' +
+    `Número:`
+  );
+  if (!seleccion) return;
+  
+  const num = parseInt(seleccion.trim(), 10);
+  const motivosMap = {
+    1: 'Cambio de prioridad',
+    2: 'Falta de materia prima',
+    3: 'Mantenimiento / paro mecánico',
+    4: 'Cambio de medida',
+    5: 'Fin de turno',
+    6: 'Falta de personal',
+    7: 'Problema de calidad',
+    8: 'Otro'
+  };
+  let motivoTxt = motivosMap[num];
+  if (!motivoTxt) {
+    toast('Motivo inválido', 'error');
+    return;
+  }
+  
+  // Si es "Otro", pedir descripción adicional
+  if (num === 8) {
+    const det = prompt('Describe el motivo del paro:');
+    if (!det) return;
+    motivoTxt = `Otro: ${det.substring(0, 100)}`;
+  }
+  
+  try {
+    state.loadingAccion = true; render();
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      proceso_estatus_actual: 'pausado',
+      pausa_iniciada_at: serverTimestamp(),
+      pausa_motivo: motivoTxt,
+      pausa_por: state.user?.nombre || state.user?.email || 'sistema',
+      updated_at: serverTimestamp()
+    });
+    toast(`⏸ ${odp.folio} pausada · ${motivoTxt}`, 'info');
+  } catch (e) {
+    console.error('Error pausar ODP:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ▶️ REANUDAR producción (guarda histórico de pausa)
+window.reanudarODP = async (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (odp.proceso_estatus_actual !== 'pausado') {
+    toast('Esta ODP no está pausada', 'error');
+    return;
+  }
+  
+  // Calcular duración de la pausa
+  let duracionMin = 0;
+  if (odp.pausa_iniciada_at) {
+    const inicio = odp.pausa_iniciada_at.seconds ? odp.pausa_iniciada_at.seconds * 1000 : Number(odp.pausa_iniciada_at);
+    duracionMin = Math.round((Date.now() - inicio) / 60_000);
+  }
+  
+  const ok = confirm(
+    `▶️ REANUDAR ${odp.folio}\n\n` +
+    `Motivo del paro: ${odp.pausa_motivo || '—'}\n` +
+    `Duración del paro: ${duracionMin} minutos\n\n` +
+    `¿Reanudar producción?`
+  );
+  if (!ok) return;
+  
+  // Guardar histórico
+  const historial = Array.isArray(odp.historial_pausas) ? [...odp.historial_pausas] : [];
+  historial.push({
+    motivo: odp.pausa_motivo || '',
+    iniciada_at: odp.pausa_iniciada_at || null,
+    duracion_minutos: duracionMin,
+    pausa_por: odp.pausa_por || '',
+    reanudada_por: state.user?.nombre || state.user?.email || 'sistema',
+    reanudada_at_ms: Date.now()
+  });
+  
+  try {
+    state.loadingAccion = true; render();
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      proceso_estatus_actual: 'en_proceso',
+      pausa_iniciada_at: null,
+      pausa_motivo: null,
+      pausa_por: null,
+      historial_pausas: historial,
+      updated_at: serverTimestamp()
+    });
+    toast(`▶️ ${odp.folio} reanudada (paro de ${duracionMin} min)`, 'success');
+  } catch (e) {
+    console.error('Error reanudar ODP:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
@@ -5620,18 +5832,58 @@ function renderTarjetaODP(o, contexto) {
         </div>
       ` : ''}
       
+      ${(() => {
+        // 🎯 BADGE DE ESTADO DETALLADO (estado real del proceso)
+        if (o.estatus === 'programada') {
+          return `<div style="padding:10px 18px;background:#fef3c7;border-top:2px solid #f59e0b;font-size:12px;font-weight:700;color:#92400e;display:flex;align-items:center;gap:8px;">
+            📦 EN COLA · Programada pero la máquina aún no inicia
+            ${o.programada_at ? `<span style="font-size:10px;color:#78350f;font-weight:500;">· Programada ${_tiempoTranscurrido(o.programada_at)}</span>` : ''}
+          </div>`;
+        }
+        if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'pausado') {
+          const tPausa = o.pausa_iniciada_at ? _tiempoTranscurrido(o.pausa_iniciada_at) : '';
+          return `<div style="padding:10px 18px;background:#fee2e2;border-top:2px solid #dc2626;font-size:12px;font-weight:700;color:#991b1b;">
+            ⏸ PAUSADA ${tPausa ? `desde hace ${tPausa}` : ''} 
+            ${o.pausa_motivo ? `<div style="font-size:11px;color:#7f1d1d;font-weight:500;margin-top:2px;">Motivo: ${o.pausa_motivo}</div>` : ''}
+          </div>`;
+        }
+        if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'esperando') {
+          return `<div style="padding:10px 18px;background:#fef3c7;border-top:2px solid #f59e0b;font-size:12px;font-weight:700;color:#92400e;">
+            ⏳ ESPERANDO INICIO de ${getProc(procActual)?.nombre || procActual} · El proceso anterior ya cerró, este aún no inicia
+          </div>`;
+        }
+        if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso') {
+          const tInicio = o.inicio_real_at ? _tiempoTranscurrido(o.inicio_real_at) : '';
+          return `<div style="padding:10px 18px;background:#dcfce7;border-top:2px solid #16a34a;font-size:12px;font-weight:700;color:#14532d;">
+            ⚙️ EN PROCESO · ${getProc(procActual)?.nombre || procActual} ${tInicio ? `· corriendo desde hace ${tInicio}` : ''}
+          </div>`;
+        }
+        if (o.estatus === 'pendiente_calidad') {
+          return `<div style="padding:10px 18px;background:#fef3c7;border-top:2px solid #a16207;font-size:12px;font-weight:700;color:#713f12;">
+            🟡 ESPERANDO LIBERACIÓN DE CALIDAD
+          </div>`;
+        }
+        return '';
+      })()}
+      
       <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
         ${o.estatus === 'pendiente_planeacion' ? `
           <button class="btn-primary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Programar</button>
         ` : ''}
         ${o.estatus === 'programada' ? `
-          <button class="btn-primary" onclick="abrirModal('capturar-turno','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📝 Capturar mi turno</button>
+          <button onclick="window.iniciarProduccionODP('${o.id}')" style="padding:10px 18px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:800;box-shadow:0 2px 4px rgba(22,163,74,0.3);">▶️ INICIAR producción</button>
           <button onclick="window.imprimirOrdenProduccionPDF('${o.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">📄 Imprimir ODP + Especif.</button>
           <button onclick="window.imprimirEtiquetasPDF('${o.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">🏷️ Imprimir Etiquetas</button>
           <button class="btn-secondary" onclick="abrirModal('programar-odp','${o.id}')" style="padding:8px 14px;">${ICONS.edit} Reprogramar</button>
         ` : ''}
-        ${o.estatus === 'en_produccion' ? `
+        ${o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'pausado' ? `
+          <button onclick="window.reanudarODP('${o.id}')" style="padding:10px 18px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:800;box-shadow:0 2px 4px rgba(22,163,74,0.3);">▶️ REANUDAR producción</button>
+          <button onclick="window.imprimirOrdenProduccionPDF('${o.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">📄 Reimprimir ODP</button>
+          <button onclick="window.imprimirEtiquetasPDF('${o.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">🏷️ Imprimir Etiquetas</button>
+        ` : ''}
+        ${o.estatus === 'en_produccion' && o.proceso_estatus_actual !== 'pausado' ? `
           <button class="btn-primary" onclick="abrirModal('capturar-turno','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📝 Capturar mi turno</button>
+          <button onclick="window.pausarODP('${o.id}')" style="padding:8px 14px;background:#fff;color:#a16207;border:1.5px solid #a16207;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">⏸ Pausar</button>
           <button onclick="window.imprimirOrdenProduccionPDF('${o.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">📄 Reimprimir ODP</button>
           <button onclick="window.imprimirEtiquetasPDF('${o.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">🏷️ Imprimir Etiquetas</button>
           ${pctProcActual >= 95 ? `
@@ -6857,21 +7109,27 @@ window.guardarCapturaTurno = async (odpId) => {
     });
     
     // 2. Actualizar ODP con estado granular del proceso
-    // Si está programada → arrancarla (en_produccion)
-    // Si proceso_estatus_actual era 'esperando' → ahora es 'en_proceso'
+    // ⚠ Validar: ODP debe estar 'en_produccion' (ya iniciada por botón explícito)
+    // Si está programada o pausada, captura NO permitida
+    if (odp.estatus === 'programada') {
+      cerrarModal();
+      toast('⚠ La ODP debe iniciarse primero con el botón "▶️ INICIAR producción"', 'error');
+      return;
+    }
+    if (odp.proceso_estatus_actual === 'pausado') {
+      cerrarModal();
+      toast('⚠ La ODP está pausada. Reanúdala antes de capturar turnos', 'error');
+      return;
+    }
+    
     const yaTeniaCapturas = (state.capturas_produccion || []).some(c => c.odp_id === odpId && c.proceso === procActual);
     const updates = {
       updated_at: serverTimestamp()
     };
-    if (odp.estatus === 'programada') {
-      updates.estatus = 'en_produccion';
-      updates.fecha_inicio_real = serverTimestamp();
-      updates.proceso_actual_inicio = serverTimestamp();
-    }
-    // Marcar proceso como en_proceso (si era el primer turno de este proceso)
+    // Marcar proceso como en_proceso (si era el primer turno de este proceso después de "esperando")
     if (!yaTeniaCapturas || odp.proceso_estatus_actual !== 'en_proceso') {
       updates.proceso_estatus_actual = 'en_proceso';
-      updates.proceso_actual_inicio = updates.proceso_actual_inicio || serverTimestamp();
+      updates.proceso_actual_inicio = serverTimestamp();
     }
     await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     
@@ -16272,8 +16530,12 @@ window.imprimirOrdenProduccionPDF = (odpId) => {
     // Mostrar preview en modal
     const blob = docPDF.output('blob');
     const url = URL.createObjectURL(blob);
-    state.pdfPreviewUrl = url;
-    state.pdfPreviewFilename = `Orden_Produccion_${odp.folio || odpId.slice(0,6)}.pdf`;
+    state.pdfPreview = {
+      blobUrl: url,
+      filename: `Orden_Produccion_${odp.folio || odpId.slice(0,6)}.pdf`,
+      titulo: `Orden de Producción ${odp.folio || ''}`,
+      blob: blob
+    };
     state.modal = 'pdf-preview';
     render();
   } catch (e) {
@@ -16286,9 +16548,31 @@ window.imprimirOrdenProduccionPDF = (odpId) => {
 // HOJA 1: ORDEN DE PRODUCCIÓN — Replica el formato Excel manual
 // ============================================================
 function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
-  const W = 215.9;  // Letter ancho
-  const H = 279.4;  // Letter alto
-  const margen = 8;
+  const W = 215.9, H = 279.4, margen = 8;
+  
+  // Helpers de color (siempre restablecemos)
+  const reset = () => {
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.setFillColor(255, 255, 255);
+  };
+  
+  // Helper: dibujar header gris con texto negro
+  const headerCell = (x, y, w, h, texto, opts = {}) => {
+    docPDF.setFillColor(220, 220, 220);
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.rect(x, y, w, h, 'FD');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(opts.size || 8);
+    docPDF.text(texto, x + w/2, y + h/2 + 1.2, { align: 'center' });
+  };
+  
+  // Helper: dibujar celda vacía (solo borde)
+  const cellEmpty = (x, y, w, h) => {
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.rect(x, y, w, h);
+  };
   
   // -------- Logo + título --------
   try {
@@ -16297,45 +16581,48 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
     }
   } catch (e) {}
   
+  reset();
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(18);
   docPDF.text('ORDEN DE PRODUCCIÓN', W/2, 14, { align: 'center' });
   
-  // Cabecera: NUMERO OPE + STOCK/PEDIDO
+  // -------- Cabecera: NUMERO OPE + STOCK/PEDIDO --------
   let y = 22;
+  reset();
   docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text('NÚMERO OPE:', 110, y);
-  docPDF.rect(135, y - 4, 35, 6);
+  cellEmpty(135, y - 4, 35, 6);
   docPDF.setFont('helvetica', 'normal');
   docPDF.text(odp.folio || '', 137, y);
   
-  // STOCK / PEDIDO
+  // STOCK / PEDIDO con checkbox
   const esStock = (pedido?.tipo_pi === 'stock_interno');
   docPDF.setFontSize(7);
-  docPDF.rect(175, y - 4, 14, 6);
-  docPDF.rect(190, y - 4, 16, 6);
+  cellEmpty(175, y - 4, 14, 6);
+  cellEmpty(190, y - 4, 16, 6);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text('STOCK', 182, y - 1, { align: 'center' });
   docPDF.text('PEDIDO', 198, y - 1, { align: 'center' });
-  // Marca con X
   docPDF.setFontSize(11);
   if (esStock) docPDF.text('X', 182, y + 2.5, { align: 'center' });
   else docPDF.text('X', 198, y + 2.5, { align: 'center' });
   
-  // Fecha inicio / Fecha entrega
+  // -------- Fecha inicio / Fecha entrega --------
   y += 10;
+  reset();
   docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text('FECHA DE INICIO:', margen, y);
-  docPDF.rect(margen + 32, y - 4, 35, 6);
+  cellEmpty(margen + 32, y - 4, 35, 6);
   docPDF.text('FECHA DE ENTREGA:', 90, y);
-  docPDF.rect(125, y - 4, 35, 6);
+  cellEmpty(125, y - 4, 35, 6);
   docPDF.setFont('helvetica', 'normal');
   if (odp.fecha_entrega_solicitada) docPDF.text(odp.fecha_entrega_solicitada, 127, y);
   
-  // Cliente y ODC (extra al Excel original — datos útiles)
+  // -------- Cliente + ODC --------
   y += 8;
+  reset();
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text('CLIENTE:', margen, y);
@@ -16349,35 +16636,30 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
     docPDF.text(String(pedido.odc_cliente), 140, y);
   }
   
-  // -------- Tabla principal: Cantidad / Unidad / Especificaciones / Línea de Proceso --------
+  // -------- Tabla: Cantidad / Unidad / Especificaciones / Línea de Proceso --------
   y += 5;
   const xCant = margen, wCant = 18;
   const xUnid = xCant + wCant, wUnid = 14;
   const xEspe = xUnid + wUnid, wEspe = 75;
   const xLP = xEspe + wEspe, wLP = W - margen*2 - wCant - wUnid - wEspe;
   
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(8);
-  docPDF.setFillColor(220, 220, 220);
-  docPDF.rect(xCant, y, wCant, 5, 'FD');
-  docPDF.text('CANTIDAD', xCant + wCant/2, y + 3.5, { align: 'center' });
-  docPDF.rect(xUnid, y, wUnid, 5, 'FD');
-  docPDF.text('UNIDAD', xUnid + wUnid/2, y + 3.5, { align: 'center' });
-  docPDF.rect(xEspe, y, wEspe, 5, 'FD');
-  docPDF.text('ESPECIFICACIONES', xEspe + wEspe/2, y + 3.5, { align: 'center' });
-  docPDF.rect(xLP, y, wLP, 5, 'FD');
-  docPDF.text('LÍNEA DE PROCESO', xLP + wLP/2, y + 3.5, { align: 'center' });
+  // Headers grises
+  headerCell(xCant, y, wCant, 5, 'CANTIDAD');
+  headerCell(xUnid, y, wUnid, 5, 'UNIDAD');
+  headerCell(xEspe, y, wEspe, 5, 'ESPECIFICACIONES');
+  headerCell(xLP, y, wLP, 5, 'LÍNEA DE PROCESO');
   y += 5;
   
-  // Filas de cantidad/UM
+  // Filas de cantidad/UM/especificaciones
   const hFila = 7;
-  docPDF.setFont('helvetica', 'normal');
-  docPDF.rect(xCant, y, wCant, hFila * 2);  // celda cantidad (combinada)
-  docPDF.rect(xUnid, y, wUnid, hFila);       // KG
-  docPDF.rect(xUnid, y + hFila, wUnid, hFila); // MILLAR
-  docPDF.rect(xEspe, y, wEspe, hFila * 2);   // especificaciones
+  reset();
+  cellEmpty(xCant, y, wCant, hFila * 2);
+  cellEmpty(xUnid, y, wUnid, hFila);
+  cellEmpty(xUnid, y + hFila, wUnid, hFila);
+  cellEmpty(xEspe, y, wEspe, hFila * 2);
   
   // Cantidad
+  reset();
   docPDF.setFontSize(10);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text(fmtNum(odp.cantidad_kg || odp.cantidad || 0), xCant + wCant/2, y + hFila, { align: 'center' });
@@ -16393,29 +16675,22 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   const espec = (odp.producto_descripcion || producto?.descripcion || odp.producto_codigo || '').substring(0, 100);
   const especLines = docPDF.splitTextToSize(espec, wEspe - 4);
   docPDF.text(especLines.slice(0, 3), xEspe + 2, y + 4);
-  // Codigo del producto
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(9);
   docPDF.text(odp.producto_codigo || '', xEspe + 2, y + hFila * 2 - 2);
   
-  // Línea de proceso: EXT / IMP / BOLSEO (con máquinas asignadas)
+  // Línea de proceso: EXT / IMP / BOLSEO
   const subLP = wLP / 3;
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(8);
-  docPDF.setFillColor(240, 240, 240);
-  docPDF.rect(xLP, y, subLP, hFila, 'FD');
-  docPDF.rect(xLP + subLP, y, subLP, hFila, 'FD');
-  docPDF.rect(xLP + subLP*2, y, subLP, hFila, 'FD');
-  docPDF.text('EXT.', xLP + subLP/2, y + hFila/2 + 1, { align: 'center' });
-  docPDF.text('IMP.', xLP + subLP + subLP/2, y + hFila/2 + 1, { align: 'center' });
-  docPDF.text('BOLSEO', xLP + subLP*2 + subLP/2, y + hFila/2 + 1, { align: 'center' });
+  headerCell(xLP, y, subLP, hFila, 'EXT.', { size: 8 });
+  headerCell(xLP + subLP, y, subLP, hFila, 'IMP.', { size: 8 });
+  headerCell(xLP + subLP*2, y, subLP, hFila, 'BOLSEO', { size: 8 });
   
-  // Máquinas asignadas (autocompletadas según programación)
+  // Máquinas asignadas
   const maqs = odp.maquinas_asignadas || {};
-  docPDF.setFont('helvetica', 'normal');
-  docPDF.rect(xLP, y + hFila, subLP, hFila);
-  docPDF.rect(xLP + subLP, y + hFila, subLP, hFila);
-  docPDF.rect(xLP + subLP*2, y + hFila, subLP, hFila);
+  reset();
+  cellEmpty(xLP, y + hFila, subLP, hFila);
+  cellEmpty(xLP + subLP, y + hFila, subLP, hFila);
+  cellEmpty(xLP + subLP*2, y + hFila, subLP, hFila);
   docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'bold');
   docPDF.text(maqs['P1-EXT'] || '', xLP + subLP/2, y + hFila + hFila/2 + 1, { align: 'center' });
@@ -16424,13 +16699,9 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   
   y += hFila * 2;
   
-  // -------- FÓRMULA AUTORIZADA (en blanco para llenar a mano) --------
+  // -------- FÓRMULA AUTORIZADA (en blanco) --------
   y += 2;
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(8);
-  docPDF.setFillColor(220, 220, 220);
-  docPDF.rect(xLP, y, wLP, 5, 'FD');
-  docPDF.text('FÓRMULA AUTORIZADA', xLP + wLP/2, y + 3.5, { align: 'center' });
+  headerCell(xLP, y, wLP, 5, 'FÓRMULA AUTORIZADA');
   y += 5;
   
   const colResina = wLP * 0.40;
@@ -16438,38 +16709,32 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   const colKg = wLP * 0.20;
   const colLote = wLP * 0.25;
   
-  docPDF.setFontSize(7);
-  docPDF.rect(xLP, y, colResina, 4, 'FD');
-  docPDF.rect(xLP + colResina, y, colPct, 4, 'FD');
-  docPDF.rect(xLP + colResina + colPct, y, colKg, 4, 'FD');
-  docPDF.rect(xLP + colResina + colPct + colKg, y, colLote, 4, 'FD');
-  docPDF.text('RESINA', xLP + colResina/2, y + 3, { align: 'center' });
-  docPDF.text('%', xLP + colResina + colPct/2, y + 3, { align: 'center' });
-  docPDF.text('KG', xLP + colResina + colPct + colKg/2, y + 3, { align: 'center' });
-  docPDF.text('LOTE', xLP + colResina + colPct + colKg + colLote/2, y + 3, { align: 'center' });
+  // Sub-headers de fórmula
+  headerCell(xLP, y, colResina, 4, 'RESINA', { size: 7 });
+  headerCell(xLP + colResina, y, colPct, 4, '%', { size: 7 });
+  headerCell(xLP + colResina + colPct, y, colKg, 4, 'KG', { size: 7 });
+  headerCell(xLP + colResina + colPct + colKg, y, colLote, 4, 'LOTE', { size: 7 });
   y += 4;
   
   // 4 filas vacías
-  docPDF.setFont('helvetica', 'normal');
+  reset();
   const hFormula = 5;
   for (let i = 0; i < 4; i++) {
-    docPDF.rect(xLP, y, colResina, hFormula);
-    docPDF.rect(xLP + colResina, y, colPct, hFormula);
-    docPDF.rect(xLP + colResina + colPct, y, colKg, hFormula);
-    docPDF.rect(xLP + colResina + colPct + colKg, y, colLote, hFormula);
+    cellEmpty(xLP, y, colResina, hFormula);
+    cellEmpty(xLP + colResina, y, colPct, hFormula);
+    cellEmpty(xLP + colResina + colPct, y, colKg, hFormula);
+    cellEmpty(xLP + colResina + colPct + colKg, y, colLote, hFormula);
     y += hFormula;
   }
   
-  // Resetear y para columna izquierda — captura turnos EXT
-  let yIzq = y - 5 - 4 - hFormula*4 - 2;
+  // Guardamos y para volver
+  const yDespuesFormula = y;
+  // Resetear y para columna izquierda (tabla EXT)
+  let yIzq = yDespuesFormula - 4 - hFormula*4 - 5 - 2;
   
   // -------- TABLA CAPTURA EXTRUSIÓN (manual) --------
   const xIzq = margen;
-  const wIzq = xLP - margen - 2;  // ancho columna izquierda
-  
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(7);
-  docPDF.setFillColor(220, 220, 220);
+  const wIzq = xLP - margen - 2;
   
   const cFecha = wIzq * 0.18;
   const cTurno = wIzq * 0.12;
@@ -16477,62 +16742,55 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   const cProd = wIzq * 0.22;
   const cMerm = wIzq * 0.18;
   
-  docPDF.rect(xIzq, yIzq, cFecha, 5, 'FD');
-  docPDF.rect(xIzq + cFecha, yIzq, cTurno, 5, 'FD');
-  docPDF.rect(xIzq + cFecha + cTurno, yIzq, cOper, 5, 'FD');
-  docPDF.rect(xIzq + cFecha + cTurno + cOper, yIzq, cProd, 5, 'FD');
-  docPDF.rect(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 5, 'FD');
-  docPDF.text('FECHA', xIzq + cFecha/2, yIzq + 3.5, { align: 'center' });
-  docPDF.text('TURNO', xIzq + cFecha + cTurno/2, yIzq + 3.5, { align: 'center' });
-  docPDF.text('OPERADOR', xIzq + cFecha + cTurno + cOper/2, yIzq + 3.5, { align: 'center' });
-  docPDF.text('PRODUCCIÓN KG', xIzq + cFecha + cTurno + cOper + cProd/2, yIzq + 3.5, { align: 'center' });
-  docPDF.text('MERMA KG', xIzq + cFecha + cTurno + cOper + cProd + cMerm/2, yIzq + 3.5, { align: 'center' });
+  // Headers EXT
+  headerCell(xIzq, yIzq, cFecha, 5, 'FECHA', { size: 7 });
+  headerCell(xIzq + cFecha, yIzq, cTurno, 5, 'TURNO', { size: 7 });
+  headerCell(xIzq + cFecha + cTurno, yIzq, cOper, 5, 'OPERADOR', { size: 7 });
+  headerCell(xIzq + cFecha + cTurno + cOper, yIzq, cProd, 5, 'PRODUCCIÓN KG', { size: 7 });
+  headerCell(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 5, 'MERMA KG', { size: 7 });
   yIzq += 5;
   
-  // 12 filas vacías para captura
+  // 12 filas vacías
+  reset();
   const hExtr = 5;
   for (let i = 0; i < 12; i++) {
-    docPDF.rect(xIzq, yIzq, cFecha, hExtr);
-    docPDF.rect(xIzq + cFecha, yIzq, cTurno, hExtr);
-    docPDF.rect(xIzq + cFecha + cTurno, yIzq, cOper, hExtr);
-    docPDF.rect(xIzq + cFecha + cTurno + cOper, yIzq, cProd, hExtr);
-    docPDF.rect(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, hExtr);
+    cellEmpty(xIzq, yIzq, cFecha, hExtr);
+    cellEmpty(xIzq + cFecha, yIzq, cTurno, hExtr);
+    cellEmpty(xIzq + cFecha + cTurno, yIzq, cOper, hExtr);
+    cellEmpty(xIzq + cFecha + cTurno + cOper, yIzq, cProd, hExtr);
+    cellEmpty(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, hExtr);
     yIzq += hExtr;
   }
   
-  // Total EXT
+  // Total EXT (fila con fondo claro)
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.rect(xIzq, yIzq, cFecha + cTurno + cOper, 6, 'FD');
+  docPDF.setTextColor(0, 0, 0);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(8);
-  docPDF.setFillColor(245, 245, 245);
-  docPDF.rect(xIzq, yIzq, cFecha + cTurno + cOper, 6, 'FD');
   docPDF.text('TOTAL EN KG :', xIzq + 2, yIzq + 4);
-  docPDF.rect(xIzq + cFecha + cTurno + cOper, yIzq, cProd, 6);
-  docPDF.rect(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 6);
+  reset();
+  cellEmpty(xIzq + cFecha + cTurno + cOper, yIzq, cProd, 6);
+  cellEmpty(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 6);
   yIzq += 6;
   
   // -------- OBSERVACIONES (recuadro derecho) --------
-  let yObs = y;
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(8);
-  docPDF.setFillColor(220, 220, 220);
-  docPDF.rect(xLP, yObs, wLP, 5, 'FD');
-  docPDF.text('OBSERVACIONES', xLP + wLP/2, yObs + 3.5, { align: 'center' });
+  let yObs = yDespuesFormula - hFormula*4 - 4 - 5 - 2;  // alineado con tabla EXT
+  yObs = y;  // y está al final de la fórmula
+  headerCell(xLP, yObs, wLP, 5, 'OBSERVACIONES');
   yObs += 5;
-  // Caja grande de observaciones
   const altoObs = yIzq - yObs - 1;
-  docPDF.rect(xLP, yObs, wLP, altoObs);
+  reset();
+  cellEmpty(xLP, yObs, wLP, altoObs);
   
   y = yIzq + 3;
   
   // -------- SUB-PROCESO BOLSEO --------
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(8);
-  docPDF.setFillColor(220, 220, 220);
-  docPDF.rect(margen, y, W - margen*2, 5, 'FD');
-  docPDF.text('SUB - PROCESO (BOLSEO / SUB-PROCESO)', W/2, y + 3.5, { align: 'center' });
+  headerCell(margen, y, W - margen*2, 5, 'SUB - PROCESO (BOLSEO / SUB-PROCESO)');
   y += 5;
   
-  // Tabla bolseo (mismo formato + columna Especificaciones)
+  // Tabla bolseo
   const wBol = W - margen*2;
   const bFecha = wBol * 0.12;
   const bTurno = wBol * 0.08;
@@ -16541,66 +16799,86 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   const bMerm = wBol * 0.12;
   const bEsp = wBol - bFecha - bTurno - bOper - bProd - bMerm;
   
-  docPDF.setFontSize(7);
-  docPDF.rect(margen, y, bFecha, 5, 'FD');
-  docPDF.rect(margen + bFecha, y, bTurno, 5, 'FD');
-  docPDF.rect(margen + bFecha + bTurno, y, bOper, 5, 'FD');
-  docPDF.rect(margen + bFecha + bTurno + bOper, y, bProd, 5, 'FD');
-  docPDF.rect(margen + bFecha + bTurno + bOper + bProd, y, bMerm, 5, 'FD');
-  docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm, y, bEsp, 5, 'FD');
-  docPDF.text('FECHA', margen + bFecha/2, y + 3.5, { align: 'center' });
-  docPDF.text('TURNO', margen + bFecha + bTurno/2, y + 3.5, { align: 'center' });
-  docPDF.text('OPERADOR', margen + bFecha + bTurno + bOper/2, y + 3.5, { align: 'center' });
-  docPDF.text('PRODUCCIÓN', margen + bFecha + bTurno + bOper + bProd/2, y + 3.5, { align: 'center' });
-  docPDF.text('MERMA', margen + bFecha + bTurno + bOper + bProd + bMerm/2, y + 3.5, { align: 'center' });
-  docPDF.text('ESPECIFICACIONES DE EMPAQUE', margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp/2, y + 3.5, { align: 'center' });
+  headerCell(margen, y, bFecha, 5, 'FECHA', { size: 7 });
+  headerCell(margen + bFecha, y, bTurno, 5, 'TURNO', { size: 7 });
+  headerCell(margen + bFecha + bTurno, y, bOper, 5, 'OPERADOR', { size: 7 });
+  headerCell(margen + bFecha + bTurno + bOper, y, bProd, 5, 'PRODUCCIÓN', { size: 7 });
+  headerCell(margen + bFecha + bTurno + bOper + bProd, y, bMerm, 5, 'MERMA', { size: 7 });
+  headerCell(margen + bFecha + bTurno + bOper + bProd + bMerm, y, bEsp, 5, 'ESPECIFICACIONES DE EMPAQUE', { size: 7 });
   y += 5;
   
   // 12 filas vacías
+  reset();
   for (let i = 0; i < 12; i++) {
-    docPDF.rect(margen, y, bFecha, 5);
-    docPDF.rect(margen + bFecha, y, bTurno, 5);
-    docPDF.rect(margen + bFecha + bTurno, y, bOper, 5);
-    docPDF.rect(margen + bFecha + bTurno + bOper, y, bProd, 5);
-    docPDF.rect(margen + bFecha + bTurno + bOper + bProd, y, bMerm, 5);
-    docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm, y, bEsp, 5);
+    cellEmpty(margen, y, bFecha, 5);
+    cellEmpty(margen + bFecha, y, bTurno, 5);
+    cellEmpty(margen + bFecha + bTurno, y, bOper, 5);
+    cellEmpty(margen + bFecha + bTurno + bOper, y, bProd, 5);
+    cellEmpty(margen + bFecha + bTurno + bOper + bProd, y, bMerm, 5);
+    cellEmpty(margen + bFecha + bTurno + bOper + bProd + bMerm, y, bEsp, 5);
     y += 5;
   }
   
-  // -------- MERMA BOLSEO + TOTAL PRODUCCION --------
+  // -------- MERMA BOLSEO + TOTAL PRODUCCIÓN FINAL --------
+  // Caja izquierda: MERMA BOLSEO label
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.rect(margen, y, bFecha + bTurno, 12, 'FD');
+  docPDF.setTextColor(0, 0, 0);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(8);
-  docPDF.setFillColor(245, 245, 245);
-  docPDF.rect(margen, y, bFecha + bTurno, 12, 'FD');
   docPDF.text('MERMA', margen + (bFecha + bTurno)/2, y + 5, { align: 'center' });
   docPDF.text('BOLSEO', margen + (bFecha + bTurno)/2, y + 9, { align: 'center' });
   
-  docPDF.rect(margen + bFecha + bTurno, y, bOper, 12);
+  reset();
+  cellEmpty(margen + bFecha + bTurno, y, bOper, 12);
   
+  // TOTAL DE PRODUCCIÓN FINAL label
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.setDrawColor(0, 0, 0);
   docPDF.rect(margen + bFecha + bTurno + bOper, y, bProd, 12, 'FD');
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
   docPDF.text('TOTAL DE', margen + bFecha + bTurno + bOper + bProd/2, y + 5, { align: 'center' });
   docPDF.text('PRODUCCIÓN FINAL', margen + bFecha + bTurno + bOper + bProd/2, y + 9, { align: 'center' });
   
-  docPDF.rect(margen + bFecha + bTurno + bOper + bProd, y, bMerm + bEsp - 16, 12);
+  reset();
+  const wRestante = bMerm + bEsp - 16;
+  cellEmpty(margen + bFecha + bTurno + bOper + bProd, y, wRestante, 12);
+  
   // KG y PZS
-  docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 16, y, 16, 6, 'FD');
-  docPDF.text('KG', margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 8, y + 4, { align: 'center' });
-  docPDF.rect(margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 16, y + 6, 16, 6, 'FD');
-  docPDF.text('PZS', margen + bFecha + bTurno + bOper + bProd + bMerm + bEsp - 8, y + 10, { align: 'center' });
+  const xKgPzs = margen + bFecha + bTurno + bOper + bProd + wRestante;
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.rect(xKgPzs, y, 16, 6, 'FD');
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.text('KG', xKgPzs + 8, y + 4, { align: 'center' });
+  
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.rect(xKgPzs, y + 6, 16, 6, 'FD');
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.text('PZS', xKgPzs + 8, y + 10, { align: 'center' });
   y += 12;
   
   // Fecha término
   y += 3;
+  reset();
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(9);
   docPDF.text('FECHA DE TÉRMINO DE ORDEN:', margen, y + 4);
-  docPDF.rect(margen + 60, y, 50, 6);
+  cellEmpty(margen + 60, y, 50, 6);
   
   // Firmas
   y += 18;
+  reset();
   const firmaAncho = 60;
-  docPDF.setFontSize(8);
+  docPDF.setDrawColor(0, 0, 0);
   docPDF.line(margen + 5, y, margen + 5 + firmaAncho, y);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
   docPDF.text('LIBERACIÓN DE PRODUCTO', margen + 5 + firmaAncho/2, y + 4, { align: 'center' });
   
   docPDF.line(W/2 - firmaAncho/2, y, W/2 + firmaAncho/2, y);
@@ -16610,6 +16888,7 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   docPDF.text('RECEPCIÓN DE ALMACÉN', W - margen - 5 - firmaAncho/2, y + 4, { align: 'center' });
   
   // Footer
+  reset();
   docPDF.setFontSize(6);
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(120, 120, 120);
@@ -16905,8 +17184,12 @@ window.imprimirEtiquetasPDF = (odpId) => {
     // Preview en modal
     const blob = docPDF.output('blob');
     const url = URL.createObjectURL(blob);
-    state.pdfPreviewUrl = url;
-    state.pdfPreviewFilename = `Etiquetas_${odp.folio || odpId.slice(0,6)}.pdf`;
+    state.pdfPreview = {
+      blobUrl: url,
+      filename: `Etiquetas_${odp.folio || odpId.slice(0,6)}.pdf`,
+      titulo: `Etiquetas (${numEtiquetas} etiq · ${Math.ceil(numEtiquetas/PORHOJA)} hoja${Math.ceil(numEtiquetas/PORHOJA) > 1 ? 's' : ''})`,
+      blob: blob
+    };
     state.modal = 'pdf-preview';
     render();
     
@@ -24504,6 +24787,7 @@ window.confirmarProgramarODP = async (odpId) => {
     
     await updateDoc(doc(db, 'ordenes_produccion', odpId), {
       estatus: 'programada',
+      proceso_estatus_actual: 'esperando',  // 🆕 inicia en cola, no en proceso
       fecha_inicio_programada: fini,
       fecha_entrega_programada: $('#podp-fent').value || null,
       ruta_procesos: ruta,
