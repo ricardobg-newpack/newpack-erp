@@ -16641,6 +16641,10 @@ window.imprimirOrdenProduccionPDF = (odpId) => {
     docPDF.addPage('letter', 'portrait');
     _renderHojaEspecificaciones(docPDF, odp, producto);
     
+    // ============= PÁGINA 3: REGISTRO DETALLADO (ROLLO POR ROLLO + BULTO POR BULTO) =============
+    docPDF.addPage('letter', 'portrait');
+    _renderHojaRegistroDetallado(docPDF, odp, producto, pedido);
+    
     // Mostrar preview en modal
     const blob = docPDF.output('blob');
     const url = URL.createObjectURL(blob);
@@ -16843,42 +16847,14 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   
   y += hFila * 2;
   
-  // -------- FÓRMULA AUTORIZADA (en blanco) --------
-  y += 2;
-  headerCell(xLP, y, wLP, 5, 'FÓRMULA AUTORIZADA');
-  y += 5;
-  
-  const colResina = wLP * 0.40;
-  const colPct = wLP * 0.15;
-  const colKg = wLP * 0.20;
-  const colLote = wLP * 0.25;
-  
-  // Sub-headers de fórmula
-  headerCell(xLP, y, colResina, 4, 'RESINA', { size: 7 });
-  headerCell(xLP + colResina, y, colPct, 4, '%', { size: 7 });
-  headerCell(xLP + colResina + colPct, y, colKg, 4, 'KG', { size: 7 });
-  headerCell(xLP + colResina + colPct + colKg, y, colLote, 4, 'LOTE', { size: 7 });
-  y += 4;
-  
-  // 4 filas vacías
-  reset();
-  const hFormula = 5;
-  for (let i = 0; i < 4; i++) {
-    cellEmpty(xLP, y, colResina, hFormula);
-    cellEmpty(xLP + colResina, y, colPct, hFormula);
-    cellEmpty(xLP + colResina + colPct, y, colKg, hFormula);
-    cellEmpty(xLP + colResina + colPct + colKg, y, colLote, hFormula);
-    y += hFormula;
-  }
-  
-  // Guardamos y para volver
-  const yDespuesFormula = y;
-  // Resetear y para columna izquierda (tabla EXT)
-  let yIzq = yDespuesFormula - 4 - hFormula*4 - 5 - 2;
+  // 🆕 OBSERVACIONES (recuadro derecho grande, sustituye FÓRMULA + OBSERVACIONES viejos)
+  // El lado izquierdo seguirá teniendo la tabla EXT
+  const yObsInicio = y + 2;
   
   // -------- TABLA CAPTURA EXTRUSIÓN (manual) --------
   const xIzq = margen;
   const wIzq = xLP - margen - 2;
+  let yIzq = y + 2;
   
   const cFecha = wIzq * 0.18;
   const cTurno = wIzq * 0.12;
@@ -16919,14 +16895,20 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   cellEmpty(xIzq + cFecha + cTurno + cOper + cProd, yIzq, cMerm, 6);
   yIzq += 6;
   
-  // -------- OBSERVACIONES (recuadro derecho) --------
-  let yObs = yDespuesFormula - hFormula*4 - 4 - 5 - 2;  // alineado con tabla EXT
-  yObs = y;  // y está al final de la fórmula
-  headerCell(xLP, yObs, wLP, 5, 'OBSERVACIONES');
-  yObs += 5;
+  // -------- OBSERVACIONES (recuadro derecho GRANDE, ahora ocupa todo el espacio) --------
+  headerCell(xLP, yObsInicio, wLP, 5, 'OBSERVACIONES');
+  let yObs = yObsInicio + 5;
   const altoObs = yIzq - yObs - 1;
   reset();
   cellEmpty(xLP, yObs, wLP, altoObs);
+  
+  // Renglones internos (líneas tenues para escritura)
+  docPDF.setDrawColor(225, 225, 225);
+  const renglonH = 6;
+  for (let yLine = yObs + renglonH; yLine < yObs + altoObs - 2; yLine += renglonH) {
+    docPDF.line(xLP + 2, yLine, xLP + wLP - 2, yLine);
+  }
+  docPDF.setDrawColor(0, 0, 0);
   
   y = yIzq + 3;
   
@@ -17037,7 +17019,7 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(120, 120, 120);
   const ahora = new Date().toLocaleString('es-MX');
-  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 1/2`, W/2, H - 5, { align: 'center' });
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 1/3`, W/2, H - 5, { align: 'center' });
   docPDF.setTextColor(0, 0, 0);
 }
 
@@ -17137,6 +17119,7 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   y += 16;
   
   // ============ MEZCLA / FÓRMULA ============
+  // ============ MEZCLA / FÓRMULA POR CAPAS ============
   docPDF.setFillColor(31, 178, 75);
   docPDF.rect(margen, y, W - margen*2, 6, 'F');
   docPDF.setTextColor(255, 255, 255);
@@ -17209,6 +17192,7 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
     }
   }
   
+  
   // Firmas
   y = Math.max(y + 10, H - 35);
   docPDF.setFont('helvetica', 'bold');
@@ -17225,7 +17209,225 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(120, 120, 120);
   const ahora = new Date().toLocaleString('es-MX');
-  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 2/2`, W/2, H - 5, { align: 'center' });
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 2/3`, W/2, H - 5, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+}
+
+
+// ============================================================
+// 📋 HOJA 3: REGISTRO DETALLADO (ROLLO X ROLLO en EXT + BULTO X BULTO en BOLSEO)
+// ============================================================
+function _renderHojaRegistroDetallado(docPDF, odp, producto, pedido) {
+  const W = 215.9, H = 279.4, margen = 8;
+  
+  // Helpers de color
+  const reset = () => {
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.setFillColor(255, 255, 255);
+  };
+  const headerCell = (x, y, w, h, texto, opts = {}) => {
+    docPDF.setFillColor(220, 220, 220);
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.rect(x, y, w, h, 'FD');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(opts.size || 8);
+    docPDF.text(texto, x + w/2, y + h/2 + 1.2, { align: 'center' });
+  };
+  const cellEmpty = (x, y, w, h) => {
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.rect(x, y, w, h);
+  };
+  
+  // -------- Logo + título --------
+  try {
+    if (window._logoNewPackBase64) {
+      docPDF.addImage(window._logoNewPackBase64, 'PNG', margen, 8, 22, 16);
+    }
+  } catch (e) {}
+  
+  reset();
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(16);
+  docPDF.text('REGISTRO DETALLADO DE PRODUCCIÓN', W/2, 14, { align: 'center' });
+  docPDF.setFontSize(9);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text(`ODP: ${odp.folio || ''}  ·  ${odp.producto_codigo || ''}  ·  Cliente: ${odp.cliente_codigo || pedido?.cliente_codigo || 'STOCK'}`, W/2, 20, { align: 'center' });
+  
+  let y = 28;
+  
+  // ====================================================
+  // SECCIÓN 1: EXTRUSIÓN — ROLLO POR ROLLO
+  // ====================================================
+  docPDF.setFillColor(220, 38, 38); // rojo extrusión
+  docPDF.rect(margen, y, W - margen*2, 6, 'F');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  docPDF.text('EXTRUSION - REGISTRO ROLLO POR ROLLO', margen + 3, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  y += 7;
+  
+  // Tabla de rollos (16 filas, 2 columnas de 8 rollos cada una para aprovechar el ancho)
+  const wTabRollo = (W - margen*2 - 4) / 2; // dos columnas con 4mm de gap
+  const xCol1 = margen;
+  const xCol2 = margen + wTabRollo + 4;
+  
+  // Columnas: # | Fecha | Turno | Operador | Peso kg
+  const colsRollo = [
+    { label: '#', w: 0.08 },
+    { label: 'FECHA', w: 0.20 },
+    { label: 'TURNO', w: 0.14 },
+    { label: 'OPERADOR', w: 0.32 },
+    { label: 'PESO KG', w: 0.26 }
+  ];
+  
+  function dibujarTablaRollos(xBase, yBase, numInicial) {
+    let yt = yBase;
+    // Headers
+    let xt = xBase;
+    colsRollo.forEach(c => {
+      headerCell(xt, yt, wTabRollo * c.w, 5, c.label, { size: 7 });
+      xt += wTabRollo * c.w;
+    });
+    yt += 5;
+    // 14 filas vacías
+    reset();
+    const hFila = 5;
+    for (let i = 0; i < 14; i++) {
+      xt = xBase;
+      // Dibujar celdas vacías PRIMERO
+      colsRollo.forEach(c => {
+        cellEmpty(xt, yt, wTabRollo * c.w, hFila);
+        xt += wTabRollo * c.w;
+      });
+      // Luego el número de rollo encima (tenue)
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7);
+      docPDF.setTextColor(150, 150, 150);
+      docPDF.text(String(numInicial + i), xBase + (wTabRollo * 0.08)/2, yt + 3.5, { align: 'center' });
+      docPDF.setTextColor(0, 0, 0);
+      yt += hFila;
+    }
+    // Total
+    docPDF.setFillColor(245, 245, 245);
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.rect(xBase, yt, wTabRollo * 0.74, 6, 'FD');
+    docPDF.setTextColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8);
+    docPDF.text('TOTAL EN KG:', xBase + 2, yt + 4);
+    cellEmpty(xBase + wTabRollo * 0.74, yt, wTabRollo * 0.26, 6);
+    return yt + 6;
+  }
+  
+  // Dibujar las dos columnas (1-14 y 15-28)
+  const yCol1End = dibujarTablaRollos(xCol1, y, 1);
+  const yCol2End = dibujarTablaRollos(xCol2, y, 15);
+  
+  y = Math.max(yCol1End, yCol2End) + 4;
+  
+  // ====================================================
+  // SECCIÓN 2: SEGUNDO PROCESO (BOLSEO) — BULTO POR BULTO
+  // ====================================================
+  // Determinar nombre del segundo proceso
+  const ruta = odp.ruta_procesos || [];
+  let nombreSubProceso = 'BOLSEO';
+  if (ruta.includes('P3-BS')) nombreSubProceso = 'BOLSA SUELTA';
+  else if (ruta.includes('P4-BR')) nombreSubProceso = 'BOLSA EN ROLLO';
+  else if (ruta.includes('P5-PEL')) nombreSubProceso = 'PELÍCULA / SELLADO';
+  
+  const um = (odp.um || 'kg').toLowerCase();
+  const umLabel = { kg: 'KG', pza: 'PZA', millar: 'MILLAR', rollo: 'ROLLO', m: 'METRO' }[um] || 'KG';
+  
+  docPDF.setFillColor(59, 130, 246); // azul bolseo
+  docPDF.rect(margen, y, W - margen*2, 6, 'F');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  docPDF.text(`${nombreSubProceso} - REGISTRO BULTO POR BULTO`, margen + 3, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  y += 7;
+  
+  // Tabla de bultos: # | Fecha | Turno | Operador | Peso kg | Contenido (UM original)
+  const colsBulto = [
+    { label: '#', w: 0.06 },
+    { label: 'FECHA', w: 0.14 },
+    { label: 'TURNO', w: 0.10 },
+    { label: 'OPERADOR', w: 0.24 },
+    { label: 'PESO KG', w: 0.13 },
+    { label: `CONTENIDO (${umLabel})`, w: 0.18 },
+    { label: 'OBSERV.', w: 0.15 }
+  ];
+  
+  const wTabBulto = W - margen*2;
+  let xt2 = margen;
+  colsBulto.forEach(c => {
+    headerCell(xt2, y, wTabBulto * c.w, 5, c.label, { size: 7 });
+    xt2 += wTabBulto * c.w;
+  });
+  y += 5;
+  
+  reset();
+  // Calcular cuántas filas caben hasta el footer
+  const yMaxBulto = H - 30; // dejar espacio para firmas + footer
+  const hFilaBulto = 5;
+  const filasBulto = Math.floor((yMaxBulto - y) / hFilaBulto);
+  
+  for (let i = 0; i < filasBulto; i++) {
+    xt2 = margen;
+    // # pre-llenado tenue
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(7);
+    docPDF.setTextColor(150, 150, 150);
+    docPDF.text(String(i + 1), xt2 + (wTabBulto * 0.06)/2, y + 3.5, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+    
+    colsBulto.forEach(c => {
+      cellEmpty(xt2, y, wTabBulto * c.w, hFilaBulto);
+      xt2 += wTabBulto * c.w;
+    });
+    y += hFilaBulto;
+  }
+  
+  // Total fila
+  docPDF.setFillColor(245, 245, 245);
+  docPDF.setDrawColor(0, 0, 0);
+  const wTotal = wTabBulto * (0.06 + 0.14 + 0.10 + 0.24);
+  docPDF.rect(margen, y, wTotal, 6, 'FD');
+  docPDF.setTextColor(0, 0, 0);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.text('TOTAL:', margen + 2, y + 4);
+  cellEmpty(margen + wTotal, y, wTabBulto * 0.13, 6);
+  cellEmpty(margen + wTotal + wTabBulto * 0.13, y, wTabBulto * 0.18, 6);
+  cellEmpty(margen + wTotal + wTabBulto * 0.13 + wTabBulto * 0.18, y, wTabBulto * 0.15, 6);
+  y += 6;
+  
+  // Firmas al final
+  y = Math.max(y + 6, H - 18);
+  reset();
+  const firmaAncho = 55;
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.line(margen + 5, y, margen + 5 + firmaAncho, y);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(7);
+  docPDF.text('OPERADOR EXT', margen + 5 + firmaAncho/2, y + 4, { align: 'center' });
+  
+  docPDF.line(W/2 - firmaAncho/2, y, W/2 + firmaAncho/2, y);
+  docPDF.text('OPERADOR BOLSEO', W/2, y + 4, { align: 'center' });
+  
+  docPDF.line(W - margen - 5 - firmaAncho, y, W - margen - 5, y);
+  docPDF.text('SUPERVISOR / CALIDAD', W - margen - 5 - firmaAncho/2, y + 4, { align: 'center' });
+  
+  // Footer
+  reset();
+  docPDF.setFontSize(6);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(120, 120, 120);
+  const ahora = new Date().toLocaleString('es-MX');
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 3/3`, W/2, H - 5, { align: 'center' });
   docPDF.setTextColor(0, 0, 0);
 }
 
