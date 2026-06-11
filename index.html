@@ -213,6 +213,90 @@ const PROCESOS = [
 ];
 window.PROCESOS = PROCESOS;
 
+// 🆕 Constantes de estatus de ODPs por categoría (para seguimiento consistente)
+const ODP_ESTATUS = {
+  // Antes de iniciar producción
+  PRE_PRODUCCION: ['pendiente_planeacion', 'programada'],
+  // Producción activa
+  EN_PRODUCCION: ['en_produccion'],
+  // Esperando liberación de calidad (producción ya terminó pero falta validar)
+  EN_CALIDAD: ['pendiente_calidad'],
+  // Producción terminada, en flujo logístico (ya pasó calidad)
+  EN_LOGISTICA: ['liberada_empaque', 'pendiente_almacen', 'en_almacen_planta', 
+                  'en_transito_cedis', 'en_transito_cedis_mty', 'en_cedis_mty', 
+                  'en_cedis_mex', 'embarcada'],
+  // Estados terminales (ciclo cerrado)
+  TERMINAL_OK: ['entregada', 'completada', 'liberada'],
+  TERMINAL_NEGATIVO: ['cancelada', 'rechazada']
+};
+window.ODP_ESTATUS = ODP_ESTATUS;
+
+// Helper: ¿esta ODP ya pasó producción? (ya está en calidad, logística o terminal)
+function odpYaTerminoProduccion(odp) {
+  if (!odp || !odp.estatus) return false;
+  return ODP_ESTATUS.EN_CALIDAD.includes(odp.estatus) ||
+         ODP_ESTATUS.EN_LOGISTICA.includes(odp.estatus) ||
+         ODP_ESTATUS.TERMINAL_OK.includes(odp.estatus) ||
+         ODP_ESTATUS.TERMINAL_NEGATIVO.includes(odp.estatus);
+}
+window.odpYaTerminoProduccion = odpYaTerminoProduccion;
+
+// Helper: ¿esta ODP está realmente activa? (aún requiere acción de producción)
+function odpEstaActiva(odp) {
+  if (!odp || odp.archivada) return false;
+  return ODP_ESTATUS.PRE_PRODUCCION.includes(odp.estatus) ||
+         ODP_ESTATUS.EN_PRODUCCION.includes(odp.estatus);
+}
+window.odpEstaActiva = odpEstaActiva;
+
+// Helper: calcular estado real del pedido basado en sus ODPs (no en pedido.estatus)
+// Retorna: 'pendiente_aprobacion', 'aprobado', 'en_proceso', 'pendiente_calidad', 
+//          'en_logistica', 'completado', 'cancelado'
+function calcularEstadoRealPedido(pedido, odps) {
+  if (!pedido) return 'desconocido';
+  if (pedido.estatus === 'cancelado') return 'cancelado';
+  if (pedido.estatus === 'pendiente_aprobacion') return 'pendiente_aprobacion';
+  
+  const odpsValidas = (odps || []).filter(o => !o.archivada);
+  
+  // Sin ODPs aún (recién creado y aprobado)
+  if (odpsValidas.length === 0) {
+    return pedido.estatus === 'aprobado' ? 'aprobado' : (pedido.estatus || 'pendiente_aprobacion');
+  }
+  
+  // ODPs no canceladas
+  const odpsActivas = odpsValidas.filter(o => !ODP_ESTATUS.TERMINAL_NEGATIVO.includes(o.estatus));
+  
+  if (odpsActivas.length === 0) {
+    return 'cancelado'; // todas canceladas/rechazadas
+  }
+  
+  // Contar por categoría
+  const enProd = odpsActivas.filter(o => 
+    ODP_ESTATUS.PRE_PRODUCCION.includes(o.estatus) || 
+    ODP_ESTATUS.EN_PRODUCCION.includes(o.estatus)
+  );
+  const enCalidad = odpsActivas.filter(o => ODP_ESTATUS.EN_CALIDAD.includes(o.estatus));
+  const enLogistica = odpsActivas.filter(o => ODP_ESTATUS.EN_LOGISTICA.includes(o.estatus));
+  const terminalOk = odpsActivas.filter(o => ODP_ESTATUS.TERMINAL_OK.includes(o.estatus));
+  
+  // TODAS las ODPs activas están entregadas/completadas → completado
+  if (terminalOk.length === odpsActivas.length) return 'completado';
+  
+  // TODAS pasaron producción (calidad + logística + entregadas) → en logística
+  if (enProd.length === 0) {
+    // Si la mayoría está en logística o entregada → "en logística"
+    return 'en_logistica';
+  }
+  
+  // Aún hay producción activa
+  if (enProd.length > 0) return 'en_proceso';
+  if (enCalidad.length > 0) return 'pendiente_calidad';
+  
+  return pedido.estatus || 'en_proceso';
+}
+window.calcularEstadoRealPedido = calcularEstadoRealPedido;
+
 // ============================================================
 // 🔧 MTTO — FAMILIAS DE PRODUCTOS DE MANTENIMIENTO
 // ============================================================
@@ -5436,6 +5520,19 @@ function renderSeguimientoPedidos() {
   // PIs no cancelados ni archivados
   let pedidos = pedidosBase.filter(p => p.estatus !== 'cancelado');
   
+  // 🔀 Pre-calcular estado real de cada pedido (basado en ODPs)
+  const odpsPorPedido = {};
+  (state.ordenes_produccion || []).forEach(o => {
+    if (!odpsPorPedido[o.pedido_id]) odpsPorPedido[o.pedido_id] = [];
+    odpsPorPedido[o.pedido_id].push(o);
+  });
+  
+  // Mapa de pedidoId → estado real
+  const estadoRealMap = {};
+  pedidosBase.forEach(p => {
+    estadoRealMap[p.id] = calcularEstadoRealPedido(p, odpsPorPedido[p.id] || []);
+  });
+  
   // Filtros por texto
   if (filtroTexto) {
     pedidos = pedidos.filter(p => 
@@ -5443,17 +5540,26 @@ function renderSeguimientoPedidos() {
     );
   }
   
-  // Filtros por estado
+  // 🆕 Filtros por estado REAL (no por campo legacy del PI)
   if (filtroEstado === 'activos') {
-    pedidos = pedidos.filter(p => p.estatus !== 'completado' && p.estatus !== 'entregado');
-  } else if (filtroEstado === 'completados') {
-    pedidos = pedidos.filter(p => p.estatus === 'completado' || p.estatus === 'entregado');
-  } else if (filtroEstado === 'sin_odp') {
-    // PIs sin ODPs asignadas (huérfanos)
+    // Activos: requieren acción de PRODUCCIÓN aún (no cuenta logística/calidad/entregado)
     pedidos = pedidos.filter(p => {
-      const odps = (state.ordenes_produccion || []).filter(o => o.pedido_id === p.id && !o.archivada);
-      return odps.length === 0;
+      const er = estadoRealMap[p.id];
+      return ['pendiente_aprobacion','aprobado','en_proceso'].includes(er);
     });
+  } else if (filtroEstado === 'calidad') {
+    pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'pendiente_calidad');
+  } else if (filtroEstado === 'logistica') {
+    pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'en_logistica');
+  } else if (filtroEstado === 'completados') {
+    pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'completado');
+  } else if (filtroEstado === 'sin_odp') {
+    pedidos = pedidos.filter(p => {
+      const odps = odpsPorPedido[p.id] || [];
+      return odps.filter(o => !o.archivada).length === 0;
+    });
+  } else if (filtroEstado === 'todos') {
+    // Sin filtro adicional
   }
   
   // Ordenar por más reciente
@@ -5461,15 +5567,18 @@ function renderSeguimientoPedidos() {
   
   // PIs sin ODPs (para botón de limpieza masiva)
   const pisSinODP = pedidosBase.filter(p => 
-    p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado' &&
-    !(state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada)
+    p.estatus !== 'cancelado' && estadoRealMap[p.id] !== 'completado' &&
+    (odpsPorPedido[p.id] || []).filter(o => !o.archivada).length === 0
   );
   
-  // KPIs
-  const activosConODP = pedidosBase.filter(p => 
-    p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado' &&
-    (state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada)
-  ).length;
+  // 🆕 KPIs basados en estados reales
+  const activosConODP = pedidosBase.filter(p => {
+    const er = estadoRealMap[p.id];
+    return ['en_proceso'].includes(er);
+  }).length;
+  const pedidosEnCalidad = pedidosBase.filter(p => estadoRealMap[p.id] === 'pendiente_calidad').length;
+  const pedidosEnLogistica = pedidosBase.filter(p => estadoRealMap[p.id] === 'en_logistica').length;
+  const pedidosCompletados = pedidosBase.filter(p => estadoRealMap[p.id] === 'completado').length;
   const odpsCorriendo = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso').length;
   const odpsEsperando = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'esperando').length;
   const odpsCalidad = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'pendiente_calidad').length;
@@ -5523,10 +5632,20 @@ function renderSeguimientoPedidos() {
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;background:#fff;padding:10px;border-radius:8px;border:1px solid #e2e8f0;">
       <input class="input" id="filtro-seguimiento" style="max-width:300px;flex:1;" placeholder="Buscar PI, cliente..." value="${state.filtros.seguimiento || ''}" autocomplete="off" />
       <button onclick="state.filtros.seguimiento_estado='activos';render();" style="padding:6px 14px;background:${filtroEstado === 'activos' ? '#1e40af' : '#fff'};color:${filtroEstado === 'activos' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'activos' ? '#1e40af' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
-        🔄 Activos
+        🔄 Producción (${activosConODP})
       </button>
+      ${pedidosEnCalidad > 0 ? `
+        <button onclick="state.filtros.seguimiento_estado='calidad';render();" style="padding:6px 14px;background:${filtroEstado === 'calidad' ? '#a16207' : '#fff'};color:${filtroEstado === 'calidad' ? '#fff' : '#a16207'};border:1.5px solid #a16207;border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+          🟡 En Calidad (${pedidosEnCalidad})
+        </button>
+      ` : ''}
+      ${pedidosEnLogistica > 0 ? `
+        <button onclick="state.filtros.seguimiento_estado='logistica';render();" style="padding:6px 14px;background:${filtroEstado === 'logistica' ? '#0891b2' : '#fff'};color:${filtroEstado === 'logistica' ? '#fff' : '#0891b2'};border:1.5px solid #0891b2;border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
+          🚚 En Logística (${pedidosEnLogistica})
+        </button>
+      ` : ''}
       <button onclick="state.filtros.seguimiento_estado='completados';render();" style="padding:6px 14px;background:${filtroEstado === 'completados' ? '#16a34a' : '#fff'};color:${filtroEstado === 'completados' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'completados' ? '#16a34a' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
-        ✅ Completados
+        ✅ Entregados (${pedidosCompletados})
       </button>
       ${pisSinODP.length > 0 ? `
         <button onclick="state.filtros.seguimiento_estado='sin_odp';render();" style="padding:6px 14px;background:${filtroEstado === 'sin_odp' ? '#dc2626' : '#fff'};color:${filtroEstado === 'sin_odp' ? '#fff' : '#dc2626'};border:1.5px solid #dc2626;border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
@@ -5560,36 +5679,17 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
   // Tarimas asociadas
   const tarimas = (state.tarimas || []).filter(t => t.pedido_folio === pedido.folio);
   
-  // 🔀 CALCULAR ESTADO REAL basado en las ODPs (no confiar solo en pedido.estatus)
-  // Para distinguir entre "campo de estatus dice X" y "lo que realmente está pasando"
-  let estadoReal = pedido.estatus;
+  // 🆕 Usar helper centralizado para calcular estado real
+  const estadoReal = calcularEstadoRealPedido(pedido, odps);
   let inconsistencia = '';
   
-  if (odps.length > 0) {
-    const odpsCanceladas = odps.filter(o => o.estatus === 'cancelada').length;
-    const odpsCompletadas = odps.filter(o => o.estatus === 'completada' || o.estatus === 'liberada').length;
-    const odpsCalidad = odps.filter(o => o.estatus === 'pendiente_calidad').length;
-    const odpsEnProd = odps.filter(o => ['programada','en_produccion'].includes(o.estatus)).length;
-    const odpsActivas = odps.length - odpsCanceladas;
-    
-    // Si TODAS las ODPs activas están completadas/liberadas → pedido completo
-    if (odpsActivas > 0 && odpsCompletadas === odpsActivas) {
-      estadoReal = 'completado';
-    } 
-    // Si hay alguna pendiente de calidad y el resto está completo
-    else if (odpsCalidad > 0 && odpsActivas - odpsCanceladas === odpsCalidad + odpsCompletadas) {
-      estadoReal = 'pendiente_calidad';
-    }
-    // Si hay alguna en producción
-    else if (odpsEnProd > 0) {
-      estadoReal = 'en_proceso';
-    }
-    
-    // ⚠ Detectar inconsistencia: pedido dice completado/entregado pero hay ODPs sin terminar
-    if ((pedido.estatus === 'completado' || pedido.estatus === 'entregado') && 
-        odpsCompletadas < odpsActivas) {
-      inconsistencia = `Inconsistencia: marcado como ${pedido.estatus} pero solo ${odpsCompletadas} de ${odpsActivas} ODPs terminaron`;
-    }
+  // Detectar inconsistencia: pedido dice completado/entregado pero hay ODPs en producción
+  if ((pedido.estatus === 'completado' || pedido.estatus === 'entregado') && estadoReal === 'en_proceso') {
+    inconsistencia = `Inconsistencia: el PI dice ${pedido.estatus} pero aún hay ODPs en producción`;
+  }
+  // Inverso: pedido dice activo pero todas las ODPs ya terminaron
+  if (pedido.estatus !== 'completado' && pedido.estatus !== 'cancelado' && estadoReal === 'completado') {
+    inconsistencia = `El PI dice "${pedido.estatus || 'activo'}" pero todas las ODPs ya están entregadas. Click "Corregir" para cerrar el PI.`;
   }
   
   // Usar el estado REAL (no el campo del PI) para colores y etiquetas
@@ -5598,6 +5698,7 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
     aprobado: '#3b82f6', 
     en_proceso: '#7c3aed',
     pendiente_calidad: '#a16207',
+    en_logistica: '#0891b2',
     completado: '#16a34a',
     entregado: '#15803d',
     cancelado: '#dc2626' 
@@ -5608,7 +5709,8 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
     aprobado: '✓ Aprobado · esperando producción',
     en_proceso: '⚙️ En producción',
     pendiente_calidad: '🟡 Esperando liberación de calidad',
-    completado: '✅ Completado',
+    en_logistica: '🚚 En logística / por entregar',
+    completado: '✅ Completado · entregado',
     entregado: '🚚 Entregado',
     cancelado: '✗ Cancelado'
   }[estadoReal] || estadoReal;
@@ -28209,3 +28311,4 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
+  
