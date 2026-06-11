@@ -4594,6 +4594,59 @@ window.migrarUsuariosCALaALP = async () => {
 // ✗ CANCELAR DOCUMENTOS CON DEVOLUCIÓN DE STOCK
 // ============================================================
 
+// 🔧 Recalcular estatus del PI con base en sus ODPs reales
+window.recalcularEstatusPedido = async (pedidoId, folio) => {
+  const p = (state.pedidos || []).find(x => x.id === pedidoId);
+  if (!p) { toast('Pedido no encontrado', 'error'); return; }
+  
+  const odps = (state.ordenes_produccion || []).filter(o => o.pedido_id === pedidoId && !o.archivada);
+  if (odps.length === 0) { toast('Este pedido no tiene ODPs', 'info'); return; }
+  
+  const odpsActivas = odps.filter(o => o.estatus !== 'cancelada');
+  const odpsCompletadas = odps.filter(o => o.estatus === 'completada' || o.estatus === 'liberada').length;
+  const odpsCalidad = odps.filter(o => o.estatus === 'pendiente_calidad').length;
+  const odpsEnProd = odps.filter(o => ['programada','en_produccion'].includes(o.estatus)).length;
+  
+  let nuevoEstatus = p.estatus;
+  if (odpsCompletadas === odpsActivas.length && odpsActivas.length > 0) {
+    nuevoEstatus = 'completado';
+  } else if (odpsCalidad > 0 || odpsEnProd > 0) {
+    nuevoEstatus = 'en_proceso';
+  } else {
+    nuevoEstatus = 'aprobado';
+  }
+  
+  if (nuevoEstatus === p.estatus) {
+    toast('El estatus ya es correcto', 'info');
+    return;
+  }
+  
+  const ok = confirm(
+    `🔧 RECALCULAR estatus de ${folio}\n\n` +
+    `Actual:  ${p.estatus}\n` +
+    `Correcto: ${nuevoEstatus}\n\n` +
+    `(${odpsCompletadas} completadas, ${odpsCalidad} en calidad, ${odpsEnProd} en producción de ${odpsActivas.length} ODPs activas)\n\n` +
+    `¿Aplicar corrección?`
+  );
+  if (!ok) return;
+  
+  try {
+    state.loadingAccion = true; render();
+    await updateDoc(doc(db, 'pedidos', pedidoId), {
+      estatus: nuevoEstatus,
+      estatus_recalculado_at: serverTimestamp(),
+      estatus_recalculado_por: state.user?.nombre || state.user?.email || 'sistema',
+      updated_at: serverTimestamp()
+    });
+    toast(`✅ ${folio} corregido a ${nuevoEstatus}`, 'success');
+  } catch (e) {
+    console.error('Error recalcular:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 // 1️⃣ Cancelar Pedido Interno (PI) y todo lo derivado de él
 window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
   const p = (state.pedidos || []).find(x => x.id === pedidoId);
@@ -4981,7 +5034,7 @@ function renderSeguimientoPedidos() {
     
     <!-- FILTROS -->
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;background:#fff;padding:10px;border-radius:8px;border:1px solid #e2e8f0;">
-      <input class="input" id="filtro-seguimiento" style="max-width:300px;flex:1;" placeholder="Buscar PI, cliente..." value="${state.filtros.seguimiento || ''}" oninput="state.filtros.seguimiento=this.value;render();" />
+      <input class="input" id="filtro-seguimiento" style="max-width:300px;flex:1;" placeholder="Buscar PI, cliente..." value="${state.filtros.seguimiento || ''}" autocomplete="off" />
       <button onclick="state.filtros.seguimiento_estado='activos';render();" style="padding:6px 14px;background:${filtroEstado === 'activos' ? '#1e40af' : '#fff'};color:${filtroEstado === 'activos' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'activos' ? '#1e40af' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
         🔄 Activos
       </button>
@@ -5020,23 +5073,58 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
   // Tarimas asociadas
   const tarimas = (state.tarimas || []).filter(t => t.pedido_folio === pedido.folio);
   
+  // 🔀 CALCULAR ESTADO REAL basado en las ODPs (no confiar solo en pedido.estatus)
+  // Para distinguir entre "campo de estatus dice X" y "lo que realmente está pasando"
+  let estadoReal = pedido.estatus;
+  let inconsistencia = '';
+  
+  if (odps.length > 0) {
+    const odpsCanceladas = odps.filter(o => o.estatus === 'cancelada').length;
+    const odpsCompletadas = odps.filter(o => o.estatus === 'completada' || o.estatus === 'liberada').length;
+    const odpsCalidad = odps.filter(o => o.estatus === 'pendiente_calidad').length;
+    const odpsEnProd = odps.filter(o => ['programada','en_produccion'].includes(o.estatus)).length;
+    const odpsActivas = odps.length - odpsCanceladas;
+    
+    // Si TODAS las ODPs activas están completadas/liberadas → pedido completo
+    if (odpsActivas > 0 && odpsCompletadas === odpsActivas) {
+      estadoReal = 'completado';
+    } 
+    // Si hay alguna pendiente de calidad y el resto está completo
+    else if (odpsCalidad > 0 && odpsActivas - odpsCanceladas === odpsCalidad + odpsCompletadas) {
+      estadoReal = 'pendiente_calidad';
+    }
+    // Si hay alguna en producción
+    else if (odpsEnProd > 0) {
+      estadoReal = 'en_proceso';
+    }
+    
+    // ⚠ Detectar inconsistencia: pedido dice completado/entregado pero hay ODPs sin terminar
+    if ((pedido.estatus === 'completado' || pedido.estatus === 'entregado') && 
+        odpsCompletadas < odpsActivas) {
+      inconsistencia = `Inconsistencia: marcado como ${pedido.estatus} pero solo ${odpsCompletadas} de ${odpsActivas} ODPs terminaron`;
+    }
+  }
+  
+  // Usar el estado REAL (no el campo del PI) para colores y etiquetas
   const colorEst = { 
     pendiente_aprobacion: '#f59e0b', 
     aprobado: '#3b82f6', 
     en_proceso: '#7c3aed',
+    pendiente_calidad: '#a16207',
     completado: '#16a34a',
     entregado: '#15803d',
     cancelado: '#dc2626' 
-  }[pedido.estatus] || '#64748b';
+  }[estadoReal] || '#64748b';
   
   const lblEst = { 
     pendiente_aprobacion: '⏳ Por aprobar', 
     aprobado: '✓ Aprobado · esperando producción',
     en_proceso: '⚙️ En producción',
+    pendiente_calidad: '🟡 Esperando liberación de calidad',
     completado: '✅ Completado',
     entregado: '🚚 Entregado',
     cancelado: '✗ Cancelado'
-  }[pedido.estatus] || pedido.estatus;
+  }[estadoReal] || estadoReal;
   
   return `
     <div style="background:#fff;border:1.5px solid #e2e8f0;border-left:4px solid ${colorEst};border-radius:12px;overflow:hidden;">
@@ -5048,6 +5136,7 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
               <span class="text-mono" style="font-weight:800;font-size:16px;color:#0f172a;">${pedido.folio}</span>
               <span style="padding:3px 10px;background:${colorEst};color:#fff;border-radius:99px;font-size:11px;font-weight:800;">${lblEst}</span>
               ${odps.length === 0 && pedido.estatus === 'aprobado' ? `<span style="padding:3px 10px;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:99px;font-size:10.5px;font-weight:800;">⚠ Sin ODPs</span>` : ''}
+              ${inconsistencia ? `<span title="${inconsistencia}" style="padding:3px 10px;background:#fee2e2;color:#991b1b;border:1px solid #dc2626;border-radius:99px;font-size:10.5px;font-weight:800;cursor:help;">⚠ Estatus inconsistente</span>` : ''}
             </div>
             <div style="font-size:13px;font-weight:700;color:#475569;margin-top:4px;">${pedido.cliente_nombre || '—'}</div>
             <div style="font-size:11px;color:#64748b;margin-top:2px;">
@@ -5055,8 +5144,9 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
               ${pedido.fecha_requerida ? `🎯 Entrega: ${pedido.fecha_requerida} · ` : ''}
               ${odps.length} ODP(s) · ${tarimas.length} tarima(s)
             </div>
+            ${inconsistencia ? `<div style="margin-top:6px;font-size:11px;color:#991b1b;background:#fee2e2;padding:6px 10px;border-radius:6px;border-left:3px solid #dc2626;">⚠ ${inconsistencia}. <button onclick="window.recalcularEstatusPedido('${pedido.id}','${pedido.folio}')" style="background:#dc2626;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:700;margin-left:4px;">🔧 Corregir</button></div>` : ''}
           </div>
-          ${puedeCancelar && pedido.estatus !== 'cancelado' && pedido.estatus !== 'completado' && pedido.estatus !== 'entregado' ? `
+          ${puedeCancelar && pedido.estatus !== 'cancelado' && estadoReal !== 'completado' && estadoReal !== 'entregado' ? `
             <button onclick="window.cancelarPedidoConDevolucion('${pedido.id}','${pedido.folio}')" style="padding:6px 12px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;">
               ✗ Cancelar
             </button>
@@ -22740,6 +22830,17 @@ function attachAppEvents() {
       state.filtros.calidad = e.target.value;
       render();
       const inp = $('#filtro-calidad');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
+  
+  // Filtro Seguimiento de Pedidos
+  if ($('#filtro-seguimiento')) {
+    $('#filtro-seguimiento').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.seguimiento = e.target.value;
+      render();
+      const inp = $('#filtro-seguimiento');
       if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
     };
   }
