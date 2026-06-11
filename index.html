@@ -1722,12 +1722,15 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'inventario_mtto' ? 'active' : ''}" data-vista="inventario_mtto">📊 Inventario MTTO</button>
         ` : ''}
         
+        <!-- 🔒 OCULTO HASTA ACTIVAR EMPAQUE (arranque solo con producción)
         ${esVerEmpaque ? `
           <div class="sidebar-section">Empaque</div>
           <button class="nav-item ${state.vista === 'productos_empaque' ? 'active' : ''}" data-vista="productos_empaque">📦 Productos Empaque</button>
           <button class="nav-item ${state.vista === 'inventario_empaque' ? 'active' : ''}" data-vista="inventario_empaque">📊 Inventario Empaque</button>
         ` : ''}
+        -->
         
+        <!-- 🔒 OCULTOS HASTA ACTIVAR OFICINA/COMERCIALIZADO (arranque solo con producción)
         ${esVerOficina ? `
           <div class="sidebar-section">Oficina</div>
           <button class="nav-item ${state.vista === 'productos_oficina' ? 'active' : ''}" data-vista="productos_oficina">🖇️ Productos Oficina</button>
@@ -1739,6 +1742,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'productos_com' ? 'active' : ''}" data-vista="productos_com">🛒 Productos Comercializados</button>
           <button class="nav-item ${state.vista === 'inventario_com' ? 'active' : ''}" data-vista="inventario_com">📊 Inventario Comercializado</button>
         ` : ''}
+        -->
         
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
@@ -4134,7 +4138,8 @@ function renderKanbanMaquinas() {
         <div style="font-size:11px;opacity:0.9;margin-top:2px;">
           Filtro: ${procFiltro === 'todos' ? 'Todos los procesos' : (getProc(procFiltro)?.nombre || procFiltro)}
           ${cantArchivadas > 0 ? ` · ${cantArchivadas} archivadas (ocultas)` : ''}
-          ${puedeEditarOrden ? ' · 🖱️ Arrastra tarjetas o usa ▲▼ para reordenar' : ''}
+          · 👤 ${u.nombre || u.email || '?'} <strong>(${u.depto || 'sin depto'})</strong>
+          ${puedeEditarOrden ? ' · ✅ Puedes reordenar (usa ▲▼ o arrastra ⠿)' : ' · 🔒 Solo lectura'}
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -4145,6 +4150,14 @@ function renderKanbanMaquinas() {
         <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#1e40af;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">🖨️ Imprimir</button>
       </div>
     </div>
+    
+    ${!puedeEditarOrden ? `
+      <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;padding:12px 16px;margin-bottom:14px;color:#92400e;font-size:12.5px;">
+        <div style="font-weight:800;margin-bottom:4px;">🔒 Tu usuario no tiene permiso para reordenar el Kanban</div>
+        <div>Tu depto actual: <strong>${u.depto || 'sin depto'}</strong>. Para mover ODPs necesitas estar como <strong>PLN, PRO, CEO o ADMIN</strong>.</div>
+        <div style="margin-top:4px;font-size:11px;opacity:0.9;">Pide al administrador que cambie tu depto, o entra con otra cuenta. Los datos de cada ODP los puedes consultar normalmente.</div>
+      </div>
+    ` : ''}
     
     <!-- FILTRO POR PROCESO (SIEMPRE VISIBLE arriba) -->
     <div style="margin-bottom:14px;display:flex;gap:6px;flex-wrap:wrap;background:#fff;padding:10px;border-radius:8px;border:1px solid #e2e8f0;">
@@ -4420,18 +4433,25 @@ function _renderTarjetaKanban(odp, columna, opts) {
   const puedeReordenar = opts.puedeReordenar === true && columna === 'cola';
   const esPrimera = idx === 0;
   const esUltima = idx === totalEnCola - 1;
-  const botonesReordenar = puedeReordenar && totalEnCola > 1 ? `
-    <div style="display:flex;gap:3px;margin-top:5px;align-items:center;">
-      <span style="font-size:9px;color:#475569;font-weight:800;background:#fef3c7;padding:2px 6px;border-radius:4px;">📋 ${idx + 1} de ${totalEnCola}</span>
+  
+  // Mostrar siempre la posición + botones cuando puede reordenar
+  // Si solo hay 1 ODP, los botones aparecen deshabilitados (para que el usuario sepa que SÍ tiene permiso, solo que no hay con quién intercambiar)
+  const botonesReordenar = puedeReordenar && columna === 'cola' ? `
+    <div style="display:flex;gap:3px;margin-top:5px;align-items:center;background:#f8fafc;padding:4px 6px;border-radius:5px;">
+      <span style="font-size:9.5px;color:#475569;font-weight:800;background:#fef3c7;padding:2px 6px;border-radius:4px;">📋 ${idx + 1} de ${totalEnCola}</span>
       <div style="flex:1;"></div>
       <button onclick="event.stopPropagation();window.moverODPCola('${odp.id}','arriba')" 
-        style="background:${esPrimera?'#e2e8f0':'#3b82f6'};color:${esPrimera?'#94a3b8':'#fff'};border:none;padding:3px 8px;border-radius:4px;cursor:${esPrimera?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
-        ${esPrimera?'disabled':''} title="Mover arriba (entra antes)">▲</button>
+        style="background:${esPrimera?'#e2e8f0':'#3b82f6'};color:${esPrimera?'#94a3b8':'#fff'};border:none;padding:4px 10px;border-radius:4px;cursor:${esPrimera?'not-allowed':'pointer'};font-size:13px;font-weight:800;line-height:1;min-width:32px;" 
+        ${esPrimera || totalEnCola < 2 ? 'disabled' : ''} title="${esPrimera?'Ya está en la primera posición':'Mover arriba (entra antes)'}">▲</button>
       <button onclick="event.stopPropagation();window.moverODPCola('${odp.id}','abajo')" 
-        style="background:${esUltima?'#e2e8f0':'#3b82f6'};color:${esUltima?'#94a3b8':'#fff'};border:none;padding:3px 8px;border-radius:4px;cursor:${esUltima?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
-        ${esUltima?'disabled':''} title="Mover abajo (entra después)">▼</button>
+        style="background:${esUltima?'#e2e8f0':'#3b82f6'};color:${esUltima?'#94a3b8':'#fff'};border:none;padding:4px 10px;border-radius:4px;cursor:${esUltima?'not-allowed':'pointer'};font-size:13px;font-weight:800;line-height:1;min-width:32px;" 
+        ${esUltima || totalEnCola < 2 ? 'disabled' : ''} title="${esUltima?'Ya está en la última posición':'Mover abajo (entra después)'}">▼</button>
     </div>
-  ` : '';
+  ` : (columna === 'cola' && totalEnCola > 0 ? `
+    <div style="margin-top:5px;">
+      <span style="font-size:9.5px;color:#475569;font-weight:800;background:#fef3c7;padding:2px 6px;border-radius:4px;">📋 ${idx + 1} de ${totalEnCola}</span>
+    </div>
+  ` : '');
   
   return `
     <div ${dragAttrs} style="background:${bgColor};border:1px solid ${borderColor};border-left:3px solid ${borderColor};border-radius:6px;padding:8px 10px;font-size:11px;${cursorStyle}${vencida ? 'box-shadow: 0 0 0 2px #fca5a5;' : ''}">
