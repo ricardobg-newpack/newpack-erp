@@ -909,6 +909,15 @@ function fmtCantidadUM(n, um) {
   return numStr + ' ' + label;
 }
 window.fmtCantidadUM = fmtCantidadUM;
+
+// 🧮 Redondear kg a múltiplo de 5 hacia arriba (para EXT siempre)
+function redondearKgExtrusion(kg) {
+  const n = Number(kg) || 0;
+  if (n <= 0) return 0;
+  return Math.ceil(n / 5) * 5;
+}
+window.redondearKgExtrusion = redondearKgExtrusion;
+
 function moneda(n) {
   return '$' + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -6607,6 +6616,25 @@ function modalFormCliente(cliente) {
           </div>
           
           <div class="field"><label class="field-label">Notas internas</label><textarea class="input" id="cli-notas" style="min-height:60px;">${c.notas || ''}</textarea></div>
+          
+          <!-- 🖼️ LOGO DEL CLIENTE (para etiquetas LOGO_CLIENTE) -->
+          <div style="margin-top:14px;padding:14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;">
+            <strong style="font-size:13px;display:block;margin-bottom:6px;color:#92400e;">🖼️ Logo del cliente (para etiquetas)</strong>
+            <div style="font-size:11px;color:#78350f;margin-bottom:10px;">
+              Sube una imagen PNG/JPG (recomendado: fondo transparente, máx. 200KB). Se imprimirá en las etiquetas de los productos del cliente cuando el producto tenga "Logo del cliente" como tipo de etiqueta.
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+              <div id="cli-logo-preview" style="width:120px;height:80px;background:#fff;border:1.5px dashed #f59e0b;border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+                ${c.logo_base64 ? `<img src="${c.logo_base64}" style="max-width:100%;max-height:100%;object-fit:contain;" />` : `<span style="font-size:10px;color:#92400e;">(sin logo)</span>`}
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <input type="file" id="cli-logo-file" accept="image/png,image/jpeg,image/jpg" style="font-size:11px;" onchange="window.handleClienteLogoUpload(event)" />
+                ${c.logo_base64 ? `<button type="button" onclick="window.removerLogoCliente()" style="padding:5px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:10px;">🗑 Quitar logo</button>` : ''}
+              </div>
+            </div>
+            <!-- Estado interno: guardamos el base64 aquí cuando se sube -->
+            <input type="hidden" id="cli-logo-base64" value="${c.logo_base64 || ''}" />
+          </div>
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
@@ -16653,21 +16681,48 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   // Filas de cantidad/UM/especificaciones
   const hFila = 7;
   reset();
-  cellEmpty(xCant, y, wCant, hFila * 2);
+  cellEmpty(xCant, y, wCant, hFila);            // fila 1 (EXT en kg)
+  cellEmpty(xCant, y + hFila, wCant, hFila);    // fila 2 (sub-proceso UM original)
   cellEmpty(xUnid, y, wUnid, hFila);
   cellEmpty(xUnid, y + hFila, wUnid, hFila);
   cellEmpty(xEspe, y, wEspe, hFila * 2);
   
-  // Cantidad
-  reset();
-  docPDF.setFontSize(10);
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.text(fmtNum(odp.cantidad_kg || odp.cantidad || 0), xCant + wCant/2, y + hFila, { align: 'center' });
+  // 🧮 Cálculo de cantidades:
+  // EXT siempre va por KG redondeado hacia arriba al múltiplo de 5
+  // Sub-proceso (bolseo, etc) va en UM original (pza/millar/kg)
+  const cantKgRaw = Number(odp.cantidad_kg) || Number(odp.cantidad) || 0;
+  const cantKgEXT = Math.ceil(cantKgRaw / 5) * 5; // redondear al múltiplo de 5 hacia arriba
+  const cantOriginal = Number(odp.cantidad) || 0;
+  const umOriginal = (odp.um || 'kg').toLowerCase();
+  const umOrigLabel = { kg: 'KG', pza: 'PZA', millar: 'MILLAR', rollo: 'ROLLO', m: 'METRO' }[umOriginal] || umOriginal.toUpperCase();
   
-  // KG / MILLAR
+  // Si la UM original es KG, ambas filas son lo mismo: solo mostrar la EXT (la celda de abajo queda vacía o se rellena con la misma cantidad)
+  const esSoloKg = umOriginal === 'kg';
+  
+  // Fila 1: EXT (siempre KG redondeado)
+  reset();
+  docPDF.setFontSize(11);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text(fmtNum(cantKgEXT), xCant + wCant/2, y + hFila/2 + 1.5, { align: 'center' });
   docPDF.setFontSize(8);
   docPDF.text('KG', xUnid + wUnid/2, y + hFila/2 + 1, { align: 'center' });
-  docPDF.text('MILLAR', xUnid + wUnid/2, y + hFila + hFila/2 + 1, { align: 'center' });
+  
+  // Fila 2: Sub-proceso (UM original)
+  reset();
+  if (!esSoloKg) {
+    docPDF.setFontSize(11);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text(fmtNum(cantOriginal), xCant + wCant/2, y + hFila + hFila/2 + 1.5, { align: 'center' });
+    docPDF.setFontSize(8);
+    docPDF.text(umOrigLabel, xUnid + wUnid/2, y + hFila + hFila/2 + 1, { align: 'center' });
+  } else {
+    // Misma UM en ambas → repetir o dejar guion
+    docPDF.setFontSize(8);
+    docPDF.setTextColor(150, 150, 150);
+    docPDF.text('—', xCant + wCant/2, y + hFila + hFila/2 + 1.5, { align: 'center' });
+    docPDF.text('—', xUnid + wUnid/2, y + hFila + hFila/2 + 1, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+  }
   
   // Especificaciones del producto
   docPDF.setFontSize(8);
@@ -17145,6 +17200,11 @@ window.imprimirEtiquetasPDF = (odpId) => {
     // Vertical: 279.4 - 250 = 29.4 → 14.7mm arriba y abajo
     const margenY = (279.4 - ETIQ_H * FILAS) / 2;
     
+    // Obtener cliente completo para acceso a logo_base64 si existe
+    const clienteObj = pedido?.cliente_codigo 
+      ? (state.clientes || []).find(c => c.codigo === pedido.cliente_codigo)
+      : null;
+    
     // Datos comunes a todas las etiquetas
     const datos = {
       tipo_etiqueta: producto?.tipo_etiqueta || 'SIN_LOGO',
@@ -17152,11 +17212,13 @@ window.imprimirEtiquetasPDF = (odpId) => {
       pi_folio: pedido?.folio || odp.pedido_folio || '',
       odp_folio: odp.folio || '',
       medida: _medidaProductoTxt(producto),
+      color: _colorProductoTxt(producto),  // 🆕 color del producto (sin calibre)
       codigo_producto: odp.producto_codigo || '',
       densidad: _densidadProductoTxt(producto),
       cant_empaque: cantEtiquetaTxt,
       um_empaque: umEmpaque,
       cliente_nombre: pedido?.cliente_nombre || odp.cliente_nombre || '',
+      cliente_logo_base64: clienteObj?.logo_base64 || null,  // 🆕 logo del cliente
     };
     
     // Si el producto tiene código de cliente interno, usarlo
@@ -17206,9 +17268,14 @@ function _medidaProductoTxt(p) {
   const anc = p.ancho || '';
   const fue = p.fuelle || 0;
   const lar = p.largo || '';
-  const cal = p.calibre || '';
-  const medida = fue > 0 ? `${anc}+${fue}×${lar}` : `${anc}×${lar}`;
-  return cal ? `${medida} cal ${cal}` : medida;
+  // ⚠ Calibre NO se incluye en la etiqueta (Ricardo: solo medida + color)
+  return fue > 0 ? `${anc}+${fue}×${lar}` : `${anc}×${lar}`;
+}
+
+// Helper: color del producto legible
+function _colorProductoTxt(p) {
+  if (!p?.color) return '';
+  return String(p.color).toUpperCase();
 }
 
 // Helper: densidad legible del producto
@@ -17248,21 +17315,37 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
     doc.setFontSize(6.5);
     doc.text('Abastecedora de Empaques S.A. de C.V.', x + 27, y + 11);
   } else if (d.tipo_etiqueta === 'LOGO_CLIENTE') {
-    // Cuadro con nombre del cliente (no tenemos imagen del cliente)
-    doc.setFillColor(245, 245, 245);
-    doc.rect(x + 2, y + 2, w - 4, logoH - 2, 'F');
-    doc.setDrawColor(150, 150, 150);
-    doc.rect(x + 2, y + 2, w - 4, logoH - 2);
-    doc.setDrawColor(0, 0, 0);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    const cliente = (d.cliente_nombre || 'CLIENTE').substring(0, 35);
-    doc.text(cliente, x + w/2, y + 6, { align: 'center' });
-    doc.setFont('helvetica', 'italic');
-    doc.setFontSize(6);
-    doc.setTextColor(120, 120, 120);
-    doc.text('(reemplazar este recuadro con el logo del cliente)', x + w/2, y + 10, { align: 'center' });
-    doc.setTextColor(0, 0, 0);
+    // 🆕 Si el cliente tiene logo base64 subido, mostrarlo
+    if (d.cliente_logo_base64) {
+      try {
+        // Detectar formato (PNG, JPEG)
+        const formato = d.cliente_logo_base64.includes('image/png') ? 'PNG' : 
+                        (d.cliente_logo_base64.includes('image/jpeg') || d.cliente_logo_base64.includes('image/jpg')) ? 'JPEG' : 'PNG';
+        doc.addImage(d.cliente_logo_base64, formato, x + 3, y + 2, w - 6, logoH - 2, undefined, 'FAST');
+      } catch (e) {
+        console.error('Error cargando logo cliente:', e);
+        // Fallback: nombre del cliente como texto
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.text((d.cliente_nombre || 'CLIENTE').substring(0, 35), x + w/2, y + 8, { align: 'center' });
+      }
+    } else {
+      // Sin logo subido: cuadro placeholder con nombre del cliente
+      doc.setFillColor(245, 245, 245);
+      doc.rect(x + 2, y + 2, w - 4, logoH - 2, 'F');
+      doc.setDrawColor(150, 150, 150);
+      doc.rect(x + 2, y + 2, w - 4, logoH - 2);
+      doc.setDrawColor(0, 0, 0);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      const cliente = (d.cliente_nombre || 'CLIENTE').substring(0, 35);
+      doc.text(cliente, x + w/2, y + 6, { align: 'center' });
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(6);
+      doc.setTextColor(120, 120, 120);
+      doc.text('(sube el logo del cliente en su ficha)', x + w/2, y + 10, { align: 'center' });
+      doc.setTextColor(0, 0, 0);
+    }
   } else {
     // SIN_LOGO: zona en blanco
     doc.setDrawColor(220, 220, 220);
@@ -17286,7 +17369,7 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   let yt = y + logoH + 4;
   const xLabel = x + 3;
   const xVal = x + 26;
-  const lineH = 4.2;
+  const lineH = 3.7;  // compactado para que entren más filas (8 en lugar de 7)
   
   function _fila(label, valor, opts = {}) {
     doc.setFont('helvetica', 'bold');
@@ -17305,6 +17388,7 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   _fila('PI:', d.pi_folio || '—');
   _fila('ODP:', d.odp_folio || '—');
   _fila('Medida:', d.medida || '—');
+  _fila('Color:', d.color || '—');
   _fila('Cód producto:', d.codigo_producto || '—');
   _fila('Densidad:', d.densidad || '—');
   
@@ -23823,6 +23907,7 @@ window.asignarMaquinaProceso = (procCod, maqCod) => {
 
 // Recolectar campos del formulario de cliente
 function recolectarDatosCliente() {
+  const logoBase64 = ($('#cli-logo-base64')?.value || '').trim();
   return {
     nombre: ($('#cli-nom').value || '').trim(),
     rfc: ($('#cli-rfc').value || '').trim().toUpperCase(),
@@ -23841,8 +23926,77 @@ function recolectarDatosCliente() {
     cedis_asignado: $('#cli-cedis').value,
     dias_credito: Number($('#cli-credito').value) || 0,
     notas: ($('#cli-notas').value || '').trim(),
+    logo_base64: logoBase64 || null,  // 🆕 logo del cliente para etiquetas
   };
 }
+
+// 🖼️ Handler de subida de logo del cliente
+window.handleClienteLogoUpload = (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  
+  // Validar tamaño (máx 500KB)
+  if (file.size > 500_000) {
+    toast('⚠ La imagen es muy grande (máx. 500KB). Redúcela en tinypng.com', 'error');
+    event.target.value = '';
+    return;
+  }
+  
+  // Validar tipo
+  if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
+    toast('Solo se aceptan archivos PNG o JPG', 'error');
+    event.target.value = '';
+    return;
+  }
+  
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const base64 = e.target.result;
+    
+    // Redimensionar al cargar en canvas (max 400x200 para etiquetas)
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ratio = img.width / img.height;
+      const maxW = 400, maxH = 200;
+      let w = img.width, h = img.height;
+      if (w > maxW) { w = maxW; h = w / ratio; }
+      if (h > maxH) { h = maxH; w = h * ratio; }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      // Convertir a PNG comprimido
+      const compressed = canvas.toDataURL('image/png', 0.85);
+      
+      // Guardar en input hidden
+      const inp = $('#cli-logo-base64');
+      if (inp) inp.value = compressed;
+      
+      // Actualizar preview
+      const preview = $('#cli-logo-preview');
+      if (preview) {
+        preview.innerHTML = `<img src="${compressed}" style="max-width:100%;max-height:100%;object-fit:contain;" />`;
+      }
+      toast('✅ Logo cargado. Recuerda guardar el cliente.', 'success');
+    };
+    img.onerror = () => toast('Error al leer la imagen', 'error');
+    img.src = base64;
+  };
+  reader.onerror = () => toast('Error leyendo el archivo', 'error');
+  reader.readAsDataURL(file);
+};
+
+// 🗑 Remover logo del cliente
+window.removerLogoCliente = () => {
+  const inp = $('#cli-logo-base64');
+  if (inp) inp.value = '';
+  const preview = $('#cli-logo-preview');
+  if (preview) preview.innerHTML = `<span style="font-size:10px;color:#92400e;">(sin logo)</span>`;
+  const fileInp = $('#cli-logo-file');
+  if (fileInp) fileInp.value = '';
+  toast('Logo removido. Guarda los cambios para confirmar.', 'info');
+};
 
 window.crearCliente = async () => {
   const cod = $('#cli-cod').value.trim().toUpperCase();
