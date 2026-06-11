@@ -6243,11 +6243,21 @@ function renderPanelOperador() {
     m.activa !== false && m.proceso_codigo === procSel
   );
   
-  // ODPs visibles: solo las que están en producción/programadas Y cuyo proceso actual coincide
-  // O cuyo siguiente proceso es este (queue)
+  // ODPs visibles: incluir también pendiente_planeacion para diagnóstico
   const todasODPs = (state.ordenes_produccion || []).filter(o => {
     if (o.archivada) return false;
-    if (!['programada','en_produccion'].includes(o.estatus)) return false;
+    if (!['pendiente_planeacion','programada','en_produccion'].includes(o.estatus)) return false;
+    
+    // Si está pendiente_planeacion, no sabemos en qué proceso irá, mostrarla solo si el cliente no la requirió
+    // (la mostramos aún sin ruta para que aparezca con warning "necesita programar")
+    if (o.estatus === 'pendiente_planeacion') {
+      // No tiene ruta_procesos aún. Mostrarla en todos los paneles? Mejor solo en el primer proceso
+      // Si NO ha sido programada, asumir que va a EXT (P1-EXT) como primer proceso
+      // o filtrar por proceso "natural" del producto
+      // Por simplicidad: mostrar pendientes solo si procSel === 'P1-EXT'
+      return procSel === 'P1-EXT';
+    }
+    
     const ruta = o.ruta_procesos || [];
     if (!ruta.includes(procSel)) return false;
     
@@ -6264,37 +6274,71 @@ function renderPanelOperador() {
   const enProduccion = [];  // mi proceso está EN_PROCESO ahora mismo
   const enCola = [];        // mi proceso aún no llega (esperando que termine el anterior)
   const completadas = [];   // mi proceso ya completado
+  const sinProgramar = [];  // 🆕 ODPs sin ruta de procesos (diagnóstico)
   
   todasODPs.forEach(o => {
+    if (o.estatus === 'pendiente_planeacion') {
+      sinProgramar.push(o);
+      return;
+    }
     const procIdx = (o.ruta_procesos || []).indexOf(procSel);
     const idxActual = o.proceso_actual_idx ?? 0;
     
     if (procIdx === idxActual) {
-      if (o.estatus === 'en_produccion' && o.proceso_estatus_actual !== 'pausado') {
+      // Mi proceso ES el actual en la ODP
+      const procEst = o.proceso_estatus_actual || 'esperando';
+      
+      if (procEst === 'en_proceso') {
+        // Realmente está siendo trabajada
         enProduccion.push(o);
-      } else if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'pausado') {
-        enProduccion.push(o); // sigue siendo "actual" pero pausada
-      } else if (o.estatus === 'programada') {
-        enCola.push(o);
+      } else if (procEst === 'pausado') {
+        // Pausada pero activa (sigue siendo actual)
+        enProduccion.push(o);
       } else {
+        // 'esperando' o cualquier otro → todavía no se ha empezado el turno
+        // 🆕 IMPORTANTE: cuando EXT termina y avanza al siguiente, llega aquí en 'esperando'
+        // Hay que ponerla en COLA para que el operador decida cuándo iniciar
         enCola.push(o);
       }
     } else if (procIdx < idxActual) {
-      // Proceso ya pasó
       completadas.push(o);
     } else {
+      // procIdx > idxActual → mi proceso aún no llega (proceso anterior trabajando)
       enCola.push(o);
     }
   });
   
-  // Ordenar: primero por fecha de entrega (más urgente arriba)
+  // Ordenar: primero por prioridad (urgentes primero), luego por fecha de entrega
   const ordenarPorEntrega = (a, b) => {
-    const fA = a.fecha_entrega_solicitada || '9999';
-    const fB = b.fecha_entrega_solicitada || '9999';
+    // Urgentes arriba
+    const urgA = a.prioridad === 'urgente' ? 0 : 1;
+    const urgB = b.prioridad === 'urgente' ? 0 : 1;
+    if (urgA !== urgB) return urgA - urgB;
+    // Luego fecha entrega
+    const fA = a.fecha_entrega_solicitada || a.fecha_entrega_programada || '9999';
+    const fB = b.fecha_entrega_solicitada || b.fecha_entrega_programada || '9999';
     return fA.localeCompare(fB);
   };
   enProduccion.sort(ordenarPorEntrega);
   enCola.sort(ordenarPorEntrega);
+  
+  // 🆕 Si NO hay máquina filtrada Y hay múltiples máquinas en el proceso,
+  // agrupar las ODPs por máquina para que el flujo se vea coordinado
+  const agruparPorMaquina = !maqSel && maquinasProc.length > 1;
+  
+  // Helper para agrupar: retorna {maqCodigo: [odps]} con orden coherente
+  function agruparODPs(arr) {
+    const grupos = {};
+    arr.forEach(o => {
+      const m = o.maquinas_asignadas?.[procSel] || '(sin máquina)';
+      if (!grupos[m]) grupos[m] = [];
+      grupos[m].push(o);
+    });
+    return grupos;
+  }
+  
+  const enProduccionPorMaq = agruparPorMaquina ? agruparODPs(enProduccion) : null;
+  const enColaPorMaq = agruparPorMaquina ? agruparODPs(enCola) : null;
   
   return `
     <div style="padding:14px;max-width:1400px;margin:0 auto;">
@@ -6320,7 +6364,7 @@ function renderPanelOperador() {
       </div>
       
       <!-- RESUMEN: cuántas ODPs hay -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
+      <div style="display:grid;grid-template-columns:repeat(${sinProgramar.length > 0 ? 4 : 3},1fr);gap:12px;margin-bottom:16px;">
         <div style="background:#16a34a;color:#fff;padding:14px;border-radius:10px;text-align:center;">
           <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;">⚙️ TRABAJANDO AHORA</div>
           <div style="font-size:36px;font-weight:900;line-height:1;margin-top:4px;">${enProduccion.length}</div>
@@ -6333,7 +6377,41 @@ function renderPanelOperador() {
           <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;">✓ TERMINADAS</div>
           <div style="font-size:36px;font-weight:900;line-height:1;margin-top:4px;">${completadas.length}</div>
         </div>
+        ${sinProgramar.length > 0 ? `
+          <div style="background:#dc2626;color:#fff;padding:14px;border-radius:10px;text-align:center;">
+            <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;">⚠ SIN PROGRAMAR</div>
+            <div style="font-size:36px;font-weight:900;line-height:1;margin-top:4px;">${sinProgramar.length}</div>
+          </div>
+        ` : ''}
       </div>
+      
+      <!-- SECCIÓN: SIN PROGRAMAR (diagnóstico) -->
+      ${sinProgramar.length > 0 ? `
+        <div style="background:#fee2e2;border:2.5px solid #dc2626;border-radius:14px;padding:18px;margin-bottom:18px;">
+          <div style="font-size:16px;font-weight:900;color:#991b1b;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+            ⚠ ODPs PENDIENTES DE PROGRAMAR <span style="background:#dc2626;color:#fff;padding:2px 12px;border-radius:99px;font-size:13px;">${sinProgramar.length}</span>
+          </div>
+          <div style="font-size:11px;color:#7f1d1d;margin-bottom:14px;">
+            Estas ODPs no tienen ruta de procesos asignada. Pídele al equipo de <strong>Planeación</strong> que las programe desde su menú "🏭 Programación".
+          </div>
+          <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+            ${sinProgramar.map(o => `
+              <div style="background:#fff;border:1.5px solid #fca5a5;border-radius:10px;padding:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <div style="font-size:18px;font-weight:900;color:#0f172a;font-family:monospace;">${o.folio}</div>
+                    <div style="font-size:13px;font-weight:700;color:#475569;">${o.descripcion || o.producto_codigo}</div>
+                    <div style="font-size:11px;color:#94a3b8;margin-top:2px;">Cliente: ${o.cliente_codigo || '—'} · ${fmtCantidadUM(o.cantidad, o.um)}</div>
+                  </div>
+                  <div style="text-align:right;">
+                    <div style="background:#fef3c7;color:#92400e;padding:6px 12px;border-radius:8px;font-weight:800;font-size:12px;">⏳ Esperando programación</div>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
       
       <!-- SECCIÓN: TRABAJANDO AHORA -->
       ${enProduccion.length > 0 ? `
@@ -6341,9 +6419,27 @@ function renderPanelOperador() {
           <div style="font-size:18px;font-weight:900;color:#15803d;margin-bottom:14px;display:flex;align-items:center;gap:8px;">
             ⚙️ TRABAJANDO AHORA <span style="background:#16a34a;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enProduccion.length}</span>
           </div>
-          <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-            ${enProduccion.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
-          </div>
+          ${agruparPorMaquina ? `
+            ${Object.keys(enProduccionPorMaq).sort().map(maqCod => {
+              const odps = enProduccionPorMaq[maqCod];
+              const maqInfo = maquinasProc.find(m => m.codigo === maqCod);
+              return `
+                <div style="margin-bottom:14px;">
+                  <div style="background:${proc.color};color:#fff;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+                    🛠️ ${maqCod} ${maqInfo?.nombre ? '· ' + maqInfo.nombre : ''}
+                    <span style="background:rgba(255,255,255,0.25);padding:2px 8px;border-radius:99px;font-size:11px;">${odps.length} ODP${odps.length>1?'s':''}</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+                    ${odps.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          ` : `
+            <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+              ${enProduccion.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
+            </div>
+          `}
         </div>
       ` : ''}
       
@@ -6352,15 +6448,33 @@ function renderPanelOperador() {
         <div style="background:#fef3c7;border:2.5px solid #f59e0b;border-radius:14px;padding:18px;margin-bottom:18px;">
           <div style="font-size:18px;font-weight:900;color:#92400e;margin-bottom:14px;display:flex;align-items:center;gap:8px;">
             📋 EN COLA <span style="background:#f59e0b;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enCola.length}</span>
-            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— pendientes por iniciar o esperando proceso anterior</span>
+            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— en orden de prioridad / fecha de entrega</span>
           </div>
-          <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-            ${enCola.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
-          </div>
+          ${agruparPorMaquina ? `
+            ${Object.keys(enColaPorMaq).sort().map(maqCod => {
+              const odps = enColaPorMaq[maqCod];
+              const maqInfo = maquinasProc.find(m => m.codigo === maqCod);
+              return `
+                <div style="margin-bottom:14px;">
+                  <div style="background:#fff;color:${proc.color};border:2px solid ${proc.color};padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+                    🛠️ ${maqCod} ${maqInfo?.nombre ? '· ' + maqInfo.nombre : ''}
+                    <span style="background:${proc.color};color:#fff;padding:2px 8px;border-radius:99px;font-size:11px;">${odps.length} ODP${odps.length>1?'s':''} en cola</span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+                    ${odps.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          ` : `
+            <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+              ${enCola.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
+            </div>
+          `}
         </div>
       ` : ''}
       
-      ${enProduccion.length === 0 && enCola.length === 0 ? `
+      ${enProduccion.length === 0 && enCola.length === 0 && sinProgramar.length === 0 ? `
         <div style="background:#fff;border:2.5px dashed #cbd5e1;border-radius:14px;padding:60px 20px;text-align:center;">
           <div style="font-size:64px;margin-bottom:12px;">${proc.icono}</div>
           <div style="font-size:20px;font-weight:800;color:#475569;">Sin órdenes asignadas</div>
@@ -6394,15 +6508,29 @@ function _tarjetaOperador(o, procSel, modo) {
   const pct = kgMeta > 0 ? Math.min(100, Math.round(prodKg / kgMeta * 100)) : 0;
   
   // Botones según estado
+  const procEst = o.proceso_estatus_actual || 'esperando';
+  const esMiTurnoYEsperando = esMiTurnoAhora && procEst === 'esperando';
+  
   let botonPrincipal = '';
+  
   if (modo === 'cola' && o.estatus === 'programada' && procIdx === 0) {
-    // Primer proceso, esperando iniciar
+    // Primer proceso, ODP recién programada (nunca iniciada)
     botonPrincipal = `<button onclick="window.iniciarProduccionODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR PRODUCCIÓN</button>`;
+  } else if (modo === 'cola' && esMiTurnoYEsperando && procIdx > 0) {
+    // 🆕 Mi proceso es el actual PERO está en 'esperando' (acaba de avanzar del anterior)
+    // El operador decide cuándo iniciarlo en su máquina
+    botonPrincipal = `
+      <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:10px;margin-bottom:8px;text-align:center;font-size:11px;color:#92400e;font-weight:700;">
+        ⏳ Listo desde proceso anterior. Inicia cuando puedas atenderla en tu máquina.
+      </div>
+      <button onclick="abrirModal('capturar-turno','${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR Y CAPTURAR PRIMER TURNO</button>
+    `;
   } else if (modo === 'cola' && procIdx > idxActual) {
-    // Mi proceso aún no llega, mostrar estado del anterior
+    // Mi proceso aún no llega (proceso anterior todavía trabajando)
     const procAnt = ruta[idxActual];
     const procAntInfo = PROCESOS.find(p => p.codigo === procAnt);
-    botonPrincipal = `<div style="background:#f1f5f9;color:#475569;padding:14px;border-radius:8px;text-align:center;font-weight:700;font-size:13px;border:1.5px dashed #cbd5e1;">⏳ Esperando ${procAntInfo?.icono || ''} ${procAntInfo?.nombre || procAnt}</div>`;
+    const maqAnt = o.maquinas_asignadas?.[procAnt];
+    botonPrincipal = `<div style="background:#f1f5f9;color:#475569;padding:14px;border-radius:8px;text-align:center;font-weight:700;font-size:13px;border:1.5px dashed #cbd5e1;">⏳ Esperando ${procAntInfo?.icono || ''} ${procAntInfo?.nombre || procAnt}${maqAnt ? ` (${maqAnt})` : ''}</div>`;
   } else if (modo === 'trabajando' && estaPausada) {
     botonPrincipal = `<button onclick="window.reanudarODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;width:100%;">▶️ REANUDAR</button>`;
   } else if (modo === 'trabajando' && !estaPausada) {
@@ -6479,9 +6607,14 @@ function _tarjetaOperador(o, procSel, modo) {
       <!-- Botón principal de acción -->
       ${botonPrincipal}
       
-      <!-- Botón secundario: ver capturas (para audit/anular) -->
-      <div style="margin-top:8px;text-align:right;">
-        <button onclick="window.verCapturasODP('${o.id}')" style="background:transparent;color:#64748b;border:none;font-size:11px;cursor:pointer;text-decoration:underline;">📋 Ver capturas</button>
+      <!-- Botones secundarios: imprimir ODP, etiquetas, ver capturas -->
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-top:1px dashed #e2e8f0;padding-top:10px;">
+        <button onclick="window.imprimirOrdenProduccionPDF('${o.id}')" style="background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;padding:7px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">📄 ODP + Especificaciones</button>
+        <button onclick="window.imprimirEtiquetasPDF('${o.id}')" style="background:#fff;color:#f59e0b;border:1.5px solid #f59e0b;padding:7px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">🏷️ Etiquetas</button>
+        <button onclick="window.verCapturasODP('${o.id}')" style="background:#fff;color:#0284c7;border:1.5px solid #0284c7;padding:7px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">📋 Ver capturas</button>
+        ${(state.user?.depto === 'PRO' || state.user?.depto === 'PLN' || state.user?.depto === 'CEO' || state.user?.rol === 'admin') ? `
+          <button onclick="window.pausarODP('${o.id}')" style="background:#fff;color:#a16207;border:1.5px solid #a16207;padding:7px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;margin-left:auto;" ${(modo !== 'trabajando' || estaPausada) ? 'style="display:none;"' : ''}>⏸ Pausar</button>
+        ` : ''}
       </div>
     </div>
   `;
@@ -7582,11 +7715,26 @@ function modalCapturarTurno() {
               `).join('')}
             </div>
             ${f.grupo ? `<div style="font-size:10px;color:#16a34a;margin-top:4px;font-weight:700;">✓ Grupo ${f.grupo} seleccionado · ${operadoresFiltrados.length} operador(es) · ${supervisoresFiltrados.length} supervisor(es) habilitado(s) para ${procActual.nombre}</div>` : ''}
-            ${f.grupo && operadoresFiltrados.length === 0 ? `<div style="margin-top:6px;padding:8px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;color:#92400e;">⚠ No hay operadores del grupo ${f.grupo} habilitados para ${procActual.nombre}. Ve a <strong>Personal → Editar operador</strong> y asígnale el proceso ${procActual.nombre}.</div>` : ''}
-            ${f.grupo && supervisoresFiltrados.length === 0 ? `<div style="margin-top:6px;padding:8px 10px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;color:#92400e;">⚠ No hay supervisores del grupo ${f.grupo} habilitados para ${procActual.nombre}. Asígnaselo en <strong>Personal</strong>.</div>` : ''}
           </div>
           
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          ${f.grupo && (operadoresFiltrados.length === 0 || supervisoresFiltrados.length === 0) ? `
+            <!-- ⚠ Modo de captura rápida cuando no hay catálogo completo -->
+            <div style="margin-top:10px;padding:14px;background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;">
+              <div style="font-weight:800;color:#92400e;font-size:13px;margin-bottom:6px;">⚠ Falta configurar personal para ${procActual.nombre}</div>
+              <div style="font-size:11px;color:#78350f;margin-bottom:8px;line-height:1.4;">
+                ${operadoresFiltrados.length === 0 ? `<div>• No hay operadores del Grupo ${f.grupo} asignados a ${procActual.nombre}</div>` : ''}
+                ${supervisoresFiltrados.length === 0 ? `<div>• No hay supervisores del Grupo ${f.grupo} asignados a ${procActual.nombre}</div>` : ''}
+                <div style="margin-top:6px;">Solución definitiva: <strong>Personal → Editar</strong> y marca el proceso ${procActual.nombre} en sus procesos asignados.</div>
+              </div>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;background:#fff;border-radius:6px;border:1px solid #f59e0b;">
+                <input type="checkbox" id="ct-modo-rapido" ${f.modo_rapido ? 'checked' : ''} onchange="window.modalFormSet('modo_rapido', this.checked)" />
+                <span style="font-weight:700;font-size:12px;color:#92400e;">⚡ Modo rápido: capturar usando mi usuario como operador y supervisor</span>
+              </label>
+              ${f.modo_rapido ? `<div style="margin-top:6px;font-size:11px;color:#15803d;font-weight:700;">✓ Se registrará a nombre de: <strong>${state.user?.nombre || state.user?.email || '(usuario actual)'}</strong></div>` : ''}
+            </div>
+          ` : ''}
+          
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;${f.modo_rapido ? 'opacity:0.5;pointer-events:none;' : ''}">
             <div class="field">
               <label class="field-label">👷 Operador *</label>
               <select class="input" id="ct-operador" onchange="window.modalFormSet('operador_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
@@ -7721,23 +7869,64 @@ window.guardarCapturaTurno = async (odpId) => {
   const idx = odp.proceso_actual_idx ?? 0;
   const procActual = ruta[idx];
   
-  // Validaciones
+  // 🛡 VALIDACIONES DE ESTADO ANTES de crear la captura (evita capturas huérfanas)
+  if (!procActual) {
+    toast('⚠ Esta ODP no tiene una ruta de procesos definida. Pídele a Planeación que la programe.', 'error');
+    return;
+  }
+  if (odp.estatus === 'pendiente_planeacion') {
+    toast('⚠ Esta ODP aún no está programada por Planeación. No se puede capturar.', 'error');
+    return;
+  }
+  if (odp.estatus === 'programada') {
+    toast('⚠ La ODP debe iniciarse primero con el botón "▶️ INICIAR producción"', 'error');
+    return;
+  }
+  if (odp.proceso_estatus_actual === 'pausado') {
+    toast('⚠ La ODP está pausada. Reanúdala antes de capturar turnos.', 'error');
+    return;
+  }
+  if (['completada','cancelada','liberada_empaque','rechazada'].includes(odp.estatus)) {
+    toast(`⚠ Esta ODP ya está ${odp.estatus}, no se permiten más capturas.`, 'error');
+    return;
+  }
+  
+  // Validaciones de campos
   if (!f.fecha) { toast('Selecciona fecha', 'error'); return; }
   if (!f.turno) { toast('Selecciona turno (Día o Noche)', 'error'); return; }
   if (!f.grupo) { toast('Selecciona grupo (A, B, C o D)', 'error'); return; }
-  if (!f.operador_id) { toast('Selecciona operador', 'error'); return; }
-  if (!f.supervisor_id) { toast('Selecciona supervisor', 'error'); return; }
+  
+  // 🆕 Modo rápido: si no hay operadores en catálogo o el usuario eligió capturar a su nombre
+  const modoRapido = f.modo_rapido === true;
+  if (!modoRapido) {
+    if (!f.operador_id) { toast('Selecciona operador (o activa "modo rápido" si no hay personal asignado)', 'error'); return; }
+    if (!f.supervisor_id) { toast('Selecciona supervisor (o activa "modo rápido")', 'error'); return; }
+  }
+  
   const prodKg = Number(f.producido_kg) || 0;
   if (prodKg <= 0) { toast('Captura kg producidos (debe ser mayor a 0)', 'error'); return; }
   
-  const op = (state.operadores || []).find(o => o.id === f.operador_id);
-  const sup = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+  // Obtener nombres (modo normal vs rápido)
+  let opNombre, opId, supNombre, supId;
+  if (modoRapido) {
+    opNombre = (state.user?.nombre || state.user?.email || 'Usuario actual') + ' (modo rápido)';
+    opId = state.user?.id || '';
+    supNombre = opNombre;
+    supId = opId;
+  } else {
+    const op = (state.operadores || []).find(o => o.id === f.operador_id);
+    const sup = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+    opNombre = op?.nombre || '';
+    opId = f.operador_id;
+    supNombre = sup?.nombre || '';
+    supId = f.supervisor_id;
+  }
   
   state.loadingAccion = true; render();
   try {
     const maquinaAsignada = (odp.maquinas_asignadas && odp.maquinas_asignadas[procActual]) || odp.maquina_codigo || '';
     
-    // 1. Crear captura
+    // 1. Crear captura (ya con todas las validaciones pasadas)
     await addDoc(collection(db, 'capturas_produccion'), {
       odp_id: odpId,
       odp_folio: odp.folio,
@@ -7747,10 +7936,11 @@ window.guardarCapturaTurno = async (odpId) => {
       fecha: f.fecha,
       turno: f.turno,
       grupo: f.grupo,
-      operador_id: f.operador_id,
-      operador: op?.nombre || '',
-      supervisor_id: f.supervisor_id,
-      supervisor: sup?.nombre || '',
+      operador_id: opId,
+      operador: opNombre,
+      supervisor_id: supId,
+      supervisor: supNombre,
+      modo_rapido: modoRapido,
       producido_kg: prodKg,
       mermas_kg: Number(f.mermas_kg) || 0,
       notas: f.notas || '',
@@ -7759,25 +7949,9 @@ window.guardarCapturaTurno = async (odpId) => {
       created_at: serverTimestamp()
     });
     
-    // 2. Actualizar ODP con estado granular del proceso
-    // ⚠ Validar: ODP debe estar 'en_produccion' (ya iniciada por botón explícito)
-    // Si está programada o pausada, captura NO permitida
-    if (odp.estatus === 'programada') {
-      cerrarModal();
-      toast('⚠ La ODP debe iniciarse primero con el botón "▶️ INICIAR producción"', 'error');
-      return;
-    }
-    if (odp.proceso_estatus_actual === 'pausado') {
-      cerrarModal();
-      toast('⚠ La ODP está pausada. Reanúdala antes de capturar turnos', 'error');
-      return;
-    }
-    
-    const yaTeniaCapturas = (state.capturas_produccion || []).some(c => c.odp_id === odpId && c.proceso === procActual);
-    const updates = {
-      updated_at: serverTimestamp()
-    };
-    // Marcar proceso como en_proceso (si era el primer turno de este proceso después de "esperando")
+    // 2. Marcar proceso como en_proceso si era el primer turno
+    const yaTeniaCapturas = capturasValidas(state.capturas_produccion).some(c => c.odp_id === odpId && c.proceso === procActual);
+    const updates = { updated_at: serverTimestamp() };
     if (!yaTeniaCapturas || odp.proceso_estatus_actual !== 'en_proceso') {
       updates.proceso_estatus_actual = 'en_proceso';
       updates.proceso_actual_inicio = serverTimestamp();
@@ -7785,10 +7959,14 @@ window.guardarCapturaTurno = async (odpId) => {
     await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     
     cerrarModal();
-    toast(`✅ Turno guardado: ${fmtNum(prodKg)} kg · ${op?.nombre || ''} · Grupo ${f.grupo}`);
+    toast(`✅ Turno guardado: ${fmtNum(prodKg)} kg · ${opNombre} · Grupo ${f.grupo}`);
   } catch (e) {
     console.error('Error guardar turno:', e);
-    toast('Error: ' + e.message, 'error');
+    let mensaje = e.message || String(e);
+    if (mensaje.includes('Missing or insufficient permissions') || mensaje.includes('PERMISSION_DENIED')) {
+      mensaje = '🔒 Sin permisos para guardar capturas. Tu depto: ' + (state.user?.depto || '?') + '. Publica las reglas firestore.rules en Firebase Console.';
+    }
+    toast('Error: ' + mensaje, 'error');
   } finally {
     state.loadingAccion = false; render();
   }
@@ -17292,10 +17470,12 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
   
   // -------- Logo + título --------
   try {
-    if (window._logoNewPackBase64) {
-      docPDF.addImage(window._logoNewPackBase64, 'PNG', margen, 8, 22, 16);
+    const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
+    if (logoSrc) {
+      const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
+      docPDF.addImage(logoSrc, fmt, margen, 8, 22, 16);
     }
-  } catch (e) {}
+  } catch (e) { console.error('Error logo header:', e); }
   
   reset();
   docPDF.setFont('helvetica', 'bold');
@@ -17658,10 +17838,12 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   
   // Logo + título
   try {
-    if (window._logoNewPackBase64) {
-      docPDF.addImage(window._logoNewPackBase64, 'PNG', margen, 8, 22, 16);
+    const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
+    if (logoSrc) {
+      const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
+      docPDF.addImage(logoSrc, fmt, margen, 8, 22, 16);
     }
-  } catch (e) {}
+  } catch (e) { console.error('Error logo:', e); }
   
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(18);
@@ -17869,10 +18051,12 @@ function _renderHojaRegistroDetallado(docPDF, odp, producto, pedido) {
   
   // -------- Logo + título --------
   try {
-    if (window._logoNewPackBase64) {
-      docPDF.addImage(window._logoNewPackBase64, 'PNG', margen, 8, 22, 16);
+    const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
+    if (logoSrc) {
+      const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
+      docPDF.addImage(logoSrc, fmt, margen, 8, 22, 16);
     }
-  } catch (e) {}
+  } catch (e) { console.error('Error logo header:', e); }
   
   reset();
   docPDF.setFont('helvetica', 'bold');
@@ -18215,18 +18399,29 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   const logoH = 13;
   
   if (d.tipo_etiqueta === 'LOGO_NEWPACK') {
-    try {
-      if (window._logoNewPackBase64) {
-        doc.addImage(window._logoNewPackBase64, 'PNG', x + 3, y + 2, 22, logoH - 2);
+    // Usar el logo real de la empresa (definido en DATOS_EMPRESA.logo_url, JPEG base64)
+    const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
+    let logoCargado = false;
+    if (logoSrc) {
+      try {
+        // Detectar formato del data URL (JPEG/PNG)
+        const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
+        doc.addImage(logoSrc, fmt, x + 3, y + 1.5, 22, logoH - 1);
+        logoCargado = true;
+      } catch (e) {
+        console.error('Error cargando logo NewPack en etiqueta:', e);
       }
-    } catch (e) {}
-    // Texto NewPack al lado del logo
+    }
+    // Texto NEWPACK al lado del logo (o solo el texto si no se pudo cargar)
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
-    doc.text('NEWPACK', x + 27, y + 7);
+    doc.setTextColor(15, 88, 36);  // Verde NewPack
+    doc.text('NEWPACK', x + (logoCargado ? 27 : 3), y + 7);
+    doc.setTextColor(80, 80, 80);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6.5);
-    doc.text('Abastecedora de Empaques S.A. de C.V.', x + 27, y + 11);
+    doc.text('Abastecedora de Empaques S.A. de C.V.', x + (logoCargado ? 27 : 3), y + 11);
+    doc.setTextColor(0, 0, 0);
   } else if (d.tipo_etiqueta === 'LOGO_CLIENTE') {
     // 🆕 Si el cliente tiene logo base64 subido, mostrarlo
     if (d.cliente_logo_base64) {
@@ -28014,4 +28209,3 @@ if (firebaseConfig.apiKey === 'TU_API_KEY') {
 </script>
 </body>
 </html>
-  
