@@ -6371,6 +6371,9 @@ function renderPanelOperador() {
   if (!state.panelOpMaq) {
     state.panelOpMaq = localStorage.getItem('newpack_panel_op_maq') || '';
   }
+  if (state.panelOpVista === undefined) {
+    state.panelOpVista = localStorage.getItem('newpack_panel_op_vista') || 'lista';
+  }
   const procSel = state.panelOpProc;
   const maqSel = state.panelOpMaq;
   
@@ -6502,10 +6505,24 @@ function renderPanelOperador() {
   const enProduccionPorMaq = agruparPorMaquina ? agruparODPs(enProduccion) : null;
   const enColaPorMaq = agruparPorMaquina ? agruparODPs(enCola) : null;
   
+  // 🆕 Búsqueda rápida por folio o producto (filtro en tiempo real)
+  const busq = (state.panelOpBusq || '').toLowerCase().trim();
+  const _filtraBusq = (arr) => {
+    if (!busq) return arr;
+    return arr.filter(o => 
+      (o.folio || '').toLowerCase().includes(busq) ||
+      (o.producto_codigo || '').toLowerCase().includes(busq) ||
+      (o.descripcion || o.producto_descripcion || '').toLowerCase().includes(busq) ||
+      (o.cliente_codigo || '').toLowerCase().includes(busq)
+    );
+  };
+  const enProduccionFiltradas = _filtraBusq(enProduccion);
+  const enColaFiltradas = _filtraBusq(enCola);
+  
   return `
     <div style="padding:14px;max-width:1400px;margin:0 auto;">
       <!-- HEADER GIGANTE: proceso actual + botón cambiar -->
-      <div style="background:${proc.color};color:#fff;border-radius:14px;padding:20px 24px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+      <div style="background:${proc.color};color:#fff;border-radius:14px;padding:20px 24px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 12px rgba(0,0,0,0.15);flex-wrap:wrap;gap:14px;">
         <div style="display:flex;align-items:center;gap:18px;">
           <div style="font-size:54px;">${proc.icono}</div>
           <div>
@@ -6514,15 +6531,30 @@ function renderPanelOperador() {
             ${maqSel ? `<div style="font-size:14px;font-weight:700;margin-top:4px;background:rgba(255,255,255,0.2);padding:3px 10px;border-radius:6px;display:inline-block;">🛠️ Máquina: ${maqSel}</div>` : ''}
           </div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
           <button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>
           ${maquinasProc.length > 1 ? `
-            <select onchange="window.cambiarMaquinaOperador(this.value)" style="background:rgba(255,255,255,0.95);color:#0f172a;border:none;padding:7px 12px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer;">
+            <select onchange="window.cambiarMaquinaOperador(this.value)" style="background:rgba(255,255,255,0.95);color:#0f172a;border:none;padding:7px 12px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer;min-width:220px;">
               <option value="">— Todas las máquinas (${maquinasProc.length}) —</option>
               ${maquinasProc.map(m => `<option value="${m.codigo}" ${m.codigo === maqSel ? 'selected' : ''}>${m.codigo} ${m.nombre ? '· ' + m.nombre : ''}</option>`).join('')}
             </select>
           ` : ''}
         </div>
+      </div>
+      
+      <!-- 🆕 BARRA DE BÚSQUEDA: encontrar una ODP específica -->
+      <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">🔍</span>
+        <input
+          type="text"
+          placeholder="Buscar por folio (ODP-00123), producto o cliente..."
+          value="${busq}"
+          oninput="window.buscarPanelOp(this.value)"
+          style="flex:1;border:none;outline:none;font-size:14px;font-weight:600;padding:6px 4px;"
+          autocomplete="off"
+        />
+        ${busq ? `<button onclick="window.buscarPanelOp('')" style="background:#f1f5f9;color:#475569;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">✗ Limpiar</button>` : ''}
+        ${busq ? `<span style="font-size:11px;color:#64748b;font-weight:700;">${enProduccionFiltradas.length + enColaFiltradas.length} encontradas</span>` : ''}
       </div>
       
       <!-- RESUMEN: cuántas ODPs hay -->
@@ -6576,12 +6608,13 @@ function renderPanelOperador() {
       ` : ''}
       
       <!-- SECCIÓN: TRABAJANDO AHORA -->
-      ${enProduccion.length > 0 ? `
+      ${enProduccionFiltradas.length > 0 ? `
         <div style="background:#dcfce7;border:2.5px solid #16a34a;border-radius:14px;padding:18px;margin-bottom:18px;">
           <div style="font-size:18px;font-weight:900;color:#15803d;margin-bottom:14px;display:flex;align-items:center;gap:8px;">
-            ⚙️ TRABAJANDO AHORA <span style="background:#16a34a;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enProduccion.length}</span>
+            ⚙️ TRABAJANDO AHORA <span style="background:#16a34a;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enProduccionFiltradas.length}</span>
+            ${busq ? `<span style="font-size:11px;font-weight:600;color:#15803d;opacity:0.8;">(filtrado de ${enProduccion.length})</span>` : ''}
           </div>
-          ${agruparPorMaquina ? `
+          ${agruparPorMaquina && !busq ? `
             ${Object.keys(enProduccionPorMaq).sort().map(maqCod => {
               const odps = enProduccionPorMaq[maqCod];
               const maqInfo = maquinasProc.find(m => m.codigo === maqCod);
@@ -6599,20 +6632,79 @@ function renderPanelOperador() {
             }).join('')}
           ` : `
             <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-              ${enProduccion.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
+              ${enProduccionFiltradas.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
             </div>
           `}
         </div>
       ` : ''}
       
-      <!-- SECCIÓN: EN COLA -->
-      ${enCola.length > 0 ? `
+      <!-- SECCIÓN: EN COLA con toggle de vista (tarjetas vs lista compacta) -->
+      ${enColaFiltradas.length > 0 ? `
         <div style="background:#fef3c7;border:2.5px solid #f59e0b;border-radius:14px;padding:18px;margin-bottom:18px;">
-          <div style="font-size:18px;font-weight:900;color:#92400e;margin-bottom:14px;display:flex;align-items:center;gap:8px;">
-            📋 EN COLA <span style="background:#f59e0b;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enCola.length}</span>
-            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— en orden de prioridad / fecha de entrega</span>
+          <div style="font-size:18px;font-weight:900;color:#92400e;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            📋 EN COLA <span style="background:#f59e0b;color:#fff;padding:2px 12px;border-radius:99px;font-size:14px;">${enColaFiltradas.length}</span>
+            ${busq ? `<span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">(filtrado de ${enCola.length})</span>` : ''}
+            <span style="font-size:11px;font-weight:600;color:#92400e;opacity:0.8;">— por prioridad / fecha de entrega</span>
+            <div style="margin-left:auto;display:flex;gap:4px;background:#fff;padding:2px;border-radius:6px;border:1px solid #f59e0b;">
+              <button onclick="window.vistaPanelOp('lista')" style="padding:4px 10px;background:${(state.panelOpVista||'lista')==='lista'?'#f59e0b':'transparent'};color:${(state.panelOpVista||'lista')==='lista'?'#fff':'#92400e'};border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">📃 Lista</button>
+              <button onclick="window.vistaPanelOp('tarjetas')" style="padding:4px 10px;background:${state.panelOpVista==='tarjetas'?'#f59e0b':'transparent'};color:${state.panelOpVista==='tarjetas'?'#fff':'#92400e'};border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;">🗂 Tarjetas</button>
+            </div>
           </div>
-          ${agruparPorMaquina ? `
+          ${(state.panelOpVista || 'lista') === 'lista' ? `
+            <!-- VISTA LISTA: tabla compacta -->
+            <div style="background:#fff;border-radius:8px;overflow:hidden;border:1px solid #f59e0b;">
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead style="background:#fef3c7;">
+                  <tr>
+                    <th style="padding:8px;text-align:left;font-size:10px;color:#92400e;">#</th>
+                    <th style="padding:8px;text-align:left;font-size:10px;color:#92400e;">ODP</th>
+                    <th style="padding:8px;text-align:left;font-size:10px;color:#92400e;">Producto</th>
+                    <th style="padding:8px;text-align:left;font-size:10px;color:#92400e;">Cliente</th>
+                    <th style="padding:8px;text-align:right;font-size:10px;color:#92400e;">Cantidad</th>
+                    <th style="padding:8px;text-align:center;font-size:10px;color:#92400e;">Máquina</th>
+                    <th style="padding:8px;text-align:center;font-size:10px;color:#92400e;">Entrega</th>
+                    <th style="padding:8px;text-align:center;font-size:10px;color:#92400e;">Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${enColaFiltradas.map((o, idx) => {
+                    const umLow = (o.um || 'kg').toLowerCase();
+                    const cant = fmtCantidadUM(o.cantidad, umLow);
+                    const maqA = o.maquinas_asignadas?.[procSel] || '—';
+                    const idxActual = o.proceso_actual_idx ?? 0;
+                    const procIdx = (o.ruta_procesos || []).indexOf(procSel);
+                    const procEst = o.proceso_estatus_actual || 'esperando';
+                    const esMiTurno = procIdx === idxActual;
+                    const urg = o.prioridad === 'urgente';
+                    
+                    let botonAccion;
+                    if (esMiTurno && procEst === 'esperando' && procIdx === 0 && o.estatus === 'programada') {
+                      botonAccion = `<button onclick="window.iniciarProduccionODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:800;cursor:pointer;">▶️ INICIAR</button>`;
+                    } else if (esMiTurno && procEst === 'esperando' && procIdx > 0) {
+                      botonAccion = `<button onclick="abrirModal('capturar-turno','${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:6px 12px;border-radius:5px;font-size:11px;font-weight:800;cursor:pointer;">▶️ INICIAR</button>`;
+                    } else {
+                      const procAnt = (o.ruta_procesos || [])[idxActual];
+                      const procAntInfo = PROCESOS.find(p => p.codigo === procAnt);
+                      botonAccion = `<span style="color:#94a3b8;font-size:10px;">⏳ Esperando ${procAntInfo?.nombre || ''}</span>`;
+                    }
+                    
+                    return `
+                      <tr style="border-top:1px solid #fde68a;${urg ? 'background:#fee2e2;' : ''}" onmouseover="this.style.background='${urg?'#fecaca':'#fffbeb'}'" onmouseout="this.style.background='${urg?'#fee2e2':'transparent'}'">
+                        <td style="padding:8px;font-weight:800;color:${urg?'#dc2626':'#92400e'};">${urg ? '🔥' : idx+1}</td>
+                        <td style="padding:8px;"><strong style="font-family:monospace;color:#0f172a;">${o.folio}</strong></td>
+                        <td style="padding:8px;"><div style="font-weight:700;font-size:11.5px;">${o.descripcion || o.producto_codigo}</div><div style="font-size:10px;color:#64748b;font-family:monospace;">${o.producto_codigo}</div></td>
+                        <td style="padding:8px;font-weight:600;">${o.cliente_codigo || '—'}</td>
+                        <td style="padding:8px;text-align:right;font-weight:800;">${cant}</td>
+                        <td style="padding:8px;text-align:center;"><span style="background:#0f172a;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;font-family:monospace;">${maqA}</span></td>
+                        <td style="padding:8px;text-align:center;font-size:11px;font-weight:700;color:#92400e;">${o.fecha_entrega_solicitada || '—'}</td>
+                        <td style="padding:8px;text-align:center;">${botonAccion}<br><a href="javascript:void(0)" onclick="abrirModal('detalle-odp','${o.id}')" style="font-size:9px;color:#64748b;text-decoration:underline;margin-top:3px;display:inline-block;">ver detalle</a></td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : (agruparPorMaquina && !busq ? `
             ${Object.keys(enColaPorMaq).sort().map(maqCod => {
               const odps = enColaPorMaq[maqCod];
               const maqInfo = maquinasProc.find(m => m.codigo === maqCod);
@@ -6630,19 +6722,20 @@ function renderPanelOperador() {
             }).join('')}
           ` : `
             <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-              ${enCola.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
+              ${enColaFiltradas.map(o => _tarjetaOperador(o, procSel, 'cola')).join('')}
             </div>
-          `}
+          `)}
         </div>
       ` : ''}
       
-      ${enProduccion.length === 0 && enCola.length === 0 && sinProgramar.length === 0 ? `
+      ${enProduccionFiltradas.length === 0 && enColaFiltradas.length === 0 && sinProgramar.length === 0 ? `
         <div style="background:#fff;border:2.5px dashed #cbd5e1;border-radius:14px;padding:60px 20px;text-align:center;">
           <div style="font-size:64px;margin-bottom:12px;">${proc.icono}</div>
-          <div style="font-size:20px;font-weight:800;color:#475569;">Sin órdenes asignadas</div>
+          <div style="font-size:20px;font-weight:800;color:#475569;">${busq ? `No se encontró "${busq}"` : 'Sin órdenes asignadas'}</div>
           <div style="font-size:13px;color:#94a3b8;margin-top:6px;">
-            No hay ODPs ${maqSel ? `en la máquina ${maqSel}` : `en ${proc.nombre}`} por ahora. 
+            ${busq ? 'Prueba con otro folio, producto o cliente.' : `No hay ODPs ${maqSel ? `en la máquina ${maqSel}` : `en ${proc.nombre}`} por ahora.`}
           </div>
+          ${busq ? `<button onclick="window.buscarPanelOp('')" style="margin-top:12px;background:#f59e0b;color:#fff;border:none;padding:8px 18px;border-radius:8px;cursor:pointer;font-weight:700;">✗ Limpiar búsqueda</button>` : ''}
         </div>
       ` : ''}
     </div>
@@ -6802,6 +6895,29 @@ window.cambiarMaquinaOperador = (codMaq) => {
   state.panelOpMaq = codMaq || '';
   if (codMaq) localStorage.setItem('newpack_panel_op_maq', codMaq);
   else localStorage.removeItem('newpack_panel_op_maq');
+  render();
+};
+
+// 🆕 Búsqueda dinámica en el panel operador (no re-renderiza completa para no perder foco)
+window.buscarPanelOp = (texto) => {
+  state.panelOpBusq = texto || '';
+  render();
+  // Re-enfocar el input después del re-render
+  setTimeout(() => {
+    const input = document.querySelector('input[oninput*="buscarPanelOp"]');
+    if (input) {
+      input.focus();
+      // Mover cursor al final
+      const len = input.value.length;
+      input.setSelectionRange(len, len);
+    }
+  }, 0);
+};
+
+// 🆕 Cambiar entre vista lista compacta y tarjetas grandes
+window.vistaPanelOp = (vista) => {
+  state.panelOpVista = vista;
+  localStorage.setItem('newpack_panel_op_vista', vista);
   render();
 };
 
@@ -18016,6 +18132,9 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   
   let y = 30;
   
+  // 🆕 Calcular tolerancias del producto (con defaults: ancho/fuelle ±1cm, largo ±1-2cm, calibre ±10%)
+  const tol = (typeof window.calcularTolerancias === 'function') ? window.calcularTolerancias(producto) : {};
+  
   // ============ DATOS DEL PRODUCTO ============
   docPDF.setFillColor(31, 178, 75); // verde NewPack
   docPDF.rect(margen, y, W - margen*2, 6, 'F');
@@ -18054,17 +18173,112 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   docPDF.text(descLines.slice(0,2), colA + 2, y + 8);
   y += 14;
   
-  // Medidas
-  const m1 = wCol/3, m2 = wCol*2/3;
-  _campo(colA, y, 'Ancho (cm)', producto?.ancho || '', m1 - 1);
-  _campo(colA + m1, y, 'Fuelle (cm)', producto?.fuelle || '', m1 - 1);
-  _campo(colA + m1*2, y, 'Largo (cm)', producto?.largo || '', m1 - 1);
-  _campo(colB, y, 'Calibre (μ)', producto?.calibre || '', m1 - 1);
-  _campo(colB + m1, y, 'Color', producto?.color || '', m1 - 1);
-  _campo(colB + m1*2, y, 'Aditivo', producto?.aditivo || '', m1 - 1);
+  // 🆕 ============ MEDIDAS NOMINALES + TOLERANCIAS (CRÍTICO PARA OPERADORES) ============
+  docPDF.setFillColor(56, 182, 255); // azul celeste NewPack
+  docPDF.rect(margen, y, W - margen*2, 6, 'F');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  docPDF.text('MEDIDAS Y CALIBRE — RANGO ACEPTABLE', margen + 3, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  y += 8;
+  
+  // Tabla compacta de medidas con min/nominal/max
+  // Columnas: MEDIDA | NOMINAL | MÍNIMO | MÁXIMO | TOLERANCIA
+  const wMed = (W - margen*2);
+  const cMedida = wMed * 0.22;
+  const cNom = wMed * 0.20;
+  const cMin = wMed * 0.20;
+  const cMax = wMed * 0.20;
+  const cTol = wMed * 0.18;
+  
+  // Header
+  docPDF.setFillColor(220, 240, 255);
+  docPDF.setDrawColor(150, 200, 230);
+  docPDF.rect(margen, y, cMedida, 6, 'FD');
+  docPDF.rect(margen + cMedida, y, cNom, 6, 'FD');
+  docPDF.rect(margen + cMedida + cNom, y, cMin, 6, 'FD');
+  docPDF.rect(margen + cMedida + cNom + cMin, y, cMax, 6, 'FD');
+  docPDF.rect(margen + cMedida + cNom + cMin + cMax, y, cTol, 6, 'FD');
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(8);
+  docPDF.setTextColor(0, 80, 120);
+  docPDF.text('MEDIDA', margen + cMedida/2, y + 4, { align: 'center' });
+  docPDF.text('NOMINAL', margen + cMedida + cNom/2, y + 4, { align: 'center' });
+  docPDF.text('MÍNIMO', margen + cMedida + cNom + cMin/2, y + 4, { align: 'center' });
+  docPDF.text('MÁXIMO', margen + cMedida + cNom + cMin + cMax/2, y + 4, { align: 'center' });
+  docPDF.text('TOLERANCIA', margen + cMedida + cNom + cMin + cMax + cTol/2, y + 4, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 6;
+  
+  function _filaMedida(label, nominal, minV, maxV, tolTxt, unidad) {
+    const filaH = 7;
+    docPDF.setDrawColor(180, 200, 220);
+    docPDF.rect(margen, y, cMedida, filaH);
+    docPDF.rect(margen + cMedida, y, cNom, filaH);
+    docPDF.rect(margen + cMedida + cNom, y, cMin, filaH);
+    docPDF.rect(margen + cMedida + cNom + cMin, y, cMax, filaH);
+    docPDF.rect(margen + cMedida + cNom + cMin + cMax, y, cTol, filaH);
+    docPDF.setDrawColor(0, 0, 0);
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(8.5);
+    docPDF.text(label, margen + 2, y + 4.5);
+    
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(10);
+    docPDF.text(nominal != null && nominal !== '' ? `${nominal} ${unidad}` : '—', margen + cMedida + cNom/2, y + 4.7, { align: 'center' });
+    
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(180, 30, 30); // rojo para mínimo
+    docPDF.text(minV != null && minV !== '' ? `${minV} ${unidad}` : '—', margen + cMedida + cNom + cMin/2, y + 4.7, { align: 'center' });
+    docPDF.setTextColor(0, 100, 0); // verde para máximo
+    docPDF.text(maxV != null && maxV !== '' ? `${maxV} ${unidad}` : '—', margen + cMedida + cNom + cMin + cMax/2, y + 4.7, { align: 'center' });
+    docPDF.setTextColor(80, 80, 80);
+    docPDF.setFontSize(7.5);
+    docPDF.text(tolTxt || '—', margen + cMedida + cNom + cMin + cMax + cTol/2, y + 4.7, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
+    y += filaH;
+  }
+  
+  // Ancho
+  if (producto?.ancho) {
+    _filaMedida('Ancho', producto.ancho, tol.ancho_min, tol.ancho_max, `±${tol.tol_ancho || 1} cm`, 'cm');
+  }
+  // Fuelle (solo si tiene fuelle)
+  if (Number(producto?.fuelle) > 0) {
+    _filaMedida('Fuelle', producto.fuelle, tol.fuelle_min, tol.fuelle_max, `±${tol.tol_fuelle || 1} cm`, 'cm');
+  }
+  // Largo
+  if (producto?.largo) {
+    _filaMedida('Largo', producto.largo, tol.largo_min, tol.largo_max, `±${tol.tol_largo || 1} cm`, 'cm');
+  }
+  // Calibre
+  if (producto?.calibre) {
+    _filaMedida('Calibre', producto.calibre, tol.calibre_min, tol.calibre_max, `±${tol.tol_calibre_pct || 10}%`, 'μ');
+  }
+  
+  y += 4;
+  
+  // 🆕 Línea informativa sobre tolerancias
+  docPDF.setFillColor(255, 248, 220);
+  docPDF.setDrawColor(255, 200, 100);
+  docPDF.rect(margen, y, W - margen*2, 6, 'FD');
+  docPDF.setDrawColor(0, 0, 0);
+  docPDF.setFont('helvetica', 'italic');
+  docPDF.setFontSize(7.5);
+  docPDF.setTextColor(120, 80, 0);
+  docPDF.text('IMPORTANTE: El operador DEBE verificar que cada bulto/rollo cumpla con las medidas dentro del rango Minimo-Maximo. Si sale fuera de rango, detener produccion y avisar a calidad.', margen + 2, y + 4);
+  docPDF.setTextColor(0, 0, 0);
+  y += 8;
+  
+  // ============ OTROS DATOS DEL PRODUCTO ============
+  _campo(colA, y, 'Color', producto?.color || '', wCol);
+  _campo(colB, y, 'Aditivo', producto?.aditivo || '', wCol);
   y += 12;
   
-  // Empaque
   _campo(colA, y, 'Tipo de empaque', producto?.tipo_empaque || '— SELECCIONAR —', wCol);
   _campo(colB, y, 'Piezas por empaque', producto?.cant_empaque ? `${producto.cant_empaque} ${producto.um_empaque || ''}` : '', wCol);
   y += 12;
@@ -18076,96 +18290,162 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   _campo(colA + (wTer + 5)*2, y, 'Tipo de sellado', producto?.tipo_sellado || '', wTer);
   y += 12;
   
-  // Observaciones técnicas
-  docPDF.setFont('helvetica', 'bold');
-  docPDF.setFontSize(7);
-  docPDF.text('OBSERVACIONES TÉCNICAS', colA + 1, y + 3);
-  docPDF.setFont('helvetica', 'normal');
-  docPDF.setFontSize(8);
-  docPDF.rect(colA, y + 4, W - margen*2, 10);
-  if (producto?.obs_tecnicas) {
-    const obsLines = docPDF.splitTextToSize(producto.obs_tecnicas, W - margen*2 - 4);
-    docPDF.text(obsLines.slice(0,3), colA + 2, y + 8);
-  }
-  y += 16;
-  
-  // ============ MEZCLA / FÓRMULA ============
-  // ============ MEZCLA / FÓRMULA POR CAPAS ============
+  // ============ MEZCLA / FÓRMULA POR CAPAS (CON DATOS REALES) ============
   docPDF.setFillColor(31, 178, 75);
   docPDF.rect(margen, y, W - margen*2, 6, 'F');
   docPDF.setTextColor(255, 255, 255);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(10);
-  docPDF.text('MEZCLA / FÓRMULA POR CAPAS', margen + 3, y + 4);
+  docPDF.text('FORMULACIÓN POR CAPAS', margen + 3, y + 4);
   docPDF.setTextColor(0, 0, 0);
   y += 8;
   
-  // Determinar # capas según máquina asignada en EXT
+  // Determinar # capas según producto (preferido) o máquina asignada
   const maqExt = odp.maquinas_asignadas?.['P1-EXT'] || '';
   const maqData = (state.maquinas || []).find(m => m.codigo === maqExt);
-  const numCapas = Number(maqData?.coex_capas) || 3;  // por defecto 3 capas si no se sabe
+  const capasProducto = producto?.capas || [];
+  const numCapasProducto = capasProducto.length || Number(producto?.num_capas) || Number(maqData?.coex_capas) || 1;
   
   docPDF.setFont('helvetica', 'normal');
   docPDF.setFontSize(8);
-  docPDF.text(`Máquina EXT asignada: ${maqExt || '— sin asignar —'}  ·  ${numCapas} capa(s) de extrusión`, margen, y);
+  docPDF.text(`Máquina EXT: ${maqExt || '— sin asignar —'}  ·  ${numCapasProducto} capa(s)  ·  Producto: ${odp.producto_codigo || ''}`, margen, y);
   y += 5;
   
-  // Tabla por cada capa con 6 filas para materiales
-  const letrasCapas = ['A', 'B', 'C', 'D', 'E'];
-  
-  for (let i = 0; i < numCapas; i++) {
-    const letra = letrasCapas[i] || `Capa${i+1}`;
-    
-    // Header de capa
-    docPDF.setFillColor(220, 235, 240);
-    docPDF.rect(margen, y, W - margen*2, 6, 'FD');
+  // Si NO hay formulación, mostrar advertencia
+  if (capasProducto.length === 0 || !capasProducto.some(c => (c.ingredientes || []).length > 0)) {
+    docPDF.setFillColor(255, 230, 230);
+    docPDF.setDrawColor(220, 60, 60);
+    docPDF.rect(margen, y, W - margen*2, 14, 'FD');
+    docPDF.setDrawColor(0, 0, 0);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(9);
-    docPDF.text(`CAPA ${letra}`, margen + 3, y + 4);
-    docPDF.text('% del total:', margen + 60, y + 4);
-    docPDF.rect(margen + 80, y + 1, 18, 4);
-    y += 6;
-    
-    // Sub-tabla: Material / % capa / Kg / Lote
-    const cMat = (W - margen*2) * 0.45;
-    const cPctC = (W - margen*2) * 0.15;
-    const cKgC = (W - margen*2) * 0.20;
-    const cLoteC = (W - margen*2) * 0.20;
-    
-    docPDF.setFillColor(245, 245, 245);
-    docPDF.rect(margen, y, cMat, 5, 'FD');
-    docPDF.rect(margen + cMat, y, cPctC, 5, 'FD');
-    docPDF.rect(margen + cMat + cPctC, y, cKgC, 5, 'FD');
-    docPDF.rect(margen + cMat + cPctC + cKgC, y, cLoteC, 5, 'FD');
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.setFontSize(7);
-    docPDF.text('MATERIAL / RESINA', margen + cMat/2, y + 3.5, { align: 'center' });
-    docPDF.text('%', margen + cMat + cPctC/2, y + 3.5, { align: 'center' });
-    docPDF.text('KG', margen + cMat + cPctC + cKgC/2, y + 3.5, { align: 'center' });
-    docPDF.text('LOTE', margen + cMat + cPctC + cKgC + cLoteC/2, y + 3.5, { align: 'center' });
-    y += 5;
-    
-    // 6 filas en blanco para materiales
+    docPDF.setTextColor(160, 30, 30);
+    docPDF.text('PRODUCTO SIN FORMULACION CAPTURADA', margen + 3, y + 5);
     docPDF.setFont('helvetica', 'normal');
-    for (let r = 0; r < 6; r++) {
-      docPDF.rect(margen, y, cMat, 5);
-      docPDF.rect(margen + cMat, y, cPctC, 5);
-      docPDF.rect(margen + cMat + cPctC, y, cKgC, 5);
-      docPDF.rect(margen + cMat + cPctC + cKgC, y, cLoteC, 5);
-      y += 5;
-    }
-    y += 2;
-    
-    // Si nos pasamos de la página, saltar
-    if (y > H - 40 && i < numCapas - 1) {
-      docPDF.addPage('letter', 'portrait');
-      y = 20;
+    docPDF.setFontSize(7.5);
+    docPDF.text('Edita el producto en el catálogo Productos PT → Capas/Formulación y captura los materiales por cada capa.', margen + 3, y + 10);
+    docPDF.setTextColor(0, 0, 0);
+    y += 16;
+  } else {
+    // Renderizar cada capa con sus ingredientes
+    for (let i = 0; i < capasProducto.length; i++) {
+      const capa = capasProducto[i];
+      const letra = capa.letra || ['A','B','C','D','E'][i] || `Capa${i+1}`;
+      const ingredientes = capa.ingredientes || [];
+      const pctCapa = Number(capa.porcentaje_capa) || 0;
+      
+      // Header de capa
+      docPDF.setFillColor(220, 235, 240);
+      docPDF.setDrawColor(150, 180, 200);
+      docPDF.rect(margen, y, W - margen*2, 6, 'FD');
+      docPDF.setDrawColor(0, 0, 0);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(9);
+      docPDF.text(`CAPA ${letra}`, margen + 3, y + 4);
+      docPDF.setFontSize(8);
+      docPDF.text(`% del total de la estructura: ${pctCapa.toFixed(1)}%`, margen + 60, y + 4);
+      y += 6;
+      
+      if (ingredientes.length === 0) {
+        // Capa vacía
+        docPDF.setFont('helvetica', 'italic');
+        docPDF.setFontSize(8);
+        docPDF.setTextColor(160, 30, 30);
+        docPDF.text('  Esta capa no tiene ingredientes capturados', margen + 2, y + 4);
+        docPDF.setTextColor(0, 0, 0);
+        y += 6;
+      } else {
+        // Sub-tabla: Material / % capa / Cantidad esperada / Lote (a llenar al producir)
+        const cMat = (W - margen*2) * 0.50;
+        const cPctC = (W - margen*2) * 0.15;
+        const cKgC = (W - margen*2) * 0.18;
+        const cLoteC = (W - margen*2) * 0.17;
+        
+        docPDF.setFillColor(245, 245, 245);
+        docPDF.setDrawColor(180, 180, 180);
+        docPDF.rect(margen, y, cMat, 5, 'FD');
+        docPDF.rect(margen + cMat, y, cPctC, 5, 'FD');
+        docPDF.rect(margen + cMat + cPctC, y, cKgC, 5, 'FD');
+        docPDF.rect(margen + cMat + cPctC + cKgC, y, cLoteC, 5, 'FD');
+        docPDF.setDrawColor(0, 0, 0);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.setFontSize(7);
+        docPDF.text('MATERIAL / RESINA', margen + cMat/2, y + 3.5, { align: 'center' });
+        docPDF.text('% CAPA', margen + cMat + cPctC/2, y + 3.5, { align: 'center' });
+        docPDF.text('KG (calc)', margen + cMat + cPctC + cKgC/2, y + 3.5, { align: 'center' });
+        docPDF.text('LOTE (llenar)', margen + cMat + cPctC + cKgC + cLoteC/2, y + 3.5, { align: 'center' });
+        y += 5;
+        
+        // Calcular kg estimados (basado en cantidad_kg_produccion de la ODP)
+        const kgTotal = Number(odp.cantidad_kg_produccion) || 0;
+        const kgCapa = kgTotal * (pctCapa / 100);
+        
+        // Filas con datos reales
+        let sumaPct = 0;
+        for (const ing of ingredientes) {
+          const ingPct = Number(ing.porcentaje) || 0;
+          sumaPct += ingPct;
+          const kgIng = kgCapa * (ingPct / 100);
+          
+          docPDF.setDrawColor(200, 200, 200);
+          docPDF.rect(margen, y, cMat, 5);
+          docPDF.rect(margen + cMat, y, cPctC, 5);
+          docPDF.rect(margen + cMat + cPctC, y, cKgC, 5);
+          docPDF.rect(margen + cMat + cPctC + cKgC, y, cLoteC, 5);
+          docPDF.setDrawColor(0, 0, 0);
+          
+          docPDF.setFont('helvetica', 'normal');
+          docPDF.setFontSize(8);
+          const descIng = `${ing.mp_codigo || ''}  ${ing.descripcion || ''}`.substring(0, 65);
+          docPDF.text(descIng, margen + 1.5, y + 3.5);
+          
+          docPDF.setFont('helvetica', 'bold');
+          docPDF.setFontSize(8);
+          docPDF.text(`${ingPct.toFixed(1)}%`, margen + cMat + cPctC/2, y + 3.5, { align: 'center' });
+          
+          docPDF.setFont('helvetica', 'normal');
+          docPDF.text(kgTotal > 0 ? `${kgIng.toFixed(1)} kg` : '—', margen + cMat + cPctC + cKgC/2, y + 3.5, { align: 'center' });
+          // Lote: campo en blanco para llenar a mano
+          y += 5;
+        }
+        
+        // Validación de % capa
+        if (Math.abs(sumaPct - 100) > 0.1) {
+          docPDF.setFont('helvetica', 'italic');
+          docPDF.setFontSize(7.5);
+          docPDF.setTextColor(180, 30, 30);
+          docPDF.text(`Los ingredientes suman ${sumaPct.toFixed(1)}% (deberia ser 100%)`, margen + 2, y + 3.5);
+          docPDF.setTextColor(0, 0, 0);
+          y += 4;
+        }
+      }
+      y += 2;
+      
+      // Si nos pasamos de la página, saltar
+      if (y > H - 40 && i < capasProducto.length - 1) {
+        docPDF.addPage('letter', 'portrait');
+        y = 20;
+      }
     }
   }
   
+  // Observaciones técnicas
+  if (y > H - 40) { docPDF.addPage('letter', 'portrait'); y = 20; }
+  y += 4;
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(7);
+  docPDF.text('OBSERVACIONES TÉCNICAS', colA + 1, y + 3);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setFontSize(8);
+  docPDF.rect(colA, y + 4, W - margen*2, 14);
+  if (producto?.obs_tecnicas) {
+    const obsLines = docPDF.splitTextToSize(producto.obs_tecnicas, W - margen*2 - 4);
+    docPDF.text(obsLines.slice(0,3), colA + 2, y + 8);
+  }
+  y += 20;
   
   // Firmas
-  y = Math.max(y + 10, H - 35);
+  y = Math.max(y + 4, H - 35);
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(8);
   const firmaAncho2 = 70;
