@@ -2268,6 +2268,13 @@ function renderProductosPT() {
   if (filtroUM) arr = arr.filter(p => (p.um || 'kg').toLowerCase() === filtroUM);
   if (filtroMat) arr = arr.filter(p => (p.material || '') === filtroMat);
   if (filtroTipo) arr = arr.filter(p => (p.tipo || '') === filtroTipo);
+  // 🆕 Filtro de productos sin empaque configurado
+  if (state.filtros.productos_pt_sinemp === true) {
+    arr = arr.filter(p => {
+      const ce = Number(p.cant_empaque || p.piezas_por_paq || 0);
+      return !ce || !p.tipo_empaque;
+    });
+  }
   
   // Estadísticas
   const statsUM = {};
@@ -2306,11 +2313,35 @@ function renderProductosPT() {
       ${puedeCrear ? `<button class="btn-primary" onclick="abrirModal('crear-producto-pt')">${ICONS.plus} Nuevo PT</button>` : ''}
       <span style="font-size:12px;color:#64748b;width:100%;">${arr.length} de ${state.productos_pt.length} productos</span>
     </div>
+    
+    ${(() => {
+      // 🆕 Contar productos sin empaque configurado
+      const sinEmpaque = state.productos_pt.filter(p => {
+        const ce = Number(p.cant_empaque || p.piezas_por_paq || 0);
+        return !ce || !p.tipo_empaque;
+      });
+      if (sinEmpaque.length === 0) return '';
+      const yaFiltradoSinEmp = (state.filtros.productos_pt_sinemp === true);
+      return `
+        <div style="background:${yaFiltradoSinEmp ? '#fef3c7' : '#fffbeb'};border:2px solid #f59e0b;border-radius:10px;padding:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div>
+            <strong style="color:#92400e;font-size:13px;">⚠ ${sinEmpaque.length} producto(s) sin empaque configurado</strong>
+            <div style="font-size:11px;color:#78350f;margin-top:3px;">
+              Calidad necesita ver el empaque (tipo, cantidad, UM) para liberar correctamente.
+              ${puedeEditar ? 'Edita cada producto y completa los campos en la sección "📦 Empaque" del catálogo.' : ''}
+            </div>
+          </div>
+          <button onclick="state.filtros.productos_pt_sinemp=${!yaFiltradoSinEmp};render();" style="background:${yaFiltradoSinEmp ? '#16a34a' : '#f59e0b'};color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">
+            ${yaFiltradoSinEmp ? '✓ Ver todos' : '🔍 Ver solo los incompletos'}
+          </button>
+        </div>
+      `;
+    })()}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:right;">Cli.</th><th></th></tr></thead>
+        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:center;">📦 Empaque</th><th style="text-align:right;">Cli.</th><th></th></tr></thead>
         <tbody>
-          ${arr.length === 0 ? `<tr><td colspan="11" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
+          ${arr.length === 0 ? `<tr><td colspan="12" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
             arr.slice(0, 100).map(p => {
               const medida = p.fuelle > 0 ? `${p.ancho}+${p.fuelle}x${p.largo}` : `${p.ancho}x${p.largo}`;
               const clis = state.cliente_productos.filter(cp => cp.producto_codigo === p.codigo).length;
@@ -2318,7 +2349,11 @@ function renderProductosPT() {
               const umBadgeColor = { kg: '#16a34a', pza: '#3b82f6', millar: '#8b5cf6', rollo: '#f59e0b', m: '#ec4899' }[umActual] || '#64748b';
               const aditivo = p.aditivo || 'NINGUNO';
               const aditivoColor = aditivo === 'NINGUNO' ? '#94a3b8' : aditivo === 'VCI' ? '#7c3aed' : aditivo === 'ANTIESTATICO' ? '#ec4899' : aditivo === 'ANTIDERRAPANTE' ? '#f97316' : '#0891b2';
-              return `<tr>
+              // 🆕 Status del empaque (fallback a varios nombres por productos viejos)
+              const cantEmp = Number(p.cant_empaque || p.piezas_por_paq || 0);
+              const tipoEmp = p.tipo_empaque || '';
+              const empOK = cantEmp > 0 && tipoEmp;
+              return `<tr ${!empOK ? 'style="background:#fffbeb;"' : ''}>
                 <td class="text-mono" style="font-size:11px;font-weight:700;">${p.codigo}</td>
                 <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion}</td>
                 <td style="font-size:11px;">${p.material || '—'}</td>
@@ -2336,6 +2371,13 @@ function renderProductosPT() {
                     </select>
                   ` : `
                     <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;background:${umBadgeColor}22;color:${umBadgeColor};">${UM_LABELS[umActual]}</span>
+                  `}
+                </td>
+                <td style="text-align:center;font-size:10px;" title="${empOK ? `${tipoEmp} de ${cantEmp} ${p.um_empaque || ''}` : 'Falta configurar empaque'}">
+                  ${empOK ? `
+                    <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#dcfce7;color:#15803d;font-weight:700;white-space:nowrap;">✓ ${tipoEmp.slice(0,4)}·${cantEmp}</span>
+                  ` : `
+                    <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#fee2e2;color:#dc2626;font-weight:700;">⚠ Falta</span>
                   `}
                 </td>
                 <td style="text-align:right;font-size:11px;">${clis}</td>
@@ -26480,16 +26522,48 @@ function modalLiberarCalidad() {
   
   // 🆕 Producto del catálogo para conocer su empaque estándar
   const productoLib = state.productos_pt.find(pp => pp.codigo === odp.producto_codigo);
-  // 🔧 FIX: usar cant_empaque (campo real del producto) en lugar de piezas_por_paq (que no existe)
-  const cantEmpaqueStd = Number(productoLib?.cant_empaque) || 0;
-  const tipoEmpaqueStd = (productoLib?.tipo_empaque || '').toUpperCase();
-  const umEmpaqueStd = (productoLib?.um_empaque || um).toLowerCase();
+  // 🔧 FALLBACK ROBUSTO: probar varios nombres por compatibilidad con productos antiguos
+  const cantEmpaqueStd = Number(
+    productoLib?.cant_empaque || 
+    productoLib?.piezas_por_paq || 
+    productoLib?.piezas_paq || 
+    productoLib?.contenido_paquete || 
+    0
+  ) || 0;
+  const tipoEmpaqueStd = (
+    productoLib?.tipo_empaque || 
+    productoLib?.empaque || 
+    ''
+  ).toString().toUpperCase();
+  // Si no tiene um_empaque, asumir la UM del pedido (lo más común)
+  const umEmpaqueStd = (
+    productoLib?.um_empaque || 
+    productoLib?.um_contenido || 
+    um  // 🔧 fallback a UM del pedido
+  ).toString().toLowerCase();
   const presentacionStd = productoLib?.presentacion || '';
   // Label del tipo de empaque (Bulto/Paquete/Caja/etc.)
   const tipoEmpInfo = (window.TIPOS_EMPAQUE || []).find(t => t.codigo === tipoEmpaqueStd);
   const tipoEmpLabel = tipoEmpInfo?.label?.replace(/^\S+\s+/, '') || (tipoEmpaqueStd ? tipoEmpaqueStd.charAt(0) + tipoEmpaqueStd.slice(1).toLowerCase() : 'Paquete');
-  // ¿Aplica empaque para la UM del pedido? (si UM pedido es kg/rollo y empaque también, sí; piezas también)
-  const aplicaEmpaque = cantEmpaqueStd > 0 && (umEmpaqueStd === um || (umEmpaqueStd === 'pza' && um === 'pza') || (umEmpaqueStd === 'millar' && um === 'millar') || (umEmpaqueStd === 'kg' && um === 'kg'));
+  // 🔧 ¿Aplica empaque? Si hay cantidad > 0 Y la UM coincide (o fallback a UM del pedido), aplica
+  const aplicaEmpaque = cantEmpaqueStd > 0 && (
+    umEmpaqueStd === um || 
+    (umEmpaqueStd === 'pza' && um === 'pza') || 
+    (umEmpaqueStd === 'millar' && um === 'millar') || 
+    (umEmpaqueStd === 'kg' && um === 'kg') ||
+    !productoLib?.um_empaque  // si no se definió UM empaque, asumimos que aplica
+  );
+  
+  // 🔍 Debug en consola para identificar productos con datos parciales
+  if (productoLib && cantEmpaqueStd === 0) {
+    console.warn(`⚠ Producto ${odp.producto_codigo} sin cant_empaque. Campos disponibles:`, {
+      cant_empaque: productoLib.cant_empaque,
+      piezas_por_paq: productoLib.piezas_por_paq,
+      tipo_empaque: productoLib.tipo_empaque,
+      um_empaque: productoLib.um_empaque,
+      presentacion: productoLib.presentacion
+    });
+  }
   
   // Inicializar form
   if (!state.modalForm) {
@@ -26686,18 +26760,36 @@ function modalLiberarCalidad() {
                 </div>
               `;
             } else {
-              // Producto sin empaque estándar definido
+              // Producto sin empaque estándar definido — diagnóstico detallado
+              const camposFaltantes = [];
+              if (!cantEmpaqueStd || cantEmpaqueStd <= 0) camposFaltantes.push('Cantidad por empaque');
+              if (!productoLib?.tipo_empaque) camposFaltantes.push('Tipo de empaque');
+              if (!productoLib?.um_empaque) camposFaltantes.push('UM contenido');
+              
               return `
                 <div style="padding:12px;background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;margin-bottom:14px;">
                   <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
                     <div style="flex:1;min-width:200px;">
-                      <div style="font-weight:800;color:#991b1b;font-size:13px;margin-bottom:3px;">⚠ Falta configurar el empaque del producto</div>
+                      <div style="font-weight:800;color:#991b1b;font-size:13px;margin-bottom:3px;">⚠ Falta configurar el empaque del producto en el catálogo</div>
                       <div style="font-size:11.5px;color:#7f1d1d;line-height:1.4;">
-                        El producto <strong>${odp.producto_codigo}</strong> no tiene definido <em>Tipo de empaque</em>, <em>Cantidad por empaque</em> ni <em>UM contenido</em> en el catálogo. 
-                        Calidad necesita esta información para hacer la relación correcta al armar tarimas.
+                        El producto <strong>${odp.producto_codigo}</strong> no tiene definidos: 
+                        <strong>${camposFaltantes.join(', ')}</strong>.
+                        ${productoLib ? `
+                          <div style="margin-top:6px;padding:6px 8px;background:#fff;border-radius:4px;font-size:10.5px;font-family:monospace;color:#475569;">
+                            📋 Lo que sí tiene: 
+                            ${productoLib.cant_empaque ? `cant_empaque=${productoLib.cant_empaque}` : ''}
+                            ${productoLib.tipo_empaque ? `· tipo=${productoLib.tipo_empaque}` : ''}
+                            ${productoLib.um_empaque ? `· um=${productoLib.um_empaque}` : ''}
+                            ${productoLib.presentacion ? `· presentación="${productoLib.presentacion}"` : ''}
+                            ${!productoLib.cant_empaque && !productoLib.tipo_empaque && !productoLib.um_empaque ? '<em>Ningún campo de empaque</em>' : ''}
+                          </div>
+                        ` : '<div style="margin-top:4px;color:#dc2626;"><strong>⚠ Producto no encontrado en el catálogo</strong></div>'}
                       </div>
                     </div>
                     <button onclick="cerrarModal();state.vista='productos_pt';state.busquedaProd='${odp.producto_codigo}';render();" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;white-space:nowrap;">✎ Editar producto</button>
+                  </div>
+                  <div style="margin-top:8px;padding:8px;background:#fff;border-radius:6px;font-size:11px;color:#475569;border-left:3px solid #f59e0b;">
+                    💡 <strong>Para no atorarte ahora:</strong> puedes capturar el contenido manualmente abajo en "Contenido por paquete" y continuar la liberación. Edita el producto después para que el resto del equipo lo tenga bien configurado.
                   </div>
                 </div>
               `;
