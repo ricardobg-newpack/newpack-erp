@@ -25281,6 +25281,109 @@ function modalLiberarCalidad() {
               </div>
             </div>
             
+            <!-- 🎞️ MODO ROLLOS: si la ODP tiene rollos capturados en EXT, mostrar panel de asignación -->
+            ${(() => {
+              const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
+              const ruta = odp.ruta_procesos || [];
+              const esSoloEXT = ruta.length === 1 && ruta[0] === 'P1-EXT';
+              if (rollosEXT.length === 0 || !esSoloEXT) return '';
+              
+              // Asegurar que tarimas_data tenga rollos_ids
+              f.tarimas_data.forEach(t => { if (!t.rollos_ids) t.rollos_ids = []; });
+              
+              // Cuáles rollos están asignados a qué tarima
+              const asignacion = {}; // rollo.id → idx tarima (-1 = sin asignar)
+              rollosEXT.forEach(r => {
+                let idx = -1;
+                f.tarimas_data.forEach((t, i) => {
+                  if ((t.rollos_ids || []).includes(r.id)) idx = i;
+                });
+                asignacion[r.id] = idx;
+              });
+              
+              const sinAsignar = rollosEXT.filter(r => asignacion[r.id] === -1);
+              const pesoTotalRollos = rollosEXT.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+              const pesoAsignado = rollosEXT.filter(r => asignacion[r.id] !== -1).reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+              const pesoSinAsignar = pesoTotalRollos - pesoAsignado;
+              
+              return `
+                <div style="margin-bottom:14px;padding:14px;background:#eff6ff;border:2px solid #3b82f6;border-radius:12px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                    <strong style="font-size:13px;color:#1e3a8a;">🎞️ Rollos producidos en extrusión (${rollosEXT.length} rollos · ${fmtNum(pesoTotalRollos.toFixed(2))} kg total)</strong>
+                    <span style="font-size:10px;color:#1e40af;background:#dbeafe;padding:3px 8px;border-radius:4px;">Modo asignación inteligente</span>
+                  </div>
+                  
+                  <!-- Resumen -->
+                  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;padding:10px;background:#fff;border-radius:8px;">
+                    <div style="text-align:center;">
+                      <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Total producido</div>
+                      <div style="font-size:16px;font-weight:900;color:#1e40af;">${fmtNum(pesoTotalRollos.toFixed(2))} kg</div>
+                    </div>
+                    <div style="text-align:center;">
+                      <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Asignado a tarimas</div>
+                      <div style="font-size:16px;font-weight:900;color:#16a34a;">${fmtNum(pesoAsignado.toFixed(2))} kg</div>
+                    </div>
+                    <div style="text-align:center;">
+                      <div style="font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;">Sin asignar</div>
+                      <div style="font-size:16px;font-weight:900;color:${pesoSinAsignar > 0 ? '#f59e0b' : '#16a34a'};">${fmtNum(pesoSinAsignar.toFixed(2))} kg</div>
+                    </div>
+                  </div>
+                  
+                  <!-- Botones de acción rápida -->
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+                    <button onclick="window.asignarRollosTodosT01()" type="button" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📦 Todos los rollos a T01</button>
+                    ${f.tarimas_data.length > 1 ? `<button onclick="window.asignarRollosDistribuir()" type="button" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🔀 Distribuir equitativo entre ${f.tarimas_data.length} tarimas</button>` : ''}
+                    <button onclick="window.asignarRollosLimpiar()" type="button" style="padding:8px 14px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">↺ Limpiar asignación</button>
+                  </div>
+                  
+                  <!-- Lista de rollos -->
+                  <div style="max-height:280px;overflow-y:auto;background:#fff;border:1px solid #cbd5e1;border-radius:8px;">
+                    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+                      <thead style="position:sticky;top:0;background:#f1f5f9;">
+                        <tr>
+                          <th style="padding:6px 10px;text-align:left;">#</th>
+                          <th style="padding:6px 10px;text-align:right;">Peso (kg)</th>
+                          <th style="padding:6px 10px;text-align:left;">Operador</th>
+                          <th style="padding:6px 10px;text-align:center;">Turno · Fecha</th>
+                          <th style="padding:6px 10px;text-align:center;">Asignar a tarima</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${rollosEXT.slice().sort((a,b) => (a.numero_rollo||0) - (b.numero_rollo||0)).map(r => {
+                          const idx = asignacion[r.id];
+                          const turnoFecha = `${r.turno === 'dia' ? '☀️' : '🌙'} ${r.grupo || ''} · ${(r.fecha || '').substring(5)}`;
+                          return `
+                            <tr style="border-top:1px solid #f1f5f9;${idx === -1 ? 'background:#fef3c7;' : ''}">
+                              <td style="padding:6px 10px;font-weight:700;color:#0f172a;">#${String(r.numero_rollo || 0).padStart(2,'0')}</td>
+                              <td style="padding:6px 10px;text-align:right;font-weight:700;color:#1e40af;">${fmtNum((Number(r.peso_kg)||0).toFixed(2))}</td>
+                              <td style="padding:6px 10px;color:#475569;">${r.operador_nombre || '—'}</td>
+                              <td style="padding:6px 10px;text-align:center;color:#64748b;font-size:10px;">${turnoFecha}</td>
+                              <td style="padding:4px 10px;text-align:center;">
+                                <select onchange="window.asignarRolloATarima('${r.id}', this.value)" style="padding:4px 8px;font-size:11px;border:1px solid ${idx === -1 ? '#f59e0b' : '#16a34a'};border-radius:4px;background:${idx === -1 ? '#fef3c7' : '#f0fdf4'};font-weight:700;color:${idx === -1 ? '#92400e' : '#15803d'};cursor:pointer;">
+                                  <option value="-1" ${idx === -1 ? 'selected' : ''}>— Sin asignar —</option>
+                                  ${f.tarimas_data.map((_, ti) => `<option value="${ti}" ${idx === ti ? 'selected' : ''}>T${String(ti+1).padStart(2,'0')}</option>`).join('')}
+                                </select>
+                              </td>
+                            </tr>
+                          `;
+                        }).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  ${sinAsignar.length > 0 ? `
+                    <div style="margin-top:8px;padding:8px 10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#92400e;">
+                      ⚠ Hay <strong>${sinAsignar.length} rollos sin asignar</strong> (${fmtNum(pesoSinAsignar.toFixed(2))} kg). Asígnalos antes de liberar.
+                    </div>
+                  ` : `
+                    <div style="margin-top:8px;padding:8px 10px;background:#dcfce7;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;color:#15803d;">
+                      ✓ Todos los rollos están asignados a una tarima.
+                    </div>
+                  `}
+                </div>
+              `;
+            })()}
+            
             <!-- Tabla por tarima -->
             <div style="margin-bottom:14px;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -31104,6 +31207,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
           paquetes: paqT,
           sueltos: sueltosT,
           contenido_paquete: contPaqGlobal,
+          rollos_ids: t.rollos_ids || [],  // 🎞️ Modo rollos: ids de rollos asignados a esta tarima
           almacen: 'PENDIENTE-EMPAQUE',
           ruta_procesos_ejecutados: odp.ruta_procesos || [],
           liberacion_calidad: liberacionData,
@@ -31152,6 +31256,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
           paquetes: paqT,
           sueltos: sueltosT,
           contenido_por_paquete: contPaqGlobal,
+          rollos_ids: t.rollos_ids || [],  // 🎞️ Modo rollos
           qr_data: qrData,
           estatus: 'pendiente_empaque',
           almacen_actual: 'PENDIENTE-EMPAQUE',
@@ -31408,7 +31513,132 @@ window.setMedicionResultado = (campo, valor) => {
   render();
 };
 
+// 🎞️ MODO ROLLOS: handlers de asignación
+// Asignar un rollo individual a una tarima específica (o "-1" para sin asignar)
+window.asignarRolloATarima = (rolloId, tarimaIdxStr) => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  const tarimaIdx = Number(tarimaIdxStr);
+  
+  // Quitar el rollo de cualquier tarima previa
+  state.modalForm.tarimas_data.forEach(t => {
+    if (!t.rollos_ids) t.rollos_ids = [];
+    t.rollos_ids = t.rollos_ids.filter(id => id !== rolloId);
+  });
+  
+  // Agregar a la nueva tarima si tarimaIdx >= 0
+  if (tarimaIdx >= 0 && state.modalForm.tarimas_data[tarimaIdx]) {
+    if (!state.modalForm.tarimas_data[tarimaIdx].rollos_ids) state.modalForm.tarimas_data[tarimaIdx].rollos_ids = [];
+    state.modalForm.tarimas_data[tarimaIdx].rollos_ids.push(rolloId);
+  }
+  
+  // Recalcular pesos de todas las tarimas
+  _recalcularTarimasDesdeRollos();
+  render();
+};
+
+// Asignar TODOS los rollos a la tarima 01
+window.asignarRollosTodosT01 = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return;
+  const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
+  
+  // Limpiar todas las tarimas
+  state.modalForm.tarimas_data.forEach(t => { t.rollos_ids = []; });
+  // Asignar todos a la primera tarima
+  if (state.modalForm.tarimas_data[0]) {
+    state.modalForm.tarimas_data[0].rollos_ids = rollosEXT.map(r => r.id);
+  }
+  
+  _recalcularTarimasDesdeRollos();
+  render();
+  toast(`✅ ${rollosEXT.length} rollos asignados a T01`);
+};
+
+// Distribuir rollos equitativamente entre todas las tarimas (por número de rollos)
+window.asignarRollosDistribuir = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return;
+  const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado)
+    .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0));
+  const numT = state.modalForm.tarimas_data.length;
+  
+  // Limpiar todas las tarimas
+  state.modalForm.tarimas_data.forEach(t => { t.rollos_ids = []; });
+  
+  // Distribuir round-robin
+  rollosEXT.forEach((r, i) => {
+    const targetT = i % numT;
+    state.modalForm.tarimas_data[targetT].rollos_ids.push(r.id);
+  });
+  
+  _recalcularTarimasDesdeRollos();
+  render();
+  toast(`✅ ${rollosEXT.length} rollos distribuidos entre ${numT} tarimas`);
+};
+
+// Limpiar todas las asignaciones
+window.asignarRollosLimpiar = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  if (!confirm('¿Quitar todas las asignaciones de rollos a tarimas?')) return;
+  state.modalForm.tarimas_data.forEach(t => { t.rollos_ids = []; });
+  _recalcularTarimasDesdeRollos();
+  render();
+};
+
+// Recalcular peso de cada tarima basado en los rollos asignados
+function _recalcularTarimasDesdeRollos() {
+  if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return;
+  const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
+  const mapaRollos = {};
+  rollosEXT.forEach(r => { mapaRollos[r.id] = r; });
+  
+  let totalKgAsignado = 0;
+  state.modalForm.tarimas_data.forEach(t => {
+    const pesoRollos = (t.rollos_ids || []).reduce((s, rid) => {
+      const r = mapaRollos[rid];
+      return s + (r ? (Number(r.peso_kg) || 0) : 0);
+    }, 0);
+    t.paquetes = 0;  // En modo rollos no hay paquetes
+    t.sueltos = Number(pesoRollos.toFixed(2));  // La "cantidad" en este modo = peso neto producto
+    t.peso_tarima_vacia = Number(t.peso_tarima_vacia) || Number(state.modalForm.peso_tarima_unit) || 25;
+    t.peso_bruto = Number((pesoRollos + (Number(t.peso_tarima_vacia) || 0)).toFixed(2));
+    totalKgAsignado += pesoRollos;
+  });
+  
+  // Actualizar cantidad_aceptada con el total real asignado (peso real producto)
+  if (totalKgAsignado > 0) {
+    state.modalForm.cantidad_aceptada = Number(totalKgAsignado.toFixed(2));
+  }
+}
+
 window.autoDistribuir = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) {
+    toast('Estado del modal no disponible. Refresca y vuelve a intentar.', 'error');
+    return;
+  }
+  
+  // 🆕 SINCRONIZAR inputs visibles → state (por si el oninput no se disparó)
+  document.querySelectorAll('.form-cal').forEach(el => {
+    const path = el.dataset.field;
+    if (!path) return;
+    if (path.includes('.')) {
+      const [obj, key] = path.split('.');
+      if (!state.modalForm[obj]) state.modalForm[obj] = {};
+      state.modalForm[obj][key] = el.value;
+    } else {
+      state.modalForm[path] = el.value;
+    }
+  });
+  
+  const numT = state.modalForm.tarimas_data.length;
+  if (numT === 0) {
+    toast('No hay tarimas. Captura "Núm. tarimas" primero.', 'error');
+    return;
+  }
   
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return;
@@ -31427,6 +31657,11 @@ window.autoDistribuir = () => {
   // Calcular paquetes totales y sueltos sobrantes
   const paqTotales = Math.floor(cantTotal / contPaq);
   const sueltosTotal = cantTotal - (paqTotales * contPaq);
+  
+  // 🆕 Sanity check: si paqTotales = 0 y contPaq > 0, contenido por paquete es mayor que la cantidad
+  if (paqTotales === 0 && contPaq > 0) {
+    if (!confirm(`⚠ El contenido por paquete (${contPaq}) es MAYOR que la cantidad aceptada (${cantTotal}).\n\nNo se podrá formar ni un solo paquete completo: todo quedará como suelto.\n\n¿Continuar de todas formas?`)) return;
+  }
   
   // Distribuir paquetes equitativo entre tarimas
   // Si paqTotales = 100 y numT = 4 → 25 c/u
@@ -31456,7 +31691,7 @@ window.autoDistribuir = () => {
   
   if (sueltosTotal > 0) {
     const sueltosMostrar = um === 'millar' 
-      ? `${Math.round(sueltosTotal * 1000)} pza` 
+      ? `${Math.round(sueltosTotal * 1000)} pza (= ${sueltosTotal.toFixed(3)} millares)` 
       : `${fmtNum(sueltosTotal)} ${UM_LABELS[um]}`;
     toast(`✅ Distribuido: ${paqTotales} paquetes + ${sueltosMostrar} en T${numT}`);
   } else {
@@ -31468,6 +31703,20 @@ window.autoDistribuir = () => {
 // Distribuir cantidad equitativa SIN paquetes (cuando UM ya está en kg directo)
 window.autoDistribuirSinPaquetes = () => {
   if (!state.modalForm || !state.modalForm.tarimas_data) return;
+  
+  // 🆕 SINCRONIZAR inputs visibles → state (por si el oninput no se disparó)
+  document.querySelectorAll('.form-cal').forEach(el => {
+    const path = el.dataset.field;
+    if (!path) return;
+    if (path.includes('.')) {
+      const [obj, key] = path.split('.');
+      if (!state.modalForm[obj]) state.modalForm[obj] = {};
+      state.modalForm[obj][key] = el.value;
+    } else {
+      state.modalForm[path] = el.value;
+    }
+  });
+  
   const numT = state.modalForm.tarimas_data.length;
   if (numT === 0) return;
   
