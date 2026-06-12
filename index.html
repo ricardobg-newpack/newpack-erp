@@ -2017,7 +2017,75 @@ function renderApp() {
     </div>
     
     ${state.modal ? renderModal() : ''}
+    ${state.modalImportarClientes ? renderModalImportarClientes() : ''}
     ${state.loadingAccion ? `<div class="loading-overlay"><div class="loading-content"><div class="spinner"></div><div>Procesando...</div></div></div>` : ''}
+  `;
+}
+
+function renderModalImportarClientes() {
+  const f = state.modalForm || {};
+  const preview = f.preview;
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)window.cerrarImportClientes()">
+      <div class="modal" style="max-width:920px;max-height:92vh;">
+        <div class="modal-header">
+          <h2 style="font-size:18px;font-weight:800;">📥 Importar Clientes Masivo</h2>
+          <button class="icon-btn" onclick="window.cerrarImportClientes()">✗</button>
+        </div>
+        <div class="modal-body">
+          <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px;color:#1e3a8a;">
+            <strong>📋 Instrucciones:</strong>
+            <ol style="margin:6px 0 0 18px;padding:0;line-height:1.6;">
+              <li>Pega abajo el JSON con los clientes (array de objetos).</li>
+              <li>Aprieta <strong>"Previsualizar"</strong> para validar el JSON.</li>
+              <li>Revisa el resumen y aprieta <strong>"Importar"</strong>.</li>
+            </ol>
+            <div style="margin-top:8px;font-size:11px;color:#475569;">
+              Campos esperados por cada cliente: <code>codigo</code>, <code>nombre</code>, <code>rfc</code>, <code>giro</code>, <code>correo</code>, <code>telefono</code>, <code>calle</code>, <code>colonia</code>, <code>cp</code>, <code>municipio</code>, <code>estado</code>, <code>dias_credito</code>, <code>vendedor</code>, <code>perfil_pago</code>, etc.
+            </div>
+          </div>
+          
+          <div class="field">
+            <label class="field-label">JSON de clientes (array)</label>
+            <textarea id="imp-cli-json" class="input text-mono" style="min-height:200px;font-size:10px;font-family:Monaco,monospace;" placeholder='[{"codigo":"S035","nombre":"SOLUCIONES EN EMPAQUES GASA","rfc":"...","giro":"Distribuidor",...}]'>${f.json_clientes || ''}</textarea>
+          </div>
+          
+          <div style="display:flex;gap:8px;margin-bottom:14px;">
+            <button class="btn-secondary" onclick="window.previsualizarImportClientes()" style="background:#1e40af;color:#fff;">🔍 Previsualizar</button>
+            <button class="btn-secondary" onclick="document.getElementById('imp-cli-json').value='';state.modalForm.preview=null;render();">↺ Limpiar</button>
+          </div>
+          
+          ${preview ? `
+            <div style="background:#f0fdf4;border:2px solid ${(preview.sinCodigo || preview.sinNombre || preview.duplicados.length) ? '#dc2626' : '#16a34a'};border-radius:10px;padding:14px;margin-bottom:14px;">
+              <div style="font-weight:800;color:${(preview.sinCodigo || preview.sinNombre || preview.duplicados.length) ? '#991b1b' : '#15803d'};font-size:14px;margin-bottom:8px;">
+                ${(preview.sinCodigo || preview.sinNombre || preview.duplicados.length) ? '⚠ Errores en el JSON' : '✓ JSON válido'}
+              </div>
+              <div style="font-size:12px;color:#475569;line-height:1.6;">
+                • Total clientes: <strong>${preview.total}</strong><br>
+                ${preview.sinCodigo > 0 ? `• <span style="color:#dc2626;font-weight:700;">${preview.sinCodigo} sin código</span><br>` : ''}
+                ${preview.sinNombre > 0 ? `• <span style="color:#dc2626;font-weight:700;">${preview.sinNombre} sin nombre</span><br>` : ''}
+                ${preview.duplicados.length > 0 ? `• <span style="color:#dc2626;font-weight:700;">Códigos duplicados:</span> ${preview.duplicados.slice(0, 5).join(', ')}${preview.duplicados.length > 5 ? '...' : ''}<br>` : ''}
+              </div>
+              ${preview.muestra && preview.muestra.length > 0 ? `
+                <details style="margin-top:8px;">
+                  <summary style="cursor:pointer;font-size:11px;color:#1e40af;font-weight:700;">Ver muestra (primeros 3)</summary>
+                  <pre style="background:#fff;padding:8px;border-radius:6px;font-size:10px;margin-top:4px;overflow-x:auto;max-height:200px;">${JSON.stringify(preview.muestra, null, 2)}</pre>
+                </details>
+              ` : ''}
+            </div>
+          ` : ''}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="window.cerrarImportClientes()">Cancelar</button>
+          ${preview && !preview.sinCodigo && !preview.sinNombre && preview.duplicados.length === 0 ? `
+            <button class="btn-primary" onclick="window.confirmarImportClientes()" style="background:#16a34a;">✓ Importar ${preview.total} clientes</button>
+          ` : `
+            <button class="btn-primary" disabled style="background:#94a3b8;cursor:not-allowed;">${preview ? 'Corrige errores primero' : 'Previsualiza primero'}</button>
+          `}
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -2173,6 +2241,26 @@ function renderDashboard() {
               </div>
             `).join('');
           })()}
+        </div>
+      </div>
+      
+      <!-- 🆕 PANEL: IMPORTAR CLIENTES MASIVO -->
+      <div class="panel" style="margin-bottom:18px;border:2px solid #1e40af;background:#eff6ff;">
+        <div style="padding:14px 18px;border-bottom:1px solid #93c5fd;">
+          <strong style="color:#1e3a8a;font-size:14px;">📥 Importar Clientes Masivo (desde Excel/JSON)</strong>
+        </div>
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div style="flex:1;min-width:220px;">
+            <div style="font-size:12.5px;color:#1e3a8a;line-height:1.5;">
+              <strong>Importa o actualiza el catálogo de clientes desde un JSON.</strong>
+              <br>• Los clientes con código repetido se <strong>actualizan</strong>
+              <br>• Los clientes que NO estén en el JSON quedan como <strong>activo:false</strong> (no se borran físicamente)
+              <br>• ${state.clientes.length} clientes activos actualmente
+            </div>
+          </div>
+          <button onclick="window.importarClientesMasivo()" style="background:#1e40af;color:#fff;border:none;padding:12px 20px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;white-space:nowrap;">
+            📥 IMPORTAR CLIENTES
+          </button>
         </div>
       </div>
       
@@ -5697,6 +5785,172 @@ window.editarPedidoBorrador = (pedidoId) => {
 // 🧹 RESET DEL SISTEMA — Borrar todos los documentos de pruebas y empezar limpio
 // Mantiene: catálogos (productos, clientes, materias primas, proveedores, usuarios, almacenes, máquinas, personal)
 // Borra: pedidos, ODPs, OVs, tarimas, OTIs, capturas, rollos, notificaciones, lotes, remisiones
+// 📥 IMPORTAR CLIENTES MASIVO — Reemplaza todos los clientes con un JSON
+window.importarClientesMasivo = async () => {
+  const u = state.user || {};
+  if (u.rol !== 'admin' && u.depto !== 'CEO' && u.depto !== 'ADMIN') {
+    toast('Solo CEO/ADMIN pueden importar clientes', 'error');
+    return;
+  }
+  
+  // Mostrar modal con textarea para pegar JSON
+  state.modalForm = { json_clientes: '', preview: null };
+  state.modalImportarClientes = true;
+  render();
+};
+
+window.previsualizarImportClientes = () => {
+  const txt = $('#imp-cli-json')?.value || '';
+  if (!txt.trim()) { toast('Pega el JSON primero', 'error'); return; }
+  try {
+    const arr = JSON.parse(txt);
+    if (!Array.isArray(arr)) { toast('El JSON debe ser un array []', 'error'); return; }
+    if (arr.length === 0) { toast('El array está vacío', 'error'); return; }
+    
+    // Validar campos obligatorios
+    const sinCodigo = arr.filter(c => !c.codigo);
+    const sinNombre = arr.filter(c => !c.nombre);
+    const codigos = arr.map(c => c.codigo);
+    const dupes = codigos.filter((c, i) => codigos.indexOf(c) !== i);
+    
+    state.modalForm.preview = {
+      total: arr.length,
+      sinCodigo: sinCodigo.length,
+      sinNombre: sinNombre.length,
+      duplicados: [...new Set(dupes)],
+      data: arr,
+      muestra: arr.slice(0, 3)
+    };
+    render();
+    toast(`✓ ${arr.length} clientes parseados`);
+  } catch (e) {
+    toast(`⚠ JSON inválido: ${e.message}`, 'error');
+  }
+};
+
+window.confirmarImportClientes = async () => {
+  const preview = state.modalForm?.preview;
+  if (!preview || !preview.data) { toast('Primero previsualiza', 'error'); return; }
+  if (preview.sinCodigo > 0 || preview.sinNombre > 0 || preview.duplicados.length > 0) {
+    toast('Hay errores en el JSON. Corrígelos antes de importar.', 'error');
+    return;
+  }
+  
+  const arr = preview.data;
+  
+  if (!confirm(
+    `⚠ IMPORTACIÓN MASIVA DE CLIENTES\n\n` +
+    `Esto va a:\n` +
+    `1. DESACTIVAR todos los clientes actuales (${state.clientes.length})\n` +
+    `2. INSERTAR ${arr.length} clientes nuevos del JSON\n\n` +
+    `Los clientes existentes con el mismo código se ACTUALIZARÁN.\n` +
+    `Los que no estén en el JSON quedarán como activo:false (no se borran).\n\n` +
+    `¿Continuar?`
+  )) return;
+  
+  state.loadingAccion = true; render();
+  let creados = 0, actualizados = 0, errores = 0;
+  
+  try {
+    // Paso 1: Desactivar todos los clientes actuales
+    const snap = await getDocs(collection(db, 'clientes'));
+    const codigosNuevos = new Set(arr.map(c => c.codigo));
+    
+    if (snap.size > 0) {
+      // Desactivar en batches de 400
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = docs.slice(i, i + 400);
+        chunk.forEach(d => {
+          const cod = d.data().codigo || d.id;
+          // Solo desactivar los que NO están en el JSON nuevo
+          if (!codigosNuevos.has(cod)) {
+            batch.update(d.ref, { activo: false, desactivado_at: serverTimestamp() });
+          }
+        });
+        await batch.commit();
+      }
+    }
+    
+    // Paso 2: Insertar/actualizar clientes nuevos
+    for (let i = 0; i < arr.length; i += 400) {
+      const batch = writeBatch(db);
+      const chunk = arr.slice(i, i + 400);
+      chunk.forEach(c => {
+        try {
+          const cod = String(c.codigo).trim().toUpperCase();
+          const ref = doc(db, 'clientes', cod);
+          batch.set(ref, {
+            codigo: cod,
+            nombre: c.nombre || '',
+            rfc: (c.rfc || '').toUpperCase(),
+            giro: c.giro || '',
+            correo: (c.correo || '').toLowerCase(),
+            telefono: c.telefono || '',
+            celular: c.celular || '',
+            contacto: c.contacto || '',
+            comprador: c.comprador || '',
+            calle: c.calle || '',
+            colonia: c.colonia || '',
+            cp: c.cp || '',
+            municipio: c.municipio || '',
+            estado: c.estado || '',
+            pais: c.pais || 'México',
+            dias_credito: Number(c.dias_credito) || 0,
+            limite_credito_texto: c.limite_credito_texto || '',
+            regimen_fiscal: c.regimen_fiscal || '',
+            uso_cfdi: c.uso_cfdi || '',
+            moneda: c.moneda || 'MXN',
+            vendedor: c.vendedor || '',
+            perfil_pago: c.perfil_pago || '',
+            referencias: c.referencias || '',
+            notas: c.notas || '',
+            cedis_asignado: c.cedis_asignado || 'CEDIS-MTY',
+            activo: true,
+            importado_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          }, { merge: true });
+          creados++;
+        } catch (e) {
+          console.error(`Error con cliente ${c.codigo}:`, e);
+          errores++;
+        }
+      });
+      await batch.commit();
+    }
+    
+    // Recargar clientes
+    const snap2 = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
+    state.clientes = snap2.docs.map(d => ({ id: d.id, ...d.data() }));
+    
+    alert(
+      `✅ IMPORTACIÓN COMPLETADA\n\n` +
+      `• ${creados} clientes importados/actualizados\n` +
+      `${errores > 0 ? `• ${errores} errores (ver consola)\n` : ''}` +
+      `• Clientes actuales totales: ${state.clientes.length}\n\n` +
+      `Refresca con Ctrl+Shift+R para ver el listado actualizado.`
+    );
+    
+    state.modalImportarClientes = false;
+    state.modalForm = null;
+    render();
+    toast(`✅ ${creados} clientes importados`);
+  } catch (e) {
+    console.error('Error en importación:', e);
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    state.loadingAccion = false;
+    render();
+  }
+};
+
+window.cerrarImportClientes = () => {
+  state.modalImportarClientes = false;
+  state.modalForm = null;
+  render();
+};
+
 window.resetSistemaPruebas = async () => {
   const u = state.user || {};
   if (u.rol !== 'admin' && u.depto !== 'CEO' && u.depto !== 'ADMIN') {
