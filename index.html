@@ -228,7 +228,12 @@ const ODP_ESTATUS = {
   EN_PRODUCCION: ['en_produccion'],
   // Esperando liberación de calidad (producción ya terminó pero falta validar)
   EN_CALIDAD: ['pendiente_calidad'],
-  // Producción terminada, en flujo logístico (ya pasó calidad)
+  // 🆕 Post-calidad pero AÚN en planta (esperando recepción CEDIS-MTY)
+  EN_LOGISTICA_PLANTA: ['liberada_empaque', 'pendiente_almacen', 'en_almacen_planta', 
+                         'en_transito_cedis', 'en_transito_cedis_mty'],
+  // 🆕 Ya recibido en CEDIS-MTY/MEX o despachado al cliente (ya NO en seguimiento PI activo)
+  EN_CEDIS_O_DESPUES: ['en_cedis_mty', 'en_transito_cedis_mex', 'en_cedis_mex', 'embarcada'],
+  // Legacy (compat con código antiguo): producción terminada + flujo logístico hasta embarque
   EN_LOGISTICA: ['liberada_empaque', 'pendiente_almacen', 'en_almacen_planta', 
                   'en_transito_cedis', 'en_transito_cedis_mty', 'en_cedis_mty', 
                   'en_cedis_mex', 'embarcada'],
@@ -323,21 +328,25 @@ function calcularEstadoRealPedido(pedido, odps) {
     ODP_ESTATUS.EN_PRODUCCION.includes(o.estatus)
   );
   const enCalidad = odpsActivas.filter(o => ODP_ESTATUS.EN_CALIDAD.includes(o.estatus));
-  const enLogistica = odpsActivas.filter(o => ODP_ESTATUS.EN_LOGISTICA.includes(o.estatus));
+  // 🆕 Separar: post-calidad PERO antes de CEDIS  vs  ya en CEDIS o más allá
+  const enLogisticaPlanta = odpsActivas.filter(o => ODP_ESTATUS.EN_LOGISTICA_PLANTA.includes(o.estatus));
+  const enCedisOdespues = odpsActivas.filter(o => ODP_ESTATUS.EN_CEDIS_O_DESPUES.includes(o.estatus));
   const terminalOk = odpsActivas.filter(o => ODP_ESTATUS.TERMINAL_OK.includes(o.estatus));
   
   // TODAS las ODPs activas están entregadas/completadas → completado
   if (terminalOk.length === odpsActivas.length) return 'completado';
   
-  // TODAS pasaron producción (calidad + logística + entregadas) → en logística
-  if (enProd.length === 0) {
-    // Si la mayoría está en logística o entregada → "en logística"
-    return 'en_logistica';
-  }
+  // 🆕 TODAS están en CEDIS o ya despachadas → "en_cedis" (sale del seguimiento PI activo)
+  if (enCedisOdespues.length + terminalOk.length === odpsActivas.length) return 'en_cedis';
   
   // Aún hay producción activa
   if (enProd.length > 0) return 'en_proceso';
+  
+  // Producción terminó, hay calidad pendiente
   if (enCalidad.length > 0) return 'pendiente_calidad';
+  
+  // Producción y calidad terminadas pero material aún en planta (esperando recibir en CEDIS)
+  if (enLogisticaPlanta.length > 0) return 'en_logistica';
   
   return pedido.estatus || 'en_proceso';
 }
@@ -787,7 +796,7 @@ window.UM_ENTEROS = UM_ENTEROS;
 // (calibre 30 → 0.0030, calibre 100 → 0.0100, calibre 200 → 0.0200)
 // peso_pieza (kg) = peso_millar / 1000
 // ============================================================
-const FACTOR_PESO = 0.470; // densidad efectiva del polietileno
+const FACTOR_PESO = 0.475; // densidad efectiva del polietileno
 
 // ============================================================
 // DATOS DE LA EMPRESA (PARA DOCUMENTOS PDF)
@@ -6060,7 +6069,7 @@ function renderSeguimientoPedidos() {
   
   // 🆕 Filtros por estado REAL (no por campo legacy del PI)
   if (filtroEstado === 'activos') {
-    // Activos: requieren acción de PRODUCCIÓN aún (no cuenta logística/calidad/entregado)
+    // Activos: requieren acción de PRODUCCIÓN o están en flujo planta (NO incluye en_cedis ni completado)
     pedidos = pedidos.filter(p => {
       const er = estadoRealMap[p.id];
       return ['pendiente_aprobacion','aprobado','en_proceso'].includes(er);
@@ -6068,7 +6077,11 @@ function renderSeguimientoPedidos() {
   } else if (filtroEstado === 'calidad') {
     pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'pendiente_calidad');
   } else if (filtroEstado === 'logistica') {
+    // 🆕 En logística PLANTA: post-calidad pero AÚN no llega a CEDIS
     pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'en_logistica');
+  } else if (filtroEstado === 'en_cedis') {
+    // 🆕 Material ya en CEDIS (responsabilidad ahora de CEDIS/CS)
+    pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'en_cedis');
   } else if (filtroEstado === 'completados') {
     pedidos = pedidos.filter(p => estadoRealMap[p.id] === 'completado');
   } else if (filtroEstado === 'sin_odp') {
@@ -6077,7 +6090,14 @@ function renderSeguimientoPedidos() {
       return odps.filter(o => !o.archivada).length === 0;
     });
   } else if (filtroEstado === 'todos') {
-    // Sin filtro adicional
+    // Sin filtro adicional, PERO excluir los que ya están en CEDIS o completados
+    // para que "todos" sea "todos los activos en planta"
+    pedidos = pedidos.filter(p => {
+      const er = estadoRealMap[p.id];
+      return !['en_cedis', 'completado'].includes(er);
+    });
+  } else if (filtroEstado === 'todos_inc') {
+    // Realmente todos, sin filtrar
   }
   
   // Ordenar por más reciente
@@ -6096,6 +6116,7 @@ function renderSeguimientoPedidos() {
   }).length;
   const pedidosEnCalidad = pedidosBase.filter(p => estadoRealMap[p.id] === 'pendiente_calidad').length;
   const pedidosEnLogistica = pedidosBase.filter(p => estadoRealMap[p.id] === 'en_logistica').length;
+  const pedidosEnCedis = pedidosBase.filter(p => estadoRealMap[p.id] === 'en_cedis').length;
   const pedidosCompletados = pedidosBase.filter(p => estadoRealMap[p.id] === 'completado').length;
   const odpsCorriendo = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso').length;
   const odpsEsperando = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'esperando').length;
@@ -6159,7 +6180,12 @@ function renderSeguimientoPedidos() {
       ` : ''}
       ${pedidosEnLogistica > 0 ? `
         <button onclick="state.filtros.seguimiento_estado='logistica';render();" style="padding:6px 14px;background:${filtroEstado === 'logistica' ? '#0891b2' : '#fff'};color:${filtroEstado === 'logistica' ? '#fff' : '#0891b2'};border:1.5px solid #0891b2;border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
-          🚚 En Logística (${pedidosEnLogistica})
+          🚚 Logística planta (${pedidosEnLogistica})
+        </button>
+      ` : ''}
+      ${pedidosEnCedis > 0 ? `
+        <button onclick="state.filtros.seguimiento_estado='en_cedis';render();" style="padding:6px 14px;background:${filtroEstado === 'en_cedis' ? '#7c3aed' : '#fff'};color:${filtroEstado === 'en_cedis' ? '#fff' : '#7c3aed'};border:1.5px solid #7c3aed;border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;" title="Material ya en CEDIS-MTY / CEDIS-MEX o embarcado al cliente. El seguimiento continúa en la vista Embarques.">
+          📦 En CEDIS (${pedidosEnCedis})
         </button>
       ` : ''}
       <button onclick="state.filtros.seguimiento_estado='completados';render();" style="padding:6px 14px;background:${filtroEstado === 'completados' ? '#16a34a' : '#fff'};color:${filtroEstado === 'completados' ? '#fff' : '#475569'};border:1.5px solid ${filtroEstado === 'completados' ? '#16a34a' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">
@@ -6217,6 +6243,7 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
     en_proceso: '#7c3aed',
     pendiente_calidad: '#a16207',
     en_logistica: '#0891b2',
+    en_cedis: '#7c3aed',
     completado: '#16a34a',
     entregado: '#15803d',
     cancelado: '#dc2626' 
@@ -6227,7 +6254,8 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
     aprobado: '✓ Aprobado · esperando producción',
     en_proceso: '⚙️ En producción',
     pendiente_calidad: '🟡 Esperando liberación de calidad',
-    en_logistica: '🚚 En logística / por entregar',
+    en_logistica: '🚚 Logística planta (pre-CEDIS)',
+    en_cedis: '📦 Recibido en CEDIS · seguimiento en Embarques',
     completado: '✅ Completado · entregado',
     entregado: '🚚 Entregado',
     cancelado: '✗ Cancelado'
@@ -6665,15 +6693,35 @@ function renderTarjetaODP(o, contexto) {
   }
   const pctProcActual = metaProcKg > 0 ? Math.min(100, Math.round((acumProcActualKg / metaProcKg) * 100)) : 0;
   
-  // Cálculo legacy
+  // Cálculo legacy + 🆕 robusto: priorizar KG (dato real) y convertir a UM si es posible
+  let totalProducidoKg = 0;
   let totalProducidoFinal = 0;
+  let totalMermasKg = 0;
   let totalMermasFinal = 0;
   if (procesosCompletados.length > 0) {
     const ultimo = procesosCompletados[procesosCompletados.length - 1];
+    totalProducidoKg = Number(ultimo.cantidad_producida_kg) || Number(ultimo.cantidad_producida) || 0;
     totalProducidoFinal = Number(ultimo.cantidad_producida) || 0;
+    totalMermasKg = procesosCompletados.reduce((s, p) => s + (Number(p.mermas_kg) || 0), 0);
     totalMermasFinal = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
   }
-  const pct = o.cantidad > 0 ? Math.min(100, Math.round((totalProducidoFinal / o.cantidad) * 100)) : 0;
+  
+  // 🆕 Convertir KG a UM del pedido en tiempo de display (más confiable que el valor guardado)
+  const umLowDisp = (o.um || '').toLowerCase();
+  let producidoEnUMReal = totalProducidoKg;
+  let conversionPosible = true;
+  if (umLowDisp === 'pza' && producto) {
+    const pp = window.calcularPesoPieza(producto);
+    if (pp > 0) producidoEnUMReal = Math.round(totalProducidoKg / pp);
+    else conversionPosible = false;
+  } else if (umLowDisp === 'millar' && producto) {
+    const pm = window.calcularPesoMillar(producto);
+    if (pm > 0) producidoEnUMReal = Math.round((totalProducidoKg / pm) * 1000) / 1000;
+    else conversionPosible = false;
+  }
+  
+  // Porcentaje basado en la UM correcta (con conversión)
+  const pct = o.cantidad > 0 ? Math.min(100, Math.round((producidoEnUMReal / o.cantidad) * 100)) : 0;
   
   // Máquina asignada al proceso actual
   const maquinaActual = (o.maquinas_asignadas && o.maquinas_asignadas[procActual]) || o.maquina_codigo || '';
@@ -6710,9 +6758,15 @@ function renderTarjetaODP(o, contexto) {
             }
             return `<div style="font-size:11px;color:#059669;font-weight:700;margin-top:2px;">🏭 ${fmtNum(kg)} kg producción</div>`;
           })()}
-          ${totalProducidoFinal > 0 ? `
-            <div style="font-size:11px;color:#475569;margin-top:2px;">Producido: <strong>${fmtCantidadUM(totalProducidoFinal, o.um)}</strong> (${pct}%)</div>
-            ${totalMermasFinal > 0 ? `<div style="font-size:10px;color:#dc2626;">Mermas: ${fmtCantidadUM(totalMermasFinal, o.um)}</div>` : ''}
+          ${totalProducidoKg > 0 ? `
+            <div style="font-size:11px;color:#475569;margin-top:2px;">
+              Producido: <strong>${fmtNum(totalProducidoKg)} kg</strong>
+              ${umLowDisp !== 'kg' ? (conversionPosible 
+                ? ` ≈ <strong style="color:#1e40af;">${fmtCantidadUM(producidoEnUMReal, o.um)}</strong> (${pct}%)` 
+                : ` <span style="color:#dc2626;font-weight:700;background:#fee2e2;padding:1px 5px;border-radius:4px;font-size:10px;">⚠ falta peso del producto para convertir a ${o.um}</span>`
+              ) : ` (${pct}%)`}
+            </div>
+            ${totalMermasKg > 0 ? `<div style="font-size:10px;color:#dc2626;">Mermas: ${fmtNum(totalMermasKg)} kg${umLowDisp !== 'kg' && conversionPosible && producto ? ' ≈ ' + fmtCantidadUM(umLowDisp==='pza' ? Math.round(totalMermasKg/window.calcularPesoPieza(producto)) : (umLowDisp==='millar' ? totalMermasKg/window.calcularPesoMillar(producto) : totalMermasKg), o.um) : ''}</div>` : ''}
           ` : ''}
         </div>
       </div>
@@ -7822,11 +7876,31 @@ function renderTarjetaCalidad(o, contexto) {
   const um = (o.um || 'kg').toLowerCase();
   const ruta = o.ruta_procesos || [];
   const procesosCompletados = o.procesos_completados || [];
-  const cantidadProducida = o.cantidad_producida_final || 0;
-  const cantidadOriginal = o.cantidad || 0;
-  const pctCalidad = cantidadOriginal > 0 ? (cantidadProducida / cantidadOriginal * 100).toFixed(1) : 0;
-  const pctClass = pctCalidad >= 90 ? '#16a34a' : '#dc2626';
   const lote = state.lotes.find(l => l.odp_id === o.id);
+  
+  // 🆕 Conversión robusta: priorizar kg real y convertir a UM del pedido
+  const ultimoCalProc = procesosCompletados.length > 0 ? procesosCompletados[procesosCompletados.length - 1] : null;
+  const producidoKgCal = ultimoCalProc 
+    ? (Number(ultimoCalProc.cantidad_producida_kg) || Number(o.cantidad_producida_final_kg) || 0)
+    : (Number(o.cantidad_producida_final_kg) || 0);
+  
+  const productoCal = state.productos_pt.find(pp => pp.codigo === o.producto_codigo);
+  let producidoEnUMCal = producidoKgCal;
+  let conversionPosibleCal = true;
+  if (um === 'pza' && productoCal) {
+    const pp = window.calcularPesoPieza(productoCal);
+    if (pp > 0) producidoEnUMCal = Math.round(producidoKgCal / pp);
+    else conversionPosibleCal = false;
+  } else if (um === 'millar' && productoCal) {
+    const pm = window.calcularPesoMillar(productoCal);
+    if (pm > 0) producidoEnUMCal = Math.round((producidoKgCal / pm) * 1000) / 1000;
+    else conversionPosibleCal = false;
+  }
+  
+  const cantidadOriginal = o.cantidad || 0;
+  // Porcentaje sobre la UM real (no sobre kg)
+  const pctCalidad = cantidadOriginal > 0 ? ((producidoEnUMCal / cantidadOriginal) * 100).toFixed(1) : 0;
+  const pctClass = pctCalidad >= 90 ? '#16a34a' : (pctCalidad >= 60 ? '#f59e0b' : '#dc2626');
   
   const colores = {
     pendiente_calidad: '#f59e0b',
@@ -7859,8 +7933,13 @@ function renderTarjetaCalidad(o, contexto) {
           <div style="font-size:11px;color:#64748b;">Solicitado:</div>
           <div style="font-size:14px;font-weight:600;">${fmtCantidadUM(cantidadOriginal, o.um)}</div>
           <div style="font-size:11px;color:#64748b;margin-top:6px;">Producido:</div>
-          <div style="font-size:18px;font-weight:800;color:${pctClass};">${fmtCantidadUM(cantidadProducida, o.um)}</div>
-          <div style="font-size:11px;color:${pctClass};font-weight:700;">${pctCalidad}% calidad</div>
+          <div style="font-size:16px;font-weight:800;">${fmtNum(producidoKgCal)} kg</div>
+          ${um !== 'kg' ? (conversionPosibleCal ? `
+            <div style="font-size:13px;font-weight:700;color:${pctClass};">≈ ${fmtCantidadUM(producidoEnUMCal, o.um)}</div>
+          ` : `
+            <div style="font-size:10px;color:#dc2626;font-weight:700;background:#fee2e2;padding:3px 7px;border-radius:5px;margin-top:3px;">⚠ Falta peso del producto para convertir a ${o.um}</div>
+          `) : ''}
+          <div style="font-size:11px;color:${pctClass};font-weight:700;margin-top:2px;">${pctCalidad}% calidad</div>
         </div>
       </div>
       
@@ -8676,7 +8755,8 @@ function modalCapturarTurno() {
       grupo: '',
       operador_id: '',
       supervisor_id: '',
-      producido_kg: '',
+      producido_um: '', // 🆕 captura en UM del proceso (kg/pza/millar)
+      producido_kg: '', // se calcula automáticamente al guardar
       mermas_kg: '',
       notas: ''
     };
@@ -8836,19 +8916,56 @@ function modalCapturarTurno() {
           <!-- PRODUCCIÓN -->
           <div style="padding:12px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-top:8px;">
             <div style="font-weight:800;color:#166534;font-size:13px;margin-bottom:8px;">📊 Producción de este turno</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-              <div class="field" style="margin:0;">
-                <label class="field-label">✅ kg producidos *</label>
-                <input class="input" id="ct-prod" type="number" min="0" step="0.1" value="${f.producido_kg || ''}" oninput="window.modalFormSetSilent('producido_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;" />
-              </div>
-              <div class="field" style="margin:0;">
-                <label class="field-label">⚠ kg mermas</label>
-                <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;color:#dc2626;" />
-              </div>
-            </div>
-            <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;font-style:italic;">
-              💡 Captura kg producidos y kg mermas de tu turno
-            </div>
+            ${(() => {
+              // 🆕 Determinar UM de captura para este proceso
+              // - Extrusión (P1-EXT): siempre kg
+              // - Otros procesos: usar UM del pedido (pza, millar, kg)
+              const esExtruP = (procCodigo === 'P1-EXT');
+              const umCapt = esExtruP ? 'kg' : um;
+              const captLabel = umCapt === 'kg' ? 'kg producidos' :
+                                umCapt === 'pza' ? 'piezas producidas' :
+                                umCapt === 'millar' ? 'millares producidos' : umCapt + ' producido(s)';
+              const iconCapt = umCapt === 'kg' ? '✅' : umCapt === 'pza' ? '📦' : '📦';
+              
+              // Calcular peso por unidad para mostrar la conversión en tiempo real
+              let pesoUnidad = 0;
+              if (umCapt === 'pza' && producto) pesoUnidad = window.calcularPesoPieza(producto);
+              else if (umCapt === 'millar' && producto) pesoUnidad = window.calcularPesoMillar(producto);
+              
+              const stepCapt = umCapt === 'kg' ? '0.1' : umCapt === 'millar' ? '0.001' : '1';
+              const conversionPosible = (umCapt === 'kg') || pesoUnidad > 0;
+              
+              return `
+                ${!conversionPosible ? `
+                  <div style="margin-bottom:10px;padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:11px;color:#991b1b;">
+                    ⚠ Este producto no tiene dimensiones/calibre cargados, no se puede convertir ${umCapt} → kg. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='productos_pt';state.busquedaProd='${odp.producto_codigo}';render();" style="color:#1d4ed8;font-weight:700;">Editar producto →</a>
+                  </div>
+                ` : ''}
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label">${iconCapt} ${captLabel} *</label>
+                    <input class="input" id="ct-prod" type="number" min="0" step="${stepCapt}" value="${f.producido_um || ''}" oninput="window.modalFormSetSilent('producido_um', this.value); if(document.getElementById('ct-prod-kg-disp')) document.getElementById('ct-prod-kg-disp').textContent = window.fmtNum((Number(this.value)||0) * ${pesoUnidad});" placeholder="0" style="font-size:18px;font-weight:800;" />
+                    ${umCapt !== 'kg' && pesoUnidad > 0 ? `
+                      <div style="font-size:10.5px;color:#475569;margin-top:4px;" id="ct-prod-conv">
+                        ≈ <strong id="ct-prod-kg-disp">${f.producido_um ? fmtNum((Number(f.producido_um) || 0) * pesoUnidad) : '0'}</strong> kg
+                      </div>
+                    ` : ''}
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label">⚠ kg mermas <span style="font-weight:400;color:#94a3b8;font-size:10px;">(siempre en kg)</span></label>
+                    <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;color:#dc2626;" />
+                  </div>
+                </div>
+                <!-- Datos para que guardarCapturaTurno sepa qué hacer -->
+                <input type="hidden" id="ct-um-captura" value="${umCapt}" />
+                <input type="hidden" id="ct-peso-unidad" value="${pesoUnidad}" />
+                <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;font-style:italic;">
+                  💡 ${esExtruP ? 'Extrusión siempre se captura en kg' : 
+                      umCapt === 'kg' ? 'Producto medido por peso (rollos/película) — captura en kg' :
+                      `Pedido en ${umCapt} → captura en ${umCapt} · merma siempre en kg`}
+                </div>
+              `;
+            })()}
           </div>
           
           <div class="field" style="margin-top:8px;">
@@ -8867,6 +8984,20 @@ function modalCapturarTurno() {
                   return tb - ta;
                 }).map(c => {
                   const grupo = TURNOS.find(t => t.codigo === c.grupo);
+                  // 🆕 Si la captura guardó producido_um + um_captura, mostrar en esa UM
+                  const umC = (c.um_captura || 'kg').toLowerCase();
+                  const prodKgVal = Number(c.producido_kg) || 0;
+                  const prodUMVal = Number(c.producido_um) || 0;
+                  let prodDisplay;
+                  if (umC === 'kg') {
+                    prodDisplay = `${fmtNum(prodKgVal)} kg`;
+                  } else if (prodUMVal > 0) {
+                    const lblU = umC === 'pza' ? 'pza' : umC === 'millar' ? 'millares' : umC;
+                    prodDisplay = `${fmtNum(prodUMVal)} ${lblU} <span style="opacity:0.6;font-size:9px;">(${fmtNum(prodKgVal)} kg)</span>`;
+                  } else {
+                    // Captura legacy sin producido_um
+                    prodDisplay = `${fmtNum(prodKgVal)} kg`;
+                  }
                   return `
                     <div style="padding:6px 10px;background:#f8fafc;border-left:3px solid ${grupo?.color || '#94a3b8'};border-radius:4px;display:flex;justify-content:space-between;align-items:center;font-size:11px;">
                       <div>
@@ -8875,7 +9006,7 @@ function modalCapturarTurno() {
                         <span style="color:#64748b;margin-left:5px;">${c.operador || ''}</span>
                       </div>
                       <div style="text-align:right;">
-                        <strong style="color:#16a34a;">${fmtNum(c.producido_kg||0)} kg</strong>
+                        <strong style="color:#16a34a;">${prodDisplay}</strong>
                         ${c.mermas_kg ? `<span style="color:#dc2626;font-size:10px;margin-left:5px;">⚠${fmtNum(c.mermas_kg)} kg</span>` : ''}
                       </div>
                     </div>
@@ -9229,7 +9360,11 @@ window.guardarCapturaTurno = async (odpId) => {
   const notasDom = ($('#ct-notas')?.value || '').trim();
   const fechaDom = ($('#ct-fecha')?.value || '').trim();
   
-  if (prodDom) f.producido_kg = prodDom;
+  // 🆕 La UM de captura viene del input hidden, y el peso unidad también
+  const umCaptura = ($('#ct-um-captura')?.value || 'kg').toLowerCase();
+  const pesoUnidad = Number($('#ct-peso-unidad')?.value) || 0;
+  
+  if (prodDom) f.producido_um = prodDom;
   if (mermDom) f.mermas_kg = mermDom;
   if (notasDom) f.notas = notasDom;
   if (fechaDom) f.fecha = fechaDom;
@@ -9275,8 +9410,33 @@ window.guardarCapturaTurno = async (odpId) => {
     if (!f.supervisor_id) { toast('Selecciona supervisor (o activa "modo rápido")', 'error'); return; }
   }
   
-  const prodKg = Number(f.producido_kg) || 0;
-  if (prodKg <= 0) { toast('Captura kg producidos (debe ser mayor a 0)', 'error'); return; }
+  // 🆕 Convertir captura a kg según UM
+  const prodUM = Number(f.producido_um) || 0;
+  if (prodUM <= 0) {
+    const lbl = umCaptura === 'kg' ? 'kg' : umCaptura === 'pza' ? 'piezas' : umCaptura === 'millar' ? 'millares' : umCaptura;
+    toast(`Captura ${lbl} producidos (debe ser mayor a 0)`, 'error'); return;
+  }
+  
+  let prodKg;
+  if (umCaptura === 'kg') {
+    prodKg = prodUM;
+  } else if (umCaptura === 'pza') {
+    if (pesoUnidad <= 0) {
+      toast('⚠ El producto no tiene peso por pieza calculable. Edita el producto y completa ancho/fuelle/largo/calibre.', 'error');
+      return;
+    }
+    prodKg = prodUM * pesoUnidad;
+  } else if (umCaptura === 'millar') {
+    if (pesoUnidad <= 0) {
+      toast('⚠ El producto no tiene peso por millar calculable. Edita el producto y completa ancho/fuelle/largo/calibre.', 'error');
+      return;
+    }
+    prodKg = prodUM * pesoUnidad;
+  } else {
+    prodKg = prodUM; // fallback
+  }
+  // Guardar valor convertido también en f.producido_kg para compatibilidad
+  f.producido_kg = prodKg;
   
   // Obtener nombres (modo normal vs rápido)
   let opNombre, opId, supNombre, supId;
@@ -9314,6 +9474,10 @@ window.guardarCapturaTurno = async (odpId) => {
       supervisor: supNombre,
       modo_rapido: modoRapido,
       producido_kg: prodKg,
+      // 🆕 Captura original en UM del proceso (para auditoría)
+      producido_um: prodUM,
+      um_captura: umCaptura,
+      peso_unidad_usado: pesoUnidad,
       mermas_kg: Number(f.mermas_kg) || 0,
       notas: f.notas || '',
       capturado_por: state.user.id,
@@ -9331,7 +9495,13 @@ window.guardarCapturaTurno = async (odpId) => {
     await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     
     cerrarModal();
-    toast(`✅ Turno guardado: ${fmtNum(prodKg)} kg · ${opNombre} · Grupo ${f.grupo}`);
+    // 🆕 Toast con la UM de captura
+    const lblToast = umCaptura === 'kg' 
+      ? `${fmtNum(prodKg)} kg` 
+      : umCaptura === 'pza' 
+        ? `${fmtNum(prodUM)} pza (${fmtNum(prodKg)} kg)` 
+        : `${fmtNum(prodUM)} millares (${fmtNum(prodKg)} kg)`;
+    toast(`✅ Turno guardado: ${lblToast} · ${opNombre} · Grupo ${f.grupo}`);
   } catch (e) {
     console.error('Error guardar turno:', e);
     let mensaje = e.message || String(e);
