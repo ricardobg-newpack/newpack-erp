@@ -3830,20 +3830,25 @@ function renderPedidos() {
   const odpsActivas = state.ordenes_produccion.filter(o => !o.archivada && ['pendiente_planeacion','programada','en_produccion'].includes(o.estatus));
   
   const ovsParaMi = state.user.almacen_asignado ? ovsPend.filter(o => o.cedis === state.user.almacen_asignado) : ovsPend;
-  const puedeCrearPI = ['CS','CEO','ADMIN','COMP'].includes(state.user.depto) || state.user.rol === 'admin';
+  const puedeCrearPI = ['CS','KAM','CEO','ADMIN','COMP'].includes(state.user.depto) || state.user.rol === 'admin';
   const puedeAprobar = ['CEO','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
+  // 🆕 CS/KAM pueden editar y cancelar PIs antes de ser aprobados
+  const puedeModificarBorrador = ['CS','KAM','CEO','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
+  
+  // 🆕 Detectar si estamos editando para mostrar el tab con otro label
+  const editandoPI = state.pedidoData?.editandoId;
   
   return `
     <div class="tabs">
-      ${puedeCrearPI ? `<button class="tab ${tab === 'nuevo' ? 'active' : ''}" onclick="state.tabs.pedidos='nuevo';state.pedidoData=null;render();">${ICONS.plus} Nuevo PI</button>` : ''}
+      ${puedeCrearPI ? `<button class="tab ${tab === 'nuevo' ? 'active' : ''}" onclick="${editandoPI ? '' : `state.tabs.pedidos='nuevo';state.pedidoData=null;render();`}">${editandoPI ? '✏️ Editando '+state.pedidoData.folioOriginal : ICONS.plus+' Nuevo PI'}</button>` : ''}
       <button class="tab ${tab === 'pendientes' ? 'active' : ''}" onclick="state.tabs.pedidos='pendientes';render();">⏳ Por aprobar (${pendientes.length})</button>
       <button class="tab ${tab === 'aprobados' ? 'active' : ''}" onclick="state.tabs.pedidos='aprobados';render();">✅ Aprobados (${aprobados.length})</button>
       <button class="tab ${tab === 'ovs' ? 'active' : ''}" onclick="state.tabs.pedidos='ovs';render();">${ICONS.send} OVs (${ovsParaMi.length})</button>
       <button class="tab ${tab === 'odps' ? 'active' : ''}" onclick="state.tabs.pedidos='odps';render();">${ICONS.factory} ODPs (${odpsActivas.length})</button>
     </div>
     ${tab === 'nuevo' ? renderFormPedido() :
-      tab === 'pendientes' ? renderListaPedidos(pendientes, puedeAprobar) :
-      tab === 'aprobados' ? renderListaPedidos(aprobados, puedeAprobar) :
+      tab === 'pendientes' ? renderListaPedidos(pendientes, puedeAprobar, puedeModificarBorrador) :
+      tab === 'aprobados' ? renderListaPedidos(aprobados, puedeAprobar, puedeModificarBorrador) :
       tab === 'ovs' ? renderListaOVs(ovsParaMi) :
       renderListaODPs(odpsActivas)
     }
@@ -3878,6 +3883,17 @@ function renderFormPedido() {
   let prodsFiltrados = busq ? productosCli.filter(p => (p.codigo + ' ' + (p.descripcion||'')).toLowerCase().includes(busq)) : productosCli;
   
   return `
+    ${datos.editandoId ? `
+      <!-- 🆕 Banner de edición -->
+      <div style="background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border:2px solid #f59e0b;border-radius:12px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="font-weight:800;color:#92400e;font-size:14px;">✏️ Editando ${datos.folioOriginal || 'PI'}</div>
+          <div style="font-size:11.5px;color:#78350f;margin-top:3px;">Estás modificando un PI existente en estado <strong>Pendiente de aprobación</strong>. Los cambios se guardarán sobre el mismo folio.</div>
+        </div>
+        <button onclick="window.cancelarEdicionPI()" style="padding:8px 14px;background:#fff;color:#92400e;border:1.5px solid #92400e;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✗ Cancelar edición</button>
+      </div>
+    ` : ''}
+    
     <!-- TOGGLE TIPO DE PI -->
     <div style="background:#fff;border:2px solid ${esStockInterno ? '#3fd34b' : (esComercializado ? '#16a34a' : '#3b82f6')};border-radius:14px;padding:14px;margin-bottom:14px;">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
@@ -4052,8 +4068,8 @@ function renderFormPedido() {
               <textarea class="input" id="ped-obs" style="min-height:60px;">${datos.observaciones || ''}</textarea>
             </div>
             <div style="display:flex;gap:8px;margin-top:14px;">
-              <button class="btn-secondary" onclick="cancelarPedido()" style="flex:1;justify-content:center;">Cancelar</button>
-              <button class="btn-primary" onclick="enviarPedido()" style="flex:2;justify-content:center;">${ICONS.send} Enviar PI</button>
+              <button class="btn-secondary" onclick="${datos.editandoId ? 'window.cancelarEdicionPI()' : 'cancelarPedido()'}" style="flex:1;justify-content:center;">${datos.editandoId ? '✗ Cancelar edición' : 'Cancelar'}</button>
+              <button class="btn-primary" onclick="enviarPedido()" style="flex:2;justify-content:center;${datos.editandoId ? 'background:#f59e0b;' : ''}">${datos.editandoId ? '💾 Guardar cambios' : ICONS.send + ' Enviar PI'}</button>
             </div>
           `}
         </div>
@@ -4062,7 +4078,7 @@ function renderFormPedido() {
   `;
 }
 
-function renderListaPedidos(pedidos, puedeAprobar) {
+function renderListaPedidos(pedidos, puedeAprobar, puedeModificarBorrador) {
   if (pedidos.length === 0) {
     return `<div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">📋 Sin pedidos en esta vista</div>`;
   }
@@ -4125,16 +4141,34 @@ function renderListaPedidos(pedidos, puedeAprobar) {
               </table>
             </div>
             ${p.observaciones ? `<div style="padding:8px 18px;font-size:12px;color:#64748b;">💬 ${p.observaciones}</div>` : '<div style="padding:6px;"></div>'}
-            ${p.estatus !== 'cancelado' && p.estatus !== 'completado' && puedeAprobar ? `
-              <div style="padding:12px 18px;background:#fffbeb;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-                <button onclick="window.cancelarPedidoConDevolucion('${p.id}','${p.folio}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
-                  ✗ Cancelar PI
-                </button>
-                ${p.estatus === 'pendiente_aprobacion' ? `
-                  <button class="btn-primary" onclick="aprobarPedido('${p.id}','${p.folio}')">${ICONS.check} Aprobar y generar OV/ODP</button>
-                ` : ''}
-              </div>
-            ` : ''}
+            ${(() => {
+              if (p.estatus === 'cancelado' || p.estatus === 'completado') return '';
+              const esPendiente = p.estatus === 'pendiente_aprobacion';
+              const puedeCancelar = puedeAprobar || (esPendiente && puedeModificarBorrador);
+              const puedeEditar = esPendiente && puedeModificarBorrador;
+              
+              if (!puedeCancelar && !puedeEditar && !(esPendiente && puedeAprobar)) return '';
+              
+              return `
+                <div style="padding:12px 18px;background:#fffbeb;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    ${puedeEditar ? `
+                      <button onclick="window.editarPedidoBorrador('${p.id}')" style="padding:8px 14px;background:#fff;color:#1e40af;border:1.5px solid #1e40af;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                        ${ICONS.edit} Editar
+                      </button>
+                    ` : ''}
+                    ${puedeCancelar ? `
+                      <button onclick="window.cancelarPedidoConDevolucion('${p.id}','${p.folio}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                        ✗ ${esPendiente ? 'Eliminar' : 'Cancelar'} PI
+                      </button>
+                    ` : ''}
+                  </div>
+                  ${esPendiente && puedeAprobar ? `
+                    <button class="btn-primary" onclick="aprobarPedido('${p.id}','${p.folio}')">${ICONS.check} Aprobar y generar OV/ODP</button>
+                  ` : ''}
+                </div>
+              `;
+            })()}
           </div>
         `;
       }).join('')}
@@ -5544,6 +5578,48 @@ window.recalcularEstatusPedido = async (pedidoId, folio) => {
   }
 };
 
+// 🆕 Editar PI en estado pendiente_aprobacion: carga datos del PI en el form
+window.editarPedidoBorrador = (pedidoId) => {
+  const p = (state.pedidos || []).find(x => x.id === pedidoId);
+  if (!p) { toast('Pedido no encontrado', 'error'); return; }
+  if (p.estatus !== 'pendiente_aprobacion') {
+    toast('Solo se pueden editar PIs en estado "Pendiente de aprobación"', 'error');
+    return;
+  }
+  
+  // Cargar líneas existentes del PI
+  const lineasExistentes = (state.pedido_lineas || []).filter(l => l.pedido_id === pedidoId);
+  
+  // Construir state.pedidoData con todos los datos del PI
+  state.pedidoData = {
+    editandoId: pedidoId,             // ⭐ Marca que estamos editando
+    folioOriginal: p.folio,
+    tipo_pi: p.tipo_pi || 'cliente',
+    cliente_codigo: p.cliente_codigo || '',
+    cliente_nombre: p.cliente_nombre || '',
+    odc_cliente: p.odc_cliente || '',
+    fecha_requerida: p.fecha_requerida || '',
+    cedis_asignado: p.cedis_asignado || '',
+    observaciones: p.observaciones || '',
+    lineas: lineasExistentes.map(l => ({
+      id: l.id, // ⭐ Guardar id para hacer update vs create
+      producto_codigo: l.producto_codigo || '',
+      descripcion: l.descripcion || '',
+      cantidad_solicitada: Number(l.cantidad_solicitada) || 0,
+      um: l.um || 'kg',
+      tipo_origen: l.tipo_origen || 'fabricar',
+      cantidad_stock: Number(l.cantidad_stock) || 0,
+      cantidad_producir: Number(l.cantidad_producir) || 0,
+      observaciones: l.observaciones || ''
+    }))
+  };
+  
+  // Cambiar al tab "nuevo" (que ahora será "editar")
+  state.tabs.pedidos = 'nuevo';
+  render();
+  toast(`✎ Editando ${p.folio} · ${lineasExistentes.length} línea(s) cargadas`);
+};
+
 // 1️⃣ Cancelar Pedido Interno (PI) y todo lo derivado de él
 window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
   const p = (state.pedidos || []).find(x => x.id === pedidoId);
@@ -6688,7 +6764,9 @@ function renderTarjetaODP(o, contexto) {
   const um = (o.um || 'kg').toLowerCase();
   let metaProcKg;
   if (idx === 0) {
-    metaProcKg = Number(o.cantidad_kg_produccion) || window.convertirAKg(o.cantidad, um, producto) || Number(o.cantidad) || 0;
+    // 🔧 Solo usar cantidad cruda como kg si UM es kg, sino requiere conversión
+    metaProcKg = Number(o.cantidad_kg_produccion) || window.convertirAKg(o.cantidad, um, producto) || 0;
+    if (metaProcKg <= 0 && um === 'kg') metaProcKg = Number(o.cantidad) || 0;
   } else {
     const procesoAnterior = procesosCompletados[procesosCompletados.length - 1];
     metaProcKg = procesoAnterior ? (Number(procesoAnterior.cantidad_producida_kg) || 0) : 0;
@@ -7345,8 +7423,20 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
     c.odp_id === o.id && c.proceso === procSel
   );
   const prodKg = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
-  const kgMeta = Number(o.cantidad_kg_produccion) || 0;
+  
+  // 🆕 kgMeta robusto: si la ODP no tiene cantidad_kg_produccion calculada, intentar recalcular on-the-fly
+  let kgMeta = Number(o.cantidad_kg_produccion) || 0;
+  const productoTarj = state.productos_pt.find(p => p.codigo === o.producto_codigo);
+  if (kgMeta <= 0 && productoTarj && um !== 'kg') {
+    // Recalcular en el momento si tenemos el producto y faltó al crear ODP
+    kgMeta = window.convertirAKg(o.cantidad, um, productoTarj) || 0;
+  } else if (kgMeta <= 0 && um === 'kg') {
+    kgMeta = Number(o.cantidad) || 0;
+  }
   const pct = kgMeta > 0 ? Math.min(100, Math.round(prodKg / kgMeta * 100)) : 0;
+  
+  // 🆕 Si la ODP no tiene kg de producción calculados, marcarla como problemática
+  const sinKgCalculado = (Number(o.cantidad_kg_produccion) || 0) <= 0 && um !== 'kg';
   
   // Botones según estado
   const procEst = o.proceso_estatus_actual || 'esperando';
@@ -7414,6 +7504,25 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
           ${o.fecha_entrega_solicitada ? `<div style="margin-top:6px;font-size:11px;background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:5px;display:inline-block;font-weight:700;">📅 Entrega: ${o.fecha_entrega_solicitada}</div>` : ''}
         </div>
       </div>
+      
+      <!-- 🆕 Banner: kg no calculados (bloquea captura coherente) -->
+      ${sinKgCalculado ? `
+        <div style="background:#fee2e2;border:2px solid #dc2626;border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:200px;">
+              <div style="font-weight:800;color:#991b1b;font-size:13px;margin-bottom:3px;">⚠ kg de producción no calculados</div>
+              <div style="font-size:11.5px;color:#7f1d1d;line-height:1.4;">
+                Esta ODP se creó cuando el producto <strong>${o.producto_codigo}</strong> no tenía cargadas dimensiones/calibre. 
+                Para poder capturar producción en kg correctamente, el producto necesita <strong>ancho, fuelle, largo y calibre</strong>.
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <button onclick="event.stopPropagation();window.recalcularKgODP('${o.id}')" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;white-space:nowrap;">🔧 Recalcular ahora</button>
+              <button onclick="event.stopPropagation();cerrarModal();state.vista='productos_pt';state.busquedaProd='${o.producto_codigo}';render();" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:700;font-size:10.5px;white-space:nowrap;">✎ Editar producto</button>
+            </div>
+          </div>
+        </div>
+      ` : ''}
       
       <!-- Progreso del proceso actual (solo si es mi turno) -->
       ${esMiTurnoAhora && modo === 'trabajando' ? `
@@ -8735,7 +8844,9 @@ function modalCapturarTurno() {
   // Meta (kg planeados al proceso)
   let metaKg;
   if (idx === 0) {
-    metaKg = Number(odp.cantidad_kg_produccion) || window.convertirAKg(odp.cantidad, um, producto) || Number(odp.cantidad) || 0;
+    // 🔧 Si UM es kg, usar cantidad directo. Si UM es pza/millar, REQUERIR cálculo desde producto (no usar la cantidad cruda como kg)
+    metaKg = Number(odp.cantidad_kg_produccion) || window.convertirAKg(odp.cantidad, um, producto) || 0;
+    if (metaKg <= 0 && um === 'kg') metaKg = Number(odp.cantidad) || 0;
   } else {
     const procesoAnterior = (odp.procesos_completados || [])[odp.procesos_completados.length - 1];
     metaKg = procesoAnterior ? (Number(procesoAnterior.cantidad_producida_kg) || 0) : 0;
@@ -26478,7 +26589,13 @@ function modalLiberarCalidad() {
   const pesoTeoricoTotal = window.convertirAKg(cantAceptada, um, productoForPeso) || 0;
   const diffPeso = totalPesoNeto - pesoTeoricoTotal;
   const pctDiff = pesoTeoricoTotal > 0 ? Math.abs(diffPeso / pesoTeoricoTotal * 100) : 0;
-  const colorPeso = pctDiff <= 5 ? '#16a34a' : (pctDiff <= 10 ? '#f59e0b' : '#dc2626');
+  // 🆕 Usar tolerancia global de variabilidad de peso (8% por defecto)
+  const tolPesoPct = (TOLERANCIAS.PESO_VARIABILIDAD_PCT || 0.08) * 100;
+  const colorPeso = pctDiff <= tolPesoPct ? '#16a34a' : (pctDiff <= tolPesoPct + 5 ? '#f59e0b' : '#dc2626');
+  
+  // 🆕 Validación: ¿están todas las tarimas pesadas?
+  const tarimasSinPesar = f.tarimas_data.filter(t => !(Number(t.peso_bruto) > 0)).length;
+  const todasPesadas = tarimasSinPesar === 0;
   
   // Cálculos del autodistribuidor (sólo para preview)
   let paqTotalNec = 0, sueltosTotal = 0;
@@ -26788,9 +26905,9 @@ function modalLiberarCalidad() {
                       <th style="padding:8px;text-align:right;">Paquetes ${contPaq > 0 ? `<span style="font-weight:400;color:#94a3b8;font-size:9px;">×${fmtNum(contPaq)}</span>` : ''}</th>
                       <th style="padding:8px;text-align:right;">${contPaq > 0 ? (um === 'millar' ? 'Sueltos (pza)' : `Sueltos (${UM_LABELS[um]})`) : `Cantidad (${UM_LABELS[um]}) *`}</th>
                       <th style="padding:8px;text-align:right;">Total ${UM_LABELS[um]} ${contPaq > 0 ? '(auto)' : ''}</th>
-                      <th style="padding:8px;text-align:right;">P. bruto (kg)</th>
-                      <th style="padding:8px;text-align:right;">P. vacío (kg)</th>
-                      <th style="padding:8px;text-align:right;">P. neto (kg)</th>
+                      <th style="padding:8px;text-align:right;background:#fef3c7;color:#92400e;">⚖ P. bruto (kg) *</th>
+                      <th style="padding:8px;text-align:right;background:#fef3c7;color:#92400e;">P. vacío (kg) *</th>
+                      <th style="padding:8px;text-align:right;background:#dcfce7;color:#15803d;">P. neto (kg)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -26809,9 +26926,9 @@ function modalLiberarCalidad() {
                           <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="paquetes" type="number" min="0" step="1" value="${t.paquetes || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:75px;" autocomplete="off" /></td>
                           <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="sueltos" data-um="${um}" type="number" min="${minSueltos}" step="${stepSueltos}" value="${sueltosVisible}" style="padding:4px 6px;font-size:11px;text-align:right;width:90px;" autocomplete="off" /></td>
                           <td id="tar-cant-${i}" style="padding:6px 8px;text-align:right;font-weight:700;color:#1e40af;">${fmtNum(cantTar)}</td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_bruto" type="number" min="0" step="0.01" value="${t.peso_bruto || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
-                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_tarima_vacia" type="number" min="0" step="0.01" value="${t.peso_tarima_vacia || 0}" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
-                          <td id="tar-neto-${i}" style="padding:6px 8px;text-align:right;font-weight:700;color:#16a34a;">${neto.toFixed(2)}</td>
+                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_bruto" type="number" min="0" step="0.01" value="${t.peso_bruto || ''}" placeholder="0.00" style="padding:4px 6px;font-size:12px;text-align:right;width:90px;font-weight:700;background:${Number(t.peso_bruto)>0?'#dcfce7':'#fef3c7'};border:${Number(t.peso_bruto)>0?'1px solid #16a34a':'1.5px solid #f59e0b'};" autocomplete="off" /></td>
+                          <td style="padding:4px;"><input class="input tarima-row" data-idx="${i}" data-field="peso_tarima_vacia" type="number" min="0" step="0.01" value="${t.peso_tarima_vacia || ''}" placeholder="0.00" style="padding:4px 6px;font-size:11px;text-align:right;width:80px;" autocomplete="off" /></td>
+                          <td id="tar-neto-${i}" style="padding:6px 8px;text-align:right;font-weight:800;color:#16a34a;font-size:12px;">${neto.toFixed(2)}</td>
                         </tr>
                       `;
                     }).join('')}
@@ -26839,17 +26956,58 @@ function modalLiberarCalidad() {
               </div>
             </div>
             
-            <!-- Verificación peso teórico -->
-            ${pesoTeoricoTotal > 0 ? `
-              <div id="cal-verif-box" style="padding:10px;background:${colorPeso}11;border-radius:8px;border:1px solid ${colorPeso}44;margin-bottom:14px;">
-                <div style="font-size:11px;font-weight:700;color:${colorPeso};margin-bottom:4px;">⚖️ Verificación báscula vs teórico</div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:11px;">
-                  <div>Peso neto báscula: <strong id="ver-neto">${totalPesoNeto.toFixed(2)} kg</strong></div>
-                  <div>Peso teórico: <strong id="ver-teorico">${pesoTeoricoTotal.toFixed(2)} kg</strong></div>
-                  <div style="text-align:right;">Diff: <strong id="ver-diff" style="color:${colorPeso};">${diffPeso >= 0 ? '+' : ''}${diffPeso.toFixed(2)} kg (${pctDiff.toFixed(1)}%)</strong></div>
-                </div>
+            <!-- 🆕 Verificación peso báscula vs teórico (prominente) -->
+            <div id="cal-verif-box" style="padding:14px;background:${todasPesadas ? colorPeso + '11' : '#fef3c7'};border-radius:10px;border:2px solid ${todasPesadas ? colorPeso : '#f59e0b'};margin-bottom:14px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <strong style="font-size:13px;color:${todasPesadas ? colorPeso : '#92400e'};">
+                  ⚖️ ${todasPesadas ? 'Verificación báscula' : `Faltan ${tarimasSinPesar} tarima(s) por pesar`}
+                </strong>
+                ${todasPesadas && pctDiff > tolPesoPct ? `
+                  <span style="background:${colorPeso};color:#fff;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:800;">⚠ FUERA DE TOLERANCIA ±${tolPesoPct.toFixed(0)}%</span>
+                ` : todasPesadas ? `
+                  <span style="background:${colorPeso};color:#fff;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:800;">✓ DENTRO DE TOLERANCIA</span>
+                ` : ''}
               </div>
-            ` : ''}
+              
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                <div style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+                  <div style="font-size:9px;color:#64748b;font-weight:700;text-transform:uppercase;">⚖ Peso neto báscula</div>
+                  <div id="ver-neto" style="font-size:16px;font-weight:800;color:${todasPesadas ? colorPeso : '#94a3b8'};">${totalPesoNeto.toFixed(2)} kg</div>
+                  <div style="font-size:9px;color:#94a3b8;">(real medido)</div>
+                </div>
+                
+                ${pesoTeoricoTotal > 0 ? `
+                  <div style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+                    <div style="font-size:9px;color:#64748b;font-weight:700;text-transform:uppercase;">📐 Peso teórico</div>
+                    <div id="ver-teorico" style="font-size:16px;font-weight:800;color:#475569;">${pesoTeoricoTotal.toFixed(2)} kg</div>
+                    <div style="font-size:9px;color:#94a3b8;">(calculado por dimensiones)</div>
+                  </div>
+                  
+                  <div style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+                    <div style="font-size:9px;color:#64748b;font-weight:700;text-transform:uppercase;">📊 Diferencia</div>
+                    <div id="ver-diff" style="font-size:16px;font-weight:800;color:${todasPesadas ? colorPeso : '#94a3b8'};">${diffPeso >= 0 ? '+' : ''}${diffPeso.toFixed(2)} kg</div>
+                    <div id="ver-pct" style="font-size:11px;color:${todasPesadas ? colorPeso : '#94a3b8'};font-weight:700;">${pctDiff.toFixed(1)}% ${diffPeso >= 0 ? 'sobre' : 'bajo'}</div>
+                  </div>
+                ` : `
+                  <div style="grid-column:span 2;background:#fff;padding:8px;border-radius:6px;text-align:center;color:#94a3b8;font-size:11px;">
+                    ⚠ El producto no tiene dimensiones para calcular peso teórico
+                  </div>
+                `}
+              </div>
+              
+              ${todasPesadas && pctDiff > tolPesoPct && pesoTeoricoTotal > 0 ? `
+                <div style="margin-top:8px;padding:8px;background:#fef2f2;border-left:3px solid #dc2626;border-radius:4px;font-size:11px;color:#7f1d1d;">
+                  ⚠ La diferencia (${pctDiff.toFixed(1)}%) excede la tolerancia configurada (±${tolPesoPct.toFixed(0)}%). 
+                  Verifica que las básculas estén calibradas y que el peso de tarima vacía sea correcto. Puedes continuar pero queda registrado.
+                </div>
+              ` : ''}
+              
+              ${!todasPesadas ? `
+                <div style="margin-top:8px;padding:8px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:11px;color:#92400e;">
+                  ⚖ <strong>Captura el peso bruto de cada tarima</strong> en la tabla de arriba (campos amarillos). El sistema NO permite liberar sin pesos.
+                </div>
+              ` : ''}
+            </div>
           </div>
           
           ${(decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') ? (() => {
@@ -27087,7 +27245,11 @@ function modalLiberarCalidad() {
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;align-items:center;">
           ${(decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') ? `<span style="font-size:11px;color:#64748b;margin-right:auto;">Se generarán ${numT} lote(s) individuales + Packing List</span>` : ''}
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          <button id="cal-btn-confirmar" class="btn-primary" onclick="confirmarLiberarCalidad('${odp.id}')" style="background:${decisionColor};">${ICONS.check} Confirmar ${decisionTexto}</button>
+          ${(decision === 'liberado' || decision === 'parcial' || decision === 'liberado_extra') && !todasPesadas ? `
+            <button id="cal-btn-confirmar" class="btn-primary" disabled style="background:#94a3b8;cursor:not-allowed;opacity:0.7;" title="Falta pesar ${tarimasSinPesar} tarima(s)">⚖ Pesa todas las tarimas para liberar (${tarimasSinPesar} faltan)</button>
+          ` : `
+            <button id="cal-btn-confirmar" class="btn-primary" onclick="confirmarLiberarCalidad('${odp.id}')" style="background:${decisionColor};">${ICONS.check} Confirmar ${decisionTexto}</button>
+          `}
         </div>
       </div>
     </div>
@@ -30659,6 +30821,15 @@ window.cancelarPedido = () => {
   render();
 };
 
+// 🆕 Cancelar edición sin descartar el PI original
+window.cancelarEdicionPI = () => {
+  if (!confirm('¿Descartar los cambios? El PI original no se modificará.')) return;
+  state.pedidoData = null;
+  state.tabs.pedidos = 'pendientes';
+  state.busqProd = '';
+  render();
+};
+
 window.enviarPedido = async () => {
   capturarPedido();
   const d = state.pedidoData;
@@ -30686,8 +30857,103 @@ window.enviarPedido = async () => {
   }
   state.loadingAccion = true; render();
   try {
+    // 🆕 ¿Estamos editando un PI existente?
+    const editandoId = d.editandoId || null;
+    let folio, pedidoId;
+    
+    if (editandoId) {
+      // ───────── MODO EDICIÓN ─────────
+      const pExistente = state.pedidos.find(p => p.id === editandoId);
+      if (!pExistente) { toast('PI ya no existe', 'error'); state.loadingAccion = false; render(); return; }
+      if (pExistente.estatus !== 'pendiente_aprobacion') {
+        toast('No se puede editar: el PI ya está ' + pExistente.estatus, 'error');
+        state.loadingAccion = false; render(); return;
+      }
+      folio = pExistente.folio;
+      pedidoId = editandoId;
+      
+      const tipos = new Set(validas.map(l => l.tipo_origen));
+      const tipo = tipos.size === 1 ? [...tipos][0] : 'mixto';
+      
+      // 1. Update PI principal
+      await updateDoc(doc(db, 'pedidos', pedidoId), {
+        tipo_pi: d.tipo_pi || 'cliente',
+        cliente_codigo: d.cliente_codigo,
+        cliente_nombre: d.cliente_nombre,
+        odc_cliente: d.odc_cliente || '',
+        fecha_requerida: d.fecha_requerida || null,
+        cedis_asignado: d.cedis_asignado,
+        tipo,
+        observaciones: d.observaciones || '',
+        editado_por: state.user.id,
+        editado_por_nombre: state.user.nombre,
+        editado_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      
+      // 2. Sincronizar líneas: eliminar las que ya no están, actualizar las existentes, crear las nuevas
+      const lineasViejas = (state.pedido_lineas || []).filter(l => l.pedido_id === pedidoId);
+      const idsActuales = new Set(validas.filter(l => l.id).map(l => l.id));
+      const batchEdit = writeBatch(db);
+      
+      // Eliminar líneas que ya no existen
+      lineasViejas.forEach(lv => {
+        if (!idsActuales.has(lv.id)) {
+          batchEdit.delete(doc(db, 'pedido_lineas', lv.id));
+        }
+      });
+      
+      // Update / Create
+      validas.forEach(l => {
+        if (l.id) {
+          // Update existente
+          batchEdit.update(doc(db, 'pedido_lineas', l.id), {
+            producto_codigo: l.producto_codigo,
+            descripcion: l.descripcion,
+            cantidad_solicitada: Number(l.cantidad_solicitada),
+            um: (l.um || 'kg').toLowerCase(),
+            tipo_origen: l.tipo_origen,
+            precio_unitario: Number(l.precio_unitario) || 0,
+            cantidad_stock: Number(l.cantidad_stock) || 0,
+            cantidad_producir: Number(l.cantidad_producir) || 0,
+            es_comercializado: l.es_comercializado === true,
+            observaciones: l.observaciones || '',
+            updated_at: serverTimestamp()
+          });
+        } else {
+          // Crear nueva
+          const ref = doc(collection(db, 'pedido_lineas'));
+          batchEdit.set(ref, {
+            pedido_id: pedidoId,
+            pedido_folio: folio,
+            producto_codigo: l.producto_codigo,
+            descripcion: l.descripcion,
+            cantidad_solicitada: Number(l.cantidad_solicitada),
+            um: (l.um || 'kg').toLowerCase(),
+            tipo_origen: l.tipo_origen,
+            precio_unitario: Number(l.precio_unitario) || 0,
+            cantidad_stock: Number(l.cantidad_stock) || 0,
+            cantidad_producir: Number(l.cantidad_producir) || 0,
+            es_comercializado: l.es_comercializado === true,
+            observaciones: l.observaciones || '',
+            created_at: serverTimestamp()
+          });
+        }
+      });
+      
+      await batchEdit.commit();
+      
+      state.pedidoData = null;
+      state.busqProd = '';
+      state.tabs.pedidos = 'pendientes';
+      toast('✏️ ' + folio + ' actualizado');
+      state.loadingAccion = false; render();
+      return;
+    }
+    
+    // ───────── MODO CREAR (original) ─────────
     const folioNum = await siguienteFolio('pedido');
-    const folio = 'PI-' + String(folioNum).padStart(5, '0');
+    folio = 'PI-' + String(folioNum).padStart(5, '0');
     
     const tipos = new Set(validas.map(l => l.tipo_origen));
     const tipo = tipos.size === 1 ? [...tipos][0] : 'mixto';
@@ -32396,6 +32662,21 @@ window.confirmarLiberarCalidad = async (odpId) => {
   const um = (odp.um || 'kg').toLowerCase();
   const numTarimas = Number(f.num_tarimas) || 0;
   const notas = (f.notas || '').trim();
+  
+  // 🆕 Validar que todas las tarimas tengan peso bruto capturado (si va a liberarse, no si se rechaza)
+  if (cantAceptada > 0 && Array.isArray(f.tarimas_data) && f.tarimas_data.length > 0) {
+    const tarimasSinPeso = f.tarimas_data.filter(t => !(Number(t.peso_bruto) > 0));
+    if (tarimasSinPeso.length > 0) {
+      toast(`⚖ Faltan ${tarimasSinPeso.length} tarima(s) por pesar. Captura el peso bruto de cada tarima antes de liberar.`, 'error');
+      return;
+    }
+    // También validar peso de tarima vacía
+    const tarimasSinVacio = f.tarimas_data.filter(t => !(Number(t.peso_tarima_vacia) > 0));
+    if (tarimasSinVacio.length > 0) {
+      toast(`⚖ Faltan ${tarimasSinVacio.length} tarima(s) por capturar peso de tarima vacía.`, 'error');
+      return;
+    }
+  }
   
   // Permitir hasta lo producido + 5% (para casos liberado_extra donde calidad acepta más del producido)
   const limiteSuperior = Math.max(cantidadProducida, cantidadOriginal) * (1 + TOLERANCIAS.CAL_EXTRA_PCT);
