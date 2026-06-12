@@ -18041,7 +18041,9 @@ window.imprimirRemisionPDF = (ovId) => {
   docPDF.setTextColor(0, 0, 0);
   docPDF.setFontSize(10);
   docPDF.setFont('helvetica', 'bold');
-  docPDF.text(ov.cliente_nombre || '—', 17, y + 11);
+  // 🆕 Wrap del nombre del cliente (max 86mm, 2 líneas)
+  const lCliRem = docPDF.splitTextToSize(ov.cliente_nombre || '—', 86);
+  lCliRem.slice(0, 2).forEach((line, i) => docPDF.text(line, 17, y + 11 + (i * 4)));
   docPDF.setFontSize(8);
   docPDF.setFont('helvetica', 'normal');
   docPDF.text(`Código: ${ov.cliente_codigo || '—'}`, 17, y + 16);
@@ -18141,8 +18143,12 @@ window.imprimirRemisionPDF = (ovId) => {
   docPDF.setTextColor(0, 0, 0);
   docPDF.setFontSize(9);
   docPDF.setFont('helvetica', 'normal');
-  docPDF.text(ov.transportista || '—', 17, y + 11);
-  docPDF.text(ov.conductor || '—', 75, y + 11);
+  // 🆕 Wrap de transportista (max 56mm)
+  const lTrans = docPDF.splitTextToSize(ov.transportista || '—', 56);
+  docPDF.text(lTrans[0] || '—', 17, y + 11);
+  // Wrap de conductor
+  const lCond = docPDF.splitTextToSize(ov.conductor || '—', 53);
+  docPDF.text(lCond[0] || '—', 75, y + 11);
   docPDF.text(ov.placas || '—', 130, y + 11);
   docPDF.text(ov.fecha_salida_programada || '—', 165, y + 11);
   
@@ -18682,7 +18688,9 @@ window.imprimirPackingListPDF = (odpId) => {
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(0, 0, 0);
   const cliNomP = pi?.cliente_nombre || odp.cliente_nombre || '—';
-  docPDF.text(cliNomP.length > 38 ? cliNomP.substring(0,35)+'...' : cliNomP, 22, y + 24);
+  // 🆕 Wrap del nombre en 2 líneas máx (max 80mm ancho)
+  const lCliNomP = docPDF.splitTextToSize(cliNomP, 80);
+  lCliNomP.slice(0, 2).forEach((line, i) => docPDF.text(line, 22, y + 24 + (i * 3.5)));
   
   // Lado derecho: 6 specs en grid 3 columnas × 2 filas
   if (producto) {
@@ -18983,7 +18991,10 @@ window.imprimirEtiquetasTarimasPDF = (odpId) => {
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
     const cliNom = pi?.cliente_nombre || odp.cliente_nombre || '—';
-    docPDF.text(cliNom.length > 26 ? cliNom.substring(0,24)+'...' : cliNom, x + 10, yi + 11);
+    // 🆕 Wrap a 2 líneas máx (ancho disponible ~70mm)
+    const lCliEt = docPDF.splitTextToSize(cliNom, 70);
+    const lCliEtAlta = lCliEt.length === 1 ? 11 : 10;
+    lCliEt.slice(0, 2).forEach((line, i) => docPDF.text(line, x + 10, yi + lCliEtAlta + (i * 4)));
     
     docPDF.setFontSize(8);
     docPDF.setFont('helvetica', 'normal');
@@ -19002,11 +19013,22 @@ window.imprimirEtiquetasTarimasPDF = (odpId) => {
     docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
     docPDF.text('PRODUCTO', colDx + 6, yi + 5);
     
-    docPDF.setFontSize(11);
+    docPDF.setFontSize(10);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
     const prodCod = odp.producto_codigo || '—';
-    docPDF.text(prodCod.length > 26 ? prodCod.substring(0,24)+'...' : prodCod, colDx + 6, yi + 12.5);
+    // 🆕 Wrap del código (ancho ~78mm a fuente 10)
+    const lProdEt = docPDF.splitTextToSize(prodCod, 78);
+    docPDF.text(lProdEt[0] || '—', colDx + 6, yi + 10);
+    
+    // 🆕 Descripción del producto en línea siguiente
+    if (odp.descripcion) {
+      docPDF.setFontSize(7);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+      const lDescEt = docPDF.splitTextToSize(odp.descripcion, 78);
+      docPDF.text(lDescEt[0] || '', colDx + 6, yi + 14.5);
+    }
     
     yi += 22;
     
@@ -19122,29 +19144,31 @@ window.imprimirOCPDF = (ocId) => {
     
     docPDF.setFontSize(9);
     docPDF.setTextColor(30, 41, 59);
-    docPDF.text((oc.proveedor || '—').substring(0, 38), 17, y + 11);
+    // 🆕 Wrap del nombre del proveedor (max 86mm ancho)
+    const lNomProv = docPDF.splitTextToSize(oc.proveedor || '—', 86);
+    lNomProv.slice(0, 2).forEach((line, i) => docPDF.text(line, 17, y + 11 + (i * 4)));
+    const yProvEnd = y + 11 + (Math.min(lNomProv.length, 2) - 1) * 4;
     
     docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(71, 85, 105);
     
-    let py = y + 16;
+    let py = yProvEnd + 5;
     if (prov?.rfc) {
       docPDF.text(`RFC: ${prov.rfc}`, 17, py); py += 4;
     }
     if (prov?.direccion) {
-      const dir = prov.direccion.substring(0, 50);
-      docPDF.text(dir, 17, py); py += 4;
-      if (prov.direccion.length > 50) {
-        docPDF.text(prov.direccion.substring(50, 100), 17, py); py += 4;
-      }
+      // 🆕 Wrap dirección con splitTextToSize
+      const lDir = docPDF.splitTextToSize(prov.direccion, 86);
+      lDir.slice(0, 2).forEach((line, i) => { docPDF.text(line, 17, py); py += 4; });
     }
-    if (prov?.contacto_nombre) {
+    if (prov?.contacto_nombre && py < y + 38) {
       docPDF.text(`Contacto: ${prov.contacto_nombre}`, 17, py); py += 4;
     }
-    if (prov?.telefono || prov?.email) {
+    if ((prov?.telefono || prov?.email) && py < y + 42) {
       const t = [prov.telefono, prov.email].filter(Boolean).join(' · ');
-      docPDF.text(t.substring(0, 50), 17, py);
+      const lT = docPDF.splitTextToSize(t, 86);
+      docPDF.text(lT[0] || '', 17, py);
     }
     
     // DATOS OC
@@ -19212,19 +19236,31 @@ window.imprimirOCPDF = (ocId) => {
     // ===== TABLA DE LÍNEAS =====
     y = _pdfSeccionTitulo(docPDF, y, 'DETALLE DE LA COMPRA', _COL_VERDE);
     
-    // Encabezado tabla
-    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-    docPDF.rect(14, y, 182, 8, 'F');
-    docPDF.setTextColor(255, 255, 255);
-    docPDF.setFontSize(8);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.text('CANT.', 18, y + 5.5);
-    docPDF.text('UM', 32, y + 5.5);
-    docPDF.text('CÓD. PROV.', 42, y + 5.5);
-    docPDF.text('DESCRIPCIÓN', 72, y + 5.5);
-    docPDF.text(`P. UNIT (${oc.moneda || 'MXN'})`, 148, y + 5.5);
-    docPDF.text(`SUBTOTAL`, 178, y + 5.5);
-    y += 8;
+    // Definir columnas: cant, um, código, descripción, p.unit, subtotal
+    const colW = { cant: 18, um: 10, cod: 30, desc: 76, punit: 28, sub: 20 };
+    const colX = { cant: 14, um: 32, cod: 42, desc: 72, punit: 148, sub: 168 };
+    const headerH = 8;
+    const padR = 1.5;
+    const lineHF = 3.5;
+    const minRowH = 7;
+    const MAX_Y_TABLA = 240;  // antes de saltar página
+    
+    function _drawHeaderTabla(yy) {
+      docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+      docPDF.rect(14, yy, 182, headerH, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFontSize(8);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text('CANT.', colX.cant + padR, yy + 5.5);
+      docPDF.text('UM', colX.um + padR, yy + 5.5);
+      docPDF.text('CÓD. PROV.', colX.cod + padR, yy + 5.5);
+      docPDF.text('DESCRIPCIÓN', colX.desc + padR, yy + 5.5);
+      docPDF.text(`P. UNIT (${oc.moneda || 'MXN'})`, colX.punit + padR, yy + 5.5);
+      docPDF.text(`SUBTOTAL`, colX.sub + colW.sub - padR, yy + 5.5, { align: 'right' });
+      return yy + headerH;
+    }
+    
+    y = _drawHeaderTabla(y);
     
     docPDF.setTextColor(0, 0, 0);
     docPDF.setFont('helvetica', 'normal');
@@ -19232,32 +19268,68 @@ window.imprimirOCPDF = (ocId) => {
     
     let subtotalTotal = 0;
     (oc.lineas || []).forEach((l, idx) => {
-      // Alternar fondo
-      if (idx % 2 === 1) {
-        docPDF.setFillColor(248, 250, 252);
-        docPDF.rect(14, y, 182, 7, 'F');
-      }
-      
       const subtotal = (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0);
       subtotalTotal += subtotal;
       
-      docPDF.setTextColor(30, 41, 59);
-      docPDF.text(fmtNum(l.cantidad || 0), 18, y + 5);
-      docPDF.text(l.um || 'Kg', 32, y + 5);
+      // Calcular líneas necesarias para cada celda con wrap
+      const sCant = fmtNum(l.cantidad || 0);
+      const sUM = l.um || 'Kg';
+      const sCod = String(l.codigo_proveedor || l.mp_codigo || '');
+      const sDesc = String(l.descripcion || '—');
+      const sPU = '$' + fmtNum((Number(l.costo_unitario) || 0).toFixed(2));
+      const sSub = '$' + fmtNum(subtotal.toFixed(2));
       
+      docPDF.setFont('courier', 'normal');
+      docPDF.setFontSize(7.5);
+      const lCod = docPDF.splitTextToSize(sCod, colW.cod - padR*2);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(8);
+      const lDesc = docPDF.splitTextToSize(sDesc, colW.desc - padR*2);
+      
+      const maxLines = Math.max(lCod.length, lDesc.length, 1);
+      const rowH = Math.max(minRowH, maxLines * lineHF + 3);
+      
+      // Saltar página si excede
+      if (y + rowH > MAX_Y_TABLA) {
+        docPDF.addPage();
+        y = 18;
+        y = _drawHeaderTabla(y);
+        docPDF.setTextColor(0, 0, 0);
+        docPDF.setFont('helvetica', 'normal');
+        docPDF.setFontSize(8);
+      }
+      
+      // Fondo alternado
+      if (idx % 2 === 1) {
+        docPDF.setFillColor(248, 250, 252);
+        docPDF.rect(14, y, 182, rowH, 'F');
+      }
+      
+      docPDF.setTextColor(30, 41, 59);
+      // Cant y UM (centro vertical, 1 línea)
+      const yCenter = y + rowH/2 + 1;
+      docPDF.text(sCant, colX.cant + padR, yCenter);
+      docPDF.text(sUM, colX.um + padR, yCenter);
+      
+      // Código (mono, wrap)
       docPDF.setFont('courier', 'bold');
       docPDF.setFontSize(7.5);
-      docPDF.text((l.codigo_proveedor || l.mp_codigo || '').substring(0, 16), 42, y + 5);
+      lCod.forEach((line, i) => {
+        docPDF.text(line, colX.cod + padR, y + 4 + (i * lineHF));
+      });
       docPDF.setFont('helvetica', 'normal');
       docPDF.setFontSize(8);
       
-      const desc = (l.descripcion || '').substring(0, 38);
-      docPDF.text(desc, 72, y + 5);
+      // Descripción (wrap)
+      lDesc.forEach((line, i) => {
+        docPDF.text(line, colX.desc + padR, y + 4 + (i * lineHF));
+      });
       
-      docPDF.text('$' + fmtNum((Number(l.costo_unitario) || 0).toFixed(2)), 148, y + 5);
-      docPDF.text('$' + fmtNum(subtotal.toFixed(2)), 178, y + 5);
+      // P. unit y subtotal (centro vertical)
+      docPDF.text(sPU, colX.punit + padR, yCenter);
+      docPDF.text(sSub, colX.sub + colW.sub - padR, yCenter, { align: 'right' });
       
-      y += 7;
+      y += rowH;
     });
     
     // Totales
@@ -19422,11 +19494,14 @@ window.imprimirPreOrdenPDF = (ocId) => {
     docPDF.setFontSize(9);
     docPDF.text(oc.folio || '—', 35, y + 6);
     docPDF.setFontSize(8);
-    docPDF.text((oc.proveedor || '—').substring(0, 38), 47, y + 12);
+    // 🆕 Wrap del nombre del proveedor (max 56mm, 1 línea)
+    const lProvPre = docPDF.splitTextToSize(oc.proveedor || '—', 56);
+    docPDF.text(lProvPre[0] || '', 47, y + 12);
     docPDF.text(oc.fecha_promesa || '—', 55, y + 18);
     
     docPDF.text(oc.rc_folio || '—', 135, y + 6);
-    docPDF.text((oc.solicitante_nombre || '—').substring(0, 25), 140, y + 12);
+    const lSolPre = docPDF.splitTextToSize(oc.solicitante_nombre || '—', 50);
+    docPDF.text(lSolPre[0] || '', 140, y + 12);
     docPDF.text(oc.depto_solicitante || '—', 122, y + 18);
     
     y += 28;
@@ -19450,27 +19525,52 @@ window.imprimirPreOrdenPDF = (ocId) => {
     // ===== TABLA DE VERIFICACIÓN =====
     y = _pdfSeccionTitulo(docPDF, y, 'MATERIAL A RECIBIR', _COL_VERDE);
     
-    // Encabezado tabla (más columnas para captura manual)
-    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
-    docPDF.rect(14, y, 182, 8, 'F');
-    docPDF.setTextColor(255, 255, 255);
-    docPDF.setFontSize(7.5);
-    docPDF.setFont('helvetica', 'bold');
-    docPDF.text('CANT. SOL.', 17, y + 5.5);
-    docPDF.text('UM', 34, y + 5.5);
-    docPDF.text('CÓD. PROV.', 42, y + 5.5);
-    docPDF.text('DESCRIPCIÓN', 70, y + 5.5);
-    docPDF.text('CANT. REC.', 128, y + 5.5);
-    docPDF.text('LOTE PROV.', 150, y + 5.5);
-    docPDF.text('CERT. #', 178, y + 5.5);
-    y += 8;
+    // Helper para imprimir cabecera de la tabla (reusable al saltar página)
+    function _drawHeaderPre(yy) {
+      docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+      docPDF.rect(14, yy, 182, 8, 'F');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.setFontSize(7.5);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.text('CANT. SOL.', 17, yy + 5.5);
+      docPDF.text('UM', 34, yy + 5.5);
+      docPDF.text('CÓD. PROV.', 42, yy + 5.5);
+      docPDF.text('DESCRIPCIÓN', 70, yy + 5.5);
+      docPDF.text('CANT. REC.', 128, yy + 5.5);
+      docPDF.text('LOTE PROV.', 150, yy + 5.5);
+      docPDF.text('CERT. #', 178, yy + 5.5);
+      return yy + 8;
+    }
+    
+    y = _drawHeaderPre(y);
     
     docPDF.setTextColor(0, 0, 0);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setFontSize(7.5);
     
     (oc.lineas || []).forEach((l, idx) => {
-      const altoFila = 11;
+      // 🆕 Calcular altura dinámica según wrap de descripción/código
+      docPDF.setFont('courier', 'normal');
+      docPDF.setFontSize(7);
+      const lCodPre = docPDF.splitTextToSize(String(l.codigo_proveedor || l.mp_codigo || ''), 26);
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7);
+      const desc = (l.descripcion || '—');
+      const descLines = docPDF.splitTextToSize(desc, 54);
+      
+      const lineH = 3.5;
+      const maxLines = Math.max(descLines.length, lCodPre.length, 1);
+      const altoFila = Math.max(11, maxLines * lineH + 4);
+      
+      // Saltar página si excede (re-imprimir header)
+      if (y + altoFila > 250) {
+        docPDF.addPage();
+        y = 20;
+        y = _drawHeaderPre(y);
+        docPDF.setTextColor(0, 0, 0);
+        docPDF.setFont('helvetica', 'normal');
+        docPDF.setFontSize(7.5);
+      }
       
       // Alternar fondo
       if (idx % 2 === 1) {
@@ -19481,41 +19581,36 @@ window.imprimirPreOrdenPDF = (ocId) => {
       // Líneas verticales separadoras
       docPDF.setDrawColor(220, 220, 220);
       docPDF.setLineWidth(0.2);
-      docPDF.line(125, y, 125, y + altoFila); // antes cant rec
-      docPDF.line(147, y, 147, y + altoFila); // antes lote
-      docPDF.line(175, y, 175, y + altoFila); // antes cert
+      docPDF.line(125, y, 125, y + altoFila);
+      docPDF.line(147, y, 147, y + altoFila);
+      docPDF.line(175, y, 175, y + altoFila);
       
+      const yCenter = y + altoFila/2 + 1;
       docPDF.setTextColor(30, 41, 59);
       docPDF.setFont('helvetica', 'bold');
-      docPDF.text(fmtNum(l.cantidad || 0), 17, y + 5);
+      docPDF.text(fmtNum(l.cantidad || 0), 17, yCenter);
       docPDF.setFont('helvetica', 'normal');
-      docPDF.text(l.um || 'Kg', 34, y + 5);
+      docPDF.text(l.um || 'Kg', 34, yCenter);
       
+      // Código con wrap
       docPDF.setFont('courier', 'bold');
       docPDF.setFontSize(7);
-      docPDF.text((l.codigo_proveedor || l.mp_codigo || '').substring(0, 14), 42, y + 5);
+      lCodPre.forEach((line, i) => docPDF.text(line, 42, y + 4 + (i * lineH)));
       docPDF.setFont('helvetica', 'normal');
       docPDF.setFontSize(7);
       
-      // Descripción puede partir en 2 líneas
-      const desc = (l.descripcion || '');
-      const descLines = docPDF.splitTextToSize(desc, 54);
-      docPDF.text(descLines.slice(0, 2), 70, y + 4);
+      // Descripción completa (sin slice)
+      descLines.forEach((line, i) => docPDF.text(line, 70, y + 4 + (i * lineH)));
       
-      // Espacios para anotar
+      // Espacios para anotar (ahora dinámicos)
       docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
       docPDF.setLineWidth(0.3);
-      docPDF.line(127, y + 7, 145, y + 7); // línea para cantidad recibida
-      docPDF.line(149, y + 7, 173, y + 7); // línea para lote prov
-      docPDF.line(177, y + 7, 194, y + 7); // línea para certificado
+      const yLin = y + altoFila - 4;
+      docPDF.line(127, yLin, 145, yLin);
+      docPDF.line(149, yLin, 173, yLin);
+      docPDF.line(177, yLin, 194, yLin);
       
       y += altoFila;
-      
-      // Si nos pasamos del límite, página nueva
-      if (y > 250 && idx < (oc.lineas.length - 1)) {
-        docPDF.addPage();
-        y = 20;
-      }
     });
     
     y += 5;
