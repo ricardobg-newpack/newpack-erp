@@ -1729,23 +1729,53 @@ window.renderPreservandoFoco = renderPreservandoFoco;
 // ============================================================
 // LOGIN
 // ============================================================
+// 🆕 Dominio interno usado para usuarios sin correo (operadores planta)
+const DOMINIO_INTERNO = '@newpack.local';
+
 function renderLogin() {
+  const modo = state.loginModo || 'email';
   return `
     <div class="login-bg">
       <div class="login-box">
         <div class="logo">NewPack ERP</div>
         <div class="subtitle">Sistema de gestión integral</div>
+        
+        <!-- Toggle modo login -->
+        <div style="display:flex;gap:0;background:#f1f5f9;padding:4px;border-radius:10px;margin-bottom:18px;">
+          <button onclick="window.setLoginModo('email')" type="button" style="flex:1;padding:9px;background:${modo==='email'?'#fff':'transparent'};color:${modo==='email'?'#1e40af':'#64748b'};border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;${modo==='email'?'box-shadow:0 1px 3px rgba(0,0,0,0.1);':''}">
+            📧 Con correo
+          </button>
+          <button onclick="window.setLoginModo('operador')" type="button" style="flex:1;padding:9px;background:${modo==='operador'?'#fff':'transparent'};color:${modo==='operador'?'#f59e0b':'#64748b'};border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;${modo==='operador'?'box-shadow:0 1px 3px rgba(0,0,0,0.1);':''}">
+            👷 Operador (código + PIN)
+          </button>
+        </div>
+        
         <form id="login-form">
-          <div class="field">
-            <label class="field-label">Correo electrónico</label>
-            <input class="input" type="email" id="login-email" required autocomplete="email" />
-          </div>
-          <div class="field">
-            <label class="field-label">Contraseña</label>
-            <input class="input" type="password" id="login-pass" required autocomplete="current-password" />
-          </div>
-          <button type="submit" class="btn-primary" style="width:100%;justify-content:center;padding:12px;" id="login-btn">
-            Iniciar sesión
+          ${modo === 'email' ? `
+            <div class="field">
+              <label class="field-label">Correo electrónico</label>
+              <input class="input" type="email" id="login-email" required autocomplete="email" placeholder="usuario@newpackempaques.com" />
+            </div>
+            <div class="field">
+              <label class="field-label">Contraseña</label>
+              <input class="input" type="password" id="login-pass" required autocomplete="current-password" />
+            </div>
+          ` : `
+            <!-- 🆕 Modo operador: código + PIN -->
+            <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px;margin-bottom:14px;font-size:11.5px;color:#92400e;">
+              👷 <strong>Login para operadores de planta</strong> sin correo electrónico. Ingresa el código que te dio tu supervisor.
+            </div>
+            <div class="field">
+              <label class="field-label">Código de operador *</label>
+              <input class="input" type="text" id="login-codigo" required autocomplete="username" placeholder="Ej: EXT01" style="font-family:monospace;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;font-size:18px;" />
+            </div>
+            <div class="field">
+              <label class="field-label">PIN (6 dígitos) *</label>
+              <input class="input" type="password" id="login-pin" required autocomplete="current-password" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" style="font-family:monospace;letter-spacing:0.3em;font-size:18px;text-align:center;" />
+            </div>
+          `}
+          <button type="submit" class="btn-primary" style="width:100%;justify-content:center;padding:12px;background:${modo==='operador'?'#f59e0b':''};" id="login-btn">
+            ${modo === 'operador' ? '👷 Entrar' : 'Iniciar sesión'}
           </button>
           <div id="login-error" style="margin-top:12px;color:#dc2626;font-size:13px;display:none;text-align:center;"></div>
         </form>
@@ -1757,6 +1787,11 @@ function renderLogin() {
   `;
 }
 
+window.setLoginModo = (m) => {
+  state.loginModo = m;
+  render();
+};
+
 function attachLoginEvents() {
   $('#login-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -1766,16 +1801,29 @@ function attachLoginEvents() {
     btn.innerHTML = '<span class="spinner"></span> Verificando...';
     err.style.display = 'none';
     try {
-      await window.hacerLogin($('#login-email').value, $('#login-pass').value);
+      const modo = state.loginModo || 'email';
+      if (modo === 'operador') {
+        // 🆕 Login por código + PIN
+        const codigo = ($('#login-codigo').value || '').trim().toUpperCase();
+        const pin = ($('#login-pin').value || '').trim();
+        if (!codigo || !pin) throw new Error('Captura código y PIN');
+        if (pin.length !== 6 || !/^\d{6}$/.test(pin)) throw new Error('El PIN debe ser de 6 dígitos');
+        // Construir email interno equivalente
+        const emailInterno = `${codigo.toLowerCase()}${DOMINIO_INTERNO}`;
+        await window.hacerLogin(emailInterno, pin);
+      } else {
+        await window.hacerLogin($('#login-email').value, $('#login-pass').value);
+      }
     } catch (e) {
       let mensaje = e.message;
       if (mensaje.includes('invalid-credential') || mensaje.includes('wrong-password') || mensaje.includes('user-not-found')) {
-        mensaje = 'Correo o contraseña incorrectos';
+        const modo = state.loginModo || 'email';
+        mensaje = modo === 'operador' ? 'Código u PIN incorrectos' : 'Correo o contraseña incorrectos';
       }
       err.textContent = mensaje;
       err.style.display = 'block';
       btn.disabled = false;
-      btn.innerHTML = 'Iniciar sesión';
+      btn.innerHTML = state.loginModo === 'operador' ? '👷 Entrar' : 'Iniciar sesión';
     }
   };
 }
@@ -1939,7 +1987,9 @@ function renderApp() {
           <h1>${tituloVista()}</h1>
           <div class="topbar-right">
             <div class="user-info">
-              <div style="font-weight:600;">${u.nombre}</div>
+              <div style="font-weight:600;display:flex;align-items:center;gap:6px;">${u.nombre}
+                ${(u.es_operador_planta || (u.email || '').endsWith(DOMINIO_INTERNO)) ? '<span style="background:#f59e0b;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:800;">👷 OP</span>' : ''}
+              </div>
               <div style="font-size:11px;color:#94a3b8;">${u.depto} • ${u.rol}</div>
             </div>
             <button class="icon-btn" onclick="hacerLogout()" title="Cerrar sesión">${ICONS.x}</button>
@@ -12407,18 +12457,27 @@ function renderTarjetaUsuario(usr) {
   const pendienteActivacion = usr.pendiente_activacion === true;
   const ubic = UBICACIONES.find(u => u.codigo === usr.ubicacion);
   const esYo = usr.id === state.user?.id;
+  // 🆕 Detectar operador (sin correo, login con código + PIN)
+  const esOperador = usr.es_operador_planta === true || (usr.email || '').endsWith(DOMINIO_INTERNO);
+  const codigoOp = usr.codigo_operador || ((usr.email || '').endsWith(DOMINIO_INTERNO) ? (usr.email || '').replace(DOMINIO_INTERNO, '').toUpperCase() : '');
   
   return `
-    <div style="background:#fff;border:1px solid ${inactivo?'#cbd5e1':esYo?'#3b82f6':pendienteActivacion?'#f59e0b':'#e2e8f0'};border-radius:10px;padding:12px;${inactivo?'opacity:0.6;':''}${esYo?'box-shadow:0 0 0 2px #3b82f622;':''}${pendienteActivacion?'background:#fffbeb;':''}">
+    <div style="background:#fff;border:1px solid ${inactivo?'#cbd5e1':esYo?'#3b82f6':pendienteActivacion?'#f59e0b':esOperador?'#fde68a':'#e2e8f0'};border-radius:10px;padding:12px;${inactivo?'opacity:0.6;':''}${esYo?'box-shadow:0 0 0 2px #3b82f622;':''}${pendienteActivacion?'background:#fffbeb;':''}${esOperador?'background:linear-gradient(135deg,#fff 0%,#fffbeb 100%);':''}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
             <div style="font-weight:800;font-size:14px;color:#1e293b;">${usr.nombre || '—'}</div>
             ${esYo ? '<span style="background:#3b82f6;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">TÚ</span>' : ''}
             ${usr.rol === 'admin' ? '<span style="background:#7c3aed;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">ADMIN</span>' : ''}
+            ${esOperador ? '<span style="background:#f59e0b;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">👷 OPERADOR</span>' : ''}
             ${pendienteActivacion ? '<span style="background:#f59e0b;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;">⏳ PENDIENTE</span>' : ''}
           </div>
-          <div style="font-size:11px;color:#475569;margin-top:3px;">📧 ${usr.email || ''}</div>
+          ${esOperador ? `
+            <div style="font-size:11px;color:#475569;margin-top:3px;">👤 Código: <strong style="font-family:monospace;font-size:13px;color:#92400e;letter-spacing:0.05em;">${codigoOp}</strong></div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:1px;">Login con código + PIN (sin correo)</div>
+          ` : `
+            <div style="font-size:11px;color:#475569;margin-top:3px;">📧 ${usr.email || ''}</div>
+          `}
           ${usr.telefono ? `<div style="font-size:11px;color:#475569;margin-top:2px;">📞 ${usr.telefono}</div>` : ''}
           ${ubic ? `<div style="font-size:11px;color:#64748b;margin-top:3px;">${ubic.icono} ${ubic.nombre}</div>` : ''}
           ${pendienteActivacion ? '<div style="font-size:10px;color:#92400e;margin-top:4px;font-weight:600;">Esperando que el usuario active su cuenta vía email</div>' : ''}
@@ -12427,7 +12486,7 @@ function renderTarjetaUsuario(usr) {
       </div>
       <div style="display:flex;gap:6px;margin-top:8px;border-top:1px solid #f1f5f9;padding-top:8px;flex-wrap:wrap;">
         <button onclick="abrirModal('editar-usuario','${usr.id}')" style="flex:1;min-width:80px;padding:5px 8px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${ICONS.edit} Editar</button>
-        <button onclick="abrirCambiarPasswordUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;min-width:80px;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="Asignar nueva contraseña al usuario">🔑 Password</button>
+        <button onclick="abrirCambiarPasswordUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;min-width:80px;padding:5px 8px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="${esOperador?'Asignar nuevo PIN':'Asignar nueva contraseña'}">🔑 ${esOperador?'PIN':'Password'}</button>
         ${!esYo ? `
           <button onclick="toggleUsuarioActivo('${usr.id}')" style="flex:1;min-width:80px;padding:5px 8px;background:${inactivo?'#16a34a':'#f59e0b'};color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">${inactivo?'✓ Activar':'⏸ Desactivar'}</button>
           <button onclick="eliminarUsuario('${usr.id}','${usr.email}','${(usr.nombre || '').replace(/'/g, "\\'")}')" style="flex:1;min-width:80px;padding:5px 8px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;" title="Eliminar usuario del sistema">🗑️ Eliminar</button>
@@ -12452,7 +12511,10 @@ function modalUsuario(esEdicion) {
       telefono: usr.telefono || '',
       depto: usr.depto || '',
       ubicacion: usr.ubicacion || '',
-      rol: usr.rol || 'usuario'
+      rol: usr.rol || 'usuario',
+      // 🆕 Si el email termina en @newpack.local es un operador (login con código)
+      sinCorreo: (usr.email || '').endsWith(DOMINIO_INTERNO),
+      codigoOperador: (usr.email || '').endsWith(DOMINIO_INTERNO) ? (usr.email || '').replace(DOMINIO_INTERNO, '').toUpperCase() : ''
     } : {
       nombre: '',
       email: '',
@@ -12460,7 +12522,10 @@ function modalUsuario(esEdicion) {
       telefono: '',
       depto: '',
       ubicacion: '',
-      rol: 'usuario'
+      rol: 'usuario',
+      // 🆕 Campos para operadores sin correo
+      sinCorreo: false,
+      codigoOperador: ''
     };
   }
   const f = state.modalForm;
@@ -12485,21 +12550,63 @@ function modalUsuario(esEdicion) {
             </div>
           </div>
           
-          <div class="field">
-            <label class="field-label">Correo electrónico * <span style="font-weight:400;color:#94a3b8;">(será su usuario para iniciar sesión)</span></label>
-            <input class="input" id="usr-email" type="email" value="${f.email || ''}" placeholder="usuario@newpackempaques.com" ${esEdicion ? 'disabled style="background:#f1f5f9;cursor:not-allowed;"' : ''} />
-            ${esEdicion ? '<div style="font-size:10px;color:#94a3b8;margin-top:4px;">El correo no se puede modificar (es la identidad del usuario)</div>' : ''}
-          </div>
+          ${!esEdicion ? `
+            <!-- 🆕 Toggle: tiene correo o es operador sin correo -->
+            <div style="margin-bottom:14px;padding:12px;background:${f.sinCorreo?'#fef3c7':'#f8fafc'};border:1.5px solid ${f.sinCorreo?'#fbbf24':'#e2e8f0'};border-radius:10px;">
+              <div style="font-size:12px;font-weight:700;color:#475569;margin-bottom:8px;">Tipo de acceso:</div>
+              <div style="display:flex;gap:8px;">
+                <button onclick="window.modalFormSet('sinCorreo', false)" type="button" style="flex:1;padding:10px;border:2px solid ${!f.sinCorreo?'#1e40af':'#cbd5e1'};background:${!f.sinCorreo?'#1e40af':'#fff'};color:${!f.sinCorreo?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  📧 Con correo electrónico
+                </button>
+                <button onclick="window.modalFormSet('sinCorreo', true)" type="button" style="flex:1;padding:10px;border:2px solid ${f.sinCorreo?'#f59e0b':'#cbd5e1'};background:${f.sinCorreo?'#f59e0b':'#fff'};color:${f.sinCorreo?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">
+                  👷 Operador (código + PIN)
+                </button>
+              </div>
+              ${f.sinCorreo ? `
+                <div style="margin-top:10px;font-size:11px;color:#92400e;background:#fff;border-radius:6px;padding:8px 10px;">
+                  💡 Ideal para operadores de planta sin correo electrónico. El operador entrará con un código corto + PIN de 6 dígitos.
+                </div>
+              ` : ''}
+            </div>
+          ` : `
+            ${f.sinCorreo ? `
+              <div style="margin-bottom:14px;padding:10px;background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;font-size:11.5px;color:#92400e;">
+                👷 <strong>Usuario operador (sin correo)</strong> · Código: <strong style="font-family:monospace;">${f.codigoOperador}</strong>
+              </div>
+            ` : ''}
+          `}
+          
+          ${!f.sinCorreo ? `
+            <div class="field">
+              <label class="field-label">Correo electrónico * <span style="font-weight:400;color:#94a3b8;">(será su usuario para iniciar sesión)</span></label>
+              <input class="input" id="usr-email" type="email" value="${f.email || ''}" placeholder="usuario@newpackempaques.com" ${esEdicion ? 'disabled style="background:#f1f5f9;cursor:not-allowed;"' : ''} />
+              ${esEdicion ? '<div style="font-size:10px;color:#94a3b8;margin-top:4px;">El correo no se puede modificar (es la identidad del usuario)</div>' : ''}
+            </div>
+          ` : !esEdicion ? `
+            <!-- 🆕 Campos para operador sin correo -->
+            <div class="field">
+              <label class="field-label">Código del operador * <span style="font-weight:400;color:#94a3b8;">(corto, sin espacios)</span></label>
+              <input class="input" id="usr-codigo" value="${f.codigoOperador || ''}" placeholder="Ej: EXT01, EXT02, EMP05..." style="font-family:monospace;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;" oninput="window.modalFormSetSilent('codigoOperador', this.value.toUpperCase().replace(/[^A-Z0-9]/g,''))" maxlength="20" />
+              <div style="font-size:10.5px;color:#64748b;margin-top:5px;">
+                💡 Será el "usuario" para iniciar sesión. Usa códigos cortos memorizables como <code>EXT01</code>, <code>EXT02</code>, <code>EMP01</code>, etc. Solo letras y números, sin espacios ni puntos.
+              </div>
+            </div>
+          ` : ''}
           
           ${!esEdicion ? `
             <div class="field">
-              <label class="field-label">Contraseña inicial * <span style="font-weight:400;color:#94a3b8;">(mín 6 caracteres)</span></label>
+              <label class="field-label">${f.sinCorreo ? 'PIN de 6 dígitos *' : 'Contraseña inicial *'} <span style="font-weight:400;color:#94a3b8;">${f.sinCorreo ? '(numérico)' : '(mín 6 caracteres)'}</span></label>
               <div style="display:flex;gap:8px;align-items:stretch;">
-                <input class="input" id="usr-password" type="text" value="${f.password || ''}" placeholder="Ej: NewPack2026" oninput="window.modalFormSetSilent('password', this.value)" style="flex:1;font-family:monospace;font-weight:700;" />
-                <button onclick="window.generarPasswordAleatorio()" type="button" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🎲 Generar</button>
+                ${f.sinCorreo ? `
+                  <input class="input" id="usr-password" type="text" value="${f.password || ''}" placeholder="123456" oninput="window.modalFormSetSilent('password', this.value.replace(/[^0-9]/g,'').slice(0,6))" maxlength="6" inputmode="numeric" pattern="[0-9]*" style="flex:1;font-family:monospace;font-weight:700;text-align:center;font-size:18px;letter-spacing:0.3em;" />
+                  <button onclick="window.generarPINAleatorio()" type="button" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🎲 Generar PIN</button>
+                ` : `
+                  <input class="input" id="usr-password" type="text" value="${f.password || ''}" placeholder="Ej: NewPack2026" oninput="window.modalFormSetSilent('password', this.value)" style="flex:1;font-family:monospace;font-weight:700;" />
+                  <button onclick="window.generarPasswordAleatorio()" type="button" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🎲 Generar</button>
+                `}
               </div>
               <div style="font-size:10px;color:#64748b;margin-top:6px;line-height:1.4;">
-                💡 Esta es la contraseña inicial que compartirás con el usuario por WhatsApp/personal. Él puede cambiarla después desde su perfil.
+                💡 ${f.sinCorreo ? 'PIN inicial. Compártelo de forma segura con el operador. Puede cambiarlo después desde su perfil.' : 'Esta es la contraseña inicial que compartirás con el usuario por WhatsApp/personal. Él puede cambiarla después desde su perfil.'}
               </div>
             </div>
           ` : ''}
@@ -12552,8 +12659,29 @@ function modalCompartirCredenciales() {
   if (!cred) return '';
   
   const urlApp = window.location.origin + window.location.pathname;
+  const esOpe = cred.sinCorreo === true;
   
-  const mensajeTexto = `¡Hola ${cred.nombre}! 👋
+  // 🆕 Mensaje específico según tipo (operador o normal)
+  const mensajeTexto = esOpe ? `¡Hola ${cred.nombre}! 👋
+
+Tu cuenta en NewPack ERP ya está lista.
+
+🔐 *Tus credenciales de acceso:*
+👤 Código: ${cred.codigoOperador}
+🔢 PIN: ${cred.password}
+
+📍 Departamento: ${cred.depto} · ${cred.ubicacion}
+
+🌐 Ingresa aquí:
+${urlApp}
+
+📌 Al abrir la app:
+1. Toca la pestaña "👷 Operador (código + PIN)"
+2. Captura tu código y tu PIN
+
+⚠️ Te recomendamos cambiar tu PIN en tu primer ingreso.
+
+¡Bienvenido(a) a NewPack! 🚀` : `¡Hola ${cred.nombre}! 👋
 
 Tu cuenta en NewPack ERP ya está lista.
 
@@ -12582,14 +12710,14 @@ ${urlApp}
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarCompartir()">
       <div class="modal" style="max-width:560px;">
-        <div class="modal-header" style="background:#dcfce7;border-bottom:2px solid #16a34a;">
-          <h2 style="font-size:18px;font-weight:800;color:#166534;">✅ Usuario creado correctamente</h2>
+        <div class="modal-header" style="background:${esOpe?'#fef3c7':'#dcfce7'};border-bottom:2px solid ${esOpe?'#f59e0b':'#16a34a'};">
+          <h2 style="font-size:18px;font-weight:800;color:${esOpe?'#92400e':'#166534'};">✅ ${esOpe?'Operador creado':'Usuario creado'} correctamente</h2>
           <button class="icon-btn" onclick="cerrarCompartir()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
           
-          <div style="padding:14px;background:#f0fdf4;border-radius:10px;margin-bottom:14px;">
-            <div style="font-weight:800;color:#166534;font-size:14px;margin-bottom:8px;">👤 ${cred.nombre}</div>
+          <div style="padding:14px;background:${esOpe?'#fffbeb':'#f0fdf4'};border-radius:10px;margin-bottom:14px;">
+            <div style="font-weight:800;color:${esOpe?'#92400e':'#166534'};font-size:14px;margin-bottom:8px;">${esOpe?'👷':'👤'} ${cred.nombre}</div>
             <div style="font-size:12px;color:#475569;">📍 ${cred.depto} · ${cred.ubicacion}</div>
           </div>
           
@@ -12598,21 +12726,34 @@ ${urlApp}
             <div style="font-weight:800;color:#92400e;font-size:13px;margin-bottom:10px;">🔐 Credenciales de acceso</div>
             
             <div style="background:#fff;padding:10px 14px;border-radius:8px;margin-bottom:8px;border:1px solid #fcd34d;">
-              <div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:0.05em;">📧 USUARIO</div>
-              <div class="text-mono" style="font-size:14px;font-weight:800;color:#1e293b;word-break:break-all;">${cred.email}</div>
+              <div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:0.05em;">${esOpe?'👤 CÓDIGO DE OPERADOR':'📧 USUARIO'}</div>
+              <div class="text-mono" style="font-size:${esOpe?'22':'14'}px;font-weight:800;color:#1e293b;${esOpe?'letter-spacing:0.1em;text-align:center;padding:6px 0;':'word-break:break-all;'}">${esOpe ? cred.codigoOperador : cred.email}</div>
             </div>
             
             <div style="background:#fff;padding:10px 14px;border-radius:8px;border:1px solid #fcd34d;">
-              <div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:0.05em;">🔑 CONTRASEÑA</div>
-              <div class="text-mono" style="font-size:18px;font-weight:800;color:#1e293b;letter-spacing:0.05em;">${cred.password}</div>
+              <div style="font-size:10px;color:#64748b;font-weight:700;letter-spacing:0.05em;">${esOpe?'🔢 PIN (6 dígitos)':'🔑 CONTRASEÑA'}</div>
+              <div class="text-mono" style="font-size:${esOpe?'24':'18'}px;font-weight:800;color:#1e293b;letter-spacing:${esOpe?'0.3em':'0.05em'};${esOpe?'text-align:center;padding:6px 0;':''}">${cred.password}</div>
             </div>
           </div>
           
-          <!-- INSTRUCCIONES -->
-          <div style="padding:12px;background:#eff6ff;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af;">
-            <strong>📌 Comparte estas credenciales con el usuario por WhatsApp, correo o de manera personal.</strong><br>
-            <span style="color:#475569;font-size:11px;">Recomienda que cambie su contraseña al iniciar sesión por seguridad.</span>
-          </div>
+          ${esOpe ? `
+            <!-- INSTRUCCIONES OPERADOR -->
+            <div style="padding:12px;background:#eff6ff;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af;">
+              <strong>📌 Indícale al operador:</strong><br>
+              <span style="color:#475569;font-size:11px;line-height:1.6;">
+                1. Abrir la app en su celular o PC<br>
+                2. Tocar la pestaña <strong>"👷 Operador (código + PIN)"</strong><br>
+                3. Capturar su código <strong style="font-family:monospace;">${cred.codigoOperador}</strong> y su PIN<br>
+                4. Puede cambiar su PIN luego desde su perfil
+              </span>
+            </div>
+          ` : `
+            <!-- INSTRUCCIONES NORMAL -->
+            <div style="padding:12px;background:#eff6ff;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af;">
+              <strong>📌 Comparte estas credenciales con el usuario por WhatsApp, correo o de manera personal.</strong><br>
+              <span style="color:#475569;font-size:11px;">Recomienda que cambie su contraseña al iniciar sesión por seguridad.</span>
+            </div>
+          `}
           
           <!-- BOTONES DE COMPARTIR -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -12911,18 +13052,35 @@ window.copiarSoloContrasena = (passwordArg) => {
 };
 
 window.crearUsuarioNuevo = async () => {
+  const sinCorreo = state.modalForm?.sinCorreo === true;
   const nombre = ($('#usr-nombre')?.value || '').trim();
-  const email = ($('#usr-email')?.value || '').trim().toLowerCase();
-  const password = ($('#usr-password')?.value || state.modalForm?.password || '').trim();
   const telefono = ($('#usr-tel')?.value || '').trim();
   const depto = state.modalForm?.depto || '';
   const ubicacion = state.modalForm?.ubicacion || '';
   const rol = state.modalForm?.rol || 'usuario';
   
-  // Validaciones
+  // 🆕 Construir email y password según el modo
+  let email, password, codigoOperador;
+  if (sinCorreo) {
+    codigoOperador = ((state.modalForm?.codigoOperador) || $('#usr-codigo')?.value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    password = ($('#usr-password')?.value || state.modalForm?.password || '').trim();
+    email = codigoOperador ? `${codigoOperador.toLowerCase()}${DOMINIO_INTERNO}` : '';
+    
+    // Validaciones específicas operador
+    if (!codigoOperador || codigoOperador.length < 2) { toast('Código de operador obligatorio (mínimo 2 caracteres)', 'error'); return; }
+    if (codigoOperador.length > 20) { toast('Código demasiado largo (máximo 20 caracteres)', 'error'); return; }
+    if (!/^\d{6}$/.test(password)) { toast('El PIN debe ser de 6 dígitos numéricos', 'error'); return; }
+  } else {
+    email = ($('#usr-email')?.value || '').trim().toLowerCase();
+    password = ($('#usr-password')?.value || state.modalForm?.password || '').trim();
+    
+    // Validaciones email
+    if (!email || !email.includes('@')) { toast('Correo válido obligatorio', 'error'); return; }
+    if (!password || password.length < 6) { toast('Contraseña obligatoria (mínimo 6 caracteres)', 'error'); return; }
+  }
+  
+  // Validaciones comunes
   if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
-  if (!email || !email.includes('@')) { toast('Correo válido obligatorio', 'error'); return; }
-  if (!password || password.length < 6) { toast('Contraseña obligatoria (mínimo 6 caracteres)', 'error'); return; }
   if (!depto) { toast('Selecciona departamento', 'error'); return; }
   if (!ubicacion) { toast('Selecciona ubicación', 'error'); return; }
   
@@ -12962,6 +13120,9 @@ window.crearUsuarioNuevo = async () => {
         depto: depto,
         ubicacion: ubicacion,
         rol: rol,
+        // 🆕 Marca de operador sin correo (para diferenciar en UI)
+        es_operador_planta: sinCorreo,
+        codigo_operador: sinCorreo ? codigoOperador : '',
         activo: true,
         creado_por: state.user.id,
         creado_por_nombre: state.user.nombre || state.user.email,
@@ -12983,7 +13144,12 @@ window.crearUsuarioNuevo = async () => {
     cerrarModal();
     
     // 4. Abrir modal de credenciales listas para compartir
-    state.credencialesCompartir = { nombre, email, password, depto, ubicacion };
+    state.credencialesCompartir = { 
+      nombre, email, password, depto, ubicacion,
+      // 🆕 Para operadores: pasar el código en lugar del email completo
+      sinCorreo,
+      codigoOperador: sinCorreo ? codigoOperador : ''
+    };
     state.modal = 'compartir-credenciales';
     render();
     
@@ -13010,6 +13176,22 @@ window.generarPasswordAleatorio = () => {
   const inp = $('#usr-password');
   if (inp) inp.value = password;
   toast(`🎲 Contraseña generada: ${password}`, 'info');
+};
+
+// 🆕 Generar PIN aleatorio de 6 dígitos (sin secuencias obvias como 123456, 000000)
+window.generarPINAleatorio = () => {
+  let pin;
+  const malos = new Set(['123456','111111','000000','222222','333333','444444','555555','666666','777777','888888','999999','654321','121212','121234','112233']);
+  do {
+    pin = String(Math.floor(Math.random() * 900000) + 100000); // 100000-999999
+  } while (malos.has(pin));
+  
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.password = pin;
+  
+  const inp = $('#usr-password');
+  if (inp) inp.value = pin;
+  toast(`🎲 PIN generado: ${pin}`, 'info');
 };
 
 window.actualizarUsuario = async (id) => {
