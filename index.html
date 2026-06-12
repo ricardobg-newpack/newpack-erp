@@ -158,6 +158,11 @@ const state = {
   capturas_produccion: [],
   // 🆕 EXTRUSIÓN: registro rollo por rollo durante el turno (sustituye hoja física)
   rollos_extrusion: [],
+  // 🆕 F4 — PELETIZADO
+  lotes_peletizado: [],
+  movimientos_merma: [],
+  corridas_peletizado: [],
+  almacen_desecho_venta: [],
   lotes: [],
   tarimas: [],
   packing_lists: [],
@@ -351,6 +356,621 @@ function calcularEstadoRealPedido(pedido, odps) {
   return pedido.estatus || 'en_proceso';
 }
 window.calcularEstadoRealPedido = calcularEstadoRealPedido;
+
+// ============================================================
+// 🆕 F2 — WATERFALL DE CANTIDADES POR LÍNEA DE PEDIDO
+// ============================================================
+// Para cada línea, calcula cuántos kg están en cada etapa del flujo.
+// Esto permite mostrar "200 entregados, 300 en CEDIS, 500 pendientes" etc.
+function calcularWaterfallLinea(linea) {
+  if (!linea) return null;
+  
+  const lineaId = linea.id;
+  const pedidoId = linea.pedido_id;
+  const producto = window.getProductoPT(linea.producto_codigo);
+  
+  // ODPs vinculadas a esta línea
+  // Compatibilidad: si la ODP no tiene pedido_linea_id (legacy), usar pedido_id + producto
+  const odps = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada) return false;
+    if (o.pedido_linea_id) return o.pedido_linea_id === lineaId;
+    return o.pedido_id === pedidoId && o.producto_codigo === linea.producto_codigo;
+  });
+  
+  // Tarimas vinculadas (vía ODP)
+  const odpIds = new Set(odps.map(o => o.id));
+  const odpFolios = new Set(odps.map(o => o.folio));
+  const tarimas = (state.tarimas || []).filter(t => 
+    odpIds.has(t.odp_id) || odpFolios.has(t.odp_folio)
+  );
+  
+  // Cantidad pedida (en UM original)
+  const qtyPedida = Number(linea.cantidad_solicitada) || 0;
+  const cantProducir = Number(linea.cantidad_producir) || Number(linea.cantidad_solicitada) || 0;
+  
+  // Para waterfall trabajamos en KG (más confiable que mezclar UM)
+  const kgPorTarima = (t) => Number(t.cantidad_kg) || 0;
+  
+  // Suma de cantidad_asignada en todas las ODPs P-1 (no se duplica con P-2)
+  const odpsP1 = odps.filter(o => !o.proceso_codigo || o.proceso_codigo === 'P-1');
+  const odpsP2plus = odps.filter(o => o.proceso_codigo && o.proceso_codigo !== 'P-1');
+  const kgAsignadosODPs = odpsP1.reduce((s, o) => s + (Number(o.cantidad_kg_produccion) || 0), 0);
+  
+  // Etapas (kg por etapa)
+  const kgEnExtrusion = odps
+    .filter(o => ['programada','en_produccion'].includes(o.estatus) && (!o.proceso_codigo || o.proceso_codigo === 'P-1'))
+    .reduce((s, o) => s + (Number(o.kg_producidos_acumulado) || 0), 0);
+    
+  const kgEnProcesoSec = odpsP2plus
+    .filter(o => ['programada','en_produccion'].includes(o.estatus))
+    .reduce((s, o) => s + (Number(o.kg_producidos_acumulado) || 0), 0);
+  
+  // Por tarimas
+  let kgPteCalidad = 0, kgPlanta = 0, kgTransito = 0, kgCedis = 0, kgEmbarcada = 0, kgEntregada = 0;
+  for (const t of tarimas) {
+    const k = kgPorTarima(t);
+    switch (t.estatus) {
+      case 'pendiente_calidad': case 'en_calidad': kgPteCalidad += k; break;
+      case 'liberada': case 'en_almacen_planta': kgPlanta += k; break;
+      case 'en_transito_cedis_mty': case 'en_transito_cedis_mex': kgTransito += k; break;
+      case 'en_cedis_mty': case 'en_cedis_mex': kgCedis += k; break;
+      case 'embarcada': kgEmbarcada += k; break;
+      case 'entregada': kgEntregada += k; break;
+    }
+  }
+  
+  // Convertir cantidad pedida a kg
+  const kgPedidos = window.convertirAKg(cantProducir, linea.um, producto) || cantProducir;
+  
+  // Pendiente fabricar = lo que pidieron - lo que ya hay en ODPs (P-1)
+  const kgPteFabricar = Math.max(0, kgPedidos - kgAsignadosODPs);
+  
+  // % completado
+  const pctCompletado = kgPedidos > 0 ? Math.min(100, Math.round((kgEntregada / kgPedidos) * 100)) : 0;
+  
+  return {
+    linea, producto,
+    qty_pedida: qtyPedida,
+    kg_pedidos: Math.round(kgPedidos),
+    kg_asignados_odps: Math.round(kgAsignadosODPs),
+    kg_pte_fabricar: Math.round(kgPteFabricar),
+    kg_en_extrusion: Math.round(kgEnExtrusion),
+    kg_en_proceso_sec: Math.round(kgEnProcesoSec),
+    kg_pte_calidad: Math.round(kgPteCalidad),
+    kg_planta: Math.round(kgPlanta),
+    kg_transito: Math.round(kgTransito),
+    kg_cedis: Math.round(kgCedis),
+    kg_embarcada: Math.round(kgEmbarcada),
+    kg_entregada: Math.round(kgEntregada),
+    pct_completado: pctCompletado,
+    odps_p1: odpsP1,
+    odps_p2plus: odpsP2plus,
+    tarimas
+  };
+}
+window.calcularWaterfallLinea = calcularWaterfallLinea;
+
+// Renderiza modal de seguimiento de un pedido completo (todas sus líneas)
+window.abrirWaterfallPedido = (pedidoId) => {
+  state.waterfallPedidoId = pedidoId;
+  render();
+};
+window.cerrarWaterfallPedido = () => {
+  state.waterfallPedidoId = null;
+  render();
+};
+
+function renderModalWaterfallPedido() {
+  if (!state.waterfallPedidoId) return '';
+  const pedido = state.pedidos.find(p => p.id === state.waterfallPedidoId);
+  if (!pedido) return '';
+  
+  const lineas = window.pedidoLineas(state.waterfallPedidoId);
+  const waterfalls = lineas.map(l => calcularWaterfallLinea(l)).filter(Boolean);
+  
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)window.cerrarWaterfallPedido()">
+      <div class="modal" style="max-width:980px;max-height:92vh;">
+        <div class="modal-header">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">📊 Seguimiento de ${pedido.folio || pedido.id}</h2>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">${pedido.cliente_codigo} · ${pedido.cliente_nombre || ''}</div>
+          </div>
+          <button class="icon-btn" onclick="window.cerrarWaterfallPedido()">✗</button>
+        </div>
+        <div class="modal-body">
+          ${waterfalls.length === 0 ? `
+            <div style="padding:40px;text-align:center;color:#64748b;">Este pedido no tiene líneas.</div>
+          ` : waterfalls.map(w => renderTarjetaWaterfallLinea(w)).join('')}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="window.cerrarWaterfallPedido()">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTarjetaWaterfallLinea(w) {
+  const kPed = w.kg_pedidos || 1;
+  const segs = [
+    { label: 'Entregado', kg: w.kg_entregada, bg: '#85B7EB', fg: '#042C53' },
+    { label: 'Embarcado', kg: w.kg_embarcada, bg: '#5DCAA5', fg: '#04342C' },
+    { label: 'En CEDIS', kg: w.kg_cedis, bg: '#97C459', fg: '#173404' },
+    { label: 'En tránsito', kg: w.kg_transito, bg: '#C0DD97', fg: '#173404' },
+    { label: 'En planta', kg: w.kg_planta, bg: '#FAC775', fg: '#412402' },
+    { label: 'Pte calidad', kg: w.kg_pte_calidad, bg: '#FBEAF0', fg: '#4B1528' },
+    { label: 'Proc. sec.', kg: w.kg_en_proceso_sec, bg: '#F0997B', fg: '#4A1B0C' },
+    { label: 'Extrusión', kg: w.kg_en_extrusion, bg: '#AFA9EC', fg: '#26215C' },
+    { label: 'Por fabricar', kg: w.kg_pte_fabricar, bg: '#D3D1C7', fg: '#2C2C2A' },
+  ].filter(s => s.kg > 0);
+  
+  const totalSegs = segs.reduce((s, x) => s + x.kg, 0) || 1;
+  
+  return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+        <div>
+          <div style="font-weight:700;font-size:13px;color:#0f172a;">${w.linea.producto_codigo}</div>
+          <div style="font-size:11px;color:#64748b;">${w.linea.descripcion || ''}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:#64748b;">Pidió</div>
+          <div style="font-weight:700;font-size:15px;">${w.qty_pedida} ${w.linea.um || ''} ≈ ${w.kg_pedidos} kg</div>
+          <div style="background:${w.pct_completado === 100 ? '#dcfce7' : '#dbeafe'};color:${w.pct_completado === 100 ? '#15803d' : '#1e40af'};font-size:10px;padding:2px 8px;border-radius:6px;display:inline-block;margin-top:4px;font-weight:700;">${w.pct_completado}% entregado</div>
+        </div>
+      </div>
+      
+      <!-- Barra de progreso por etapa -->
+      <div style="height:28px;background:#f1f5f9;border-radius:6px;overflow:hidden;display:flex;margin:10px 0 8px;">
+        ${segs.map(s => `
+          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${s.kg} kg">${s.kg > totalSegs * 0.05 ? s.kg : ''}</div>
+        `).join('')}
+      </div>
+      
+      <!-- Leyenda -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));gap:4px;margin-top:8px;">
+        ${segs.map(s => `
+          <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
+            <span style="width:10px;height:10px;background:${s.bg};border-radius:2px;flex-shrink:0;"></span>
+            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${s.kg} kg</strong></span>
+          </div>
+        `).join('')}
+      </div>
+      
+      <!-- ODPs vinculadas -->
+      ${(w.odps_p1.length + w.odps_p2plus.length) > 0 ? `
+        <div style="margin-top:10px;padding:8px;background:#f8fafc;border-radius:6px;">
+          <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;">📋 ODPs vinculadas</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${[...w.odps_p1, ...w.odps_p2plus].map(o => `
+              <span style="background:#eff6ff;color:#1e40af;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;">${o.folio} · ${o.proceso_codigo || 'P-1'} · ${o.estatus}</span>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      
+      ${w.kg_pte_fabricar > 0 && (state.user?.depto === 'CS' || state.user?.depto === 'PLN' || state.user?.depto === 'CEO' || state.user?.rol === 'admin') ? `
+        <div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="font-size:11px;color:#92400e;font-weight:600;">⚠ Faltan ${w.kg_pte_fabricar} kg por fabricar</div>
+          <button onclick="window.generarODPFaltante('${w.linea.id}')" style="background:#f59e0b;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">+ Generar ODP del faltante</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+// Generar ODP para cubrir lo faltante de una línea (placeholder para F6)
+window.generarODPFaltante = async (lineaId) => {
+  toast('🚧 Función completa en F6 — por ahora crea manualmente la ODP desde Planeación', 'info');
+};
+
+// ============================================================
+// 🆕 F4 — MÓDULO PELETIZADO (P-5)
+// ============================================================
+// Captura merma clasificada por Material × Color y la acumula en lotes_peletizado.
+// Clasificación automática desde los campos del producto PT origen.
+
+// Registrar merma → clasifica y suma al lote correspondiente
+window.registrarMermaPeletizado = async ({ kg, odp_id = '', odp_folio = '', rollo_id = '', rollo_folio = '', producto_codigo, proceso = 'P-1', motivo = 'OTRO', notas = '' }) => {
+  const kgNum = Number(kg) || 0;
+  if (kgNum <= 0) return null;
+  
+  const producto = window.getProductoPT(producto_codigo);
+  if (!producto) {
+    console.warn(`registrarMermaPeletizado: producto ${producto_codigo} no encontrado`);
+    return null;
+  }
+  
+  // Clasificación: leer del producto, con fallback inteligente
+  let mat = producto.tipo_material_peletizado || '';
+  if (!mat) {
+    if (producto.material === 'Baja Densidad') mat = 'BD';
+    else if (producto.material === 'Alta Densidad') mat = 'AD';
+    else if (producto.material === 'Termoencogible') mat = 'TE';
+    else mat = 'NO_PELETIZABLE';
+  }
+  
+  if (mat === 'NO_PELETIZABLE') {
+    console.warn(`Producto ${producto_codigo} es NO_PELETIZABLE — merma no se registra en peletizado`);
+    return null;
+  }
+  
+  let col = (producto.color_peletizado || '').toUpperCase().trim();
+  if (!col) {
+    col = producto.color === 'Transparente' ? 'TPTE' : 
+          ((producto.color || 'TPTE').toUpperCase().replace(/\s+/g, '-'));
+  }
+  
+  const loteId = `PEL-${mat}-${col}`;
+  const u = state.user || {};
+  
+  // 1. Registrar el movimiento de merma (historial inmutable)
+  await addDoc(collection(db, 'movimientos_merma'), {
+    proceso,
+    odp_id, odp_folio,
+    rollo_id, rollo_folio,
+    producto_origen: producto_codigo,
+    producto_descripcion: producto.descripcion || '',
+    kg_merma: kgNum,
+    lote_peletizado_destino: loteId,
+    tipo_material: mat,
+    color: col,
+    motivo,
+    notas,
+    capturado_por: u.nombre || u.email || 'sistema',
+    capturado_por_depto: u.depto || '',
+    created_at: serverTimestamp()
+  });
+  
+  // 2. Acumular en el lote (crear si no existe, sumar si existe)
+  const loteRef = doc(db, 'lotes_peletizado', loteId);
+  const loteSnap = await getDoc(loteRef);
+  
+  if (loteSnap.exists()) {
+    const prev = loteSnap.data();
+    await updateDoc(loteRef, {
+      stock_kg: (Number(prev.stock_kg) || 0) + kgNum,
+      total_capturas: (Number(prev.total_capturas) || 0) + 1,
+      ultima_captura_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+  } else {
+    await setDoc(loteRef, {
+      id: loteId,
+      tipo_material: mat,
+      color: col,
+      stock_kg: kgNum,
+      total_capturas: 1,
+      peletizado_kg_acumulado: 0,
+      ultima_captura_at: serverTimestamp(),
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+  }
+  
+  // 3. Refrescar state local
+  try {
+    const snap = await getDocs(collection(db, 'lotes_peletizado'));
+    state.lotes_peletizado = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch (e) { /* listener lo actualizará */ }
+  
+  console.log(`♻️ Merma registrada: ${kgNum} kg → ${loteId}`);
+  return loteId;
+};
+
+// Iniciar corrida P-5: consume un lote y produce pellet + desecho
+window.iniciarCorridaP5 = async (loteId) => {
+  const u = state.user || {};
+  if (!['PRO','PLN','CEO','ADMIN'].includes(u.depto) && u.rol !== 'admin') {
+    toast('Solo PRO/PLN/CEO pueden iniciar corridas de peletizado', 'error');
+    return;
+  }
+  
+  const lote = (state.lotes_peletizado || []).find(l => l.id === loteId);
+  if (!lote) { toast('Lote no encontrado', 'error'); return; }
+  
+  const stockDisp = Number(lote.stock_kg) || 0;
+  if (stockDisp <= 0) { toast('El lote no tiene stock', 'error'); return; }
+  
+  const kgEntradaStr = prompt(
+    `🔄 CORRIDA P-5 · ${loteId}\n\n` +
+    `Stock disponible: ${stockDisp} kg\n\n` +
+    `¿Cuántos kg de merma vas a peletizar?`,
+    String(stockDisp)
+  );
+  if (!kgEntradaStr) return;
+  const kgEntrada = Number(kgEntradaStr);
+  if (!kgEntrada || kgEntrada <= 0) { toast('Cantidad inválida', 'error'); return; }
+  if (kgEntrada > stockDisp) { toast(`Solo hay ${stockDisp} kg en el lote`, 'error'); return; }
+  
+  const kgPelletStr = prompt(
+    `¿Cuántos kg de PELLET salieron?\n\n` +
+    `(Entrada: ${kgEntrada} kg — el resto se considera merma de P-5 que va a DESECHO-VENTA)`
+  );
+  if (!kgPelletStr) return;
+  const kgPellet = Number(kgPelletStr);
+  if (isNaN(kgPellet) || kgPellet < 0) { toast('Cantidad inválida', 'error'); return; }
+  if (kgPellet > kgEntrada) { toast('El pellet no puede ser mayor que la entrada', 'error'); return; }
+  
+  const kgDesecho = Number((kgEntrada - kgPellet).toFixed(2));
+  const eficiencia = kgEntrada > 0 ? Math.round((kgPellet / kgEntrada) * 100) : 0;
+  
+  if (!confirm(
+    `CONFIRMAR CORRIDA P-5\n\n` +
+    `Lote: ${loteId}\n` +
+    `Entrada: ${kgEntrada} kg\n` +
+    `Pellet producido: ${kgPellet} kg (${eficiencia}% eficiencia)\n` +
+    `Desecho a venta: ${kgDesecho} kg\n\n` +
+    `El pellet se dará de alta como MP: MP-PELLET-${lote.tipo_material}-${lote.color}\n` +
+    `¿Proceder?`
+  )) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    // 1. Registrar corrida
+    const corridaRef = await addDoc(collection(db, 'corridas_peletizado'), {
+      lote_origen: loteId,
+      tipo_material: lote.tipo_material,
+      color: lote.color,
+      kg_entrada: kgEntrada,
+      kg_pellet_salida: kgPellet,
+      kg_desecho: kgDesecho,
+      eficiencia_pct: eficiencia,
+      operador: u.nombre || u.email,
+      operador_depto: u.depto || '',
+      created_at: serverTimestamp()
+    });
+    
+    // 2. Descontar del lote
+    await updateDoc(doc(db, 'lotes_peletizado', loteId), {
+      stock_kg: Number((stockDisp - kgEntrada).toFixed(2)),
+      peletizado_kg_acumulado: (Number(lote.peletizado_kg_acumulado) || 0) + kgPellet,
+      ultima_corrida_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    // 3. Dar de alta el pellet como MP (lote de MP con stock)
+    const mpCodigo = `MP-PELLET-${lote.tipo_material}-${lote.color}`;
+    const mpRef = doc(db, 'materias_primas', mpCodigo);
+    const mpSnap = await getDoc(mpRef);
+    if (!mpSnap.exists()) {
+      await setDoc(mpRef, {
+        codigo: mpCodigo,
+        descripcion: `Pellet reciclado ${lote.tipo_material === 'BD' ? 'Baja Densidad' : lote.tipo_material === 'AD' ? 'Alta Densidad' : 'Termoencogible'} ${lote.color}`,
+        tipo: 'pellet_reciclado',
+        um: 'Kg',
+        proveedor: 'NEWPACK (interno P-5)',
+        origen_interno: true,
+        activo: true,
+        created_at: serverTimestamp()
+      });
+    }
+    // Crear lote de MP con el stock del pellet
+    await addDoc(collection(db, 'lotes_mp'), {
+      mp_codigo: mpCodigo,
+      lote_proveedor: `P5-${new Date().toISOString().slice(0,10)}-${corridaRef.id.slice(-5)}`,
+      cantidad: kgPellet,
+      cantidad_disponible: kgPellet,
+      um: 'Kg',
+      costo_unitario: 0, // costo interno — definir después si quieren costearlo
+      proveedor: 'NEWPACK (interno P-5)',
+      origen: 'corrida_peletizado',
+      corrida_p5_id: corridaRef.id,
+      fecha_recepcion: new Date().toISOString().slice(0,10),
+      created_at: serverTimestamp()
+    });
+    
+    // 4. Acumular el desecho en almacén DESECHO-VENTA
+    if (kgDesecho > 0) {
+      const desechoId = `DESECHO-${lote.tipo_material}-${lote.color}`;
+      const desRef = doc(db, 'almacen_desecho_venta', desechoId);
+      const desSnap = await getDoc(desRef);
+      if (desSnap.exists()) {
+        await updateDoc(desRef, {
+          stock_kg: (Number(desSnap.data().stock_kg) || 0) + kgDesecho,
+          updated_at: serverTimestamp()
+        });
+      } else {
+        await setDoc(desRef, {
+          id: desechoId,
+          tipo_material: lote.tipo_material,
+          color: lote.color,
+          stock_kg: kgDesecho,
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+      }
+    }
+    
+    // 5. Notificar
+    await window.notificarEvento({
+      evento: 'corrida_p5_terminada',
+      folio: loteId,
+      extra: { detalle: `${kgPellet} kg pellet (${eficiencia}%) + ${kgDesecho} kg desecho · MP: ${mpCodigo}` }
+    });
+    
+    // 6. Refrescar state
+    const snapLotes = await getDocs(collection(db, 'lotes_peletizado'));
+    state.lotes_peletizado = snapLotes.docs.map(d => ({ id: d.id, ...d.data() }));
+    
+    alert(
+      `✅ CORRIDA P-5 COMPLETADA\n\n` +
+      `Lote: ${loteId}\n` +
+      `Pellet: ${kgPellet} kg → MP ${mpCodigo}\n` +
+      `Desecho: ${kgDesecho} kg → DESECHO-VENTA\n` +
+      `Eficiencia: ${eficiencia}%`
+    );
+    toast(`✅ Corrida P-5: ${kgPellet} kg de pellet generados`);
+    render();
+  } catch (e) {
+    console.error('Error en corrida P-5:', e);
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Captura manual de merma (cuando no viene de una ODP, ej. limpieza, barredura)
+window.capturarMermaManual = async () => {
+  const u = state.user || {};
+  if (!['PRO','PLN','ALP','CAL','CEO','ADMIN'].includes(u.depto) && u.rol !== 'admin') {
+    toast('Sin permisos para capturar merma', 'error');
+    return;
+  }
+  
+  const prodCod = prompt('Código del producto PT que generó la merma:\n(se usa para clasificar material y color)');
+  if (!prodCod) return;
+  const producto = window.getProductoPT(prodCod.trim().toUpperCase());
+  if (!producto) { toast(`Producto ${prodCod} no encontrado`, 'error'); return; }
+  
+  const kgStr = prompt(`Producto: ${producto.descripcion}\n\n¿Cuántos kg de merma?`);
+  if (!kgStr) return;
+  const kg = Number(kgStr);
+  if (!kg || kg <= 0) { toast('Cantidad inválida', 'error'); return; }
+  
+  state.loadingAccion = true; render();
+  try {
+    const loteId = await window.registrarMermaPeletizado({
+      kg,
+      producto_codigo: producto.codigo,
+      proceso: 'MANUAL',
+      motivo: 'CAPTURA_MANUAL',
+      notas: 'Captura manual desde almacén peletizado'
+    });
+    if (loteId) {
+      toast(`♻️ ${kg} kg registrados en ${loteId}`);
+    } else {
+      toast('El producto no es peletizable', 'error');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// ============================================================
+// 🆕 SISTEMA CENTRALIZADO DE NOTIFICACIONES DEL FLUJO
+// ============================================================
+// Helper único para disparar notificaciones consistentes en cada evento del flujo.
+// Uso: await notificarEvento({ evento: 'odp_cerrada_parcial', folio: 'ODP-001', extra: {...} })
+window.notificarEvento = async ({ evento, folio = '', mensaje_personalizado = '', extra = {} }) => {
+  try {
+    const u = state.user || {};
+    const eventos = {
+      pi_creado: { 
+        titulo: '🆕 PI creado', 
+        depto_destino: 'CS',  // CS lo aprueba
+        tipo: 'info' 
+      },
+      pi_aprobado: { 
+        titulo: '✅ PI aprobado · OVs y ODPs generadas', 
+        depto_destino: 'PLN',  // PLN programa ODPs
+        tipo: 'success' 
+      },
+      pi_cancelado: {
+        titulo: '✗ PI cancelado',
+        depto_destino: 'CS',
+        tipo: 'warning'
+      },
+      odp_programada: { 
+        titulo: '📅 ODP programada', 
+        depto_destino: 'PRO',  // PRO la ejecuta
+        tipo: 'info' 
+      },
+      odp_iniciada: { 
+        titulo: '▶️ ODP en producción', 
+        depto_destino: 'PLN',
+        tipo: 'info' 
+      },
+      odp_cerrada_completa: { 
+        titulo: '✅ ODP terminada · pasa a calidad', 
+        depto_destino: 'CAL', 
+        tipo: 'success' 
+      },
+      odp_cerrada_parcial: { 
+        titulo: '⚠ ODP cerrada PARCIAL', 
+        depto_destino: 'PLN',  // PLN decide cómo cubrir delta
+        tipo: 'warning' 
+      },
+      odp_p2_lista_iniciar: {
+        titulo: '⚙️ ODP secundaria lista para iniciar',
+        depto_destino: 'PRO',
+        tipo: 'info'
+      },
+      tarima_liberada: { 
+        titulo: '🟢 Tarima liberada por calidad', 
+        depto_destino: 'ALP', 
+        tipo: 'success' 
+      },
+      tarima_rechazada: { 
+        titulo: '🔴 Tarima rechazada por calidad', 
+        depto_destino: 'PRO', 
+        tipo: 'error' 
+      },
+      oti_generada: { 
+        titulo: '🚚 OTI lista para enviar a CEDIS', 
+        depto_destino: 'ALP', 
+        tipo: 'info' 
+      },
+      oti_recibida: { 
+        titulo: '📥 OTI recibida en CEDIS', 
+        depto_destino: 'CS', 
+        tipo: 'success' 
+      },
+      embarque_creado: { 
+        titulo: '📦 Embarque creado · remisión generada', 
+        depto_destino: 'CS', 
+        tipo: 'success' 
+      },
+      embarque_entregado: { 
+        titulo: '✅ Pedido entregado al cliente', 
+        depto_destino: 'FAC',  // FAC factura
+        tipo: 'success' 
+      },
+      merma_capturada: { 
+        titulo: '♻️ Merma capturada en peletizado', 
+        depto_destino: 'PLN', 
+        tipo: 'info' 
+      },
+      corrida_p5_iniciada: {
+        titulo: '🔄 Corrida P-5 iniciada',
+        depto_destino: 'PLN',
+        tipo: 'info'
+      },
+      corrida_p5_terminada: {
+        titulo: '✅ Corrida P-5 terminada',
+        depto_destino: 'COMP',
+        tipo: 'success'
+      }
+    };
+    
+    const cfg = eventos[evento];
+    if (!cfg) {
+      console.warn(`notificarEvento: evento desconocido "${evento}"`);
+      return;
+    }
+    
+    const mensaje = mensaje_personalizado || 
+      (folio ? `${folio}${extra.cliente ? ' · ' + extra.cliente : ''}${extra.detalle ? ' · ' + extra.detalle : ''}` : (extra.detalle || ''));
+    
+    await addDoc(collection(db, 'notificaciones'), {
+      titulo: cfg.titulo,
+      mensaje,
+      depto_destino: cfg.depto_destino,
+      tipo: cfg.tipo,
+      folio_ref: folio,
+      evento_codigo: evento,
+      generado_por: u.nombre || u.email || 'sistema',
+      generado_por_depto: u.depto || '',
+      leida: false,
+      created_at: serverTimestamp()
+    });
+  } catch (e) {
+    console.warn('Error generando notificación:', e);
+  }
+};
 
 // ============================================================
 // 🔧 MTTO — FAMILIAS DE PRODUCTOS DE MANTENIMIENTO
@@ -1456,6 +2076,23 @@ async function cargarTodo() {
         state.rollos_extrusion = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
       }),
+      // 🆕 F4 — Peletizado: lotes acumulados, movimientos y corridas P-5
+      onSnapshot(collection(db, 'lotes_peletizado'), (snap) => {
+        state.lotes_peletizado = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(query(collection(db, 'movimientos_merma'), orderBy('created_at', 'desc'), limit(300)), (snap) => {
+        state.movimientos_merma = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(query(collection(db, 'corridas_peletizado'), orderBy('created_at', 'desc'), limit(100)), (snap) => {
+        state.corridas_peletizado = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
+      onSnapshot(collection(db, 'almacen_desecho_venta'), (snap) => {
+        state.almacen_desecho_venta = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) render();
+      }),
       onSnapshot(query(collection(db, 'lotes'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.lotes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) render();
@@ -1898,6 +2535,7 @@ function renderApp() {
         ` : ''}
         ${esPLN || esPRO ? `
           <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
+          <button class="nav-item ${state.vista === 'peletizado' ? 'active' : ''}" data-vista="peletizado">♻️ Peletizado P-5</button>
         ` : ''}
         ${esCS || esKAM || esPLN || esPRO || esCAL || esCEO || esADMIN ? `
           <button class="nav-item ${state.vista === 'seguimiento_pedidos' ? 'active' : ''}" data-vista="seguimiento_pedidos">📍 Seguimiento de Pedidos</button>
@@ -2018,6 +2656,7 @@ function renderApp() {
     
     ${state.modal ? renderModal() : ''}
     ${state.modalImportarClientes ? renderModalImportarClientes() : ''}
+    ${state.waterfallPedidoId ? renderModalWaterfallPedido() : ''}
     ${state.loadingAccion ? `<div class="loading-overlay"><div class="loading-content"><div class="spinner"></div><div>Procesando...</div></div></div>` : ''}
   `;
 }
@@ -2114,6 +2753,7 @@ function tituloVista() {
     stock_mty: '📊 Inventario CEDIS-MTY',
     stock_mex: '📊 Inventario CEDIS-MEX',
     stock_producto: '📊 Inventario General CEDIS',
+    peletizado: '♻️ Almacén Peletizado P-5',
     maquinas: '🛠️ Máquinas de Producción',
     personal: '👷 Operadores y Supervisores',
     materias_primas: '🧪 Materias Primas, Aditivos y Pigmentos',
@@ -2161,6 +2801,7 @@ function renderVista() {
   if (v === 'stock_mty') { state.filtros.stock_cedis = 'CEDIS-MTY'; return renderStockProducto(); }
   if (v === 'stock_mex') { state.filtros.stock_cedis = 'CEDIS-MEX'; return renderStockProducto(); }
   if (v === 'stock_producto') return renderStockProducto();
+  if (v === 'peletizado') return renderPeletizado();
   if (v === 'maquinas') return renderMaquinas();
   if (v === 'personal') return renderPersonal();
   if (v === 'materias_primas') return renderMateriasPrimas();
@@ -6844,6 +7485,9 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
               ✗ Cancelar
             </button>
           ` : ''}
+          <button onclick="window.abrirWaterfallPedido('${pedido.id}')" style="padding:6px 12px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;">
+            📊 Waterfall
+          </button>
         </div>
       </div>
       
@@ -9044,6 +9688,10 @@ function modalEditarCliente() {
 function modalFormCliente(cliente) {
   const esEditar = !!cliente;
   const c = cliente || {};
+  const u = state.user || {};
+  // 🆕 FAC/CYC/CEO/ADMIN pueden cambiar el código del cliente
+  const puedeEditarCodigo = ['FAC','CYC','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:680px;">
@@ -9053,11 +9701,20 @@ function modalFormCliente(cliente) {
         </div>
         <div class="modal-body">
           <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
-            <div class="field"><label class="field-label">Código *</label><input class="input text-mono" id="cli-cod" style="text-transform:uppercase;" value="${c.codigo || ''}" ${esEditar ? 'readonly' : ''} /></div>
+            <div class="field">
+              <label class="field-label">Código *${esEditar && puedeEditarCodigo ? ` <span style="background:#16a34a;color:#fff;padding:1px 5px;border-radius:4px;font-size:9px;margin-left:4px;">Editable (${u.depto})</span>` : ''}</label>
+              <div style="display:flex;gap:4px;">
+                <input class="input text-mono" id="cli-cod" style="text-transform:uppercase;" value="${c.codigo || ''}" ${esEditar ? 'readonly' : ''} />
+                ${esEditar && puedeEditarCodigo ? `
+                  <button onclick="window.cambiarCodigoCliente('${c.codigo}')" type="button" style="background:#f59e0b;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;" title="Cambiar código del cliente">🔧</button>
+                ` : ''}
+              </div>
+              ${esEditar && puedeEditarCodigo ? '<div style="font-size:9px;color:#64748b;margin-top:2px;">🔧 Aprieta el botón para cambiar el código</div>' : ''}
+            </div>
             <div class="field"><label class="field-label">Nombre / Razón social *</label><input class="input" id="cli-nom" value="${c.nombre || ''}" /></div>
           </div>
           
-          <div class="field"><label class="field-label">RFC</label><input class="input text-mono" id="cli-rfc" style="text-transform:uppercase;" value="${c.rfc || ''}" placeholder="Ej: ABC850515ABC" /></div>
+          <div class="field"><label class="field-label">RFC${esEditar && !puedeEditarCodigo ? ` <span style="background:#94a3b8;color:#fff;padding:1px 5px;border-radius:4px;font-size:9px;margin-left:4px;">Solo FAC/CYC</span>` : ''}</label><input class="input text-mono" id="cli-rfc" style="text-transform:uppercase;" value="${c.rfc || ''}" placeholder="Ej: ABC850515ABC" ${esEditar && !puedeEditarCodigo ? 'readonly' : ''} /></div>
           
           <div style="margin-top:18px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
             <strong style="font-size:13px;display:block;margin-bottom:10px;">📞 Contacto</strong>
@@ -9093,7 +9750,108 @@ function modalFormCliente(cliente) {
                 ${state.almacenes.filter(a => a.tipo === 'cedis').map(a => `<option value="${a.codigo}" ${c.cedis_asignado === a.codigo ? 'selected' : ''}>${a.nombre}</option>`).join('')}
               </select>
             </div>
-            <div class="field"><label class="field-label">Días de crédito</label><input class="input" id="cli-credito" type="number" min="0" step="1" value="${c.dias_credito || 0}" /></div>
+            <div class="field"><label class="field-label">Días de crédito</label><input class="input" id="cli-credito" type="number" min="0" step="1" value="${c.dias_credito || 0}" ${puedeEditarCodigo ? '' : 'readonly'} /></div>
+          </div>
+          
+          <!-- 🆕 DATOS FISCALES — Editable solo por FAC/CYC/CEO/ADMIN -->
+          <div style="margin-top:14px;padding:14px;background:${puedeEditarCodigo ? '#fef3c7' : '#f8fafc'};border-radius:10px;border:1.5px solid ${puedeEditarCodigo ? '#f59e0b' : '#e2e8f0'};">
+            <strong style="font-size:13px;display:block;margin-bottom:10px;color:${puedeEditarCodigo ? '#92400e' : '#475569'};">
+              📑 Datos fiscales (CFDI 4.0)
+              ${!puedeEditarCodigo ? ` <span style="background:#94a3b8;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;margin-left:4px;font-weight:700;">Solo lectura — Requiere FAC/CYC</span>` : ` <span style="background:#16a34a;color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;margin-left:4px;font-weight:700;">Editable (${u.depto})</span>`}
+            </strong>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Régimen Fiscal SAT</label>
+                <select class="input" id="cli-regimen" ${puedeEditarCodigo ? '' : 'disabled'}>
+                  <option value="">— Seleccionar —</option>
+                  <option value="601" ${c.regimen_fiscal === '601' ? 'selected' : ''}>601 — General Personas Morales</option>
+                  <option value="603" ${c.regimen_fiscal === '603' ? 'selected' : ''}>603 — Personas Morales con Fines no Lucrativos</option>
+                  <option value="605" ${c.regimen_fiscal === '605' ? 'selected' : ''}>605 — Sueldos y Salarios</option>
+                  <option value="606" ${c.regimen_fiscal === '606' ? 'selected' : ''}>606 — Arrendamiento</option>
+                  <option value="608" ${c.regimen_fiscal === '608' ? 'selected' : ''}>608 — Demás ingresos</option>
+                  <option value="612" ${c.regimen_fiscal === '612' ? 'selected' : ''}>612 — Personas Físicas con Actividades Empresariales</option>
+                  <option value="616" ${c.regimen_fiscal === '616' ? 'selected' : ''}>616 — Sin obligaciones fiscales</option>
+                  <option value="621" ${c.regimen_fiscal === '621' ? 'selected' : ''}>621 — Incorporación Fiscal</option>
+                  <option value="622" ${c.regimen_fiscal === '622' ? 'selected' : ''}>622 — Actividades Agrícolas, Ganaderas, Silvícolas y Pesqueras</option>
+                  <option value="624" ${c.regimen_fiscal === '624' ? 'selected' : ''}>624 — Coordinados</option>
+                  <option value="625" ${c.regimen_fiscal === '625' ? 'selected' : ''}>625 — Actividades empresariales con ingresos a través de Plataformas Tecnológicas</option>
+                  <option value="626" ${c.regimen_fiscal === '626' ? 'selected' : ''}>626 — RESICO (Personas Físicas)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label">Uso CFDI</label>
+                <select class="input" id="cli-cfdi" ${puedeEditarCodigo ? '' : 'disabled'}>
+                  <option value="">— Seleccionar —</option>
+                  <option value="G01" ${c.uso_cfdi === 'G01' ? 'selected' : ''}>G01 — Adquisición de mercancías</option>
+                  <option value="G02" ${c.uso_cfdi === 'G02' ? 'selected' : ''}>G02 — Devoluciones, descuentos o bonificaciones</option>
+                  <option value="G03" ${c.uso_cfdi === 'G03' ? 'selected' : ''}>G03 — Gastos en general</option>
+                  <option value="I01" ${c.uso_cfdi === 'I01' ? 'selected' : ''}>I01 — Construcciones</option>
+                  <option value="I02" ${c.uso_cfdi === 'I02' ? 'selected' : ''}>I02 — Mobiliario y equipo de oficina</option>
+                  <option value="I03" ${c.uso_cfdi === 'I03' ? 'selected' : ''}>I03 — Equipo de transporte</option>
+                  <option value="I04" ${c.uso_cfdi === 'I04' ? 'selected' : ''}>I04 — Equipo de cómputo y accesorios</option>
+                  <option value="I08" ${c.uso_cfdi === 'I08' ? 'selected' : ''}>I08 — Otra maquinaria y equipo</option>
+                  <option value="P01" ${c.uso_cfdi === 'P01' ? 'selected' : ''}>P01 — Por definir</option>
+                  <option value="S01" ${c.uso_cfdi === 'S01' ? 'selected' : ''}>S01 — Sin efectos fiscales</option>
+                  <option value="CP01" ${c.uso_cfdi === 'CP01' ? 'selected' : ''}>CP01 — Pagos</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label">Moneda</label>
+                <select class="input" id="cli-moneda" ${puedeEditarCodigo ? '' : 'disabled'}>
+                  <option value="MXN" ${(c.moneda || 'MXN') === 'MXN' ? 'selected' : ''}>MXN — Peso mexicano</option>
+                  <option value="USD" ${c.moneda === 'USD' ? 'selected' : ''}>USD — Dólar americano</option>
+                  <option value="EUR" ${c.moneda === 'EUR' ? 'selected' : ''}>EUR — Euro</option>
+                </select>
+              </div>
+            </div>
+            ${puedeEditarCodigo ? `<div style="font-size:10px;color:#78350f;margin-top:6px;">💡 Estos datos se usan al emitir facturas CFDI. Asegúrate que coincidan con la constancia de situación fiscal del cliente.</div>` : ''}
+          </div>
+          
+          <!-- 🆕 CRÉDITO Y COMERCIAL -->
+          <div style="margin-top:14px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
+            <strong style="font-size:13px;display:block;margin-bottom:10px;">💰 Crédito y comercial</strong>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+              <div class="field">
+                <label class="field-label">Límite de crédito</label>
+                <input class="input" id="cli-limite" value="${c.limite_credito_texto || ''}" placeholder="ABIERTO o $50,000" ${puedeEditarCodigo ? '' : 'readonly'} />
+              </div>
+              <div class="field">
+                <label class="field-label">Perfil de pago</label>
+                <select class="input" id="cli-perfil">
+                  <option value="">— Seleccionar —</option>
+                  <option value="Alta Rotación" ${c.perfil_pago === 'Alta Rotación' ? 'selected' : ''}>Alta Rotación</option>
+                  <option value="Rotación Media" ${c.perfil_pago === 'Rotación Media' ? 'selected' : ''}>Rotación Media</option>
+                  <option value="Ocasional Estratégico" ${c.perfil_pago === 'Ocasional Estratégico' ? 'selected' : ''}>Ocasional Estratégico</option>
+                  <option value="Proyecto o Eventual" ${c.perfil_pago === 'Proyecto o Eventual' ? 'selected' : ''}>Proyecto o Eventual</option>
+                  <option value="Nuevo" ${c.perfil_pago === 'Nuevo' ? 'selected' : ''}>Nuevo</option>
+                  <option value="Condicionado" ${c.perfil_pago === 'Condicionado' ? 'selected' : ''}>Condicionado</option>
+                  <option value="Unica Ocasion" ${c.perfil_pago === 'Unica Ocasion' ? 'selected' : ''}>Única Ocasión</option>
+                  <option value="Perdido" ${c.perfil_pago === 'Perdido' ? 'selected' : ''}>Perdido</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label">Vendedor / KAM</label>
+                <input class="input" id="cli-vendedor" value="${c.vendedor || ''}" placeholder="Nombre del vendedor" />
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;">
+              <div class="field">
+                <label class="field-label">Giro / Industria</label>
+                <input class="input" id="cli-giro" value="${c.giro || ''}" placeholder="Ej: Distribuidor, Alimenticio, Automotriz" />
+              </div>
+              <div class="field">
+                <label class="field-label">Forma de pago habitual</label>
+                <select class="input" id="cli-forma-pago">
+                  <option value="">— Seleccionar —</option>
+                  <option value="Transferencia" ${c.forma_pago === 'Transferencia' ? 'selected' : ''}>Transferencia</option>
+                  <option value="Cheque" ${c.forma_pago === 'Cheque' ? 'selected' : ''}>Cheque</option>
+                  <option value="Cheque posfechado" ${c.forma_pago === 'Cheque posfechado' ? 'selected' : ''}>Cheque posfechado</option>
+                  <option value="Efectivo" ${c.forma_pago === 'Efectivo' ? 'selected' : ''}>Efectivo</option>
+                  <option value="Tarjeta de crédito" ${c.forma_pago === 'Tarjeta de crédito' ? 'selected' : ''}>Tarjeta de crédito</option>
+                  <option value="Tarjeta de débito" ${c.forma_pago === 'Tarjeta de débito' ? 'selected' : ''}>Tarjeta de débito</option>
+                </select>
+              </div>
+            </div>
           </div>
           
           <div class="field"><label class="field-label">Notas internas</label><textarea class="input" id="cli-notas" style="min-height:60px;">${c.notas || ''}</textarea></div>
@@ -10186,6 +10944,24 @@ window.agregarRolloExtrusion = async (odpId) => {
         });
       } catch (e) {
         console.warn('No se pudo auto-iniciar la ODP:', e.message);
+      }
+    }
+    
+    // 🆕 F4 — Si el rollo trae merma, registrarla automáticamente en PELETIZADO
+    if (Number(mermas) > 0) {
+      try {
+        await window.registrarMermaPeletizado({
+          kg: Number(mermas),
+          odp_id: odpId,
+          odp_folio: odp.folio || '',
+          rollo_folio: `R-${odp.folio}-${proxNum}`,
+          producto_codigo: odp.producto_codigo,
+          proceso: 'P-1',
+          motivo: 'MERMA_ROLLO',
+          notas: `Rollo #${proxNum} · ${fmtNum(peso)} kg buenos`
+        });
+      } catch (ePel) {
+        console.warn('No se pudo registrar merma del rollo en peletizado:', ePel);
       }
     }
     
@@ -12406,6 +13182,179 @@ window.toggleDetalleStock = (key) => {
   state.stockDetalleAbierto[key] = !state.stockDetalleAbierto[key];
   render();
 };
+
+// ============================================================
+// 🆕 F4 — VISTA: ALMACÉN PELETIZADO (P-5)
+// ============================================================
+function renderPeletizado() {
+  const u = state.user || {};
+  const puedeCorrer = ['PRO','PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const puedeCapturar = ['PRO','PLN','ALP','CAL','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  
+  const lotes = (state.lotes_peletizado || []).filter(l => (Number(l.stock_kg) || 0) > 0 || (Number(l.peletizado_kg_acumulado) || 0) > 0);
+  const stockTotal = lotes.reduce((s, l) => s + (Number(l.stock_kg) || 0), 0);
+  const movRecientes = (state.movimientos_merma || []).slice(0, 20);
+  const corridas = (state.corridas_peletizado || []).slice(0, 10);
+  const desechos = (state.almacen_desecho_venta || []).filter(d => (Number(d.stock_kg) || 0) > 0);
+  const desechoTotal = desechos.reduce((s, d) => s + (Number(d.stock_kg) || 0), 0);
+  
+  // Agrupar lotes por material
+  const matNombre = { BD: 'Baja Densidad', AD: 'Alta Densidad', TE: 'Termoencogible' };
+  const porMaterial = { BD: [], AD: [], TE: [] };
+  lotes.forEach(l => {
+    if (porMaterial[l.tipo_material]) porMaterial[l.tipo_material].push(l);
+  });
+  
+  const tabActiva = state.tabs.peletizado || 'stock';
+  
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;border-bottom:1px solid #e2e8f0;">
+        <div>
+          <h2 style="font-size:17px;font-weight:800;margin:0;">♻️ Almacén Peletizado · P-5</h2>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">
+            Stock merma: <strong style="color:#0f172a;">${fmtNum(stockTotal)} kg</strong> en ${lotes.length} lote(s)
+            · Desecho p/venta: <strong style="color:#0f172a;">${fmtNum(desechoTotal)} kg</strong>
+          </div>
+        </div>
+        ${puedeCapturar ? `
+          <button onclick="window.capturarMermaManual()" style="background:#0e7490;color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+            ♻️ Capturar merma manual
+          </button>
+        ` : ''}
+      </div>
+      
+      <div style="padding:10px 20px;display:flex;gap:8px;border-bottom:1px solid #e2e8f0;">
+        ${[['stock','📦 Stock por lote'],['movimientos','📋 Movimientos'],['corridas','🔄 Corridas P-5'],['desecho','🗑 Desecho p/venta']].map(([k, lbl]) => `
+          <button onclick="state.tabs.peletizado='${k}';render();" style="padding:6px 14px;background:${tabActiva === k ? '#0e7490' : '#fff'};color:${tabActiva === k ? '#fff' : '#475569'};border:1.5px solid ${tabActiva === k ? '#0e7490' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">${lbl}</button>
+        `).join('')}
+      </div>
+    </div>
+    
+    ${tabActiva === 'stock' ? `
+      ${['BD','AD','TE'].map(mat => {
+        const ls = porMaterial[mat];
+        if (ls.length === 0) return '';
+        return `
+          <div class="panel" style="margin-bottom:14px;">
+            <div style="padding:12px 20px;border-bottom:1px solid #e2e8f0;">
+              <strong style="font-size:14px;">${matNombre[mat]} (${mat})</strong>
+            </div>
+            <div style="padding:14px 20px;display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:12px;">
+              ${ls.map(l => `
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+                  <div style="font-size:11px;color:#64748b;font-weight:700;" class="text-mono">${l.id}</div>
+                  <div style="font-size:24px;font-weight:800;margin-top:6px;color:#0f172a;">${fmtNum(l.stock_kg)} kg</div>
+                  <div style="font-size:10.5px;color:#64748b;margin-top:4px;">
+                    ${l.total_capturas || 0} captura(s) · ${fmtNum(l.peletizado_kg_acumulado || 0)} kg ya peletizados
+                  </div>
+                  ${puedeCorrer && (Number(l.stock_kg) || 0) > 0 ? `
+                    <button onclick="window.iniciarCorridaP5('${l.id}')" style="margin-top:10px;width:100%;background:#16a34a;color:#fff;border:none;padding:8px;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">
+                      🔄 Iniciar corrida P-5
+                    </button>
+                  ` : ''}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }).join('')}
+      ${lotes.length === 0 ? `
+        <div class="panel"><div style="padding:50px;text-align:center;color:#94a3b8;">
+          Aún no hay merma acumulada.<br>
+          <span style="font-size:11px;">La merma se registra automáticamente al cerrar ODPs, o manual con el botón de arriba.</span>
+        </div></div>
+      ` : ''}
+    ` : ''}
+    
+    ${tabActiva === 'movimientos' ? `
+      <div class="panel">
+        <div style="padding:12px 20px;border-bottom:1px solid #e2e8f0;"><strong style="font-size:13px;">Últimos 20 movimientos de merma</strong></div>
+        ${movRecientes.length === 0 ? `<div style="padding:40px;text-align:center;color:#94a3b8;">Sin movimientos aún</div>` : `
+          <div style="overflow-x:auto;">
+            <table style="width:100%;font-size:11.5px;border-collapse:collapse;">
+              <thead><tr style="background:#f8fafc;color:#475569;text-align:left;">
+                <th style="padding:8px 12px;">Fecha</th>
+                <th style="padding:8px 12px;">Proceso</th>
+                <th style="padding:8px 12px;">Origen</th>
+                <th style="padding:8px 12px;">Producto</th>
+                <th style="padding:8px 12px;text-align:right;">Kg</th>
+                <th style="padding:8px 12px;">Lote destino</th>
+                <th style="padding:8px 12px;">Capturó</th>
+              </tr></thead>
+              <tbody>
+                ${movRecientes.map(m => `
+                  <tr style="border-top:1px solid #f1f5f9;">
+                    <td style="padding:7px 12px;color:#64748b;">${m.created_at?.toDate ? m.created_at.toDate().toLocaleDateString('es-MX', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '—'}</td>
+                    <td style="padding:7px 12px;"><span style="background:#ecfeff;color:#0e7490;padding:2px 8px;border-radius:6px;font-weight:700;font-size:10px;">${m.proceso}</span></td>
+                    <td style="padding:7px 12px;" class="text-mono">${m.odp_folio || m.rollo_folio || 'manual'}</td>
+                    <td style="padding:7px 12px;" class="text-mono">${m.producto_origen}</td>
+                    <td style="padding:7px 12px;text-align:right;font-weight:700;">${fmtNum(m.kg_merma)}</td>
+                    <td style="padding:7px 12px;" class="text-mono" style="color:#0e7490;">${m.lote_peletizado_destino}</td>
+                    <td style="padding:7px 12px;color:#64748b;">${m.capturado_por || ''}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+    ` : ''}
+    
+    ${tabActiva === 'corridas' ? `
+      <div class="panel">
+        <div style="padding:12px 20px;border-bottom:1px solid #e2e8f0;"><strong style="font-size:13px;">Últimas 10 corridas de peletizado</strong></div>
+        ${corridas.length === 0 ? `<div style="padding:40px;text-align:center;color:#94a3b8;">Sin corridas aún</div>` : `
+          <div style="overflow-x:auto;">
+            <table style="width:100%;font-size:11.5px;border-collapse:collapse;">
+              <thead><tr style="background:#f8fafc;color:#475569;text-align:left;">
+                <th style="padding:8px 12px;">Fecha</th>
+                <th style="padding:8px 12px;">Lote</th>
+                <th style="padding:8px 12px;text-align:right;">Entrada</th>
+                <th style="padding:8px 12px;text-align:right;">Pellet</th>
+                <th style="padding:8px 12px;text-align:right;">Desecho</th>
+                <th style="padding:8px 12px;text-align:right;">Eficiencia</th>
+                <th style="padding:8px 12px;">Operador</th>
+              </tr></thead>
+              <tbody>
+                ${corridas.map(c => `
+                  <tr style="border-top:1px solid #f1f5f9;">
+                    <td style="padding:7px 12px;color:#64748b;">${c.created_at?.toDate ? c.created_at.toDate().toLocaleDateString('es-MX', {day:'2-digit',month:'short'}) : '—'}</td>
+                    <td style="padding:7px 12px;" class="text-mono">${c.lote_origen}</td>
+                    <td style="padding:7px 12px;text-align:right;">${fmtNum(c.kg_entrada)} kg</td>
+                    <td style="padding:7px 12px;text-align:right;font-weight:700;color:#16a34a;">${fmtNum(c.kg_pellet_salida)} kg</td>
+                    <td style="padding:7px 12px;text-align:right;color:#dc2626;">${fmtNum(c.kg_desecho)} kg</td>
+                    <td style="padding:7px 12px;text-align:right;font-weight:700;">${c.eficiencia_pct}%</td>
+                    <td style="padding:7px 12px;color:#64748b;">${c.operador || ''}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+    ` : ''}
+    
+    ${tabActiva === 'desecho' ? `
+      <div class="panel">
+        <div style="padding:12px 20px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">🗑 Desecho acumulado para venta externa</strong>
+          <div style="font-size:11px;color:#64748b;margin-top:2px;">Merma de P-5 (quemado/contaminado) — NO se reutiliza, se vende a tercero</div>
+        </div>
+        ${desechos.length === 0 ? `<div style="padding:40px;text-align:center;color:#94a3b8;">Sin desecho acumulado</div>` : `
+          <div style="padding:14px 20px;display:grid;grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));gap:12px;">
+            ${desechos.map(d => `
+              <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:14px;">
+                <div style="font-size:11px;color:#991b1b;font-weight:700;" class="text-mono">${d.id}</div>
+                <div style="font-size:22px;font-weight:800;margin-top:6px;color:#7f1d1d;">${fmtNum(d.stock_kg)} kg</div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+    ` : ''}
+  `;
+}
 
 // ============================================================
 // VISTA: MÁQUINAS DE PRODUCCIÓN (CRUD)
@@ -28728,6 +29677,16 @@ function modalEditarProductoPT() {
     
     state.modalForm = {
       descripcion: p.descripcion || '',
+      // Estos los necesita el modal aunque no editen — se usan para generar lote
+      material: p.material || 'Baja Densidad',
+      tipo: p.tipo || 'BOLSA SUELTA',
+      ancho: p.ancho || '',
+      fuelle: p.fuelle || '',
+      largo: p.largo || '',
+      calibre: p.calibre || '',
+      color: p.color || 'Transparente',
+      aditivo: p.aditivo || 'NINGUNO',
+      secuencia: p.secuencia || 1,
       um: (p.um || 'kg').toLowerCase(),
       tipo_empaque: p.tipo_empaque || '',
       cant_empaque: p.cant_empaque || '',
@@ -28742,7 +29701,16 @@ function modalEditarProductoPT() {
       tipo_sellado: p.tipo_sellado || '',
       estructura_rollo_ext: p.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(p.salidas_extrusion) || 1),
-      obs_extrusion: p.obs_extrusion || ''
+      obs_extrusion: p.obs_extrusion || '',
+      // 🆕 F3 — Cargar campos de peletizado existentes
+      tipo_material_peletizado: p.tipo_material_peletizado || (
+        p.material === 'Baja Densidad' ? 'BD' :
+        p.material === 'Alta Densidad' ? 'AD' :
+        p.material === 'Termoencogible' ? 'TE' : ''
+      ),
+      color_peletizado: p.color_peletizado || (p.color === 'Transparente' ? 'TPTE' : (p.color || '').toUpperCase()),
+      requiere_proceso_secundario: !!p.requiere_proceso_secundario,
+      proceso_secundario_codigo: p.proceso_secundario_codigo || ''
     };
   }
   const f = state.modalForm;
@@ -29737,7 +30705,12 @@ function modalCrearProductoPT() {
       busqClientes: '',
       clientesAsignados: {}, // { codigoCliente: { precio, codigo_cliente_interno } }
       num_capas: 1,
-      capas: [{ letra: 'A', porcentaje_capa: 100, ingredientes: [] }]
+      capas: [{ letra: 'A', porcentaje_capa: 100, ingredientes: [] }],
+      // 🆕 F3 — Peletizado (auto-llenado al cambiar material/color)
+      tipo_material_peletizado: 'BD',
+      color_peletizado: 'TPTE',
+      requiere_proceso_secundario: false,
+      proceso_secundario_codigo: ''
     };
   }
   const f = state.modalForm;
@@ -29863,6 +30836,58 @@ function modalCrearProductoPT() {
               </select>
               <div style="font-size:10px;color:#78350f;margin-top:4px;">Define qué logo lleva la etiqueta cuando se imprima desde la ODP. Si es "Logo cliente", se mostrará el nombre del cliente como referencia.</div>
             </div>
+          </div>
+          
+          <!-- 🔄 PELETIZADO Y PROCESO SECUNDARIO (F3) -->
+          <div style="margin-top:12px;padding:14px;background:#ecfeff;border-radius:10px;border:1.5px solid #06b6d4;">
+            <strong style="font-size:13px;display:block;margin-bottom:8px;color:#0e7490;">♻️ Clasificación para Peletizado y Proceso secundario</strong>
+            <div style="font-size:10px;color:#155e75;margin-bottom:10px;">
+              La merma generada por este producto se clasifica automáticamente en el almacén de Peletizado según estos campos.
+            </div>
+            
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+              <div class="field">
+                <label class="field-label" style="color:#0e7490;">Material peletizado *</label>
+                <select class="input form-pt" data-field="tipo_material_peletizado">
+                  <option value="">— Selecciona —</option>
+                  <option value="BD" ${f.tipo_material_peletizado === 'BD' ? 'selected' : ''}>BD — Baja Densidad</option>
+                  <option value="AD" ${f.tipo_material_peletizado === 'AD' ? 'selected' : ''}>AD — Alta Densidad</option>
+                  <option value="TE" ${f.tipo_material_peletizado === 'TE' ? 'selected' : ''}>TE — Termoencogible</option>
+                  <option value="NO_PELETIZABLE" ${f.tipo_material_peletizado === 'NO_PELETIZABLE' ? 'selected' : ''}>NO — No peletizable</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" style="color:#0e7490;">Color peletizado *</label>
+                <input class="input form-pt" data-field="color_peletizado" value="${f.color_peletizado || ''}" placeholder="TPTE, AZ-MET, AMARILLO..." style="text-transform:uppercase;" />
+                <div style="font-size:9px;color:#155e75;margin-top:2px;">TPTE = transparente. Si tiene pigmento, escribe código del color.</div>
+              </div>
+              <div class="field">
+                <label class="field-label" style="color:#0e7490;">Lote destino</label>
+                <input class="input text-mono" readonly value="${f.tipo_material_peletizado && f.tipo_material_peletizado !== 'NO_PELETIZABLE' && f.color_peletizado ? `PEL-${f.tipo_material_peletizado}-${(f.color_peletizado || '').toUpperCase()}` : '—'}" style="background:#f0f9ff;font-weight:700;color:#0c4a6e;" />
+              </div>
+            </div>
+            
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;margin-top:10px;align-items:end;">
+              <div class="field" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f0f9ff;border-radius:8px;border:1px solid #7dd3fc;">
+                <input type="checkbox" class="form-pt" data-field="requiere_proceso_secundario" id="pt-requiere-sec" ${f.requiere_proceso_secundario ? 'checked' : ''} />
+                <label for="pt-requiere-sec" style="font-size:12px;color:#0e7490;font-weight:700;cursor:pointer;">Requiere proceso secundario</label>
+              </div>
+              <div class="field">
+                <label class="field-label" style="color:#0e7490;">Proceso secundario aplicable</label>
+                <select class="input form-pt" data-field="proceso_secundario_codigo" ${!f.requiere_proceso_secundario ? 'disabled' : ''}>
+                  <option value="">— Solo extrusión P-1 —</option>
+                  <option value="P-2" ${f.proceso_secundario_codigo === 'P-2' ? 'selected' : ''}>P-2 Bolseo</option>
+                  <option value="P-3" ${f.proceso_secundario_codigo === 'P-3' ? 'selected' : ''}>P-3 Impresión</option>
+                  <option value="P-4" ${f.proceso_secundario_codigo === 'P-4' ? 'selected' : ''}>P-4 Sellado especial</option>
+                </select>
+              </div>
+            </div>
+            
+            ${f.requiere_proceso_secundario ? `
+              <div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:6px;font-size:10px;color:#92400e;">
+                ⚙️ Productos con proceso secundario generan <strong>2 ODPs en cascada</strong>: una P-1 (extrusión a rollo) y otra ${f.proceso_secundario_codigo || 'P-X'} (a producto terminado).
+              </div>
+            ` : ''}
           </div>
           
           <!-- 5. Asignación a clientes -->
@@ -30827,7 +31852,16 @@ function recolectarDatosCliente() {
     cedis_asignado: $('#cli-cedis').value,
     dias_credito: Number($('#cli-credito').value) || 0,
     notas: ($('#cli-notas').value || '').trim(),
-    logo_base64: logoBase64 || null,  // 🆕 logo del cliente para etiquetas
+    logo_base64: logoBase64 || null,
+    // 🆕 Datos fiscales y comerciales
+    regimen_fiscal: ($('#cli-regimen')?.value || '').trim(),
+    uso_cfdi: ($('#cli-cfdi')?.value || '').trim(),
+    moneda: ($('#cli-moneda')?.value || 'MXN').trim(),
+    limite_credito_texto: ($('#cli-limite')?.value || '').trim(),
+    perfil_pago: ($('#cli-perfil')?.value || '').trim(),
+    vendedor: ($('#cli-vendedor')?.value || '').trim(),
+    giro: ($('#cli-giro')?.value || '').trim(),
+    forma_pago: ($('#cli-forma-pago')?.value || '').trim(),
   };
 }
 
@@ -30897,6 +31931,147 @@ window.removerLogoCliente = () => {
   const fileInp = $('#cli-logo-file');
   if (fileInp) fileInp.value = '';
   toast('Logo removido. Guarda los cambios para confirmar.', 'info');
+};
+
+// 🆕 Cambiar el código de un cliente — migra todas las referencias
+window.cambiarCodigoCliente = async (codigoActual) => {
+  const u = state.user || {};
+  if (!['FAC','CYC','CEO','ADMIN'].includes(u.depto) && u.rol !== 'admin') {
+    toast('Solo FAC/CYC/CEO/ADMIN pueden cambiar códigos de cliente', 'error');
+    return;
+  }
+  
+  const cliente = state.clientes.find(c => c.codigo === codigoActual);
+  if (!cliente) { toast('Cliente no encontrado', 'error'); return; }
+  
+  // Contar referencias en otras colecciones
+  const pedidos = (state.pedidos || []).filter(p => p.cliente_codigo === codigoActual).length;
+  const ovs = (state.ordenes_venta || []).filter(o => o.cliente_codigo === codigoActual).length;
+  const odps = (state.ordenes_produccion || []).filter(o => o.cliente_codigo === codigoActual).length;
+  const tarimas = (state.tarimas || []).filter(t => t.cliente_codigo === codigoActual).length;
+  const cliProds = (state.cliente_productos || []).filter(cp => cp.cliente_codigo === codigoActual).length;
+  const otis = (state.oti || []).filter(o => 
+    (o.consolidado_por_cliente || []).some(cp => cp.cliente_codigo === codigoActual) ||
+    o.cliente_codigo === codigoActual
+  ).length;
+  
+  const nuevoCodigo = prompt(
+    `🔧 CAMBIAR CÓDIGO DE CLIENTE\n\n` +
+    `Cliente: ${cliente.nombre}\n` +
+    `Código actual: ${codigoActual}\n\n` +
+    `Esto va a migrar el código en:\n` +
+    `• ${pedidos} pedido(s) (PI)\n` +
+    `• ${ovs} orden(es) de venta (OV)\n` +
+    `• ${odps} orden(es) de producción (ODP)\n` +
+    `• ${tarimas} tarima(s)\n` +
+    `• ${otis} OTI(s)\n` +
+    `• ${cliProds} asignación(es) de producto-cliente\n\n` +
+    `Escribe el NUEVO código (en MAYÚSCULAS, sin espacios):`
+  );
+  
+  if (!nuevoCodigo) { toast('Cambio cancelado', 'info'); return; }
+  
+  const nuevoCod = nuevoCodigo.trim().toUpperCase();
+  if (!nuevoCod) { toast('Código vacío', 'error'); return; }
+  if (nuevoCod === codigoActual) { toast('El código nuevo es igual al actual', 'info'); return; }
+  if (!/^[A-Z0-9_-]+$/i.test(nuevoCod)) { toast('Solo letras, números, guiones y guiones bajos', 'error'); return; }
+  
+  // Verificar que no exista ya
+  const existe = state.clientes.find(c => c.codigo === nuevoCod);
+  if (existe) {
+    toast(`Ya existe un cliente con el código "${nuevoCod}" (${existe.nombre})`, 'error');
+    return;
+  }
+  
+  const confirma = confirm(
+    `⚠ CONFIRMAR CAMBIO\n\n` +
+    `De:   ${codigoActual}\n` +
+    `A:    ${nuevoCod}\n\n` +
+    `Se actualizarán ${pedidos + ovs + odps + tarimas + otis + cliProds + 1} documento(s).\n\n` +
+    `¿Proceder?`
+  );
+  if (!confirma) { toast('Cancelado', 'info'); return; }
+  
+  state.loadingAccion = true; render();
+  
+  try {
+    // 1. Crear nuevo documento de cliente con los mismos datos pero nuevo código como ID
+    const datosCliente = { ...cliente };
+    delete datosCliente.id;
+    delete datosCliente.codigo;
+    
+    await setDoc(doc(db, 'clientes', nuevoCod), {
+      ...datosCliente,
+      codigo: nuevoCod,
+      codigo_anterior: codigoActual,
+      codigo_cambiado_por: u.nombre || u.email,
+      codigo_cambiado_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    
+    // 2. Actualizar referencias en otras colecciones (en batches)
+    const actualizar = async (coleccion, campoFiltro, valor) => {
+      const snap = await getDocs(query(collection(db, coleccion), where(campoFiltro, '==', valor)));
+      if (snap.empty) return 0;
+      let totalActualizados = 0;
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = docs.slice(i, i + 400);
+        chunk.forEach(d => batch.update(d.ref, { cliente_codigo: nuevoCod, updated_at: serverTimestamp() }));
+        await batch.commit();
+        totalActualizados += chunk.length;
+      }
+      return totalActualizados;
+    };
+    
+    const updPed = await actualizar('pedidos', 'cliente_codigo', codigoActual);
+    const updOV = await actualizar('ordenes_venta', 'cliente_codigo', codigoActual);
+    const updODP = await actualizar('ordenes_produccion', 'cliente_codigo', codigoActual);
+    const updTar = await actualizar('tarimas', 'cliente_codigo', codigoActual);
+    const updCP = await actualizar('cliente_productos', 'cliente_codigo', codigoActual);
+    const updPL = await actualizar('pedido_lineas', 'cliente_codigo', codigoActual);
+    
+    // 3. Borrar el documento viejo del cliente
+    await deleteDoc(doc(db, 'clientes', codigoActual));
+    
+    // 4. Recargar clientes
+    const snap = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
+    state.clientes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    
+    // 5. Notificación de auditoría
+    await addDoc(collection(db, 'notificaciones'), {
+      titulo: `🔧 Código de cliente cambiado`,
+      mensaje: `${u.nombre || u.email} cambió ${codigoActual} → ${nuevoCod} (${cliente.nombre})`,
+      depto_destino: 'CEO',
+      tipo: 'info',
+      created_at: serverTimestamp(),
+      leida: false
+    });
+    
+    alert(
+      `✅ CÓDIGO CAMBIADO\n\n` +
+      `${codigoActual} → ${nuevoCod}\n\n` +
+      `Documentos actualizados:\n` +
+      `• ${updPed} pedidos\n` +
+      `• ${updPL} líneas de pedido\n` +
+      `• ${updOV} OVs\n` +
+      `• ${updODP} ODPs\n` +
+      `• ${updTar} tarimas\n` +
+      `• ${updCP} asignaciones cliente-producto\n\n` +
+      `Refresca (Ctrl+Shift+R) para ver los cambios reflejados.`
+    );
+    
+    cerrarModal();
+    toast(`✅ ${codigoActual} → ${nuevoCod}`);
+    render();
+  } catch (e) {
+    console.error('Error cambiando código:', e);
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    state.loadingAccion = false;
+    render();
+  }
 };
 
 window.crearCliente = async () => {
@@ -31096,6 +32271,17 @@ window.crearProductoPT = async () => {
     const est = f.estandarizacion || {};
     const estLimpia = limpiarEstandarizacion(est);
     
+    // 🆕 F3 — Auto-clasificación de peletizado si no se llenó manualmente
+    let matPel = f.tipo_material_peletizado || '';
+    if (!matPel) {
+      if (f.material === 'Baja Densidad') matPel = 'BD';
+      else if (f.material === 'Alta Densidad') matPel = 'AD';
+      else if (f.material === 'Termoencogible') matPel = 'TE';
+      else matPel = 'NO_PELETIZABLE';
+    }
+    const colPel = (f.color_peletizado || '').toUpperCase().trim() || 
+                   (f.color === 'Transparente' ? 'TPTE' : (f.color || '').toUpperCase());
+    
     const producto = {
       codigo, descripcion: desc,
       material: f.material, tipo: f.tipo,
@@ -31118,6 +32304,12 @@ window.crearProductoPT = async () => {
       num_capas: Number(f.num_capas) || 1,
       capas: capasLimpias,
       estandarizacion_extrusion: estLimpia,
+      // 🆕 F3 — Campos de peletizado y proceso secundario
+      tipo_material_peletizado: matPel,
+      color_peletizado: colPel,
+      requiere_proceso_secundario: !!f.requiere_proceso_secundario,
+      proceso_secundario_codigo: f.requiere_proceso_secundario ? (f.proceso_secundario_codigo || '') : '',
+      lote_peletizado_destino: (matPel && matPel !== 'NO_PELETIZABLE' && colPel) ? `PEL-${matPel}-${colPel}` : '',
       activo: true,
       created_at: serverTimestamp()
     };
@@ -31239,6 +32431,26 @@ window.guardarProductoPT = async (codigo) => {
       capas: capasLimpias,
       estandarizacion_extrusion: estLimpia,
       formulacion: null, // limpiar formato antiguo
+      // 🆕 F3 — Actualizar también clasificación de peletizado al editar
+      tipo_material_peletizado: f.tipo_material_peletizado || (
+        f.material === 'Baja Densidad' ? 'BD' :
+        f.material === 'Alta Densidad' ? 'AD' :
+        f.material === 'Termoencogible' ? 'TE' : 'NO_PELETIZABLE'
+      ),
+      color_peletizado: (f.color_peletizado || '').toUpperCase().trim() || 
+                        (f.color === 'Transparente' ? 'TPTE' : (f.color || '').toUpperCase()),
+      requiere_proceso_secundario: !!f.requiere_proceso_secundario,
+      proceso_secundario_codigo: f.requiere_proceso_secundario ? (f.proceso_secundario_codigo || '') : '',
+      lote_peletizado_destino: (() => {
+        const m = f.tipo_material_peletizado || (
+          f.material === 'Baja Densidad' ? 'BD' :
+          f.material === 'Alta Densidad' ? 'AD' :
+          f.material === 'Termoencogible' ? 'TE' : 'NO_PELETIZABLE'
+        );
+        const c = (f.color_peletizado || '').toUpperCase().trim() || 
+                  (f.color === 'Transparente' ? 'TPTE' : (f.color || '').toUpperCase());
+        return (m && m !== 'NO_PELETIZABLE' && c) ? `PEL-${m}-${c}` : '';
+      })(),
       updated_at: serverTimestamp()
     };
     await updateDoc(doc(db, 'productos_pt', codigo), updates);
@@ -31632,6 +32844,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
         const folioOV = 'OV-' + String(num).padStart(5, '0');
         await addDoc(collection(db, 'ordenes_venta'), {
           folio: folioOV, pedido_id: pedidoId, pedido_folio: pedido.folio,
+          pedido_linea_id: l.id || '',  // 🆕 F1 — Vínculo a línea
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
           cedis: pedido.cedis_asignado || 'CEDIS-MTY',
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
@@ -31655,8 +32868,6 @@ window.aprobarPedido = async (pedidoId, folio) => {
       
       // ===== ODP (siempre que haya cantidad a producir) =====
       if (cantProd > 0) {
-        const num = await siguienteFolio('odp');
-        const folioODP = 'ODP-' + String(num).padStart(5, '0');
         const productoODP = window.getProductoPT(l.producto_codigo);
         const cantidadKg = window.convertirAKg(cantProd, l.um, productoODP);
         const pesoMillar = window.calcularPesoMillar(productoODP);
@@ -31665,26 +32876,64 @@ window.aprobarPedido = async (pedidoId, folio) => {
         // 🛡 Aviso si no se pudo calcular kg (producto sin medidas y UM ≠ kg)
         const umLin = (l.um || 'kg').toLowerCase();
         if (umLin !== 'kg' && (!cantidadKg || cantidadKg <= 0)) {
-          console.warn(`⚠ ODP ${folioODP}: no se pudo calcular kg para ${l.producto_codigo} (faltan ancho/largo/calibre).`);
+          console.warn(`⚠ ODP ${l.producto_codigo}: no se pudo calcular kg (faltan ancho/largo/calibre).`);
         }
         
-        await addDoc(collection(db, 'ordenes_produccion'), {
-          folio: folioODP, pedido_id: pedidoId, pedido_folio: pedido.folio,
+        // 🆕 F1 — Verificar si el producto requiere proceso secundario (cascada P-1 → P-2)
+        const requiereSec = !!productoODP?.requiere_proceso_secundario;
+        const procSecCod = productoODP?.proceso_secundario_codigo || '';
+        
+        // ===== ODP P-1 (extrusión, siempre se crea) =====
+        const num1 = await siguienteFolio('odp');
+        const folioODP1 = 'ODP-' + String(num1).padStart(5, '0');
+        const ref1 = doc(collection(db, 'ordenes_produccion'));
+        await setDoc(ref1, {
+          folio: folioODP1, pedido_id: pedidoId, pedido_folio: pedido.folio,
+          pedido_linea_id: l.id || '',  // 🆕 F1 — Vínculo exacto a línea
+          cantidad_asignada: cantProd,    // 🆕 F1 — Para validación R2
+          proceso_codigo: 'P-1',           // 🆕 F1 — Identifica que es extrusión
+          odp_padre_id: null,              // 🆕 F1 — P-1 no tiene padre
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
           producto_codigo: l.producto_codigo, descripcion: l.descripcion,
           cantidad: cantProd, um: l.um, estatus: 'pendiente_planeacion',
-          cantidad_kg_produccion: cantidadKg || 0,  // 0 si no se pudo calcular, no null
+          cantidad_kg_produccion: cantidadKg || 0,
           peso_teorico_millar: pesoMillar || 0,
           peso_teorico_pieza: pesoPieza || 0,
           fecha_entrega_programada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
-          // ⭐ Marcar tipo origen para identificar stock interno
           tipo_origen: esStockInterno ? 'stock_interno' : 'pedido_cliente',
-          // 🆕 Heredar CEDIS destino del pedido (CEDIS-MTY o CEDIS-MEX)
           cedis_destino: pedido.cedis_asignado || 'CEDIS-MTY',
+          requiere_proceso_secundario: requiereSec,
           created_at: serverTimestamp()
         });
-        odps.push(folioODP);
+        odps.push(folioODP1);
+        
+        // ===== ODP P-2 / P-3 / P-4 (proceso secundario, solo si aplica) =====
+        if (requiereSec && procSecCod) {
+          const num2 = await siguienteFolio('odp');
+          const folioODP2 = 'ODP-' + String(num2).padStart(5, '0');
+          await addDoc(collection(db, 'ordenes_produccion'), {
+            folio: folioODP2, pedido_id: pedidoId, pedido_folio: pedido.folio,
+            pedido_linea_id: l.id || '',
+            cantidad_asignada: cantProd,
+            proceso_codigo: procSecCod,    // P-2 / P-3 / P-4
+            odp_padre_id: ref1.id,          // 🆕 F1 — Apunta a ODP P-1 padre
+            odp_padre_folio: folioODP1,
+            cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
+            producto_codigo: l.producto_codigo, descripcion: l.descripcion,
+            cantidad: cantProd, um: l.um, 
+            estatus: 'esperando_padre', // No puede iniciar hasta que P-1 tenga rollo liberado
+            cantidad_kg_produccion: cantidadKg || 0,
+            peso_teorico_millar: pesoMillar || 0,
+            peso_teorico_pieza: pesoPieza || 0,
+            fecha_entrega_programada: pedido.fecha_requerida || null,
+            observaciones: `Proceso secundario ${procSecCod} - depende de ${folioODP1}`,
+            tipo_origen: esStockInterno ? 'stock_interno' : 'pedido_cliente',
+            cedis_destino: pedido.cedis_asignado || 'CEDIS-MTY',
+            created_at: serverTimestamp()
+          });
+          odps.push(folioODP2);
+        }
         
         // ===== OV de producir (SOLO si NO es stock interno) =====
         if (!esStockInterno) {
@@ -31700,7 +32949,8 @@ window.aprobarPedido = async (pedidoId, folio) => {
             cantidad: cantProd,
             um: l.um,
             tipo_origen: 'producir',
-            odp_folio: folioODP,
+            odp_folio: folioODP1,
+            pedido_linea_id: l.id || '',  // 🆕 F1 — Vínculo a línea
             estatus: 'esperando_produccion',
             tarimas_ids: [],
             fecha_entrega_solicitada: pedido.fecha_requerida || null,
@@ -32471,6 +33721,78 @@ window.confirmarCompletarProceso = async (odpId) => {
         notas_produccion_finales: notasCierre,
         updated_at: serverTimestamp()
       });
+      
+      // 🆕 F4 — Capturar merma al almacén de PELETIZADO (clasificación automática)
+      // ⚠ Anti doble-conteo: en P-1 la merma se registra POR ROLLO al capturarlo.
+      // Al cerrar, solo registramos el DELTA que no fue capturado en rollos.
+      if (totalMermasKg > 0) {
+        try {
+          const mermaYaRegistrada = (state.movimientos_merma || [])
+            .filter(m => m.odp_id === odpId)
+            .reduce((s, m) => s + (Number(m.kg_merma) || 0), 0);
+          const deltaMerma = Number((totalMermasKg - mermaYaRegistrada).toFixed(2));
+          
+          if (deltaMerma > 0.01) {
+            await window.registrarMermaPeletizado({
+              kg: deltaMerma,
+              odp_id: odpId,
+              odp_folio: odp.folio,
+              producto_codigo: odp.producto_codigo,
+              proceso: odp.proceso_codigo || 'P-1',
+              motivo: 'CIERRE_ODP',
+              notas: mermaYaRegistrada > 0 ? `Delta al cierre (${fmtNum(mermaYaRegistrada)} kg ya capturados por rollo)` : 'Merma total al cierre de ODP'
+            });
+          }
+        } catch (ePel) {
+          console.warn('No se pudo registrar merma en peletizado:', ePel);
+        }
+      }
+      
+      // 🆕 Detectar cierre PARCIAL: producido < asignado (tolerancia 2%)
+      const kgAsignado = Number(odp.cantidad_kg_produccion) || 0;
+      const esParcial = kgAsignado > 0 && prodKg < kgAsignado * 0.98;
+      if (esParcial) {
+        const deltaKg = Math.round(kgAsignado - prodKg);
+        await window.notificarEvento({
+          evento: 'odp_cerrada_parcial',
+          folio: odp.folio,
+          extra: { 
+            cliente: odp.cliente_nombre, 
+            detalle: `Produjo ${fmtNum(prodKg)} de ${fmtNum(kgAsignado)} kg · faltan ${fmtNum(deltaKg)} kg por cubrir` 
+          }
+        });
+        // También a CS para que sepa del retraso
+        await addDoc(collection(db, 'notificaciones'), {
+          titulo: '⚠ ODP cerrada PARCIAL ' + odp.folio,
+          mensaje: `${odp.cliente_nombre} · ${odp.producto_codigo} · faltan ${fmtNum(deltaKg)} kg. Revisar en Waterfall del pedido.`,
+          depto_destino: 'CS', tipo: 'warning', folio_ref: odp.folio,
+          leida: false, created_at: serverTimestamp()
+        });
+      }
+      
+      // 🆕 F1 — Si esta ODP P-1 tiene ODPs hijas (P-2/P-3/P-4) esperando, activarlas
+      try {
+        const hijas = (state.ordenes_produccion || []).filter(o => 
+          o.odp_padre_id === odpId && o.estatus === 'esperando_padre'
+        );
+        for (const hija of hijas) {
+          await updateDoc(doc(db, 'ordenes_produccion', hija.id), {
+            estatus: 'pendiente_planeacion',
+            padre_completado_at: serverTimestamp(),
+            updated_at: serverTimestamp()
+          });
+          await window.notificarEvento({
+            evento: 'odp_p2_lista_iniciar',
+            folio: hija.folio,
+            extra: { 
+              cliente: hija.cliente_nombre, 
+              detalle: `${hija.proceso_codigo} desbloqueada — su padre ${odp.folio} terminó extrusión` 
+            }
+          });
+        }
+      } catch (eHijas) {
+        console.warn('Error activando ODPs hijas:', eHijas);
+      }
       
       const batch = writeBatch(db);
       ['CAL', 'ALP', 'CEO'].forEach(depto => {
