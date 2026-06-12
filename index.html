@@ -10031,30 +10031,61 @@ function renderOTIList(otis, esTransito) {
   return otis.map(o => {
     const color = o.estatus === 'en_transito' ? '#f59e0b' : (o.estatus === 'recibido' ? '#16a34a' : '#dc2626');
     const numTarimas = (o.tarimas_ids || []).length;
+    
+    // 🆕 Badge de modalidad
+    let badgeModalidad = '';
+    if (o.modalidad) {
+      const mc = o.modalidad === 'consolidado' ? '#7c3aed' :
+                 o.modalidad === 'pedido_completo' ? '#2563eb' :
+                 '#6366f1';
+      const mi = o.modalidad === 'consolidado' ? '🚛' :
+                 o.modalidad === 'pedido_completo' ? '📦' :
+                 '🏷️';
+      badgeModalidad = `<span style="background:${mc}22;color:${mc};padding:2px 8px;border-radius:99px;font-size:10px;font-weight:800;">${mi} ${o.modalidad_label || ''}</span>`;
+    }
+    // 🆕 Badge transportista externo
+    const badgeExterno = (o.transportista_tipo === 'externo') 
+      ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:800;">🚚 EXTERNO</span>`
+      : '';
+    
     return `
       <div class="panel" style="margin-bottom:12px;border-left:4px solid ${color};">
         <div style="padding:12px 18px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
           <div style="flex:1;min-width:280px;">
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
               <span class="text-mono" style="font-size:14px;font-weight:800;">${o.folio}</span>
               <span style="background:${color}22;color:${color};padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;text-transform:uppercase;">${o.estatus.replace('_',' ')}</span>
               <span style="font-size:11px;color:#64748b;">${o.origen} → ${o.destino}</span>
+              ${badgeModalidad}
+              ${badgeExterno}
             </div>
+            ${(o.num_clientes && o.num_clientes > 1) ? `
+              <div style="font-size:11px;color:#6d28d9;font-weight:700;margin-bottom:4px;">
+                🚛 Consolidado: ${o.num_clientes} clientes · ${o.num_pedidos || 0} PI(s)
+              </div>
+            ` : ''}
             ${(o.pedidos_folios && o.pedidos_folios.length > 0) ? `
               <div style="font-size:11px;color:#475569;margin-bottom:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
                 <span style="color:#64748b;">📋 PI(s):</span>
-                ${o.pedidos_folios.map(pi => `<span class="text-mono" style="background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:4px;font-weight:700;">${pi}</span>`).join('')}
+                ${o.pedidos_folios.slice(0, 6).map(pi => `<span class="text-mono" style="background:#dbeafe;color:#1e40af;padding:2px 6px;border-radius:4px;font-weight:700;">${pi}</span>`).join('')}
+                ${o.pedidos_folios.length > 6 ? `<span style="color:#64748b;font-size:10px;">+${o.pedidos_folios.length - 6} más</span>` : ''}
               </div>
             ` : ''}
             ${(o.clientes_nombres && o.clientes_nombres.length > 0) ? `
               <div style="font-size:11px;color:#475569;margin-bottom:4px;">
-                ${ICONS.users} ${o.clientes_nombres.join(' · ')}
+                ${ICONS.users} ${o.clientes_nombres.slice(0, 5).join(' · ')}${o.clientes_nombres.length > 5 ? ` <em style="color:#64748b;">y ${o.clientes_nombres.length - 5} más</em>` : ''}
               </div>
             ` : ''}
             <div style="font-size:11px;color:#64748b;">
               📅 ${o.created_at ? new Date(o.created_at.seconds*1000).toLocaleString('es-MX') : '-'}
               · 🚛 ${o.transportista || '-'} · ${o.placas || ''}
+              ${o.guia_externa ? `· 📋 Guía: <strong style="font-family:monospace;color:#1e40af;">${o.guia_externa}</strong>` : ''}
             </div>
+            ${o.costo_flete > 0 ? `
+              <div style="font-size:11px;color:#475569;margin-top:2px;">
+                💰 Flete: <strong style="color:#15803d;">$${fmtNum(Number(o.costo_flete).toFixed(2))} ${o.flete_moneda || 'MXN'}</strong>
+              </div>
+            ` : ''}
           </div>
           <div style="text-align:right;">
             <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:700;">${numTarimas} tarima(s)</div>
@@ -24900,30 +24931,70 @@ window.confirmarCrearOTI = async () => {
     toast('Selecciona al menos 1 tarima', 'error'); return;
   }
   
-  // 🆕 Usar catálogos: obtener transportista/operador/unidad por ID
-  const transportistasInternos = (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
-  if (transportistasInternos.length === 0) {
-    toast('Registra primero NewPack Logística en el catálogo', 'error'); return;
+  const destinoSel = f.destino || 'CEDIS-MTY';
+  const esMex = destinoSel === 'CEDIS-MEX';
+  
+  // 🆕 Transportistas según destino: para MEX permite ambos, para MTY solo internos
+  const transportistasDisp = esMex
+    ? (state.transportistas || []).filter(t => t.activo !== false)
+    : (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
+  
+  if (transportistasDisp.length === 0) {
+    toast(esMex ? 'Registra al menos un transportista en el catálogo' : 'Registra primero NewPack Logística en el catálogo', 'error');
+    return;
   }
-  const transportistaSelId = f.transportista_id || ($('#oti-transp-id')?.value || transportistasInternos[0]?.id);
+  
+  const transportistaSelId = f.transportista_id || ($('#oti-transp-id')?.value || transportistasDisp[0]?.id);
   const transportista = (state.transportistas || []).find(t => t.id === transportistaSelId);
   if (!transportista) { toast('Selecciona un transportista', 'error'); return; }
   
-  const operadorId = ($('#oti-operador-id')?.value || '');
-  const operador = (state.operadores_logistica || []).find(o => o.id === operadorId);
-  if (!operador) { toast('Selecciona el operador', 'error'); return; }
+  const esTranspExterno = transportista.tipo === 'externo';
   
-  const unidadId = ($('#oti-unidad-id')?.value || '');
-  const unidad = (state.unidades_logistica || []).find(u => u.id === unidadId);
-  if (!unidad) { toast('Selecciona la unidad', 'error'); return; }
+  // 🆕 Operador y unidad: para externos puede ser captura manual; para internos siempre del catálogo
+  let operador;
+  if (esTranspExterno && esMex) {
+    const nom = ($('#oti-operador-nombre')?.value || '').trim();
+    if (!nom) { toast('Captura el nombre del operador', 'error'); return; }
+    operador = {
+      id: '',
+      nombre: nom,
+      licencia_tipo: ($('#oti-operador-licencia')?.value || '').trim(),
+      licencia_numero: '',
+      telefono: ($('#oti-operador-telefono')?.value || '').trim()
+    };
+  } else {
+    const operadorId = ($('#oti-operador-id')?.value || '');
+    operador = (state.operadores_logistica || []).find(o => o.id === operadorId);
+    if (!operador) { toast('Selecciona el operador', 'error'); return; }
+  }
+  
+  let unidad;
+  if (esTranspExterno && esMex) {
+    const placas = ($('#oti-unidad-placas')?.value || '').trim().toUpperCase();
+    if (!placas) { toast('Captura las placas del camión', 'error'); return; }
+    unidad = {
+      id: '',
+      placas,
+      tipo_unidad: ($('#oti-unidad-tipo')?.value || 'camion'),
+      marca: ($('#oti-unidad-marca')?.value || '').trim(),
+      modelo: ($('#oti-unidad-modelo')?.value || '').trim()
+    };
+  } else {
+    const unidadId = ($('#oti-unidad-id')?.value || '');
+    unidad = (state.unidades_logistica || []).find(u => u.id === unidadId);
+    if (!unidad) { toast('Selecciona la unidad', 'error'); return; }
+  }
   
   const observaciones = ($('#oti-obs')?.value || '').trim();
   
+  // 🆕 Modalidad de envío y campos externos (solo para MEX)
+  const modalidad = esMex ? (f.modalidad || 'tarima_suelta') : null;
+  const guiaExterna = esMex && esTranspExterno ? ($('#oti-guia-externa')?.value || '').trim() : '';
+  const costoFlete = esMex && esTranspExterno ? Number($('#oti-costo-flete')?.value) || 0 : 0;
+  const fleteMoneda = esMex && esTranspExterno ? ($('#oti-flete-moneda')?.value || 'MXN') : '';
+  
   state.loadingAccion = true; render();
   try {
-    // 🆕 Detectar destino para flujos diferentes (Planta→MTY vs MTY→MEX)
-    const destinoSel = f.destino || 'CEDIS-MTY';
-    const esMex = destinoSel === 'CEDIS-MEX';
     const origenSel = esMex ? 'CEDIS-MTY' : 'PLANTA-MTY';
     const estatusTarimaEnTransito = esMex ? 'en_transito_cedis_mex' : 'en_transito_cedis_mty';
     const salidaField = esMex ? 'salida_cedis_mty_at' : 'salida_planta_at';
@@ -25009,6 +25080,28 @@ window.confirmarCrearOTI = async () => {
       conductor: operador.nombre,
       placas: unidad.placas,
       observaciones: observaciones || '',
+      // 🆕 Modalidad de envío (solo aplicable a OTIs MTY→MEX)
+      modalidad: modalidad || '',
+      modalidad_label: modalidad === 'tarima_suelta' ? 'Tarima(s) suelta(s)' :
+                       modalidad === 'pedido_completo' ? 'Pedido completo' :
+                       modalidad === 'consolidado' ? 'Camión consolidado' : '',
+      // 🆕 Campos para transportistas externos
+      guia_externa: guiaExterna || '',
+      costo_flete: costoFlete || 0,
+      flete_moneda: fleteMoneda || '',
+      // 🆕 Resumen consolidado por cliente (útil para PDF y dashboards)
+      consolidado_por_cliente: clientesUnicos.map(cli => {
+        const tarsCli = tarimasSel.filter(t => t.cliente_nombre === cli);
+        return {
+          cliente_nombre: cli,
+          cliente_codigo: tarsCli[0]?.cliente_codigo || '',
+          num_tarimas: tarsCli.length,
+          peso_kg: tarsCli.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0),
+          pedidos_folios: [...new Set(tarsCli.map(t => t.pedido_folio).filter(Boolean))]
+        };
+      }),
+      num_clientes: clientesUnicos.length,
+      num_pedidos: pedidosUnicos.length,
       creado_por: state.user.id || '',
       creado_por_nombre: state.user.nombre || '',
       created_at: serverTimestamp(),
@@ -25077,10 +25170,34 @@ window.confirmarCrearOTI = async () => {
       transportista_nombre: transportista.razon_social || transportista.nombre,
       transportista_tipo: transportista.tipo || 'interno',
       operador_nombre: operador.nombre,
-      operador_licencia: operador.licencia || '',
+      operador_licencia: operador.licencia_tipo ? `${operador.licencia_tipo} ${operador.licencia_numero || ''}`.trim() : (operador.licencia || ''),
+      operador_telefono: operador.telefono || '',
       unidad_placas: unidad.placas || '',
       unidad_marca: unidad.marca || '',
+      unidad_modelo: unidad.modelo || '',
       observaciones,
+      // 🆕 Datos de modalidad y consolidación
+      modalidad: modalidad || '',
+      modalidad_label: modalidad === 'tarima_suelta' ? 'Tarima(s) suelta(s)' :
+                       modalidad === 'pedido_completo' ? 'Pedido completo' :
+                       modalidad === 'consolidado' ? 'Camión consolidado' : '',
+      guia_externa: guiaExterna || '',
+      costo_flete: costoFlete || 0,
+      flete_moneda: fleteMoneda || '',
+      num_clientes: clientesUnicos.length,
+      num_pedidos: pedidosUnicos.length,
+      consolidado_por_cliente: clientesUnicos.map(cli => {
+        const tarsCli = tarimasSel.filter(t => t.cliente_nombre === cli);
+        return {
+          cliente_nombre: cli,
+          cliente_codigo: tarsCli[0]?.cliente_codigo || '',
+          num_tarimas: tarsCli.length,
+          peso_kg: tarsCli.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0),
+          pedidos_folios: [...new Set(tarsCli.map(t => t.pedido_folio).filter(Boolean))]
+        };
+      }),
+      pedidos_folios: pedidosUnicos,
+      clientes_nombres: clientesUnicos,
       num_tarimas: tarimasSel.length,
       peso_total_kg: totalKg,
       tarimas_resumen: tarimasSel.map(t => ({
@@ -25598,13 +25715,24 @@ function modalCrearOTI() {
   const origen = destino === 'CEDIS-MEX' ? 'CEDIS-MTY' : 'PLANTA-MTY';
   const titulo = destino === 'CEDIS-MEX' ? '🚚 Crear OTI CEDIS-MTY → CEDIS-MEX' : '🚚 Crear OTI Planta → CEDIS-MTY';
   const colorAccent = destino === 'CEDIS-MEX' ? '#7c3aed' : '#1e40af';
+  const esMex = destino === 'CEDIS-MEX';
   
   const seleccionadas = state.tarimas.filter(t => f.tarimas_seleccionadas.includes(t.id));
   const totalKg = seleccionadas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
   
-  // 🆕 Para planta → CEDIS solo se usa transportista INTERNO (NewPack Logística)
-  const transportistasInternos = (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
-  const transportistaSelId = f.transportista_id || (transportistasInternos[0]?.id || '');
+  // 🆕 Análisis para envíos a MEX: clientes, PIs únicos
+  const clientesUnicos = [...new Set(seleccionadas.map(t => t.cliente_nombre).filter(Boolean))];
+  const piUnicos = [...new Set(seleccionadas.map(t => t.pedido_folio).filter(Boolean))];
+  const odpUnicas = [...new Set(seleccionadas.map(t => t.odp_folio).filter(Boolean))];
+  
+  // 🆕 Para destino MEX se permiten ambos tipos; para MTY solo interno (NewPack)
+  let transportistasDisp;
+  if (esMex) {
+    transportistasDisp = (state.transportistas || []).filter(t => t.activo !== false);
+  } else {
+    transportistasDisp = (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
+  }
+  const transportistaSelId = f.transportista_id || (transportistasDisp[0]?.id || '');
   
   const operadoresDisp = (state.operadores_logistica || []).filter(o => 
     o.transportista_id === transportistaSelId && o.activo !== false
@@ -25613,50 +25741,135 @@ function modalCrearOTI() {
     u.transportista_id === transportistaSelId && u.activo !== false
   );
   
-  const noHayInterno = transportistasInternos.length === 0;
+  const noHayTransportistas = transportistasDisp.length === 0;
+  const transportistaActual = transportistasDisp.find(t => t.id === transportistaSelId);
+  const esExterno = transportistaActual && transportistaActual.tipo === 'externo';
+  
+  // 🆕 Modalidad de envío (solo para MEX): tarima_suelta / pedido_completo / consolidado
+  const modalidad = f.modalidad || (esMex ? _inferirModalidad(seleccionadas, clientesUnicos, piUnicos) : 'interna');
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
-      <div class="modal" style="max-width:620px;">
+      <div class="modal" style="max-width:${esMex ? '780' : '620'}px;">
         <div class="modal-header">
           <h2 style="font-size:18px;font-weight:800;">${titulo}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
-          <div style="padding:12px;background:${destino === 'CEDIS-MEX' ? '#ede9fe' : '#dbeafe'};border-radius:10px;margin-bottom:14px;">
+          <div style="padding:12px;background:${esMex ? '#ede9fe' : '#dbeafe'};border-radius:10px;margin-bottom:14px;">
             <div style="font-size:11px;color:${colorAccent};font-weight:700;text-transform:uppercase;">Resumen del embarque</div>
             <div style="font-size:16px;font-weight:800;color:${colorAccent};">${seleccionadas.length} tarima(s) · ${fmtNum(totalKg)} kg netos</div>
             <div style="font-size:11px;color:#475569;margin-top:4px;">Origen: ${origen} → Destino: ${destino}</div>
+            ${esMex ? `
+              <div style="display:flex;gap:14px;margin-top:6px;font-size:11px;color:#475569;flex-wrap:wrap;">
+                <span>👥 <strong>${clientesUnicos.length}</strong> cliente(s)</span>
+                <span>📋 <strong>${piUnicos.length}</strong> PI(s)</span>
+                <span>🏭 <strong>${odpUnicas.length}</strong> ODP(s)</span>
+              </div>
+            ` : ''}
             <div style="font-size:10.5px;color:#64748b;margin-top:3px;">💡 Se generará automáticamente un folio de Remisión (REM-XXXXX)</div>
           </div>
           
-          ${noHayInterno ? `
+          ${esMex ? `
+            <!-- 🆕 MODALIDAD DE ENVÍO -->
+            <div class="field">
+              <label class="field-label">📦 Modalidad de envío *</label>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                <label style="cursor:pointer;padding:10px;border:2px solid ${modalidad==='tarima_suelta'?'#7c3aed':'#e2e8f0'};background:${modalidad==='tarima_suelta'?'#ede9fe':'#fff'};border-radius:8px;text-align:center;">
+                  <input type="radio" name="modalidad" value="tarima_suelta" ${modalidad==='tarima_suelta'?'checked':''} onchange="window.setModalidadOTI('tarima_suelta')" style="display:none;" />
+                  <div style="font-size:22px;margin-bottom:4px;">🏷️</div>
+                  <div style="font-size:12px;font-weight:800;color:${modalidad==='tarima_suelta'?'#6d28d9':'#475569'};">Tarima(s) suelta(s)</div>
+                  <div style="font-size:10px;color:#64748b;margin-top:2px;">Envío parcial · pocas tarimas</div>
+                </label>
+                
+                <label style="cursor:pointer;padding:10px;border:2px solid ${modalidad==='pedido_completo'?'#7c3aed':'#e2e8f0'};background:${modalidad==='pedido_completo'?'#ede9fe':'#fff'};border-radius:8px;text-align:center;">
+                  <input type="radio" name="modalidad" value="pedido_completo" ${modalidad==='pedido_completo'?'checked':''} onchange="window.setModalidadOTI('pedido_completo')" style="display:none;" />
+                  <div style="font-size:22px;margin-bottom:4px;">📦</div>
+                  <div style="font-size:12px;font-weight:800;color:${modalidad==='pedido_completo'?'#6d28d9':'#475569'};">Pedido completo</div>
+                  <div style="font-size:10px;color:#64748b;margin-top:2px;">PI(s) completo(s) · sin mezclar</div>
+                </label>
+                
+                <label style="cursor:pointer;padding:10px;border:2px solid ${modalidad==='consolidado'?'#7c3aed':'#e2e8f0'};background:${modalidad==='consolidado'?'#ede9fe':'#fff'};border-radius:8px;text-align:center;">
+                  <input type="radio" name="modalidad" value="consolidado" ${modalidad==='consolidado'?'checked':''} onchange="window.setModalidadOTI('consolidado')" style="display:none;" />
+                  <div style="font-size:22px;margin-bottom:4px;">🚛</div>
+                  <div style="font-size:12px;font-weight:800;color:${modalidad==='consolidado'?'#6d28d9':'#475569'};">Camión consolidado</div>
+                  <div style="font-size:10px;color:#64748b;margin-top:2px;">Varios clientes en 1 camión</div>
+                </label>
+              </div>
+              
+              <!-- Advertencias según modalidad -->
+              ${modalidad === 'consolidado' && clientesUnicos.length === 1 ? `
+                <div style="margin-top:8px;padding:10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:6px;font-size:11.5px;color:#92400e;">
+                  ℹ Marcaste consolidado pero solo hay <strong>1 cliente</strong> seleccionado. Considera elegir "Pedido completo" o "Tarima suelta".
+                </div>
+              ` : ''}
+              ${modalidad === 'pedido_completo' && clientesUnicos.length > 1 ? `
+                <div style="margin-top:8px;padding:10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:6px;font-size:11.5px;color:#92400e;">
+                  ⚠ Marcaste "Pedido completo" pero hay <strong>${clientesUnicos.length} clientes diferentes</strong>. Esto es un <strong>camión consolidado</strong>. Cambia la modalidad.
+                </div>
+              ` : ''}
+              ${modalidad === 'consolidado' && clientesUnicos.length > 1 ? `
+                <div style="margin-top:8px;padding:10px;background:#ede9fe;border-left:3px solid #7c3aed;border-radius:6px;">
+                  <div style="font-size:11.5px;color:#6d28d9;font-weight:700;margin-bottom:4px;">🚛 Camión consolidado · ${clientesUnicos.length} clientes:</div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:10.5px;">
+                    ${clientesUnicos.map(c => {
+                      const tarimasDelCli = seleccionadas.filter(t => t.cliente_nombre === c);
+                      const kgCli = tarimasDelCli.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+                      return `<span style="background:#fff;border:1px solid #c4b5fd;padding:3px 8px;border-radius:99px;color:#5b21b6;font-weight:600;">${c} <strong>·</strong> ${tarimasDelCli.length}t · ${fmtNum(kgCli)}kg</span>`;
+                    }).join('')}
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
+          
+          ${noHayTransportistas ? `
             <div style="background:#fee2e2;border:2px solid #dc2626;border-radius:10px;padding:14px;margin-bottom:14px;">
-              <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:4px;">⚠ No hay transportista interno registrado</div>
-              <div style="font-size:11.5px;color:#7f1d1d;margin-bottom:8px;">Como este es un embarque interno (planta → CEDIS), debe usar la flota de <strong>NewPack Logística</strong>.</div>
+              <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:4px;">⚠ No hay transportistas registrados</div>
+              <div style="font-size:11.5px;color:#7f1d1d;margin-bottom:8px;">
+                ${esMex ? 'Registra al menos un transportista (interno o externo) para hacer envíos a CEDIS-MEX.' : 'Como este es un embarque interno (planta → CEDIS), debe usar la flota de <strong>NewPack Logística</strong>.'}
+              </div>
               <button onclick="cerrarModal();state.vista='catalogo_logistica';render();" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">→ Ir al Catálogo de Logística</button>
             </div>
           ` : `
             <div class="field">
-              <label class="field-label">Transportista (NewPack Logística) *</label>
-              ${transportistasInternos.length === 1 ? `
-                <div style="padding:10px;background:#dcfce7;border:1.5px solid #16a34a;border-radius:8px;display:flex;align-items:center;gap:8px;">
-                  <span style="font-size:18px;">🏠</span>
-                  <strong style="color:#15803d;">${transportistasInternos[0].nombre}</strong>
+              <label class="field-label">Transportista *</label>
+              <select class="input" id="oti-transp-id" onchange="state.formOTI.transportista_id=this.value;render()">
+                ${transportistasDisp.map(t => {
+                  const icon = t.tipo === 'interno' ? '🏠' : '🚚';
+                  const lbl = t.tipo === 'interno' ? 'NewPack' : 'EXTERNO';
+                  return `<option value="${t.id}" ${transportistaSelId===t.id?'selected':''}>${icon} ${t.nombre} · ${lbl}</option>`;
+                }).join('')}
+              </select>
+              ${esMex && esExterno ? `
+                <div style="margin-top:6px;font-size:10.5px;color:#64748b;background:#f1f5f9;padding:6px 10px;border-radius:6px;">
+                  ℹ Proveedor externo de logística. Captura los datos del operador y unidad (puede ser captura manual sin estar en catálogo).
                 </div>
-              ` : `
-                <select class="input" id="oti-transp-id" onchange="state.formOTI.transportista_id=this.value;render()">
-                  ${transportistasInternos.map(t => `<option value="${t.id}" ${transportistaSelId===t.id?'selected':''}>🏠 ${t.nombre}</option>`).join('')}
-                </select>
-              `}
+              ` : ''}
             </div>
             
             <div class="field">
               <label class="field-label">Operador (chofer) *</label>
-              ${operadoresDisp.length === 0 ? `
+              ${operadoresDisp.length === 0 && !esExterno ? `
                 <div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;">
-                  ⚠ No hay operadores registrados para este transportista. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='operadores';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar operador →</a>
+                  ⚠ No hay operadores registrados. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='operadores';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar →</a>
                 </div>
+              ` : esExterno ? `
+                <!-- Captura manual para transportistas externos -->
+                <input class="input" id="oti-operador-nombre" placeholder="Nombre del chofer" value="${f.operador_nombre || ''}" />
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+                  <input class="input" id="oti-operador-licencia" placeholder="Licencia (tipo + #)" value="${f.operador_licencia || ''}" />
+                  <input class="input" id="oti-operador-telefono" placeholder="Teléfono" value="${f.operador_telefono || ''}" />
+                </div>
+                ${operadoresDisp.length > 0 ? `
+                  <div style="margin-top:6px;font-size:10.5px;color:#64748b;">
+                    O selecciona de catálogo:
+                    <select class="input" id="oti-operador-id" onchange="if(this.value){const o=state.operadores_logistica.find(x=>x.id===this.value);if(o){document.getElementById('oti-operador-nombre').value=o.nombre;document.getElementById('oti-operador-licencia').value=(o.licencia_tipo||'')+' '+(o.licencia_numero||'');document.getElementById('oti-operador-telefono').value=o.telefono||'';}}" style="margin-top:3px;">
+                      <option value="">— Sin selección —</option>
+                      ${operadoresDisp.map(o => `<option value="${o.id}">${o.nombre}</option>`).join('')}
+                    </select>
+                  </div>
+                ` : ''}
               ` : `
                 <select class="input" id="oti-operador-id">
                   <option value="">— Selecciona operador —</option>
@@ -25667,10 +25880,29 @@ function modalCrearOTI() {
             
             <div class="field">
               <label class="field-label">Unidad (camión) *</label>
-              ${unidadesDisp.length === 0 ? `
+              ${unidadesDisp.length === 0 && !esExterno ? `
                 <div style="padding:10px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;">
-                  ⚠ No hay unidades registradas. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='unidades';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar unidad →</a>
+                  ⚠ No hay unidades registradas. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='catalogo_logistica';state.catLogTab='unidades';render();" style="color:#1d4ed8;text-decoration:underline;font-weight:700;">Registrar →</a>
                 </div>
+              ` : esExterno ? `
+                <!-- Captura manual para transportistas externos -->
+                <input class="input" id="oti-unidad-placas" placeholder="Placas del camión" style="font-family:monospace;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;" value="${f.unidad_placas || ''}" />
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px;">
+                  <select class="input" id="oti-unidad-tipo">
+                    ${(window.TIPOS_UNIDAD || []).map(t => `<option value="${t.codigo}">${t.icono} ${t.nombre}</option>`).join('')}
+                  </select>
+                  <input class="input" id="oti-unidad-marca" placeholder="Marca" value="${f.unidad_marca || ''}" />
+                  <input class="input" id="oti-unidad-modelo" placeholder="Modelo" value="${f.unidad_modelo || ''}" />
+                </div>
+                ${unidadesDisp.length > 0 ? `
+                  <div style="margin-top:6px;font-size:10.5px;color:#64748b;">
+                    O selecciona de catálogo:
+                    <select class="input" id="oti-unidad-id" onchange="if(this.value){const u=state.unidades_logistica.find(x=>x.id===this.value);if(u){document.getElementById('oti-unidad-placas').value=u.placas||'';document.getElementById('oti-unidad-marca').value=u.marca||'';document.getElementById('oti-unidad-modelo').value=u.modelo||'';}}" style="margin-top:3px;">
+                      <option value="">— Sin selección —</option>
+                      ${unidadesDisp.map(u => `<option value="${u.id}">${u.placas}${u.marca?' · '+u.marca:''}</option>`).join('')}
+                    </select>
+                  </div>
+                ` : ''}
               ` : `
                 <select class="input" id="oti-unidad-id">
                   <option value="">— Selecciona unidad —</option>
@@ -25681,16 +25913,49 @@ function modalCrearOTI() {
                 </select>
               `}
             </div>
+            
+            ${esMex && esExterno ? `
+              <div class="field">
+                <label class="field-label">Guía / Folio del transportista (opcional)</label>
+                <input class="input" id="oti-guia-externa" placeholder="Folio o número de guía" value="${f.guia_externa || ''}" style="font-family:monospace;font-weight:700;" />
+              </div>
+              <div class="field">
+                <label class="field-label">Costo del flete (opcional)</label>
+                <div style="display:grid;grid-template-columns:1fr 100px;gap:8px;">
+                  <input class="input" id="oti-costo-flete" type="number" min="0" step="0.01" placeholder="0.00" value="${f.costo_flete || ''}" />
+                  <select class="input" id="oti-flete-moneda">
+                    <option value="MXN" ${(f.flete_moneda||'MXN')==='MXN'?'selected':''}>MXN</option>
+                    <option value="USD" ${f.flete_moneda==='USD'?'selected':''}>USD</option>
+                  </select>
+                </div>
+              </div>
+            ` : ''}
           `}
           
           <div class="field">
             <label class="field-label">Observaciones</label>
-            <textarea class="input" id="oti-obs" style="min-height:60px;" placeholder="Notas, instrucciones especiales, etc."></textarea>
+            <textarea class="input" id="oti-obs" style="min-height:60px;" placeholder="${esMex ? 'Indicaciones especiales (orden de entrega, andén CEDIS-MEX, contacto, etc.)' : 'Notas, instrucciones especiales, etc.'}">${f.observaciones || ''}</textarea>
           </div>
           
-          <div style="margin-top:12px;padding:10px;background:#f8fafc;border-radius:8px;font-size:11px;max-height:160px;overflow-y:auto;">
-            <strong style="color:#475569;">Tarimas a enviar:</strong>
-            ${seleccionadas.map(t => `
+          <div style="margin-top:12px;padding:10px;background:#f8fafc;border-radius:8px;font-size:11px;max-height:180px;overflow-y:auto;">
+            <strong style="color:#475569;">Tarimas a enviar ${esMex && modalidad==='consolidado' ? '(agrupadas por cliente)' : ''}:</strong>
+            ${esMex && modalidad === 'consolidado' ? clientesUnicos.map(cli => {
+              const tarsCli = seleccionadas.filter(t => t.cliente_nombre === cli);
+              return `
+                <div style="margin-top:6px;padding:6px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;">
+                  <div style="font-size:10.5px;font-weight:800;color:#6d28d9;margin-bottom:3px;">👤 ${cli} (${tarsCli.length} tarimas)</div>
+                  ${tarsCli.map(t => `
+                    <div style="margin-left:10px;display:flex;justify-content:space-between;font-size:10.5px;">
+                      <span>
+                        <span class="text-mono" style="font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</span>
+                        ${t.pedido_folio ? `<span class="text-mono" style="margin-left:6px;color:#3b82f6;font-weight:700;">${t.pedido_folio}</span>` : ''}
+                      </span>
+                      <span style="color:#1e40af;font-weight:600;">${fmtCantidadUM(t.cantidad, t.um)}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              `;
+            }).join('') : seleccionadas.map(t => `
               <div style="margin-top:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
                 <span>
                   <span class="text-mono" style="font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</span>
@@ -25704,15 +25969,30 @@ function modalCrearOTI() {
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
-          ${!noHayInterno ? `
-            <button class="btn-secondary" onclick="window.previewOTIPDF()" style="background:#dbeafe;color:#1e40af;border-color:#bfdbfe;">📄 Ver vista previa PDF</button>
-            <button class="btn-primary" onclick="confirmarCrearOTI()" style="background:#16a34a;">${ICONS.check} Crear OTI y enviar</button>
+          ${!noHayTransportistas ? `
+            <button class="btn-secondary" onclick="window.previewOTIPDF()" style="background:${esMex?'#ede9fe':'#dbeafe'};color:${colorAccent};border-color:${esMex?'#c4b5fd':'#bfdbfe'};">📄 Ver vista previa PDF</button>
+            <button class="btn-primary" onclick="confirmarCrearOTI()" style="background:${esMex?'#7c3aed':'#16a34a'};">${ICONS.check} Crear OTI y enviar</button>
           ` : ''}
         </div>
       </div>
     </div>
   `;
 }
+
+// 🆕 Inferir modalidad automáticamente según selección
+function _inferirModalidad(seleccionadas, clientesUnicos, piUnicos) {
+  if (seleccionadas.length === 0) return 'tarima_suelta';
+  if (clientesUnicos.length > 1) return 'consolidado';
+  // 1 cliente solamente
+  if (piUnicos.length === 1 && seleccionadas.length >= 3) return 'pedido_completo';
+  return 'tarima_suelta';
+}
+
+window.setModalidadOTI = (m) => {
+  if (!state.formOTI) state.formOTI = {};
+  state.formOTI.modalidad = m;
+  render();
+};
 
 // ============================================================
 // MODAL: DETALLE DE ODP (lectura)
@@ -33422,41 +33702,101 @@ window.previewOTIPDF = () => {
     toast('Selecciona al menos 1 tarima', 'error'); return;
   }
   
-  // Resolver transportista/operador/unidad desde inputs
-  const transportistasInternos = (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
-  if (transportistasInternos.length === 0) {
-    toast('Registra primero NewPack Logística en el catálogo', 'error'); return;
-  }
-  const transpId = f.transportista_id || ($('#oti-transp-id')?.value || transportistasInternos[0]?.id);
-  const transportista = (state.transportistas || []).find(t => t.id === transpId);
-  const operadorId = ($('#oti-operador-id')?.value || '');
-  const operador = (state.operadores_logistica || []).find(o => o.id === operadorId);
-  const unidadId = ($('#oti-unidad-id')?.value || '');
-  const unidad = (state.unidades_logistica || []).find(u => u.id === unidadId);
+  const destinoSel = f.destino || 'CEDIS-MTY';
+  const esMex = destinoSel === 'CEDIS-MEX';
   
-  if (!transportista || !operador || !unidad) {
-    toast('Completa transportista, operador y unidad antes del preview', 'error'); return;
+  // 🆕 Transportistas según destino
+  const transportistasDisp = esMex
+    ? (state.transportistas || []).filter(t => t.activo !== false)
+    : (state.transportistas || []).filter(t => t.tipo === 'interno' && t.activo !== false);
+  
+  if (transportistasDisp.length === 0) {
+    toast(esMex ? 'Registra al menos un transportista' : 'Registra NewPack Logística', 'error');
+    return;
+  }
+  
+  const transpId = f.transportista_id || ($('#oti-transp-id')?.value || transportistasDisp[0]?.id);
+  const transportista = (state.transportistas || []).find(t => t.id === transpId);
+  if (!transportista) { toast('Selecciona transportista', 'error'); return; }
+  const esTranspExterno = transportista.tipo === 'externo';
+  
+  // Operador y unidad (manual si externo, catálogo si interno)
+  let operador, unidad;
+  if (esTranspExterno && esMex) {
+    const nom = ($('#oti-operador-nombre')?.value || '').trim();
+    if (!nom) { toast('Captura el nombre del operador', 'error'); return; }
+    operador = {
+      nombre: nom,
+      licencia_tipo: ($('#oti-operador-licencia')?.value || '').trim(),
+      licencia_numero: '',
+      telefono: ($('#oti-operador-telefono')?.value || '').trim()
+    };
+    const placas = ($('#oti-unidad-placas')?.value || '').trim().toUpperCase();
+    if (!placas) { toast('Captura las placas', 'error'); return; }
+    unidad = {
+      placas,
+      tipo_unidad: ($('#oti-unidad-tipo')?.value || 'camion'),
+      marca: ($('#oti-unidad-marca')?.value || '').trim(),
+      modelo: ($('#oti-unidad-modelo')?.value || '').trim()
+    };
+  } else {
+    operador = (state.operadores_logistica || []).find(o => o.id === ($('#oti-operador-id')?.value || ''));
+    unidad = (state.unidades_logistica || []).find(u => u.id === ($('#oti-unidad-id')?.value || ''));
+    if (!operador || !unidad) {
+      toast('Completa transportista, operador y unidad antes del preview', 'error'); return;
+    }
   }
   
   const observaciones = ($('#oti-obs')?.value || '').trim();
   const tarimasSel = state.tarimas.filter(t => f.tarimas_seleccionadas.includes(t.id));
   const totalKg = tarimasSel.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  const pedidosUnicos = [...new Set(tarimasSel.map(t => t.pedido_folio).filter(Boolean))];
+  const clientesUnicos = [...new Set(tarimasSel.map(t => t.cliente_nombre).filter(Boolean))];
+  
+  const modalidad = esMex ? (f.modalidad || _inferirModalidad(tarimasSel, clientesUnicos, pedidosUnicos)) : '';
+  const guiaExterna = esMex && esTranspExterno ? ($('#oti-guia-externa')?.value || '').trim() : '';
+  const costoFlete = esMex && esTranspExterno ? Number($('#oti-costo-flete')?.value) || 0 : 0;
+  const fleteMoneda = esMex && esTranspExterno ? ($('#oti-flete-moneda')?.value || 'MXN') : '';
   
   // Construir OTI temporal (no guardada)
   const otiTmp = {
-    folio: 'OTI-PREVIEW',
+    folio: esMex ? 'OTI-MEX-PREVIEW' : 'OTI-PREVIEW',
     remision_folio: 'REM-PREVIEW',
-    origen: 'PLANTA-MTY',
-    destino: 'CEDIS-MTY',
+    origen: esMex ? 'CEDIS-MTY' : 'PLANTA-MTY',
+    destino: destinoSel,
     estatus: 'preview',
     transportista_nombre: transportista.razon_social || transportista.nombre,
-    transportista_tipo: 'interno',
+    transportista_tipo: transportista.tipo || 'interno',
     transportista_rfc: transportista.rfc || '',
     operador_nombre: operador.nombre,
-    operador_licencia: operador.licencia || '',
+    operador_licencia: operador.licencia_tipo ? `${operador.licencia_tipo} ${operador.licencia_numero || ''}`.trim() : (operador.licencia || ''),
+    operador_telefono: operador.telefono || '',
     unidad_placas: unidad.placas || '',
     unidad_marca: unidad.marca || '',
+    unidad_modelo: unidad.modelo || '',
     observaciones,
+    // Modalidad y consolidado
+    modalidad,
+    modalidad_label: modalidad === 'tarima_suelta' ? 'Tarima(s) suelta(s)' :
+                     modalidad === 'pedido_completo' ? 'Pedido completo' :
+                     modalidad === 'consolidado' ? 'Camión consolidado' : '',
+    guia_externa: guiaExterna,
+    costo_flete: costoFlete,
+    flete_moneda: fleteMoneda,
+    num_clientes: clientesUnicos.length,
+    num_pedidos: pedidosUnicos.length,
+    pedidos_folios: pedidosUnicos,
+    clientes_nombres: clientesUnicos,
+    consolidado_por_cliente: clientesUnicos.map(cli => {
+      const tarsCli = tarimasSel.filter(t => t.cliente_nombre === cli);
+      return {
+        cliente_nombre: cli,
+        cliente_codigo: tarsCli[0]?.cliente_codigo || '',
+        num_tarimas: tarsCli.length,
+        peso_kg: tarsCli.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0),
+        pedidos_folios: [...new Set(tarsCli.map(t => t.pedido_folio).filter(Boolean))]
+      };
+    }),
     num_tarimas: tarimasSel.length,
     peso_total_kg: totalKg,
     tarimas_resumen: tarimasSel.map(t => ({
@@ -33562,6 +33902,99 @@ function _renderOTIPDF(oti, esPreview) {
   h2 = _campo(docPDF, 'Marca/Modelo', oti.unidad_marca, margen + wCol + 5, y, wCol);
   y += Math.max(h1, h2) + 3;
   
+  // 🆕 Sección de MODALIDAD y CONSOLIDACIÓN (solo para OTIs MTY→MEX)
+  const esOTIMex = (oti.destino || '').toString().toUpperCase().includes('MEX');
+  if (esOTIMex && oti.modalidad) {
+    // Banner morado de modalidad
+    const colorMod = oti.modalidad === 'consolidado' ? [124, 58, 237] :
+                     oti.modalidad === 'pedido_completo' ? [37, 99, 235] :
+                     [99, 102, 241];
+    docPDF.setFillColor(colorMod[0], colorMod[1], colorMod[2]);
+    docPDF.rect(margen, y, W - margen*2, 7, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(9);
+    const iconMod = oti.modalidad === 'consolidado' ? '[CAMION CONSOL.]' :
+                    oti.modalidad === 'pedido_completo' ? '[PEDIDO COMPLETO]' : '[TARIMAS SUELTAS]';
+    docPDF.text(`MODALIDAD ${iconMod} · ${oti.modalidad_label || ''}`, margen + 3, y + 4.8);
+    if (oti.num_clientes && oti.num_pedidos) {
+      docPDF.text(`${oti.num_clientes} cliente(s) · ${oti.num_pedidos} PI(s)`, margen + (W - margen*2) - 3, y + 4.8, { align: 'right' });
+    }
+    docPDF.setTextColor(0, 0, 0);
+    y += 9;
+    
+    // Datos del envío externo (guía, costo) si aplica
+    if (oti.transportista_tipo === 'externo' && (oti.guia_externa || oti.costo_flete)) {
+      const wColE = (W - margen*2 - 5) / 2;
+      const hE1 = _campo(docPDF, 'Guía / Folio transportista', oti.guia_externa || '—', margen, y, wColE);
+      const hE2 = _campo(docPDF, 'Costo flete', oti.costo_flete > 0 ? `$${fmtNum(Number(oti.costo_flete).toFixed(2))} ${oti.flete_moneda || 'MXN'}` : '—', margen + wColE + 5, y, wColE);
+      y += Math.max(hE1, hE2) + 2;
+    }
+    
+    // Si es consolidado: tabla de clientes
+    if (oti.modalidad === 'consolidado' && Array.isArray(oti.consolidado_por_cliente) && oti.consolidado_por_cliente.length > 1) {
+      docPDF.setFillColor(237, 233, 254);
+      docPDF.rect(margen, y, W - margen*2, 6, 'F');
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(8);
+      docPDF.setTextColor(91, 33, 182);
+      docPDF.text('CONSOLIDADO POR CLIENTE', margen + 3, y + 4);
+      docPDF.setTextColor(0, 0, 0);
+      y += 6;
+      
+      const cwc = { c1: (W-margen*2)*0.45, c2: (W-margen*2)*0.20, c3: (W-margen*2)*0.13, c4: (W-margen*2)*0.22 };
+      docPDF.setFillColor(245, 243, 255);
+      docPDF.rect(margen, y, W - margen*2, 5.5, 'FD');
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setFontSize(7.5);
+      let xxc = margen;
+      ['CLIENTE', 'PI(s)', 'TARIMAS', 'PESO (KG)'].forEach((h, i) => {
+        const w = [cwc.c1, cwc.c2, cwc.c3, cwc.c4][i];
+        docPDF.text(h, xxc + w/2, y + 3.8, { align: 'center' });
+        xxc += w;
+      });
+      y += 5.5;
+      
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.setFontSize(7.5);
+      const padCellC = 1.5;
+      const lineHC = 3.2;
+      
+      oti.consolidado_por_cliente.forEach(cli => {
+        const lCli = docPDF.splitTextToSize(cli.cliente_nombre || '—', cwc.c1 - padCellC*2);
+        const lPI = docPDF.splitTextToSize((cli.pedidos_folios || []).join(', ') || '—', cwc.c2 - padCellC*2);
+        const rowHc = Math.max(5, Math.max(lCli.length, lPI.length) * lineHC + padCellC);
+        
+        let xxc2 = margen;
+        docPDF.rect(xxc2, y, cwc.c1, rowHc);
+        lCli.forEach((line, i) => docPDF.text(line, xxc2 + padCellC, y + padCellC + lineHC + (i*lineHC) - 0.8));
+        xxc2 += cwc.c1;
+        
+        docPDF.rect(xxc2, y, cwc.c2, rowHc);
+        docPDF.setFont('courier', 'bold');
+        docPDF.setFontSize(7);
+        lPI.forEach((line, i) => docPDF.text(line, xxc2 + padCellC, y + padCellC + lineHC + (i*lineHC) - 0.8));
+        docPDF.setFont('helvetica', 'normal');
+        docPDF.setFontSize(7.5);
+        xxc2 += cwc.c2;
+        
+        docPDF.rect(xxc2, y, cwc.c3, rowHc);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.text(String(cli.num_tarimas || 0), xxc2 + cwc.c3/2, y + rowHc/2 + 1, { align: 'center' });
+        docPDF.setFont('helvetica', 'normal');
+        xxc2 += cwc.c3;
+        
+        docPDF.rect(xxc2, y, cwc.c4, rowHc);
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.text(`${fmtNum(Math.round(cli.peso_kg))} kg`, xxc2 + cwc.c4/2, y + rowHc/2 + 1, { align: 'center' });
+        docPDF.setFont('helvetica', 'normal');
+        
+        y += rowHc;
+      });
+      y += 3;
+    }
+  }
+  
   // Sección Mercancía
   docPDF.setFillColor(8, 145, 178);
   docPDF.rect(margen, y, W - margen*2, 7, 'F');
@@ -33593,7 +34026,38 @@ function _renderOTIPDF(oti, esPreview) {
     docPDF.setFontSize(7.5);
     const lineH = 3.2, padCell = 1.5;
     
-    tar.slice().sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0)).forEach(t => {
+    // 🆕 Si es consolidado, ordenar tarimas por cliente (no por número)
+    const esConsolidado = (oti.modalidad === 'consolidado') && esOTIMex;
+    const tarOrdenadas = esConsolidado
+      ? tar.slice().sort((a, b) => {
+          const cliCmp = String(a.cliente_nombre || '').localeCompare(String(b.cliente_nombre || ''));
+          if (cliCmp !== 0) return cliCmp;
+          return (a.numero_tarima || 0) - (b.numero_tarima || 0);
+        })
+      : tar.slice().sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+    
+    let clienteActualBanner = null;
+    tarOrdenadas.forEach(t => {
+      // 🆕 Banner de cliente cuando es consolidado y cambia
+      if (esConsolidado && t.cliente_nombre !== clienteActualBanner) {
+        clienteActualBanner = t.cliente_nombre || '';
+        const cT2 = W - margen*2;
+        // Verificar espacio para banner + al menos una fila (mínimo 11mm)
+        if (y + 11 > contenidoMaxY) {
+          docPDF.addPage('letter', 'portrait');
+          y = 20;
+        }
+        docPDF.setFillColor(237, 233, 254);
+        docPDF.rect(margen, y, cT2, 5, 'F');
+        docPDF.setFont('helvetica', 'bold');
+        docPDF.setFontSize(7.5);
+        docPDF.setTextColor(91, 33, 182);
+        docPDF.text(`>> ${clienteActualBanner}`, margen + 2, y + 3.5);
+        docPDF.setTextColor(0, 0, 0);
+        docPDF.setFont('helvetica', 'normal');
+        y += 5;
+      }
+      
       const sT = `T${String(t.numero_tarima || 0).padStart(2,'0')}`;
       const sLote = String(t.lote_codigo || '—');
       const sProd = `${t.producto_codigo || ''}${t.descripcion ? ' · ' + t.descripcion : ''}`;
