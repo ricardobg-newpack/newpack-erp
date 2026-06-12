@@ -3,21 +3,16 @@ service cloud.firestore {
   match /databases/{database}/documents {
     
     // ────────────────────────────────────────────────────────────
-    // HELPERS (mejorados con check exists() para evitar errores
-    // cuando un usuario auth pero sin doc en /usuarios aún)
+    // HELPERS
     // ────────────────────────────────────────────────────────────
     function isAuth() { return request.auth != null; }
     
-    // ✅ exists check evita crash cuando el usuario fue creado en Auth pero
-    // todavía no tiene su doc en /usuarios (caso: registro recién creado)
     function userExists() { 
       return isAuth() && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)); 
     }
     function userProfile() { 
       return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data; 
     }
-    
-    // Si el usuario no tiene perfil aún, retornar valores vacíos en vez de crashear
     function userDept() { 
       return userExists() ? userProfile().depto : ''; 
     }
@@ -30,7 +25,6 @@ service cloud.firestore {
       return isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']); 
     }
     
-    // Helpers por grupos funcionales (reducen repetición)
     function isCalidad() { 
       return isAuth() && (isAdmin() || userDept() in ['CAL','ALP','CEO','ADMIN']); 
     }
@@ -49,19 +43,23 @@ service cloud.firestore {
     function isComercial() {
       return isAuth() && (isAdmin() || userDept() in ['CS','KAM','COMP','CEO','ADMIN']);
     }
+    // 🆕 Facturación y Crédito y Cobranza
+    function isFacturacion() {
+      return isAuth() && (isAdmin() || userDept() in ['FAC','CEO','ADMIN']);
+    }
+    function isCreditoYCobranza() {
+      return isAuth() && (isAdmin() || userDept() in ['CYC','CEO','ADMIN']);
+    }
+    function isFacOCyC() {
+      return isAuth() && (isAdmin() || userDept() in ['FAC','CYC','CEO','ADMIN']);
+    }
     
     // ────────────────────────────────────────────────────────────
     // USUARIOS
     // ────────────────────────────────────────────────────────────
     match /usuarios/{uid} {
       allow read: if isAuth();
-      // 🆕 El propio usuario puede crear SU PROPIO doc (al registrarse), o admin crea cualquier
-      // Esto permite el flujo de auto-registro donde el doc se crea con datos básicos
-      allow create: if isAuth() && (
-        request.auth.uid == uid ||  // Self-create al primer login
-        isAdminOrCEO()              // Admin crea para otros
-      );
-      // El usuario puede editar su propio doc (datos básicos, no rol/depto), o admin edita cualquier
+      allow create: if isAuth() && (request.auth.uid == uid || isAdminOrCEO());
       allow update: if isAuth() && (isAdminOrCEO() || request.auth.uid == uid);
       allow delete: if isAuth() && isAdminOrCEO();
     }
@@ -69,12 +67,12 @@ service cloud.firestore {
     // ────────────────────────────────────────────────────────────
     // CATÁLOGOS GENERALES
     // ────────────────────────────────────────────────────────────
+    // 🆕 CLIENTES: FAC y CYC pueden editar datos fiscales y código
     match /clientes/{id} {
       allow read: if isAuth();
-      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN'];
+      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','FAC','CYC'];
     }
     
-    // 🆕 PRODUCTOS PT: PRO también puede actualizar (para fórmula/estandarización)
     match /productos_pt/{id} {
       allow read: if isAuth();
       allow create: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN'];
@@ -95,35 +93,32 @@ service cloud.firestore {
     // ────────────────────────────────────────────────────────────
     // PEDIDOS Y ÓRDENES DE VENTA
     // ────────────────────────────────────────────────────────────
+    // 🆕 PEDIDOS: FAC y CYC pueden leer/actualizar (autorizar crédito, marcar facturado)
     match /pedidos/{id} {
       allow read: if isAuth();
-      // 🆕 ALP/CAL crean PI de reposición cuando rechazan/parcializan en calidad
       allow create: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','CAL','ALP']);
-      // ALP/CAL/CS también actualizan al cerrar el ciclo
-      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','PLN','CAL','ALP','CEDMTY','CEDMEX']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','PLN','CAL','ALP','CEDMTY','CEDMEX','FAC','CYC']);
       allow delete: if isAdmin();
     }
     
     match /pedido_lineas/{id} {
       allow read: if isAuth();
-      // 🆕 ALP/CAL crean líneas del PI de reposición
       allow create: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','CAL','ALP']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','CAL','ALP']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','CAL','ALP','FAC','CYC']);
       allow delete: if isAdmin();
     }
     
-    // 🆕 ORDENES DE VENTA: CS marca como entregada al final
+    // 🆕 ORDENES DE VENTA: FAC y CYC pueden actualizar
     match /ordenes_venta/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN','CS','KAM']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CAL','ALP','CEDMTY','CEDMEX','CEO','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CAL','ALP','CEDMTY','CEDMEX','CEO','ADMIN','FAC','CYC']);
       allow delete: if isAdmin();
     }
     
     // ────────────────────────────────────────────────────────────
     // PRODUCCIÓN
     // ────────────────────────────────────────────────────────────
-    // 🆕 ORDENES DE PRODUCCIÓN: ALP (calidad) liberacion, CS para sincronizar estatus tras entregar
     match /ordenes_produccion/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN','PLN']);
@@ -134,13 +129,10 @@ service cloud.firestore {
     match /capturas_produccion/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CEO','ADMIN']);
-      // 🆕 PRO/PLN/CEO pueden ANULAR capturas (soft-delete con motivo) cuando hay duplicados
       allow update: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']);
       allow delete: if isAdmin();
     }
     
-    // 🆕 ROLLOS DE EXTRUSIÓN — registro granular durante el turno
-    // PRO captura rollos; PRO/PLN/CEO pueden anularlos
     match /rollos_extrusion/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CEO','ADMIN']);
@@ -150,13 +142,11 @@ service cloud.firestore {
     
     match /lotes/{id} {
       allow read: if isAuth();
-      // 🆕 ALP puede crear lotes (al liberar)
       allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CAL','ALP','CEO','ADMIN']);
       allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','PRO','CAL','CEO','ADMIN','CS','KAM']);
       allow delete: if isAdmin();
     }
     
-    // 🆕 TARIMAS: ALP crea al liberar, CS actualiza al marcar entregada
     match /tarimas/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CAL','ALP','CEO','ADMIN']);
@@ -164,7 +154,6 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // 🆕 PACKING LISTS: ALP también puede crear/actualizar
     match /packing_lists/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['CAL','ALP','CEO','ADMIN']);
@@ -179,7 +168,6 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
     
-    // 🆕 LOGÍSTICA — CATÁLOGOS (transportistas internos NewPack + externos proveedores)
     match /transportistas/{id} {
       allow read: if isAuth();
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CEO','ADMIN']);
@@ -198,12 +186,66 @@ service cloud.firestore {
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
     
-    // 🆕 REMISIONES — folio único auto-generado por embarque
+    // 🆕 REMISIONES — FAC y CYC pueden actualizar (concilia con facturas)
     match /remisiones/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CS','KAM','CEO','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CS','KAM','CEO','ADMIN']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CS','KAM','CEO','ADMIN','FAC','CYC']);
       allow delete: if isAdmin();
+    }
+    
+    // ────────────────────────────────────────────────────────────
+    // 🆕 FACTURACIÓN, CRÉDITO Y COBRANZA
+    // ────────────────────────────────────────────────────────────
+    match /facturas/{id} {
+      allow read: if isAuth();
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['FAC','CEO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    match /cobros/{id} {
+      allow read: if isAuth();
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CEO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    match /movimientos_credito/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CEO','ADMIN']);
+      allow update, delete: if isAdmin();
+    }
+    
+    match /expedientes_credito/{id} {
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CS','KAM','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CEO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    // ────────────────────────────────────────────────────────────
+    // 🆕 PELETIZADO (P-5) — merma clasificada por Material × Color
+    // ────────────────────────────────────────────────────────────
+    match /lotes_peletizado/{id} {
+      allow read: if isAuth();
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','ALP','CAL','CEO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
+    }
+    
+    match /movimientos_merma/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','ALP','CAL','CEO','ADMIN']);
+      allow update, delete: if isAdmin(); // historial inmutable
+    }
+    
+    match /corridas_peletizado/{id} {
+      allow read: if isAuth();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']);
+      allow update, delete: if isAdmin();
+    }
+    
+    match /almacen_desecho_venta/{id} {
+      allow read: if isAuth();
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CS','COMP','CEO','ADMIN']);
+      allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
     
     // ────────────────────────────────────────────────────────────
@@ -219,7 +261,7 @@ service cloud.firestore {
     match /notificaciones/{id} {
       allow read: if isAuth();
       allow create: if isAuth();
-      allow update, delete: if isAuth(); // cualquier user marca leídas las suyas
+      allow update, delete: if isAuth();
     }
     
     // ────────────────────────────────────────────────────────────
@@ -248,7 +290,6 @@ service cloud.firestore {
     // ────────────────────────────────────────────────────────────
     match /materias_primas/{id} {
       allow read: if isAuth();
-      // 🆕 PRO/PLN pueden crear/editar MPs (para definir fórmulas) — pero típicamente las crea Compras
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','PLN','PRO','CEO','ADMIN']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','ADMIN','CEO']);
     }
@@ -278,18 +319,20 @@ service cloud.firestore {
     match /ordenes_compra/{id} {
       allow read: if isAuth();
       allow create: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','ALP','CEDMTY','CEDMEX']);
+      // 🆕 FAC también edita OCs (facturas de proveedores)
+      allow update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','ALP','CEDMTY','CEDMEX','FAC']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
     
     match /proveedores/{id} {
       allow read: if isAuth();
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
+      // 🆕 FAC y CYC editan datos fiscales de proveedores
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','FAC','CYC']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
     
     // ────────────────────────────────────────────────────────────
-    // ESTANDARIZACIÓN — 🆕 PRO también puede crear (para fórmulas y registro de estandarización)
+    // ESTANDARIZACIÓN
     // ────────────────────────────────────────────────────────────
     match /estandarizacion_historial/{id} {
       allow read: if isAuth();
@@ -328,12 +371,12 @@ service cloud.firestore {
     }
     
     // ────────────────────────────────────────────────────────────
-    // 🖇️ OFICINA
+    // 🖇️ OFICINA — FAC y CYC también lo necesitan
     // ────────────────────────────────────────────────────────────
     match /productos_oficina/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in [
         'ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO',
-        'CS','KAM','PLN','PRO','CAL','MTTO'
+        'CS','KAM','PLN','PRO','CAL','MTTO','FAC','CYC'
       ]);
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
@@ -342,9 +385,9 @@ service cloud.firestore {
     match /movimientos_oficina/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in [
         'ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO',
-        'CS','KAM','PLN','PRO','CAL','MTTO'
+        'CS','KAM','PLN','PRO','CAL','MTTO','FAC','CYC'
       ]);
-      allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO','FAC','CYC']);
       allow update, delete: if false;
     }
     
