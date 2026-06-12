@@ -887,12 +887,17 @@ function calcularMedidasRolloExt(producto) {
   const calibre = Number(producto.calibre) || 0;
   const tipo = producto.tipo_sellado || '';
   const estructura = producto.estructura_rollo_ext || '';
+  // 🆕 Salidas múltiples: cuántos rollos salen del extrusor (1 por defecto)
+  // Aplica a BOLSA_ROLLO y PELICULA (rollos continuos sin sellado transversal)
+  const salidas = Math.max(1, Number(producto.salidas_extrusion) || 1);
   
-  if (!ancho || !largo) return null;
+  // Para BR/PEL el largo NO es obligatorio (son rollos continuos)
+  const requiereLargo = (tipo === 'SELLO_FONDO' || tipo === 'SELLO_LATERAL');
+  if (!ancho || (requiereLargo && !largo)) return null;
   
   let ancho_rollo = 0, fuelle_rollo = 0, descripcion = '', observacion = '';
   
-  // SELLO DE FONDO → extrusión al ANCHO
+  // SELLO DE FONDO → extrusión al ANCHO (sin multi-salida)
   if (tipo === 'SELLO_FONDO') {
     if (estructura === 'tubular_con_fuelle') {
       ancho_rollo = ancho;
@@ -906,7 +911,7 @@ function calcularMedidasRolloExt(producto) {
       observacion = 'Extruir tubular simple (sin fuelle)';
     }
   }
-  // SELLO LATERAL → extrusión al LARGO
+  // SELLO LATERAL → extrusión al LARGO (sin multi-salida, las variantes ya lo manejan)
   else if (tipo === 'SELLO_LATERAL') {
     if (estructura === 'ax1l') {
       ancho_rollo = largo;
@@ -925,32 +930,52 @@ function calcularMedidasRolloExt(producto) {
       observacion = `Rollo tubular de ${largo * 2} mm (= largo × 2). Se corta por el centro en bolseo.`;
     }
   }
-  // BOLSA EN ROLLO → extrusión al ANCHO
+  // BOLSA EN ROLLO → extrusión al ANCHO × salidas (multi-salida soportada)
   else if (tipo === 'BOLSA_ROLLO') {
     if (estructura === 'tubular_con_fuelle') {
-      ancho_rollo = ancho;
-      fuelle_rollo = fuelle;
-      descripcion = `Tubular ${ancho} mm con fuelle ${fuelle} mm`;
-      observacion = 'Extruir tubular con fuelle integrado';
+      ancho_rollo = ancho * salidas;
+      fuelle_rollo = fuelle;  // El fuelle por rollo individual no se multiplica
+      if (salidas > 1) {
+        descripcion = `Tubular ${ancho_rollo} mm c/fuelle ${fuelle} mm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir tubular de ${ancho_rollo} mm con fuelle ${fuelle} mm como un solo rollo. BOLSEO: corta longitudinalmente para sacar ${salidas} rollos de ${ancho} mm c/u.`;
+      } else {
+        descripcion = `Tubular ${ancho} mm con fuelle ${fuelle} mm`;
+        observacion = 'Extruir tubular con fuelle integrado (1 salida)';
+      }
     } else {
-      ancho_rollo = ancho;
+      ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
-      descripcion = `Tubular simple ${ancho} mm`;
-      observacion = 'Extruir tubular simple';
+      if (salidas > 1) {
+        descripcion = `Tubular simple ${ancho_rollo} mm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir tubular simple de ${ancho_rollo} mm como un solo rollo. BOLSEO: corta longitudinalmente para sacar ${salidas} rollos de ${ancho} mm c/u.`;
+      } else {
+        descripcion = `Tubular simple ${ancho} mm`;
+        observacion = 'Extruir tubular simple (1 salida)';
+      }
     }
   }
-  // PELÍCULA → tubular o lay-flat
+  // PELÍCULA → tubular o lay-flat × salidas
   else if (tipo === 'PELICULA') {
     if (estructura === 'lay_flat') {
-      ancho_rollo = ancho;
+      ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
-      descripcion = `Lay-flat ${ancho} mm`;
-      observacion = 'Película lay-flat (abierta)';
+      if (salidas > 1) {
+        descripcion = `Lay-flat ${ancho_rollo} mm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir película lay-flat de ${ancho_rollo} mm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} mm c/u.`;
+      } else {
+        descripcion = `Lay-flat ${ancho} mm`;
+        observacion = 'Película lay-flat (abierta, 1 salida)';
+      }
     } else {
-      ancho_rollo = ancho;
+      ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
-      descripcion = `Tubular ${ancho} mm`;
-      observacion = 'Película tubular';
+      if (salidas > 1) {
+        descripcion = `Tubular ${ancho_rollo} mm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir película tubular de ${ancho_rollo} mm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} mm c/u.`;
+      } else {
+        descripcion = `Tubular ${ancho} mm`;
+        observacion = 'Película tubular (1 salida)';
+      }
     }
   }
   
@@ -958,6 +983,7 @@ function calcularMedidasRolloExt(producto) {
     ancho_rollo,
     fuelle_rollo,
     calibre,
+    salidas,
     descripcion,
     observacion,
     tipo_sellado_nombre: getTipoSellado(tipo)?.nombre || '—',
@@ -7322,11 +7348,12 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
         return `
           <div style="padding:12px;background:#0f172a;color:#fff;border-radius:10px;margin-bottom:12px;">
             <div style="font-size:11px;font-weight:900;letter-spacing:0.05em;margin-bottom:6px;">📐 CÓMO EXTRUIR ESTE PRODUCTO</div>
-            <div style="font-size:11px;opacity:0.9;margin-bottom:6px;">${medidas.tipo_sellado_nombre} · ${medidas.estructura_nombre}</div>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px;background:rgba(251,191,36,0.15);border-radius:6px;border:1px solid #fbbf24;">
+            <div style="font-size:11px;opacity:0.9;margin-bottom:6px;">${medidas.tipo_sellado_nombre} · ${medidas.estructura_nombre}${medidas.salidas > 1 ? ` · <span style="color:#fb923c;font-weight:800;">${medidas.salidas} salidas en bolseo</span>` : ''}</div>
+            <div style="display:grid;grid-template-columns:repeat(${medidas.salidas > 1 ? 4 : 3},1fr);gap:8px;padding:8px;background:rgba(251,191,36,0.15);border-radius:6px;border:1px solid #fbbf24;">
               <div style="text-align:center;">
                 <div style="font-size:8.5px;opacity:0.85;font-weight:700;">ANCHO ROLLO</div>
                 <div style="font-size:18px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+                ${medidas.salidas > 1 ? `<div style="font-size:8px;opacity:0.75;">${prod.ancho}×${medidas.salidas}</div>` : ''}
               </div>
               <div style="text-align:center;">
                 <div style="font-size:8.5px;opacity:0.85;font-weight:700;">FUELLE</div>
@@ -7336,8 +7363,15 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
                 <div style="font-size:8.5px;opacity:0.85;font-weight:700;">CALIBRE</div>
                 <div style="font-size:18px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
               </div>
+              ${medidas.salidas > 1 ? `
+                <div style="text-align:center;">
+                  <div style="font-size:8.5px;opacity:0.85;font-weight:700;">→ A BOLSEO</div>
+                  <div style="font-size:18px;font-weight:900;color:#fb923c;">${medidas.salidas} rollos</div>
+                  <div style="font-size:8px;opacity:0.75;">${prod.ancho} mm c/u</div>
+                </div>
+              ` : ''}
             </div>
-            <div style="margin-top:6px;font-size:10.5px;font-style:italic;opacity:0.9;">💡 ${medidas.observacion}</div>
+            <div style="margin-top:6px;font-size:10.5px;font-style:italic;opacity:0.9;line-height:1.4;">💡 ${medidas.observacion}</div>
             ${prod.obs_extrusion ? `
               <div style="margin-top:6px;padding:8px;background:#fef3c7;color:#92400e;border-radius:5px;border-left:3px solid #f59e0b;font-size:11px;line-height:1.4;">
                 <strong>📝 NOTA:</strong> ${prod.obs_extrusion}
@@ -22149,6 +22183,15 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
         { content: `${med.largo} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
       ]);
     }
+    
+    // 🆕 Metros por rollo (solo si producto es película/rollo y se capturó valor)
+    if (producto && Number(producto.largo) === 0 && med.metros_por_rollo) {
+      filasCar.push([
+        'Metros por rollo',
+        'Variable',
+        { content: `${med.metros_por_rollo} m`, colSpan: 3, styles: { halign: 'center' } }
+      ]);
+    }
 
     // Calibre (Máx/Moda/Mín)
     if (producto && Number(producto.calibre) > 0) {
@@ -25015,6 +25058,7 @@ function modalLiberarCalidad() {
         fuelle_centro: '',
         fuelle_izquierdo: '',
         largo: '',
+        metros_por_rollo: '',
         calibre_max: '',
         calibre_moda: '',
         calibre_min: '',
@@ -25347,24 +25391,74 @@ function modalLiberarCalidad() {
               ` : `<div style="color:#dc2626;font-size:11px;margin-bottom:8px;">⚠ Producto no encontrado en catálogo. Captura libre.</div>`}
               
               <!-- Dimensiones (con spec al lado) -->
-              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
-                    <span>Ancho real (cm) *</span>
-                    ${productoCal ? `<span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.ancho} ±${tolsCal.tol_ancho} (${tolsCal.ancho_min}-${tolsCal.ancho_max})</span>` : ''}
-                  </label>
-                  <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" style="${checkTol(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}" placeholder="${productoCal ? productoCal.ancho : 'ej. 30'}" />
-                  <div style="margin-top:2px;">${dot(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}</div>
-                </div>
-                <div class="field" style="margin:0;">
-                  <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
-                    <span>Largo real (cm) *</span>
-                    ${productoCal ? `<span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.largo} ±${tolsCal.tol_largo} (${tolsCal.largo_min}-${tolsCal.largo_max})</span>` : ''}
-                  </label>
-                  <input class="input form-cal" data-field="mediciones.largo" type="number" step="0.1" value="${med.largo}" style="${checkTol(med.largo, tolsCal.largo_min, tolsCal.largo_max)}" placeholder="${productoCal ? productoCal.largo : 'ej. 40'}" />
-                  <div style="margin-top:2px;">${dot(med.largo, tolsCal.largo_min, tolsCal.largo_max)}</div>
-                </div>
-              </div>
+              ${(() => {
+                const tieneLargo = productoCal && Number(productoCal.largo) > 0;
+                // Detectar si es película/rollo (sin largo definido)
+                const esPeliculaORollo = productoCal && Number(productoCal.largo) === 0;
+                
+                if (tieneLargo) {
+                  // Producto con largo definido (bolsa): muestra Ancho + Largo
+                  return `
+                    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
+                          <span>Ancho real (cm) *</span>
+                          <span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.ancho} ±${tolsCal.tol_ancho} (${tolsCal.ancho_min}-${tolsCal.ancho_max})</span>
+                        </label>
+                        <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" style="${checkTol(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}" placeholder="${productoCal.ancho}" />
+                        <div style="margin-top:2px;">${dot(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}</div>
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
+                          <span>Largo real (cm) *</span>
+                          <span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.largo} ±${tolsCal.tol_largo} (${tolsCal.largo_min}-${tolsCal.largo_max})</span>
+                        </label>
+                        <input class="input form-cal" data-field="mediciones.largo" type="number" step="0.1" value="${med.largo}" style="${checkTol(med.largo, tolsCal.largo_min, tolsCal.largo_max)}" placeholder="${productoCal.largo}" />
+                        <div style="margin-top:2px;">${dot(med.largo, tolsCal.largo_min, tolsCal.largo_max)}</div>
+                      </div>
+                    </div>
+                  `;
+                } else if (esPeliculaORollo) {
+                  // Película/rollo (sin largo definido): solo Ancho + metros lineales por rollo (opcional)
+                  return `
+                    <div style="padding:8px 10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;margin-bottom:10px;font-size:11px;color:#1e40af;">
+                      🎞️ Este producto es <strong>película/rollo continuo</strong>. No se valida largo (es variable por rollo).
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
+                          <span>Ancho real (cm) *</span>
+                          <span style="color:#1e40af;font-weight:700;">Spec: ${productoCal.ancho} ±${tolsCal.tol_ancho} (${tolsCal.ancho_min}-${tolsCal.ancho_max})</span>
+                        </label>
+                        <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" style="${checkTol(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}" placeholder="${productoCal.ancho}" />
+                        <div style="margin-top:2px;">${dot(med.ancho, tolsCal.ancho_min, tolsCal.ancho_max)}</div>
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:10px;display:flex;justify-content:space-between;">
+                          <span>Metros lineales promedio por rollo</span>
+                          <span style="color:#64748b;font-weight:500;font-style:italic;">opcional</span>
+                        </label>
+                        <input class="input form-cal" data-field="mediciones.metros_por_rollo" type="number" step="0.1" value="${med.metros_por_rollo || ''}" placeholder="ej. 535" />
+                        <div style="font-size:9.5px;color:#64748b;margin-top:2px;">Para certificado. Se imprime si capturas valor.</div>
+                      </div>
+                    </div>
+                  `;
+                } else {
+                  // Sin producto: captura libre
+                  return `
+                    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:10px;">Ancho real (cm) *</label>
+                        <input class="input form-cal" data-field="mediciones.ancho" type="number" step="0.1" value="${med.ancho}" placeholder="ej. 30" />
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:10px;">Largo real (cm)</label>
+                        <input class="input form-cal" data-field="mediciones.largo" type="number" step="0.1" value="${med.largo}" placeholder="ej. 40" />
+                      </div>
+                    </div>
+                  `;
+                }
+              })()}
               
               ${tieneFuelle ? `
                 <div style="margin-bottom:10px;">
@@ -26435,6 +26529,7 @@ function modalEditarProductoPT() {
       // 🔥 Config extrusión (nuevos campos)
       tipo_sellado: p.tipo_sellado || '',
       estructura_rollo_ext: p.estructura_rollo_ext || '',
+      salidas_extrusion: Math.max(1, Number(p.salidas_extrusion) || 1),
       obs_extrusion: p.obs_extrusion || ''
     };
   }
@@ -26570,11 +26665,13 @@ function renderBloqueConfigExtrusion(f, p) {
   const tipoSel = f.tipo_sellado || p?.tipo_sellado || '';
   const estructura = f.estructura_rollo_ext !== undefined ? f.estructura_rollo_ext : (p?.estructura_rollo_ext || '');
   const obs = f.obs_extrusion !== undefined ? f.obs_extrusion : (p?.obs_extrusion || '');
+  const salidas = Math.max(1, Number(f.salidas_extrusion !== undefined ? f.salidas_extrusion : (p?.salidas_extrusion || 1)));
   
   // Pre-cargar en form si no está
   if (f.tipo_sellado === undefined) f.tipo_sellado = tipoSel;
   if (f.estructura_rollo_ext === undefined) f.estructura_rollo_ext = estructura;
   if (f.obs_extrusion === undefined) f.obs_extrusion = obs;
+  if (f.salidas_extrusion === undefined) f.salidas_extrusion = salidas;
   
   // Calcular medidas previstas usando los datos del producto + selección actual
   const productoTmp = {
@@ -26583,7 +26680,8 @@ function renderBloqueConfigExtrusion(f, p) {
     largo: p?.largo || 0,
     calibre: p?.calibre || 0,
     tipo_sellado: tipoSel,
-    estructura_rollo_ext: estructura
+    estructura_rollo_ext: estructura,
+    salidas_extrusion: salidas
   };
   const medidas = calcularMedidasRolloExt(productoTmp);
   
@@ -26632,14 +26730,35 @@ function renderBloqueConfigExtrusion(f, p) {
         </div>
       `}
       
+      <!-- 🆕 Selector "Salidas" (solo aplica a BR y PEL: extruir 1 rollo grande, cortar en bolseo) -->
+      ${(tipoSel === 'BOLSA_ROLLO' || tipoSel === 'PELICULA') && estructura ? `
+        <div class="field" style="margin-bottom:10px;padding:10px;background:#fff7ed;border:1.5px solid #fb923c;border-radius:8px;">
+          <label class="field-label" style="color:#9a3412;font-weight:800;">
+            🔀 ¿Cuántos rollos salen del rollo madre?
+            <span style="font-weight:500;color:#9a3412;font-size:10px;">El corte longitudinal se hace en BOLSEO</span>
+          </label>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:6px;">
+            ${[1, 2, 3, 4, 5].map(n => `
+              <button type="button" onclick="window.setSalidasExtrusion(${n})" style="padding:10px;background:${(salidas === n) ? '#ea580c' : '#fff'};color:${(salidas === n) ? '#fff' : '#9a3412'};border:1.5px solid ${(salidas === n) ? '#ea580c' : '#fed7aa'};border-radius:6px;cursor:pointer;font-weight:800;font-size:14px;">
+                ${n}${n === 1 ? ' (un rollo)' : ''}
+              </button>
+            `).join('')}
+          </div>
+          <div style="font-size:10.5px;color:#9a3412;margin-top:6px;line-height:1.4;">
+            Si seleccionas <strong>2</strong> ó <strong>3</strong>: extrusión hace 1 rollo ancho (= ancho_producto × salidas), bolseo lo corta longitudinalmente en N rollos del ancho del producto.
+          </div>
+        </div>
+      ` : ''}
+      
       <!-- Medidas calculadas del rollo -->
       ${medidas && medidas.descripcion ? `
         <div style="margin-top:12px;padding:12px;background:#0f172a;color:#fff;border-radius:8px;">
           <div style="font-size:11px;font-weight:800;letter-spacing:0.05em;opacity:0.85;margin-bottom:8px;">📐 MEDIDAS A EXTRUIR (CALCULADAS AUTOMÁTICAMENTE)</div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          <div style="display:grid;grid-template-columns:repeat(${medidas.salidas > 1 ? 4 : 3},1fr);gap:10px;">
             <div>
               <div style="font-size:9.5px;opacity:0.75;font-weight:700;">ANCHO DEL ROLLO</div>
               <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+              ${medidas.salidas > 1 ? `<div style="font-size:9px;opacity:0.7;margin-top:2px;">${p.ancho}×${medidas.salidas}</div>` : ''}
             </div>
             <div>
               <div style="font-size:9.5px;opacity:0.75;font-weight:700;">FUELLE</div>
@@ -26649,8 +26768,15 @@ function renderBloqueConfigExtrusion(f, p) {
               <div style="font-size:9.5px;opacity:0.75;font-weight:700;">CALIBRE</div>
               <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
             </div>
+            ${medidas.salidas > 1 ? `
+              <div>
+                <div style="font-size:9.5px;opacity:0.75;font-weight:700;">SALIDAS EN BOLSEO</div>
+                <div style="font-size:22px;font-weight:900;color:#fb923c;">${medidas.salidas} rollos</div>
+                <div style="font-size:9px;opacity:0.7;margin-top:2px;">de ${p.ancho} mm c/u</div>
+              </div>
+            ` : ''}
           </div>
-          <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;">
+          <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;line-height:1.4;">
             💡 ${medidas.observacion}
           </div>
         </div>
@@ -26679,6 +26805,12 @@ window.setTipoSellado = (codigo) => {
 window.setEstructuraRollo = (codigo) => {
   if (!state.modalForm) return;
   state.modalForm.estructura_rollo_ext = codigo;
+  _capturarFormPT();
+  render();
+};
+window.setSalidasExtrusion = (n) => {
+  if (!state.modalForm) return;
+  state.modalForm.salidas_extrusion = Math.max(1, Number(n) || 1);
   _capturarFormPT();
   render();
 };
@@ -28767,6 +28899,7 @@ window.crearProductoPT = async () => {
       num_tintas: Number(f.num_tintas) || 0,
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
+      salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
       obs_extrusion: f.obs_extrusion || '',
       obs_tecnicas: f.obs_tecnicas || '',
       presentacion,
@@ -28880,6 +29013,7 @@ window.guardarProductoPT = async (codigo) => {
       num_tintas: Number(f.num_tintas) || 0,
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
+      salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
       obs_extrusion: f.obs_extrusion || '',
       obs_tecnicas: f.obs_tecnicas || '',
       num_capas: Number(f.num_capas) || 1,
@@ -30842,7 +30976,10 @@ window.confirmarLiberarCalidad = async (odpId) => {
     const med = f.mediciones || {};
     const productoCal = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
     const tieneFuelle = productoCal && Number(productoCal.fuelle) > 0;
-    const camposObligatorios = ['ancho', 'largo', 'calibre_max', 'calibre_moda', 'calibre_min'];
+    const tieneLargo = productoCal && Number(productoCal.largo) > 0;
+    // Ancho y calibre siempre obligatorios
+    const camposObligatorios = ['ancho', 'calibre_max', 'calibre_moda', 'calibre_min'];
+    if (tieneLargo) camposObligatorios.push('largo');  // Solo si producto tiene largo definido (no para películas/rollos)
     if (tieneFuelle) camposObligatorios.push('fuelle_derecho', 'fuelle_izquierdo');
     // 🆕 Piezas por paquete solo si UM aplica (pz/pza/millar)
     const umVal = (odp.um || 'kg').toLowerCase();
