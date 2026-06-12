@@ -711,7 +711,9 @@ const TOLERANCIAS = {
   MERMA_MAX_PCT: 0.03,        // 3% (merma máxima en procesos posteriores)
   // Calidad final (sobre cantidad solicitada original)
   CAL_FALTANTE_PCT: 0.03,     // 3% (faltante tolerable: aún libera TOTAL)
-  CAL_EXTRA_PCT: 0.05         // 5% (extra tolerable: aún libera TOTAL)
+  CAL_EXTRA_PCT: 0.05,        // 5% (extra tolerable: aún libera TOTAL)
+  // 🆕 Variabilidad de peso (calibre real puede diferir del teórico)
+  PESO_VARIABILIDAD_PCT: 0.08 // 8% (tolerancia entre kg teórico calculado vs kg real)
 };
 window.TOLERANCIAS = TOLERANCIAS;
 
@@ -8947,7 +8949,7 @@ function modalCapturarTurno() {
                     <input class="input" id="ct-prod" type="number" min="0" step="${stepCapt}" value="${f.producido_um || ''}" oninput="window.modalFormSetSilent('producido_um', this.value); if(document.getElementById('ct-prod-kg-disp')) document.getElementById('ct-prod-kg-disp').textContent = window.fmtNum((Number(this.value)||0) * ${pesoUnidad});" placeholder="0" style="font-size:18px;font-weight:800;" />
                     ${umCapt !== 'kg' && pesoUnidad > 0 ? `
                       <div style="font-size:10.5px;color:#475569;margin-top:4px;" id="ct-prod-conv">
-                        ≈ <strong id="ct-prod-kg-disp">${f.producido_um ? fmtNum((Number(f.producido_um) || 0) * pesoUnidad) : '0'}</strong> kg
+                        ≈ <strong id="ct-prod-kg-disp">${f.producido_um ? fmtNum((Number(f.producido_um) || 0) * pesoUnidad) : '0'}</strong> kg <span style="color:#94a3b8;font-style:italic;">(teórico · puede variar ±${(TOLERANCIAS.PESO_VARIABILIDAD_PCT*100).toFixed(0)}%)</span>
                       </div>
                     ` : ''}
                   </div>
@@ -26363,6 +26365,10 @@ function modalLiberarCalidad() {
   const procesosCompletados = odp.procesos_completados || [];
   const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
   
+  // 🆕 Producto del catálogo para conocer su empaque estándar
+  const productoLib = state.productos_pt.find(pp => pp.codigo === odp.producto_codigo);
+  const piezasPorPaqStd = Number(productoLib?.piezas_por_paq) || 0;
+  
   // Inicializar form
   if (!state.modalForm) {
     state.modalForm = {
@@ -26370,7 +26376,8 @@ function modalLiberarCalidad() {
       num_tarimas: 1,
       peso_tarima_unit: 25,
       // GLOBAL: contenido por paquete (numérico, en la UM del producto)
-      contenido_por_paquete: '',
+      // 🆕 Pre-llenar con el empaque estándar del producto si existe
+      contenido_por_paquete: piezasPorPaqStd > 0 ? piezasPorPaqStd : '',
       // Lista de tarimas (cada una: paquetes completos + sueltos + pesos)
       tarimas_data: [],
       decision: 'pendiente',
@@ -26386,7 +26393,7 @@ function modalLiberarCalidad() {
         calibre_max: '',
         calibre_moda: '',
         calibre_min: '',
-        piezas_por_paq: '',
+        piezas_por_paq: piezasPorPaqStd > 0 ? piezasPorPaqStd : '',
         resultado_resina: 'Cumple con la especificación',
         resultado_aditivo: 'Cumple con la especificación',
         resultado_pigmento: 'N/A',
@@ -26494,6 +26501,63 @@ function modalLiberarCalidad() {
             ${odp.descripcion || ''}
           </div>
           
+          ${(() => {
+            // 🆕 Banner de empaque del producto — guía para hacer la relación
+            const cantSugerida = Number(f.cantidad_aceptada) || cantidadProducida;
+            const numTSug = Number(f.num_tarimas) || 1;
+            
+            if (piezasPorPaqStd > 0 && um === 'pza') {
+              // Producto en piezas con empaque estándar
+              const totalPaqs = Math.floor(cantSugerida / piezasPorPaqStd);
+              const totalSueltos = cantSugerida - (totalPaqs * piezasPorPaqStd);
+              const paqsPorTarima = Math.floor(totalPaqs / numTSug);
+              const restoPaqs = totalPaqs - (paqsPorTarima * numTSug);
+              
+              return `
+                <div style="padding:12px;background:linear-gradient(135deg,#eff6ff 0%,#dbeafe 100%);border:2px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                    <span style="font-size:20px;">📦</span>
+                    <strong style="color:#1e40af;font-size:13px;">Empaque estándar del producto</strong>
+                  </div>
+                  <div style="font-size:13px;color:#1e3a8a;line-height:1.6;">
+                    <strong>${fmtNum(piezasPorPaqStd)} pza/paq</strong> · 
+                    Para <strong>${fmtNum(cantSugerida)} pza</strong> producidas →
+                    <strong style="background:#fff;padding:2px 8px;border-radius:4px;border:1px solid #93c5fd;">${fmtNum(totalPaqs)} paquetes${totalSueltos > 0 ? ` + ${fmtNum(totalSueltos)} sueltas` : ''}</strong>
+                  </div>
+                  ${numTSug > 1 ? `
+                    <div style="font-size:11.5px;color:#475569;margin-top:6px;">
+                      Distribución sugerida en <strong>${numTSug} tarimas</strong>: 
+                      ${restoPaqs === 0 
+                        ? `${numTSug} × ${fmtNum(paqsPorTarima)} paquetes c/u`
+                        : `${numTSug - restoPaqs} tarimas × ${fmtNum(paqsPorTarima)} paqs + ${restoPaqs} tarimas × ${fmtNum(paqsPorTarima + 1)} paqs`
+                      }${totalSueltos > 0 ? ` (+ ${fmtNum(totalSueltos)} sueltas en última tarima)` : ''}
+                    </div>
+                  ` : ''}
+                  ${(productoLib?.peso_paq || productoLib?.kg_x_paq) ? `
+                    <div style="font-size:11px;color:#64748b;margin-top:6px;">
+                      Peso del paquete (referencia): <strong>${fmtNum(productoLib.peso_paq || productoLib.kg_x_paq)} kg</strong>
+                    </div>
+                  ` : ''}
+                </div>
+              `;
+            } else if (piezasPorPaqStd > 0) {
+              // Producto NO en piezas pero con empaque estándar (info de referencia)
+              return `
+                <div style="padding:10px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;margin-bottom:14px;font-size:12px;color:#1e40af;">
+                  📦 <strong>Empaque estándar del producto:</strong> ${fmtNum(piezasPorPaqStd)} pza/paq
+                </div>
+              `;
+            } else {
+              // Producto sin empaque estándar definido
+              return `
+                <div style="padding:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;margin-bottom:14px;font-size:11.5px;color:#991b1b;">
+                  ⚠ El producto <strong>${odp.producto_codigo}</strong> no tiene <em>piezas por paquete</em> definidas en el catálogo. Captura el contenido manualmente o 
+                  <a href="javascript:void(0)" onclick="cerrarModal();state.vista='productos_pt';state.busquedaProd='${odp.producto_codigo}';render();" style="color:#1d4ed8;font-weight:700;text-decoration:underline;">edita el producto →</a>
+                </div>
+              `;
+            }
+          })()}
+          
           <!-- Resumen producción -->
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;">
             <div style="padding:8px;background:#f8fafc;border-radius:8px;text-align:center;">
@@ -26542,9 +26606,9 @@ function modalLiberarCalidad() {
               
               <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:8px;align-items:end;">
                 <div>
-                  <label class="field-label" style="font-size:10px;">Contenido por paquete (en ${UM_LABELS[um]})</label>
-                  <input class="input form-cal" data-field="contenido_por_paquete" type="number" min="0" step="${stepCant}" value="${f.contenido_por_paquete}" placeholder="${um === 'pza' ? 'Ej: 250 ó 2500' : um === 'millar' ? 'Ej: 1 (= 1 millar/paq)' : um === 'kg' ? 'Ej: 25 (= 25 kg/paq)' : ''}" autocomplete="off" />
-                  <div style="font-size:9px;color:#94a3b8;margin-top:2px;">${um === 'pza' ? 'Cuántas piezas trae cada paquete' : um === 'millar' ? 'Cuántos millares trae cada paquete' : um === 'kg' ? 'Cuántos kg trae cada paquete' : ''}</div>
+                  <label class="field-label" style="font-size:10px;">Contenido por paquete (en ${UM_LABELS[um]})${piezasPorPaqStd > 0 ? ` <span style="background:#16a34a;color:#fff;padding:1px 5px;border-radius:4px;font-size:9px;margin-left:4px;">Estándar: ${fmtNum(piezasPorPaqStd)}</span>` : ''}</label>
+                  <input class="input form-cal" data-field="contenido_por_paquete" type="number" min="0" step="${stepCant}" value="${f.contenido_por_paquete}" placeholder="${piezasPorPaqStd > 0 ? `Estándar: ${piezasPorPaqStd}` : (um === 'pza' ? 'Ej: 250 ó 2500' : um === 'millar' ? 'Ej: 1 (= 1 millar/paq)' : um === 'kg' ? 'Ej: 25 (= 25 kg/paq)' : '')}" autocomplete="off" />
+                  <div style="font-size:9px;color:#94a3b8;margin-top:2px;">${piezasPorPaqStd > 0 ? `✓ Pre-llenado del catálogo. Puedes ajustarlo si este lote va diferente.` : (um === 'pza' ? 'Cuántas piezas trae cada paquete' : um === 'millar' ? 'Cuántos millares trae cada paquete' : um === 'kg' ? 'Cuántos kg trae cada paquete' : '')}</div>
                 </div>
                 <div>
                   <label class="field-label" style="font-size:10px;">Núm. tarimas *</label>
