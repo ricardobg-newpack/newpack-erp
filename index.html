@@ -389,33 +389,57 @@ function calcularWaterfallLinea(linea) {
   const cantProducir = Number(linea.cantidad_producir) || Number(linea.cantidad_solicitada) || 0;
   
   // Para waterfall trabajamos en KG (más confiable que mezclar UM)
-  const kgPorTarima = (t) => Number(t.cantidad_kg) || 0;
+  // 🔧 FIX: las tarimas guardan peso_neto_kg / peso_neto (no cantidad_kg)
+  const kgPorTarima = (t) => Number(t.peso_neto_kg) || Number(t.peso_neto) || Number(t.cantidad_kg) || 0;
   
   // Suma de cantidad_asignada en todas las ODPs P-1 (no se duplica con P-2)
   const odpsP1 = odps.filter(o => !o.proceso_codigo || o.proceso_codigo === 'P-1');
   const odpsP2plus = odps.filter(o => o.proceso_codigo && o.proceso_codigo !== 'P-1');
   const kgAsignadosODPs = odpsP1.reduce((s, o) => s + (Number(o.cantidad_kg_produccion) || 0), 0);
   
-  // Etapas (kg por etapa)
-  const kgEnExtrusion = odps
-    .filter(o => ['programada','en_produccion'].includes(o.estatus) && (!o.proceso_codigo || o.proceso_codigo === 'P-1'))
-    .reduce((s, o) => s + (Number(o.kg_producidos_acumulado) || 0), 0);
-    
-  const kgEnProcesoSec = odpsP2plus
-    .filter(o => ['programada','en_produccion'].includes(o.estatus))
-    .reduce((s, o) => s + (Number(o.kg_producidos_acumulado) || 0), 0);
+  // 🔧 FIX: kg producidos = cantidad_producida_final_kg (si cerró) o suma de rollos (si activa)
+  const kgProducidoODP = (o) => {
+    if (Number(o.cantidad_producida_final_kg) > 0) return Number(o.cantidad_producida_final_kg);
+    // ODP activa: sumar rollos no anulados
+    return (state.rollos_extrusion || [])
+      .filter(r => r.odp_id === o.id && !r.anulado)
+      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  };
   
-  // Por tarimas
+  // kg ya convertidos en tarima (cualquier estatus)
+  const kgYaEnTarimas = tarimas.reduce((s, t) => s + kgPorTarima(t), 0);
+  
+  // kg producidos pero AÚN sin tarimar (en proceso, en rollos, esperando empaque)
+  const kgProducidoTotal = odps.reduce((s, o) => {
+    // Evitar doble conteo P-1 + P-2: solo contar la última etapa (P-2 si existe, sino P-1)
+    if (o.proceso_codigo === 'P-1' && odpsP2plus.some(h => h.odp_padre_id === o.id)) return s;
+    return s + kgProducidoODP(o);
+  }, 0);
+  
+  // Etapas (kg por etapa)
+  const odpsActivasP1 = odpsP1.filter(o => ['programada','en_produccion'].includes(o.estatus));
+  const odpsActivasSec = odpsP2plus.filter(o => ['programada','en_produccion'].includes(o.estatus));
+  
+  const kgEnExtrusion = odpsActivasP1.reduce((s, o) => s + kgProducidoODP(o), 0);
+  const kgEnProcesoSec = odpsActivasSec.reduce((s, o) => s + kgProducidoODP(o), 0);
+  
+  // Por tarimas — 🔧 FIX: estatus reales del sistema
   let kgPteCalidad = 0, kgPlanta = 0, kgTransito = 0, kgCedis = 0, kgEmbarcada = 0, kgEntregada = 0;
   for (const t of tarimas) {
     const k = kgPorTarima(t);
     switch (t.estatus) {
-      case 'pendiente_calidad': case 'en_calidad': kgPteCalidad += k; break;
-      case 'liberada': case 'en_almacen_planta': kgPlanta += k; break;
-      case 'en_transito_cedis_mty': case 'en_transito_cedis_mex': kgTransito += k; break;
-      case 'en_cedis_mty': case 'en_cedis_mex': kgCedis += k; break;
-      case 'embarcada': kgEmbarcada += k; break;
-      case 'entregada': kgEntregada += k; break;
+      case 'pendiente_empaque': case 'pendiente_calidad': case 'en_calidad': 
+        kgPteCalidad += k; break;
+      case 'liberada_empaque': case 'liberada': case 'pendiente_almacen': case 'en_almacen_planta': 
+        kgPlanta += k; break;
+      case 'en_transito': case 'en_transito_cedis': case 'en_transito_cedis_mty': case 'en_transito_cedis_mex': 
+        kgTransito += k; break;
+      case 'en_cedis_mty': case 'en_cedis_mex': 
+        kgCedis += k; break;
+      case 'embarcada': 
+        kgEmbarcada += k; break;
+      case 'entregada': 
+        kgEntregada += k; break;
     }
   }
   
@@ -449,6 +473,106 @@ function calcularWaterfallLinea(linea) {
   };
 }
 window.calcularWaterfallLinea = calcularWaterfallLinea;
+
+// ============================================================
+// 🆕 FIX — SINCRONIZACIÓN ODP ← TARIMAS
+// ============================================================
+// Cuando las tarimas avanzan (CEDIS, embarque, entrega), la ODP debe reflejar
+// el avance. El estatus de la ODP = la etapa de su tarima MÁS ATRASADA.
+const RANK_TARIMA = {
+  pendiente_empaque: 0, pendiente_calidad: 0, en_calidad: 0,
+  liberada_empaque: 1, liberada: 1, pendiente_almacen: 1, en_almacen_planta: 1,
+  en_transito: 2, en_transito_cedis: 2, en_transito_cedis_mty: 2,
+  en_cedis_mty: 3,
+  en_transito_cedis_mex: 4,
+  en_cedis_mex: 5,
+  embarcada: 6,
+  entregada: 7
+};
+const ESTATUS_ODP_POR_RANK = {
+  1: 'en_almacen_planta',
+  2: 'en_transito_cedis_mty',
+  3: 'en_cedis_mty',
+  4: 'en_transito_cedis_mex',
+  5: 'en_cedis_mex',
+  6: 'embarcada',
+  7: 'entregada'
+};
+
+// Calcula el estatus que DEBERÍA tener la ODP según sus tarimas. null = no tocar.
+window.calcularEstatusODPPorTarimas = (odpId) => {
+  const tarimas = (state.tarimas || []).filter(t => 
+    (t.odp_id === odpId) && t.activo !== false && t.estatus !== 'rechazada'
+  );
+  if (tarimas.length === 0) return null;
+  
+  // Etapa mínima (la tarima más atrasada manda)
+  let minRank = 99;
+  for (const t of tarimas) {
+    const r = RANK_TARIMA[t.estatus];
+    if (r === undefined) continue;
+    if (r < minRank) minRank = r;
+  }
+  if (minRank === 99 || minRank === 0) return null; // sin info o aún en calidad — la ODP maneja eso
+  
+  return ESTATUS_ODP_POR_RANK[minRank] || null;
+};
+
+// Sincroniza una o varias ODPs con el avance de sus tarimas
+window.sincronizarODPsDeTarimas = async (odpIds) => {
+  const ids = [...new Set((odpIds || []).filter(Boolean))];
+  let actualizadas = 0;
+  for (const odpId of ids) {
+    try {
+      const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+      if (!odp) continue;
+      // No tocar ODPs canceladas/rechazadas ni las que aún están en producción/calidad
+      if (['cancelada','rechazada','pendiente_planeacion','programada','en_produccion','pendiente_calidad','esperando_padre'].includes(odp.estatus)) continue;
+      
+      const nuevoEstatus = window.calcularEstatusODPPorTarimas(odpId);
+      if (!nuevoEstatus || nuevoEstatus === odp.estatus) continue;
+      
+      // Solo avanzar, nunca retroceder
+      const rankActual = Object.entries(ESTATUS_ODP_POR_RANK).find(([, v]) => v === odp.estatus)?.[0];
+      const rankNuevo = Object.entries(ESTATUS_ODP_POR_RANK).find(([, v]) => v === nuevoEstatus)?.[0];
+      if (rankActual && rankNuevo && Number(rankNuevo) <= Number(rankActual)) continue;
+      
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        estatus: nuevoEstatus,
+        estatus_sincronizado_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      actualizadas++;
+    } catch (e) {
+      console.warn(`No se pudo sincronizar ODP ${odpId}:`, e.message);
+    }
+  }
+  return actualizadas;
+};
+
+// 🔧 Re-sincronizar TODAS las ODPs históricas (botón admin para arreglar las que quedaron atoradas)
+window.sincronizarTodasLasODPs = async () => {
+  const u = state.user || {};
+  if (!['CEO','ADMIN'].includes(u.depto) && u.rol !== 'admin') {
+    toast('Solo CEO/ADMIN', 'error');
+    return;
+  }
+  if (!confirm('🔧 Esto va a revisar TODAS las ODPs activas y actualizar su estatus según el avance real de sus tarimas (CEDIS, embarcada, entregada).\n\n¿Continuar?')) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const candidatas = (state.ordenes_produccion || []).filter(o => 
+      !o.archivada && 
+      !['cancelada','rechazada','entregada','completada','pendiente_planeacion','programada','en_produccion','pendiente_calidad','esperando_padre'].includes(o.estatus)
+    );
+    const n = await window.sincronizarODPsDeTarimas(candidatas.map(o => o.id));
+    toast(`✅ ${n} ODP(s) sincronizadas con sus tarimas`);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
 
 // Renderiza modal de seguimiento de un pedido completo (todas sus líneas)
 window.abrirWaterfallPedido = (pedidoId) => {
@@ -2901,6 +3025,21 @@ function renderDashboard() {
           </div>
           <button onclick="window.importarClientesMasivo()" style="background:#1e40af;color:#fff;border:none;padding:12px 20px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;white-space:nowrap;">
             📥 IMPORTAR CLIENTES
+          </button>
+        </div>
+      </div>
+      
+      <!-- 🆕 PANEL: SINCRONIZAR ODPs CON TARIMAS -->
+      <div class="panel" style="margin-bottom:18px;border:2px solid #0e7490;background:#ecfeff;">
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div style="flex:1;min-width:220px;">
+            <div style="font-size:12.5px;color:#155e75;line-height:1.5;">
+              <strong>🔧 Sincronizar estatus de ODPs con sus tarimas.</strong>
+              <br>Si en Seguimiento aparecen pedidos "En logística" que ya fueron entregados, este botón actualiza las ODPs según el avance real de sus tarimas (CEDIS / embarcada / entregada).
+            </div>
+          </div>
+          <button onclick="window.sincronizarTodasLasODPs()" style="background:#0e7490;color:#fff;border:none;padding:12px 20px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;white-space:nowrap;">
+            🔧 SINCRONIZAR ODPs
           </button>
         </div>
       </div>
@@ -26569,6 +26708,17 @@ window.confirmarCargaOV = async (ovId) => {
     }
     
     await batch.commit();
+    
+    // 🆕 FIX — Sincronizar el estatus de las ODPs (→ embarcada)
+    try {
+      const odpIdsEmb = (ov.tarimas_ids || [])
+        .map(tid => (state.tarimas || []).find(t => t.id === tid)?.odp_id)
+        .filter(Boolean);
+      if (odpIdsEmb.length > 0) {
+        setTimeout(() => window.sincronizarODPsDeTarimas(odpIdsEmb), 1500);
+      }
+    } catch (eS) { console.warn(eS); }
+    
     toast(`🚚 ${ov.folio} ENVIADA al cliente`);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
@@ -26628,6 +26778,23 @@ window.marcarOVEntregada = async (ovId) => {
     }
     
     await batch.commit();
+    
+    // 🆕 FIX — Sincronizar el estatus de las ODPs con sus tarimas entregadas
+    try {
+      const odpIdsAfectadas = (ov.tarimas_ids || [])
+        .map(tid => (state.tarimas || []).find(t => t.id === tid)?.odp_id)
+        .filter(Boolean);
+      if (odpIdsAfectadas.length > 0) {
+        // Pequeño delay para que el listener actualice state.tarimas con el nuevo estatus
+        setTimeout(async () => {
+          const n = await window.sincronizarODPsDeTarimas(odpIdsAfectadas);
+          if (n > 0) console.log(`✓ ${n} ODP(s) sincronizadas tras entrega`);
+        }, 1500);
+      }
+    } catch (eSync) {
+      console.warn('Error sincronizando ODPs tras entrega:', eSync);
+    }
+    
     toast(`🏁 ${ov.folio} ENTREGADA`);
   } catch (e) {
     console.error('Error marcando entregada:', e);
@@ -27208,6 +27375,16 @@ window._abrirRecepcionOTI_legacy = async (otiId) => {
     });
     
     await batch.commit();
+    
+    // 🆕 FIX — Sincronizar el estatus de las ODPs (→ en_cedis_mty)
+    try {
+      const odpIdsCedis = (oti.tarimas_ids || [])
+        .map(tid => (state.tarimas || []).find(t => t.id === tid)?.odp_id)
+        .filter(Boolean);
+      if (odpIdsCedis.length > 0) {
+        setTimeout(() => window.sincronizarODPsDeTarimas(odpIdsCedis), 1500);
+      }
+    } catch (eS) { console.warn(eS); }
     
     let msg = `✅ ${oti.folio} recibido · ${oti.num_tarimas} tarima(s) en CEDIS-MTY`;
     if (ovsActivar.length > 0) {
