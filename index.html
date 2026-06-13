@@ -592,6 +592,28 @@ function renderModalWaterfallPedido() {
   const lineas = window.pedidoLineas(state.waterfallPedidoId);
   const waterfalls = lineas.map(l => calcularWaterfallLinea(l)).filter(Boolean);
   
+  // 🆕 Resumen global del pedido
+  const totKgPedidos = waterfalls.reduce((s, w) => s + w.kg_pedidos, 0);
+  const totKgEntregados = waterfalls.reduce((s, w) => s + w.kg_entregada, 0);
+  const totKgCedis = waterfalls.reduce((s, w) => s + w.kg_cedis + w.kg_embarcada, 0);
+  const totKgPlanta = waterfalls.reduce((s, w) => s + w.kg_planta + w.kg_pte_calidad + w.kg_transito, 0);
+  const totKgFaltante = waterfalls.reduce((s, w) => s + w.kg_pte_fabricar, 0);
+  const pctGlobal = totKgPedidos > 0 ? Math.min(100, Math.round((totKgEntregados / totKgPedidos) * 100)) : 0;
+  
+  // 🆕 Fechas y atraso
+  const fechaProm = pedido.fecha_requerida || null;
+  let diasAtraso = 0;
+  if (fechaProm && pctGlobal < 100) {
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const fp = new Date(fechaProm + 'T00:00:00');
+    diasAtraso = Math.floor((hoy - fp) / 86400000);
+  }
+  
+  // 🆕 Remisiones vinculadas al pedido
+  const remisionesPI = (state.ordenes_venta || []).filter(o => 
+    o.pedido_id === state.waterfallPedidoId && o.remision
+  ).map(o => ({ folio: o.remision, ov: o.folio, estatus: o.estatus, transportista: o.transportista || '' }));
+  
   return `
     <div class="modal-bg" onclick="if(event.target===this)window.cerrarWaterfallPedido()">
       <div class="modal" style="max-width:980px;max-height:92vh;">
@@ -603,6 +625,64 @@ function renderModalWaterfallPedido() {
           <button class="icon-btn" onclick="window.cerrarWaterfallPedido()">✗</button>
         </div>
         <div class="modal-body">
+        
+          <!-- 🆕 RESUMEN GLOBAL -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px;margin-bottom:14px;">
+            <div style="background:#f8fafc;border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;">PEDIDO TOTAL</div>
+              <div style="font-size:20px;font-weight:800;color:#0f172a;">${fmtNum(totKgPedidos)} kg</div>
+            </div>
+            <div style="background:#eff6ff;border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:10px;color:#1e40af;font-weight:700;">ENTREGADO</div>
+              <div style="font-size:20px;font-weight:800;color:#1e40af;">${fmtNum(totKgEntregados)} kg</div>
+            </div>
+            <div style="background:#f0fdf4;border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:10px;color:#15803d;font-weight:700;">EN CEDIS/RUTA</div>
+              <div style="font-size:20px;font-weight:800;color:#15803d;">${fmtNum(totKgCedis)} kg</div>
+            </div>
+            <div style="background:#fef3c7;border-radius:10px;padding:12px;text-align:center;">
+              <div style="font-size:10px;color:#92400e;font-weight:700;">EN PLANTA</div>
+              <div style="font-size:20px;font-weight:800;color:#92400e;">${fmtNum(totKgPlanta)} kg</div>
+            </div>
+            ${totKgFaltante > 0 ? `
+              <div style="background:#fee2e2;border-radius:10px;padding:12px;text-align:center;">
+                <div style="font-size:10px;color:#991b1b;font-weight:700;">POR FABRICAR</div>
+                <div style="font-size:20px;font-weight:800;color:#991b1b;">${fmtNum(totKgFaltante)} kg</div>
+              </div>
+            ` : ''}
+          </div>
+          
+          <!-- 🆕 Barra global + fechas -->
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+              <div style="font-size:12px;color:#475569;">
+                ${fechaProm ? `🎯 Promesa: <strong>${fechaProm}</strong>` : 'Sin fecha promesa'}
+                ${diasAtraso > 0 ? ` · <span style="color:#dc2626;font-weight:800;">⚠ ${diasAtraso} día(s) de atraso</span>` : ''}
+                ${diasAtraso < 0 && pctGlobal < 100 ? ` · <span style="color:#16a34a;font-weight:700;">quedan ${-diasAtraso} día(s)</span>` : ''}
+              </div>
+              <div style="font-size:15px;font-weight:800;color:${pctGlobal === 100 ? '#16a34a' : '#1e40af'};">${pctGlobal}% entregado</div>
+            </div>
+            <div style="height:10px;background:#f1f5f9;border-radius:99px;overflow:hidden;">
+              <div style="height:100%;width:${pctGlobal}%;background:${pctGlobal === 100 ? '#16a34a' : '#3b82f6'};border-radius:99px;"></div>
+            </div>
+          </div>
+          
+          <!-- 🆕 Remisiones del pedido -->
+          ${remisionesPI.length > 0 ? `
+            <div style="background:#f8fafc;border-radius:10px;padding:10px 14px;margin-bottom:14px;">
+              <div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px;">📄 Remisiones / Embarques (${remisionesPI.length})</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${remisionesPI.map(r => `
+                  <span style="background:#fff;border:1px solid #cbd5e1;padding:4px 10px;border-radius:8px;font-size:10.5px;">
+                    <strong class="text-mono">${r.folio}</strong> · ${r.ov} · 
+                    <span style="color:${r.estatus === 'entregada' ? '#16a34a' : r.estatus === 'enviada' ? '#0891b2' : '#92400e'};font-weight:700;">${r.estatus}</span>
+                    ${r.transportista ? ` · ${r.transportista}` : ''}
+                  </span>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+          
           ${waterfalls.length === 0 ? `
             <div style="padding:40px;text-align:center;color:#64748b;">Este pedido no tiene líneas.</div>
           ` : waterfalls.map(w => renderTarjetaWaterfallLinea(w)).join('')}
@@ -631,16 +711,27 @@ function renderTarjetaWaterfallLinea(w) {
   
   const totalSegs = segs.reduce((s, x) => s + x.kg, 0) || 1;
   
+  // 🆕 Mapeo de estatus de tarima → label corto y color
+  const estTarLbl = {
+    pendiente_empaque: ['⏳ Pte empaque', '#92400e'], pendiente_calidad: ['⏳ Pte calidad', '#92400e'],
+    liberada_empaque: ['🟢 Liberada', '#15803d'], en_almacen_planta: ['🏭 Planta', '#92400e'],
+    en_transito: ['🚚 Tránsito', '#0891b2'], en_transito_cedis_mty: ['🚚 →MTY', '#0891b2'],
+    en_transito_cedis_mex: ['🚚 →MEX', '#0891b2'],
+    en_cedis_mty: ['📦 CEDIS-MTY', '#15803d'], en_cedis_mex: ['📦 CEDIS-MEX', '#15803d'],
+    embarcada: ['🚛 Embarcada', '#0891b2'], entregada: ['✅ Entregada', '#1e40af'],
+    rechazada: ['🔴 Rechazada', '#dc2626'], no_recibida: ['⚠ No recibida', '#dc2626']
+  };
+  
   return `
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px;margin-bottom:12px;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
         <div>
-          <div style="font-weight:700;font-size:13px;color:#0f172a;">${w.linea.producto_codigo}</div>
+          <div style="font-weight:700;font-size:13px;color:#0f172a;" class="text-mono">${w.linea.producto_codigo}</div>
           <div style="font-size:11px;color:#64748b;">${w.linea.descripcion || ''}</div>
         </div>
         <div style="text-align:right;">
           <div style="font-size:11px;color:#64748b;">Pidió</div>
-          <div style="font-weight:700;font-size:15px;">${w.qty_pedida} ${w.linea.um || ''} ≈ ${w.kg_pedidos} kg</div>
+          <div style="font-weight:700;font-size:15px;">${fmtNum(w.qty_pedida)} ${w.linea.um || ''} ≈ ${fmtNum(w.kg_pedidos)} kg</div>
           <div style="background:${w.pct_completado === 100 ? '#dcfce7' : '#dbeafe'};color:${w.pct_completado === 100 ? '#15803d' : '#1e40af'};font-size:10px;padding:2px 8px;border-radius:6px;display:inline-block;margin-top:4px;font-weight:700;">${w.pct_completado}% entregado</div>
         </div>
       </div>
@@ -648,16 +739,16 @@ function renderTarjetaWaterfallLinea(w) {
       <!-- Barra de progreso por etapa -->
       <div style="height:28px;background:#f1f5f9;border-radius:6px;overflow:hidden;display:flex;margin:10px 0 8px;">
         ${segs.map(s => `
-          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${s.kg} kg">${s.kg > totalSegs * 0.05 ? s.kg : ''}</div>
+          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${fmtNum(s.kg)} kg">${s.kg > totalSegs * 0.05 ? fmtNum(s.kg) : ''}</div>
         `).join('')}
       </div>
       
       <!-- Leyenda -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));gap:4px;margin-top:8px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(130px, 1fr));gap:4px;margin-top:8px;">
         ${segs.map(s => `
           <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
             <span style="width:10px;height:10px;background:${s.bg};border-radius:2px;flex-shrink:0;"></span>
-            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${s.kg} kg</strong></span>
+            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${fmtNum(s.kg)} kg</strong></span>
           </div>
         `).join('')}
       </div>
@@ -668,15 +759,47 @@ function renderTarjetaWaterfallLinea(w) {
           <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;">📋 ODPs vinculadas</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             ${[...w.odps_p1, ...w.odps_p2plus].map(o => `
-              <span style="background:#eff6ff;color:#1e40af;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;">${o.folio} · ${o.proceso_codigo || 'P-1'} · ${o.estatus}</span>
+              <span style="background:${o.es_odp_faltante ? '#fef3c7' : '#eff6ff'};color:${o.es_odp_faltante ? '#92400e' : '#1e40af'};padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;" title="${o.es_odp_faltante ? 'ODP de faltante: ' + (o.motivo_parcialidad || '') : ''}">${o.es_odp_faltante ? '🔁 ' : ''}${o.folio} · ${o.proceso_codigo || 'P-1'} · ${o.estatus}</span>
             `).join('')}
           </div>
         </div>
       ` : ''}
       
-      ${w.kg_pte_fabricar > 0 && (state.user?.depto === 'CS' || state.user?.depto === 'PLN' || state.user?.depto === 'CEO' || state.user?.rol === 'admin') ? `
+      <!-- 🆕 Detalle de tarimas (expandible) -->
+      ${w.tarimas.length > 0 ? `
+        <details style="margin-top:8px;">
+          <summary style="cursor:pointer;font-size:11px;color:#1e40af;font-weight:700;padding:4px 0;">📦 Ver ${w.tarimas.length} tarima(s) con detalle</summary>
+          <div style="margin-top:6px;overflow-x:auto;">
+            <table style="width:100%;font-size:10.5px;border-collapse:collapse;">
+              <thead><tr style="background:#f8fafc;color:#64748b;text-align:left;">
+                <th style="padding:5px 8px;">Tarima</th>
+                <th style="padding:5px 8px;">Lote</th>
+                <th style="padding:5px 8px;text-align:right;">Kg neto</th>
+                <th style="padding:5px 8px;">Estatus</th>
+                <th style="padding:5px 8px;">Almacén</th>
+              </tr></thead>
+              <tbody>
+                ${w.tarimas.map(t => {
+                  const [lbl, color] = estTarLbl[t.estatus] || [t.estatus, '#64748b'];
+                  return `
+                    <tr style="border-top:1px solid #f1f5f9;">
+                      <td style="padding:4px 8px;" class="text-mono">${t.codigo || ''}</td>
+                      <td style="padding:4px 8px;" class="text-mono">${t.lote_codigo || ''}</td>
+                      <td style="padding:4px 8px;text-align:right;font-weight:700;">${fmtNum(Number(t.peso_neto_kg) || Number(t.peso_neto) || 0)}</td>
+                      <td style="padding:4px 8px;color:${color};font-weight:700;">${lbl}</td>
+                      <td style="padding:4px 8px;color:#64748b;">${t.almacen_actual || ''}</td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ` : ''}
+      
+      ${w.kg_pte_fabricar > 0 && (state.user?.depto === 'CS' || state.user?.depto === 'KAM' || state.user?.depto === 'PLN' || state.user?.depto === 'CEO' || state.user?.rol === 'admin') ? `
         <div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
-          <div style="font-size:11px;color:#92400e;font-weight:600;">⚠ Faltan ${w.kg_pte_fabricar} kg por fabricar</div>
+          <div style="font-size:11px;color:#92400e;font-weight:600;">⚠ Faltan ${fmtNum(w.kg_pte_fabricar)} kg por fabricar</div>
           <button onclick="window.generarODPFaltante('${w.linea.id}')" style="background:#f59e0b;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">+ Generar ODP del faltante</button>
         </div>
       ` : ''}
@@ -684,9 +807,151 @@ function renderTarjetaWaterfallLinea(w) {
   `;
 }
 
-// Generar ODP para cubrir lo faltante de una línea (placeholder para F6)
+// 🆕 F6 — Generar ODP para cubrir lo faltante de una línea de pedido
 window.generarODPFaltante = async (lineaId) => {
-  toast('🚧 Función completa en F6 — por ahora crea manualmente la ODP desde Planeación', 'info');
+  const u = state.user || {};
+  if (!['CS','KAM','PLN','CEO','ADMIN'].includes(u.depto) && u.rol !== 'admin') {
+    toast('Solo CS/KAM/PLN/CEO pueden generar ODPs de faltante', 'error');
+    return;
+  }
+  
+  const linea = (state.pedido_lineas || []).find(l => l.id === lineaId);
+  if (!linea) { toast('Línea no encontrada', 'error'); return; }
+  
+  const w = window.calcularWaterfallLinea(linea);
+  if (!w || w.kg_pte_fabricar <= 0) { 
+    toast('Esta línea no tiene faltante por fabricar', 'info'); 
+    return; 
+  }
+  
+  const pedido = state.pedidos.find(p => p.id === linea.pedido_id);
+  if (!pedido) { toast('Pedido no encontrado', 'error'); return; }
+  
+  const producto = window.getProductoPT(linea.producto_codigo);
+  
+  // Convertir kg faltantes de regreso a la UM de la línea para mostrar coherencia
+  const um = (linea.um || 'kg').toLowerCase();
+  let cantFaltanteUM = w.kg_pte_fabricar;
+  if (um !== 'kg' && producto) {
+    const pesoPieza = window.calcularPesoPieza(producto) || 0;
+    if (pesoPieza > 0) {
+      if (um === 'pza') cantFaltanteUM = Math.round(w.kg_pte_fabricar / pesoPieza);
+      else if (um === 'millar') cantFaltanteUM = Number((w.kg_pte_fabricar / (pesoPieza * 1000)).toFixed(2));
+    }
+  }
+  
+  const motivo = prompt(
+    `🏭 GENERAR ODP DEL FALTANTE\n\n` +
+    `Pedido: ${pedido.folio} · ${pedido.cliente_nombre}\n` +
+    `Producto: ${linea.producto_codigo}\n` +
+    `Faltante: ${fmtNum(w.kg_pte_fabricar)} kg ≈ ${fmtNum(cantFaltanteUM)} ${um}\n\n` +
+    `Escribe el MOTIVO de la parcialidad (obligatorio):\n` +
+    `Ej: "Sobrecarga producción", "Material insuficiente", "Urgencia cliente"`
+  );
+  if (!motivo || !motivo.trim()) { toast('El motivo es obligatorio (regla R3)', 'error'); return; }
+  
+  if (!confirm(
+    `CONFIRMAR\n\n` +
+    `Se generará una ODP nueva por ${fmtNum(cantFaltanteUM)} ${um} (≈${fmtNum(w.kg_pte_fabricar)} kg)\n` +
+    `vinculada a la misma línea del pedido ${pedido.folio}.\n\n` +
+    `Motivo: ${motivo.trim()}\n\n¿Proceder?`
+  )) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const cantidadKg = w.kg_pte_fabricar;
+    const pesoMillar = window.calcularPesoMillar(producto);
+    const pesoPieza = window.calcularPesoPieza(producto);
+    const requiereSec = !!producto?.requiere_proceso_secundario;
+    const procSecCod = producto?.proceso_secundario_codigo || '';
+    
+    // ODP P-1 del faltante
+    const num1 = await siguienteFolio('odp');
+    const folioODP1 = 'ODP-' + String(num1).padStart(5, '0');
+    const ref1 = doc(collection(db, 'ordenes_produccion'));
+    await setDoc(ref1, {
+      folio: folioODP1,
+      pedido_id: linea.pedido_id,
+      pedido_folio: pedido.folio,
+      pedido_linea_id: lineaId,
+      cantidad_asignada: cantFaltanteUM,
+      proceso_codigo: 'P-1',
+      odp_padre_id: null,
+      es_odp_faltante: true,           // 🏷 marca de reposición/parcialidad
+      motivo_parcialidad: motivo.trim(),
+      cliente_codigo: pedido.cliente_codigo,
+      cliente_nombre: pedido.cliente_nombre,
+      producto_codigo: linea.producto_codigo,
+      descripcion: linea.descripcion,
+      cantidad: cantFaltanteUM,
+      um,
+      estatus: 'pendiente_planeacion',
+      cantidad_kg_produccion: cantidadKg,
+      peso_teorico_millar: pesoMillar || 0,
+      peso_teorico_pieza: pesoPieza || 0,
+      fecha_entrega_programada: pedido.fecha_requerida || null,
+      observaciones: `⚠ ODP de FALTANTE · ${motivo.trim()}`,
+      tipo_origen: 'pedido_cliente',
+      cedis_destino: pedido.cedis_asignado || 'CEDIS-MTY',
+      requiere_proceso_secundario: requiereSec,
+      creado_por: u.id || '',
+      creado_por_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp()
+    });
+    
+    const foliosGenerados = [folioODP1];
+    
+    // Si requiere proceso secundario → ODP hija en cascada
+    if (requiereSec && procSecCod) {
+      const num2 = await siguienteFolio('odp');
+      const folioODP2 = 'ODP-' + String(num2).padStart(5, '0');
+      await addDoc(collection(db, 'ordenes_produccion'), {
+        folio: folioODP2,
+        pedido_id: linea.pedido_id,
+        pedido_folio: pedido.folio,
+        pedido_linea_id: lineaId,
+        cantidad_asignada: cantFaltanteUM,
+        proceso_codigo: procSecCod,
+        odp_padre_id: ref1.id,
+        odp_padre_folio: folioODP1,
+        es_odp_faltante: true,
+        motivo_parcialidad: motivo.trim(),
+        cliente_codigo: pedido.cliente_codigo,
+        cliente_nombre: pedido.cliente_nombre,
+        producto_codigo: linea.producto_codigo,
+        descripcion: linea.descripcion,
+        cantidad: cantFaltanteUM,
+        um,
+        estatus: 'esperando_padre',
+        cantidad_kg_produccion: cantidadKg,
+        peso_teorico_millar: pesoMillar || 0,
+        peso_teorico_pieza: pesoPieza || 0,
+        fecha_entrega_programada: pedido.fecha_requerida || null,
+        observaciones: `Proceso secundario ${procSecCod} del faltante - depende de ${folioODP1}`,
+        tipo_origen: 'pedido_cliente',
+        cedis_destino: pedido.cedis_asignado || 'CEDIS-MTY',
+        created_at: serverTimestamp()
+      });
+      foliosGenerados.push(folioODP2);
+    }
+    
+    // Notificar a PLN para programar
+    await addDoc(collection(db, 'notificaciones'), {
+      titulo: `🏭 ODP de FALTANTE generada ${folioODP1}`,
+      mensaje: `${pedido.cliente_nombre} · ${linea.producto_codigo} · ${fmtNum(cantFaltanteUM)} ${um} (≈${fmtNum(cantidadKg)} kg) · Motivo: ${motivo.trim()}`,
+      depto_destino: 'PLN', tipo: 'warning', folio_ref: folioODP1,
+      leida: false, created_at: serverTimestamp()
+    });
+    
+    toast(`✅ ${foliosGenerados.join(' + ')} generada(s) por ${fmtNum(cantFaltanteUM)} ${um}`);
+    window.cerrarWaterfallPedido();
+    render();
+  } catch (e) {
+    console.error('Error generando ODP faltante:', e);
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
 };
 
 // ============================================================
@@ -27222,6 +27487,14 @@ window.confirmarCrearOTI = async () => {
     });
     await batch.commit();
     
+    // 🆕 FIX — Sincronizar el estatus de las ODPs (→ en_transito)
+    try {
+      const odpIdsTrans = tarimasSel.map(t => t.odp_id).filter(Boolean);
+      if (odpIdsTrans.length > 0) {
+        setTimeout(() => window.sincronizarODPsDeTarimas(odpIdsTrans), 1500);
+      }
+    } catch (eS) { console.warn(eS); }
+    
     // 🆕 Construir OTI completa para generar PDF auto-preview
     const otiGenerada = {
       id: otiRef.id,
@@ -36420,6 +36693,16 @@ window.confirmarRecepcionConciliada = async (otiId) => {
     });
     
     await batch.commit();
+    
+    // 🆕 FIX — Sincronizar el estatus de las ODPs (→ en_cedis_mty / en_cedis_mex)
+    try {
+      const odpIdsRec = (oti.tarimas_ids || [])
+        .map(tid => (state.tarimas || []).find(t => t.id === tid)?.odp_id)
+        .filter(Boolean);
+      if (odpIdsRec.length > 0) {
+        setTimeout(() => window.sincronizarODPsDeTarimas(odpIdsRec), 1500);
+      }
+    } catch (eS) { console.warn(eS); }
     
     // 🆕 Construir OTI completa con datos de recepción para PDF auto
     const otiRecibida = {
