@@ -2904,6 +2904,7 @@ function renderApp() {
         
         <div class="sidebar-section">General</div>
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
+        <button class="nav-item ${state.vista === 'centro_control' ? 'active' : ''}" data-vista="centro_control" style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;font-weight:800;">📊 Centro de Control</button>
         
         <div class="sidebar-section">Comercial</div>
         ${(['CS','KAM','CEO','ADMIN','COMP'].includes(u.depto) || esAdmin) ? `
@@ -2924,6 +2925,7 @@ function renderApp() {
         ` : ''}
         ${esPLN || esPRO ? `
           <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
+          <button class="nav-item ${state.vista === 'almacen_intermedio' ? 'active' : ''}" data-vista="almacen_intermedio">🧵 Almacén Intermedio</button>
           <button class="nav-item ${state.vista === 'peletizado' ? 'active' : ''}" data-vista="peletizado">♻️ Peletizado P-5</button>
         ` : ''}
         ${esCS || esKAM || esPLN || esPRO || esCAL || esCEO || esADMIN ? `
@@ -3143,6 +3145,8 @@ function tituloVista() {
     stock_mex: '📊 Inventario CEDIS-MEX',
     stock_producto: '📊 Inventario General CEDIS',
     peletizado: '♻️ Almacén Peletizado P-5',
+    almacen_intermedio: '🧵 Almacén Producto Intermedio',
+    centro_control: '📊 Centro de Control — KPIs por Área',
     maquinas: '🛠️ Máquinas de Producción',
     personal: '👷 Operadores y Supervisores',
     materias_primas: '🧪 Materias Primas, Aditivos y Pigmentos',
@@ -3166,6 +3170,7 @@ function tituloVista() {
 function renderVista() {
   const v = state.vista;
   if (v === 'dashboard') return renderDashboard();
+  if (v === 'centro_control') return renderCentroControl();
   if (v === 'clientes') return renderClientes();
   if (v === 'pedidos') return renderPedidos();
   if (v === 'productos_pt') return renderProductosPT();
@@ -3191,6 +3196,7 @@ function renderVista() {
   if (v === 'stock_mex') { state.filtros.stock_cedis = 'CEDIS-MEX'; return renderStockProducto(); }
   if (v === 'stock_producto') return renderStockProducto();
   if (v === 'peletizado') return renderPeletizado();
+  if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
   if (v === 'maquinas') return renderMaquinas();
   if (v === 'personal') return renderPersonal();
   if (v === 'materias_primas') return renderMateriasPrimas();
@@ -3572,10 +3578,10 @@ function renderProductosPT() {
                     <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#fee2e2;color:#dc2626;font-weight:700;">⚠ Falta</span>
                   `}
                 </td>
-                <td style="text-align:left;font-size:10px;max-width:170px;" title="${clisArr.map(c => c.codigo + ' — ' + c.nombre).join('\n')}">
+                <td style="text-align:left;font-size:10px;max-width:130px;" title="${clisArr.map(c => c.codigo + ' — ' + c.nombre).join('\n')}">
                   ${clis === 0 ? '<span style="color:#cbd5e1;">—</span>' : `
-                    ${clisArr.slice(0, 2).map(c => `<span style="display:inline-block;background:#eff6ff;color:#1e40af;padding:1px 6px;border-radius:5px;font-weight:600;margin:1px 2px 1px 0;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;">${(c.nombre || c.codigo).slice(0, 18)}</span>`).join('')}
-                    ${clis > 2 ? `<span style="color:#64748b;font-weight:700;">+${clis - 2}</span>` : ''}
+                    ${clisArr.slice(0, 3).map(c => `<span class="text-mono" style="display:inline-block;background:#eff6ff;color:#1e40af;padding:1px 5px;border-radius:4px;font-weight:700;margin:1px 2px 1px 0;">${c.codigo}</span>`).join('')}
+                    ${clis > 3 ? `<span style="color:#64748b;font-weight:700;">+${clis - 3}</span>` : ''}
                   `}
                 </td>
                 <td style="text-align:right;">
@@ -5774,6 +5780,10 @@ function renderKanbanMaquinas() {
     if (estatus === 'completada' || estatus === 'liberada' || estatus === 'pendiente_calidad') {
       porMaquina[key].completadas.push(odp);
     }
+    // ⏸ PAUSADA: REGRESA A LA COLA — la máquina queda libre para la siguiente orden
+    else if (procEst === 'pausado') {
+      porMaquina[key].en_cola.push(odp);
+    }
     // ⚙️ EN PROCESO: el proceso tiene capturas activas
     else if (procEst === 'en_proceso' || estatus === 'en_produccion' && procEst !== 'esperando' && procEst !== 'completado') {
       // Si tiene capturas en este proceso = en proceso
@@ -5791,9 +5801,13 @@ function renderKanbanMaquinas() {
   }
   
   // 🔢 Ordenar cada cola por prioridad_cola (menor = más arriba). 
-  // ODPs sin prioridad_cola van al final
+  // ⏸ PAUSADAS van hasta arriba (para no olvidarlas), luego por prioridad
   Object.keys(porMaquina).forEach(k => {
     porMaquina[k].en_cola.sort((a, b) => {
+      // Pausadas primero (visibles, pendientes de reanudar)
+      const pauA = a.proceso_estatus_actual === 'pausado' ? 0 : 1;
+      const pauB = b.proceso_estatus_actual === 'pausado' ? 0 : 1;
+      if (pauA !== pauB) return pauA - pauB;
       // Usar MAX_SAFE_INTEGER en vez de Infinity para evitar NaN en restas
       const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
       const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
@@ -6003,6 +6017,7 @@ function _renderTarjetaKanban(odp, columna, opts) {
         ${vencida ? `<span style="font-size:9px;font-weight:800;color:#dc2626;">🔴 VENCIDA</span>` : ''}
       </div>
       ${estadoBadge ? `<div style="margin-top:4px;display:inline-block;padding:2px 7px;background:${estadoBadge.bg};color:${estadoBadge.color};border-radius:99px;font-size:9.5px;font-weight:800;letter-spacing:0.02em;">${estadoBadge.txt}</div>` : ''}
+      <div style="margin-top:3px;">${window.flujoODP(odp).badge}</div>
       <div style="font-weight:700;color:#475569;margin-top:4px;font-size:11px;">${odp.producto_codigo || ''}</div>
       <div style="font-size:10px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${odp.producto_descripcion || ''}</div>
       <div style="display:flex;justify-content:space-between;margin-top:5px;font-size:10px;">
@@ -7371,7 +7386,7 @@ window.iniciarProduccionODP = async (odpId) => {
   }
 };
 
-// ⏸ PAUSAR producción con motivo
+// ⏸ PAUSAR producción con motivo — 🔧 FIX: modal con botones (el prompt confundía: pedía número y escribían texto)
 window.pausarODP = async (odpId) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
@@ -7379,49 +7394,76 @@ window.pausarODP = async (odpId) => {
     toast('Solo se pueden pausar ODPs en proceso', 'error');
     return;
   }
+  // Abrir modal de selección de motivo (botones grandes, sin prompt)
+  state.modal = 'pausar-odp';
+  state.modalData = odpId;
+  state.modalForm = { motivo_otro: '' };
+  render();
+};
+
+// Modal con botones de motivo de pausa
+function modalPausarODP() {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === state.modalData);
+  if (!odp) return '';
+  const f = state.modalForm || {};
   
-  // Pedir motivo con dropdown
-  const motivos = [
-    '1) Cambio de prioridad (parar para adelantar otra)',
-    '2) Falta de materia prima',
-    '3) Mantenimiento / paro mecánico',
-    '4) Cambio de medida / formato',
-    '5) Fin de turno',
-    '6) Falta de personal',
-    '7) Problema de calidad detectado',
-    '8) Otro'
+  const MOTIVOS_PAUSA = [
+    { codigo: 'Cambio de prioridad', icono: '🔀', desc: 'Parar para adelantar otra orden' },
+    { codigo: 'Falta de materia prima', icono: '📦', desc: 'No hay MP disponible' },
+    { codigo: 'Mantenimiento / paro mecánico', icono: '🔧', desc: 'Falla o servicio de máquina' },
+    { codigo: 'Cambio de medida', icono: '📐', desc: 'Ajuste de formato/medida' },
+    { codigo: 'Fin de turno', icono: '🕐', desc: 'Se terminó el turno' },
+    { codigo: 'Falta de personal', icono: '👤', desc: 'Sin operador disponible' },
+    { codigo: 'Problema de calidad', icono: '⚠️', desc: 'Defecto detectado en línea' },
   ];
-  const seleccion = prompt(
-    `⏸ PAUSAR ${odp.folio}\n\n` +
-    `Selecciona el motivo (escribe el número):\n\n` +
-    motivos.join('\n') + '\n\n' +
-    `Número:`
-  );
-  if (!seleccion) return;
   
-  const num = parseInt(seleccion.trim(), 10);
-  const motivosMap = {
-    1: 'Cambio de prioridad',
-    2: 'Falta de materia prima',
-    3: 'Mantenimiento / paro mecánico',
-    4: 'Cambio de medida',
-    5: 'Fin de turno',
-    6: 'Falta de personal',
-    7: 'Problema de calidad',
-    8: 'Otro'
-  };
-  let motivoTxt = motivosMap[num];
-  if (!motivoTxt) {
-    toast('Motivo inválido', 'error');
-    return;
-  }
-  
-  // Si es "Otro", pedir descripción adicional
-  if (num === 8) {
-    const det = prompt('Describe el motivo del paro:');
-    if (!det) return;
-    motivoTxt = `Otro: ${det.substring(0, 100)}`;
-  }
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">⏸ Pausar ${odp.folio}</h2>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">${odp.producto_codigo} · ${odp.cliente_nombre || ''}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">✗</button>
+        </div>
+        <div class="modal-body" style="padding:18px 22px;">
+          <div style="font-size:13px;font-weight:700;color:#475569;margin-bottom:12px;">Toca el motivo del paro:</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            ${MOTIVOS_PAUSA.map(m => `
+              <button onclick="window.confirmarPausaODP('${odp.id}', '${m.codigo.replace(/'/g, "\\'")}')" 
+                style="background:#fff;border:2px solid #e2e8f0;border-radius:12px;padding:14px 12px;cursor:pointer;text-align:left;transition:border-color 0.15s;"
+                onmouseover="this.style.borderColor='#a16207';this.style.background='#fffbeb'" 
+                onmouseout="this.style.borderColor='#e2e8f0';this.style.background='#fff'">
+                <div style="font-size:22px;margin-bottom:4px;">${m.icono}</div>
+                <div style="font-weight:800;font-size:13px;color:#0f172a;">${m.codigo}</div>
+                <div style="font-size:10.5px;color:#64748b;margin-top:2px;">${m.desc}</div>
+              </button>
+            `).join('')}
+            
+            <!-- Otro: con campo de texto -->
+            <div style="background:#fff;border:2px solid #e2e8f0;border-radius:12px;padding:14px 12px;grid-column:1 / -1;">
+              <div style="font-size:22px;margin-bottom:4px;">✏️</div>
+              <div style="font-weight:800;font-size:13px;color:#0f172a;margin-bottom:8px;">Otro motivo</div>
+              <div style="display:flex;gap:8px;">
+                <input class="input" id="pausa-motivo-otro" placeholder="Describe el motivo..." value="${f.motivo_otro || ''}" style="flex:1;" />
+                <button onclick="window.confirmarPausaODPOtro('${odp.id}')" style="background:#a16207;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;white-space:nowrap;">⏸ Pausar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Aplicar la pausa con el motivo elegido
+window.confirmarPausaODP = async (odpId, motivoTxt) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
   try {
     state.loadingAccion = true; render();
@@ -7432,13 +7474,69 @@ window.pausarODP = async (odpId) => {
       pausa_por: state.user?.nombre || state.user?.email || 'sistema',
       updated_at: serverTimestamp()
     });
+    state.modal = null; state.modalData = null; state.modalForm = null;
     toast(`⏸ ${odp.folio} pausada · ${motivoTxt}`, 'info');
+    
+    // 🆕 EL MOVIMIENTO — buscar la SIGUIENTE orden en cola de la MISMA máquina y ofrecer iniciarla
+    try {
+      const idx = odp.proceso_actual_idx ?? 0;
+      const procCod = (odp.ruta_procesos || [])[idx] || '';
+      const maqActual = odp.maquinas_asignadas?.[procCod] || '';
+      
+      if (maqActual) {
+        // Candidatas: programadas en la misma máquina (mismo proceso), ordenadas por prioridad de cola
+        const candidatas = (state.ordenes_produccion || []).filter(o2 => {
+          if (o2.id === odpId || o2.archivada) return false;
+          if (o2.estatus !== 'programada') return false;
+          const i2 = o2.proceso_actual_idx ?? 0;
+          const p2 = (o2.ruta_procesos || [])[i2] || '';
+          return (o2.maquinas_asignadas?.[p2] || '') === maqActual;
+        }).sort((a, b) => {
+          const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+          const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
+          if (pa !== pb) return pa - pb;
+          return (a.fecha_entrega_solicitada || '9999').localeCompare(b.fecha_entrega_solicitada || '9999');
+        });
+        
+        const siguiente = candidatas[0];
+        if (siguiente) {
+          const iniciarYa = confirm(
+            `⏭ SIGUIENTE EN COLA DE ${maqActual}\n\n` +
+            `${siguiente.folio} · ${siguiente.producto_codigo}\n` +
+            `${siguiente.cliente_nombre || 'STOCK'} · ${fmtNum(siguiente.cantidad_kg_produccion || siguiente.cantidad)} ${siguiente.um || 'kg'}\n\n` +
+            `¿INICIARLA AHORA en ${maqActual}?`
+          );
+          if (iniciarYa) {
+            await updateDoc(doc(db, 'ordenes_produccion', siguiente.id), {
+              estatus: 'en_produccion',
+              proceso_estatus_actual: 'en_proceso',
+              inicio_real_at: siguiente.inicio_real_at || serverTimestamp(),
+              inicio_real_por: state.user?.nombre || state.user?.email || 'sistema',
+              updated_at: serverTimestamp()
+            });
+            toast(`▶️ ${siguiente.folio} iniciada en ${maqActual}`, 'success');
+          }
+        }
+      }
+    } catch (eSig) {
+      console.warn('No se pudo ofrecer la siguiente orden:', eSig);
+    }
   } catch (e) {
     console.error('Error pausar ODP:', e);
-    toast('Error: ' + e.message, 'error');
+    const msgErr = e.message?.includes('PERMISSION_DENIED')
+      ? `🔒 Sin permisos para pausar. Tu depto: ${state.user?.depto || '?'}`
+      : 'Error: ' + e.message;
+    toast(msgErr, 'error');
   } finally {
     state.loadingAccion = false; render();
   }
+};
+
+// Pausa con motivo libre ("Otro")
+window.confirmarPausaODPOtro = async (odpId) => {
+  const det = ($('#pausa-motivo-otro')?.value || '').trim();
+  if (!det) { toast('Escribe el motivo', 'error'); return; }
+  await window.confirmarPausaODP(odpId, `Otro: ${det.substring(0, 100)}`);
 };
 
 // ▶️ REANUDAR producción (guarda histórico de pausa)
@@ -8703,8 +8801,8 @@ function renderPanelOperador() {
         // Realmente está siendo trabajada
         enProduccion.push(o);
       } else if (procEst === 'pausado') {
-        // Pausada pero activa (sigue siendo actual)
-        enProduccion.push(o);
+        // ⏸ 🔧 FIX: Pausada → REGRESA A LA COLA (libera "TRABAJANDO AHORA" para la siguiente)
+        enCola.push(o);
       } else {
         // 'esperando' o cualquier otro → su turno, listo para iniciar
         // Aquí llega cuando EXT cerró y avanzó a este proceso
@@ -9033,7 +9131,15 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
   
   let botonPrincipal = '';
   
-  if (modo === 'cola' && o.estatus === 'programada' && procIdx === 0) {
+  if (modo === 'cola' && estaPausada) {
+    // ⏸ 🔧 FIX: ODP pausada en la cola → mostrar quién/por qué pausó + botón reanudar
+    botonPrincipal = `
+      <div style="background:#fee2e2;border:1.5px solid #dc2626;border-radius:8px;padding:10px;margin-bottom:8px;font-size:11px;color:#991b1b;">
+        ⏸ <strong>PAUSADA</strong> · ${o.pausa_motivo || 'sin motivo'} · por ${o.pausa_por || '?'}
+      </div>
+      <button onclick="window.reanudarODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;width:100%;">▶️ REANUDAR</button>
+    `;
+  } else if (modo === 'cola' && o.estatus === 'programada' && procIdx === 0) {
     // Primer proceso, ODP recién programada (nunca iniciada)
     botonPrincipal = `<button onclick="window.iniciarProduccionODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR PRODUCCIÓN</button>`;
   } else if (modo === 'cola' && esMiTurnoYEsperando && procIdx > 0) {
@@ -9083,6 +9189,7 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
           <div style="font-size:14px;font-weight:700;color:#475569;line-height:1.3;">${o.descripcion || o.producto_codigo}</div>
           <div style="font-size:11px;color:#64748b;font-family:monospace;margin-top:2px;">${o.producto_codigo}</div>
           ${o.cliente_codigo ? `<div style="margin-top:4px;font-size:11px;color:#94a3b8;">Cliente: <strong style="color:#475569;">${o.cliente_codigo}</strong></div>` : ''}
+          <div style="margin-top:5px;">${window.flujoODP(o).badge}</div>
         </div>
         
         <!-- Columna 2: Cantidades -->
@@ -9093,6 +9200,25 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
           ${o.fecha_entrega_solicitada ? `<div style="margin-top:6px;font-size:11px;background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:5px;display:inline-block;font-weight:700;">📅 Entrega: ${o.fecha_entrega_solicitada}</div>` : ''}
         </div>
       </div>
+      
+      ${(() => {
+        // 🆕 ODP secundaria (P-2/P-3/P-4): mostrar material disponible del Almacén Intermedio
+        if (!o.proceso_codigo || o.proceso_codigo === 'P-1') return '';
+        if (!o.odp_padre_id) return '';
+        const rollosColocados = (state.rollos_extrusion || []).filter(r => !r.anulado && r.consumido_en_odp_id === o.id);
+        const rollosDispPadre = (state.rollos_extrusion || []).filter(r => !r.anulado && !r.consumido_en_odp_id && r.odp_id === o.odp_padre_id);
+        const kgColocados = rollosColocados.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+        const kgDispPadre = rollosDispPadre.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+        if (kgColocados === 0 && kgDispPadre === 0) {
+          return `<div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e;">
+            ⏳ Sin rollos disponibles aún — esperando que ${o.odp_padre_folio || 'extrusión'} produzca material
+          </div>`;
+        }
+        return `<div style="background:#f5f3ff;border:1.5px solid #a78bfa;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#5b21b6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+          <span>🧵 <strong>Material:</strong> ${fmtNum(kgColocados)} kg colocados${kgDispPadre > 0 ? ` · ${fmtNum(kgDispPadre)} kg más disponibles en Intermedio` : ''}</span>
+          ${kgDispPadre > 0 ? `<button onclick="event.stopPropagation();window.colocarRollosEnODP('${o.odp_padre_id}','${o.id}')" style="background:#7c3aed;color:#fff;border:none;padding:4px 12px;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">➡️ Traer rollos</button>` : ''}
+        </div>`;
+      })()}
       
       <!-- 🆕 Banner: kg no calculados (bloquea captura coherente) -->
       ${sinKgCalculado ? `
@@ -10102,6 +10228,7 @@ function renderModal() {
   if (m === 'crear-personal') return modalPersonal(false);
   if (m === 'editar-personal') return modalPersonal(true);
   if (m === 'capturar-turno') return modalCapturarTurno();
+  if (m === 'pausar-odp') return modalPausarODP();
   if (m === 'crear-usuario') return modalUsuario(false);
   if (m === 'editar-usuario') return modalUsuario(true);
   if (m === 'compartir-credenciales') return modalCompartirCredenciales();
@@ -11430,6 +11557,32 @@ window.agregarRolloExtrusion = async (odpId) => {
       }
     }
     
+    // 🆕 ALMACÉN INTERMEDIO — Si esta ODP P-1 tiene hijas esperando, desbloquearlas con el PRIMER ROLLO
+    // (el material parcial ya está disponible: el siguiente proceso puede ir trabajando)
+    try {
+      const hijasEsperando = (state.ordenes_produccion || []).filter(o2 => 
+        o2.odp_padre_id === odpId && o2.estatus === 'esperando_padre'
+      );
+      for (const hija of hijasEsperando) {
+        await updateDoc(doc(db, 'ordenes_produccion', hija.id), {
+          estatus: 'pendiente_planeacion',
+          desbloqueada_por_rollo: true,
+          padre_primer_rollo_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+        await window.notificarEvento({
+          evento: 'odp_p2_lista_iniciar',
+          folio: hija.folio,
+          extra: { 
+            cliente: hija.cliente_nombre, 
+            detalle: `${hija.proceso_codigo} desbloqueada — ya hay rollo disponible de ${odp.folio} en Almacén Intermedio` 
+          }
+        });
+      }
+    } catch (eHija) {
+      console.warn('Error desbloqueando hijas por rollo:', eHija);
+    }
+    
     // Reset el form del próximo rollo
     if (state.modalForm) {
       const ahora = new Date();
@@ -11438,7 +11591,10 @@ window.agregarRolloExtrusion = async (odpId) => {
       state.modalForm.proxRollo = { peso_kg: '', hora: `${hh}:${mm}`, mermas_kg: '0' };
     }
     
-    toast(`✅ Rollo #${proxNum}: ${fmtNum(peso)} kg agregado`);
+    const flujoR = window.flujoODP(odp);
+    toast(flujoR.tipo === 'intermedio' 
+      ? `✅ Rollo #${proxNum}: ${fmtNum(peso)} kg → 🧵 Almacén Intermedio`
+      : `✅ Rollo #${proxNum}: ${fmtNum(peso)} kg agregado (🎯 directo a calidad al cerrar)`);
   } catch (e) {
     toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos para registrar rollos' : e.message), 'error');
   } finally {
@@ -13648,6 +13804,990 @@ window.toggleDetalleStock = (key) => {
   if (!state.stockDetalleAbierto) state.stockDetalleAbierto = {};
   state.stockDetalleAbierto[key] = !state.stockDetalleAbierto[key];
   render();
+};
+
+// ============================================================
+// 🆕 ALMACÉN DE PRODUCTO INTERMEDIO (WIP — rollos entre procesos)
+// ============================================================
+// Material que YA salió de extrusión pero AÚN le faltan 1+ procesos.
+// De aquí los rollos se "colocan" en la ODP del proceso siguiente.
+
+// ============================================================
+// 🆕 CENTRO DE CONTROL — KPIs por área + alertas accionables
+// ============================================================
+// Una sola vista común para TODOS los deptos: qué está pasando,
+// dónde está el problema, y las mediciones de cada área.
+
+function _kpiEnPeriodo(ts, dias) {
+  if (!ts) return false;
+  const ms = ts.toDate ? ts.toDate().getTime() : (ts.seconds ? ts.seconds * 1000 : new Date(ts).getTime());
+  if (isNaN(ms)) return false;
+  return (Date.now() - ms) <= dias * 86400000;
+}
+
+// 📊 Gráfica de barras SVG inline (sin dependencias)
+function _graficaBarras({ datos, color = '#3b82f6', altura = 160, formatoY = (v) => fmtNum(Math.round(v)), tituloY = '' }) {
+  // datos: [{ label, valor, color? }]
+  if (!datos || datos.length === 0) return `<div style="padding:30px;text-align:center;color:#94a3b8;font-size:11px;">Sin datos en el periodo</div>`;
+  const maxV = Math.max(...datos.map(d => d.valor), 1);
+  const anchoBarra = Math.max(18, Math.min(60, Math.floor(560 / datos.length) - 8));
+  const w = datos.length * (anchoBarra + 8) + 50;
+  const h = altura;
+  const areaH = h - 38;
+  
+  return `
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w * 1.2}px;height:auto;font-family:inherit;">
+      ${[1, 0.5].map(f => `
+        <line x1="42" y1="${10 + areaH * (1 - f)}" x2="${w - 4}" y2="${10 + areaH * (1 - f)}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="38" y="${13 + areaH * (1 - f)}" text-anchor="end" font-size="8" fill="#94a3b8">${formatoY(maxV * f)}</text>
+      `).join('')}
+      ${datos.map((d, i) => {
+        const bh = Math.max(2, (d.valor / maxV) * areaH);
+        const x = 46 + i * (anchoBarra + 8);
+        const y = 10 + areaH - bh;
+        return `
+          <rect x="${x}" y="${y}" width="${anchoBarra}" height="${bh}" rx="3" fill="${d.color || color}" opacity="0.9">
+            <title>${d.label}: ${formatoY(d.valor)}</title>
+          </rect>
+          ${d.valor > 0 && bh > 14 ? `<text x="${x + anchoBarra / 2}" y="${y + 11}" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">${formatoY(d.valor)}</text>` : 
+            d.valor > 0 ? `<text x="${x + anchoBarra / 2}" y="${y - 3}" text-anchor="middle" font-size="8" font-weight="700" fill="#475569">${formatoY(d.valor)}</text>` : ''}
+          <text x="${x + anchoBarra / 2}" y="${h - 6}" text-anchor="middle" font-size="8" fill="#64748b">${d.label}</text>
+        `;
+      }).join('')}
+    </svg>
+  `;
+}
+
+// 📊 Barras horizontales (para rankings: paros por motivo, stock por material)
+function _graficaBarrasH({ datos, color = '#3b82f6', formatoV = (v) => fmtNum(Math.round(v)) }) {
+  if (!datos || datos.length === 0) return `<div style="padding:20px;text-align:center;color:#94a3b8;font-size:11px;">Sin datos</div>`;
+  const maxV = Math.max(...datos.map(d => d.valor), 1);
+  return `
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${datos.map(d => `
+        <div style="display:grid;grid-template-columns:130px 1fr 70px;gap:8px;align-items:center;font-size:11px;">
+          <div style="color:#475569;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${d.label}">${d.label}</div>
+          <div style="background:#f1f5f9;border-radius:5px;height:18px;overflow:hidden;">
+            <div style="width:${Math.max(2, (d.valor / maxV) * 100)}%;height:100%;background:${d.color || color};border-radius:5px;"></div>
+          </div>
+          <div style="text-align:right;font-weight:800;color:#0f172a;">${formatoV(d.valor)}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function _kpiCard(label, valor, sub, color = '#0f172a', onclick = '') {
+  return `
+    <div ${onclick ? `onclick="${onclick}" style="cursor:pointer;"` : ''} 
+      style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;${onclick ? 'cursor:pointer;' : ''}">
+      <div style="font-size:10px;color:#64748b;font-weight:800;text-transform:uppercase;letter-spacing:0.03em;">${label}</div>
+      <div style="font-size:23px;font-weight:800;color:${color};margin-top:3px;">${valor}</div>
+      ${sub ? `<div style="font-size:10.5px;color:#94a3b8;margin-top:2px;">${sub}</div>` : ''}
+    </div>
+  `;
+}
+
+function _kpiSeccion(icono, titulo, color, cards, extra = '') {
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;background:linear-gradient(90deg,${color}11,transparent);">
+        <strong style="font-size:13.5px;color:#0f172a;">${icono} ${titulo}</strong>
+      </div>
+      <div style="padding:12px 18px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+          ${cards}
+        </div>
+        ${extra}
+      </div>
+    </div>
+  `;
+}
+
+function renderCentroControl() {
+  const dias = state.kpi_periodo || 7;
+  const hoy = new Date().toISOString().split('T')[0];
+  
+  // ════════ DATOS BASE ════════
+  const pedidos = (state.pedidos || []).filter(p => !p.archivada);
+  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  const ovs = (state.ordenes_venta || []).filter(o => !o.archivada);
+  const tarimas = (state.tarimas || []).filter(t => t.activo !== false);
+  const capturas = (state.capturas_produccion || []).filter(c => !c.anulada && _kpiEnPeriodo(c.created_at, dias));
+  const rollos = (state.rollos_extrusion || []).filter(r => !r.anulado);
+  
+  // ════════ 🚨 ALERTAS (lo accionable primero) ════════
+  const alertas = [];
+  
+  // PIs vencidos (pasó fecha promesa sin completar)
+  const pisVencidos = pedidos.filter(p => 
+    p.fecha_requerida && p.fecha_requerida < hoy && 
+    !['completado','cancelado'].includes(p.estatus)
+  );
+  if (pisVencidos.length > 0) alertas.push({
+    nivel: 'rojo', icono: '🔴',
+    txt: `${pisVencidos.length} pedido(s) VENCIDOS sin entregar`,
+    detalle: pisVencidos.slice(0, 5).map(p => `${p.folio} (${p.cliente_nombre || ''}, prometido ${p.fecha_requerida})`).join(' · '),
+    accion: `state.vista='seguimiento_pedidos';render();`
+  });
+  
+  // ODPs pausadas con duración
+  const odpsPausadas = odps.filter(o => o.proceso_estatus_actual === 'pausado');
+  if (odpsPausadas.length > 0) {
+    const conHoras = odpsPausadas.map(o => {
+      const ini = o.pausa_iniciada_at?.toDate ? o.pausa_iniciada_at.toDate().getTime() : (o.pausa_iniciada_at?.seconds ? o.pausa_iniciada_at.seconds*1000 : 0);
+      const hrs = ini ? Math.round((Date.now() - ini) / 3600000) : 0;
+      return `${o.folio} (${o.pausa_motivo || '?'}, ${hrs}h)`;
+    });
+    alertas.push({
+      nivel: 'amarillo', icono: '⏸',
+      txt: `${odpsPausadas.length} ODP(s) PAUSADAS`,
+      detalle: conHoras.join(' · '),
+      accion: `state.vista='kanban_maquinas';render();`
+    });
+  }
+  
+  // ODPs pendientes de calidad (cuello de botella CAL)
+  const odpsPteCal = odps.filter(o => o.estatus === 'pendiente_calidad');
+  if (odpsPteCal.length > 2) alertas.push({
+    nivel: 'amarillo', icono: '🟡',
+    txt: `${odpsPteCal.length} ODP(s) esperando liberación de Calidad`,
+    detalle: odpsPteCal.slice(0, 5).map(o => o.folio).join(' · '),
+    accion: `state.vista='calidad';render();`
+  });
+  
+  // OVs de saldo sin asignar (entregas parciales pendientes de completar)
+  const ovsSaldo = ovs.filter(o => o.es_ov_saldo && !['entregada','cancelada'].includes(o.estatus));
+  if (ovsSaldo.length > 0) alertas.push({
+    nivel: 'amarillo', icono: '🔁',
+    txt: `${ovsSaldo.length} OV(s) de SALDO pendientes (entregas parciales por completar)`,
+    detalle: ovsSaldo.slice(0, 5).map(o => `${o.folio} ← ${o.ov_origen_folio || ''} (${fmtCantidadUM(o.cantidad_solicitada, o.um)})`).join(' · '),
+    accion: `state.vista='embarques';render();`
+  });
+  
+  // Material en intermedio sin colocar y la ODP hija ya activa
+  const rollosIntDisp = rollos.filter(r => !r.consumido_en_odp_id && typeof rolloEnIntermedio === 'function' && rolloEnIntermedio(r));
+  const kgIntDisp = rollosIntDisp.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  if (kgIntDisp > 0) alertas.push({
+    nivel: 'info', icono: '🧵',
+    txt: `${fmtNum(kgIntDisp)} kg en Almacén Intermedio por colocar`,
+    detalle: `${rollosIntDisp.length} rollo(s) esperando el proceso siguiente`,
+    accion: `state.vista='almacen_intermedio';render();`
+  });
+  
+  // Productos mal catalogados
+  const prodsSinClasif = (state.productos_pt || []).filter(p => p.activo !== false && (!p.tipo_material_peletizado || !p.color_peletizado));
+  if (prodsSinClasif.length > 0) alertas.push({
+    nivel: 'info', icono: '📋',
+    txt: `${prodsSinClasif.length} producto(s) sin clasificación de peletizado`,
+    detalle: 'Su merma no se puede clasificar automáticamente',
+    accion: `state.vista='productos_pt';render();`
+  });
+  
+  // ════════ 🏭 PRODUCCIÓN ════════
+  const kgProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const kgMerma = capturas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  const pctMerma = (kgProd + kgMerma) > 0 ? ((kgMerma / (kgProd + kgMerma)) * 100).toFixed(1) : '0';
+  const odpsEnProc = odps.filter(o => o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso');
+  
+  // Cumplimiento de ODPs cerradas en el periodo (producido vs meta)
+  const odpsCerradasPer = odps.filter(o => _kpiEnPeriodo(o.produccion_terminada_at, dias) && Number(o.cantidad_producida_final_kg) > 0);
+  const cumplimientos = odpsCerradasPer.map(o => {
+    const meta = Number(o.cantidad_kg_produccion) || 0;
+    return meta > 0 ? Math.min(150, (Number(o.cantidad_producida_final_kg) / meta) * 100) : null;
+  }).filter(x => x !== null);
+  const cumplProm = cumplimientos.length > 0 ? Math.round(cumplimientos.reduce((s, x) => s + x, 0) / cumplimientos.length) : null;
+  
+  // Pausas del periodo: total minutos por motivo (historial)
+  const pausasPorMotivo = {};
+  let minutosPausaTotal = 0;
+  odps.forEach(o => {
+    (o.historial_pausas || []).forEach(h => {
+      if (!_kpiEnPeriodo({ seconds: (h.reanudada_at_ms || 0) / 1000 }, dias)) return;
+      const m = (h.motivo || 'Otro').split(':')[0];
+      pausasPorMotivo[m] = (pausasPorMotivo[m] || 0) + (Number(h.duracion_minutos) || 0);
+      minutosPausaTotal += Number(h.duracion_minutos) || 0;
+    });
+  });
+  const pausasTop = Object.entries(pausasPorMotivo).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  
+  // ════════ ✅ CALIDAD ════════
+  const tarimasRech = tarimas.filter(t => t.estatus === 'rechazada').length;
+  const tarimasLib = tarimas.filter(t => !['pendiente_empaque','pendiente_calidad','rechazada'].includes(t.estatus)).length;
+  const pctRechazo = (tarimasLib + tarimasRech) > 0 ? ((tarimasRech / (tarimasLib + tarimasRech)) * 100).toFixed(1) : '0';
+  
+  // ════════ 🚚 LOGÍSTICA ════════
+  const kgPorEstatus = (lista) => tarimas.filter(t => lista.includes(t.estatus)).reduce((s, t) => s + (Number(t.peso_neto_kg) || Number(t.peso_neto) || 0), 0);
+  const kgPlanta = kgPorEstatus(['liberada_empaque','en_almacen_planta','pendiente_almacen']);
+  const kgTransito = kgPorEstatus(['en_transito','en_transito_cedis','en_transito_cedis_mty','en_transito_cedis_mex']);
+  const kgMTY = kgPorEstatus(['en_cedis_mty']);
+  const kgMEX = kgPorEstatus(['en_cedis_mex']);
+  const otisTransito = (state.oti || []).filter(o => o.estatus === 'en_transito').length;
+  const ovsPorEmbarcar = ovs.filter(o => ['pendiente_asignar','preparando','lista_embarcar'].includes(o.estatus)).length;
+  
+  // ════════ 👥 COMERCIAL / ENTREGAS ════════
+  const pisPendAprob = pedidos.filter(p => p.estatus === 'pendiente_aprobacion').length;
+  const pisActivos = pedidos.filter(p => !['completado','cancelado','pendiente_aprobacion'].includes(p.estatus)).length;
+  const ovsEntregadasPer = ovs.filter(o => o.estatus === 'entregada' && _kpiEnPeriodo(o.entregada_at, dias));
+  const ovsATiempo = ovsEntregadasPer.filter(o => {
+    if (!o.fecha_entrega_solicitada) return true;
+    const fEnt = o.entregada_at?.toDate ? o.entregada_at.toDate().toISOString().split('T')[0] : hoy;
+    return fEnt <= o.fecha_entrega_solicitada;
+  });
+  const pctOTIF = ovsEntregadasPer.length > 0 ? Math.round((ovsATiempo.length / ovsEntregadasPer.length) * 100) : null;
+  const ovsParciales = ovs.filter(o => o.es_entrega_parcial).length;
+  
+  // ════════ ♻️ PELETIZADO ════════
+  const kgPelStock = (state.lotes_peletizado || []).reduce((s, l) => s + (Number(l.stock_kg) || 0), 0);
+  const corridasPer = (state.corridas_peletizado || []).filter(c => _kpiEnPeriodo(c.created_at, dias));
+  const kgPelletPer = corridasPer.reduce((s, c) => s + (Number(c.kg_pellet_salida) || 0), 0);
+  const efP5 = corridasPer.length > 0 ? Math.round(corridasPer.reduce((s, c) => s + (Number(c.eficiencia_pct) || 0), 0) / corridasPer.length) : null;
+  const kgDesecho = (state.almacen_desecho_venta || []).reduce((s, d) => s + (Number(d.stock_kg) || 0), 0);
+  
+  // ════════ 📈 SERIES DIARIAS PARA GRÁFICAS ════════
+  const numBarras = Math.min(dias, 14); // máximo 14 barras para legibilidad
+  const diasLista = [];
+  for (let i = numBarras - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    diasLista.push({
+      fecha: d.toISOString().split('T')[0],
+      label: d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }).replace('.', '')
+    });
+  }
+  
+  // Producción y merma por día (de capturas)
+  const prodPorDia = diasLista.map(d => {
+    const caps = (state.capturas_produccion || []).filter(c => !c.anulada && c.fecha === d.fecha);
+    return {
+      label: d.label,
+      valor: caps.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0),
+      merma: caps.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0)
+    };
+  });
+  
+  // Entregas por día (a tiempo verde, tarde rojo)
+  const entregasPorDia = diasLista.map(d => {
+    const delDia = ovs.filter(o => {
+      if (o.estatus !== 'entregada' || !o.entregada_at) return false;
+      const f = o.entregada_at.toDate ? o.entregada_at.toDate().toISOString().split('T')[0] : '';
+      return f === d.fecha;
+    });
+    const aTiempo = delDia.filter(o => !o.fecha_entrega_solicitada || d.fecha <= o.fecha_entrega_solicitada).length;
+    return { label: d.label, valor: delDia.length, aTiempo, tarde: delDia.length - aTiempo };
+  });
+  
+  // Stock peletizado por material (barras H)
+  const pelPorMaterial = ['BD','AD','TE'].map(mat => ({
+    label: mat === 'BD' ? 'Baja Densidad' : mat === 'AD' ? 'Alta Densidad' : 'Termoencogible',
+    valor: (state.lotes_peletizado || []).filter(l => l.tipo_material === mat).reduce((s, l) => s + (Number(l.stock_kg) || 0), 0),
+    color: mat === 'BD' ? '#3b82f6' : mat === 'AD' ? '#16a34a' : '#f59e0b'
+  })).filter(x => x.valor > 0);
+  
+  // Datos para PDF (guardar en window para que el generador los tome)
+  window._kpiDatosPDF = {
+    dias, hoy,
+    alertas: [], // se llena abajo
+    produccion: { kgProd, kgMerma, pctMerma, odpsEnProc: odpsEnProc.length, pausadas: odpsPausadas.length, cumplProm, minutosPausaTotal, pausasTop },
+    calidad: { pteCal: odpsPteCal.length, pctRechazo, tarimasRech },
+    logistica: { kgPlanta, kgTransito, kgMTY, kgMEX, otisTransito, ovsPorEmbarcar, kgIntDisp },
+    comercial: { pisPendAprob, pisActivos, pctOTIF, entregadas: ovsEntregadasPer.length, ovsParciales, saldosAbiertos: ovsSaldo.length, pisVencidos: pisVencidos.length },
+    peletizado: { kgPelStock, kgPelletPer, efP5, kgDesecho, corridas: corridasPer.length },
+    prodPorDia, entregasPorDia, pelPorMaterial,
+    odpsCerradasPer: odpsCerradasPer.map(o => ({
+      folio: o.folio, producto: o.producto_codigo, cliente: o.cliente_nombre || 'STOCK',
+      meta: Math.round(Number(o.cantidad_kg_produccion) || 0),
+      producido: Math.round(Number(o.cantidad_producida_final_kg) || 0),
+      merma: Math.round(Number(o.mermas_finales_kg) || 0),
+      cumpl: (Number(o.cantidad_kg_produccion) > 0) ? Math.round((Number(o.cantidad_producida_final_kg) / Number(o.cantidad_kg_produccion)) * 100) : 0
+    })),
+    ovsEntregadasDet: ovsEntregadasPer.map(o => {
+      const fEnt = o.entregada_at?.toDate ? o.entregada_at.toDate().toISOString().split('T')[0] : '';
+      return {
+        folio: o.folio, cliente: o.cliente_nombre || '', producto: o.producto_codigo || '',
+        prometida: o.fecha_entrega_solicitada || '—', entregada: fEnt,
+        aTiempo: !o.fecha_entrega_solicitada || fEnt <= o.fecha_entrega_solicitada,
+        parcial: !!o.es_entrega_parcial
+      };
+    })
+  };
+  
+  const nivelColor = { rojo: '#dc2626', amarillo: '#f59e0b', info: '#3b82f6' };
+  const nivelBg = { rojo: '#fee2e2', amarillo: '#fef3c7', info: '#eff6ff' };
+  window._kpiDatosPDF.alertas = alertas.map(a => ({ icono: a.icono, txt: a.txt, detalle: a.detalle }));
+  
+  return `
+    <!-- SELECTOR DE PERIODO -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div style="font-size:12px;color:#64748b;">
+        Última actualización: en vivo · Todos los departamentos ven esta misma información
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        ${[[1,'Hoy'],[7,'7 días'],[30,'30 días'],[90,'90 días']].map(([d, lbl]) => `
+          <button onclick="state.kpi_periodo=${d};render();" style="padding:6px 14px;background:${dias === d ? '#0f172a' : '#fff'};color:${dias === d ? '#fff' : '#475569'};border:1.5px solid ${dias === d ? '#0f172a' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">${lbl}</button>
+        `).join('')}
+        <button onclick="window.generarReporteEjecutivoPDF()" style="padding:8px 18px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;box-shadow:0 2px 6px rgba(220,38,38,0.3);">📄 Reporte PDF para Dirección</button>
+      </div>
+    </div>
+    
+    <!-- 🚨 ALERTAS ACCIONABLES -->
+    ${alertas.length === 0 ? `
+      <div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:12px;padding:14px 18px;margin-bottom:14px;color:#166534;font-weight:700;font-size:13px;">
+        ✅ Sin problemas detectados — todo el flujo está en orden
+      </div>
+    ` : `
+      <div class="panel" style="margin-bottom:14px;border:2px solid #f59e0b;">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;background:#fffbeb;">
+          <strong style="font-size:13.5px;color:#92400e;">🚨 ¿Dónde está el problema? — ${alertas.length} punto(s) de atención</strong>
+        </div>
+        <div style="padding:10px 18px;display:flex;flex-direction:column;gap:8px;">
+          ${alertas.map(a => `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:${nivelBg[a.nivel]};border-left:4px solid ${nivelColor[a.nivel]};border-radius:8px;padding:10px 14px;flex-wrap:wrap;">
+              <div style="flex:1;min-width:240px;">
+                <div style="font-weight:800;font-size:12.5px;color:#0f172a;">${a.icono} ${a.txt}</div>
+                <div style="font-size:10.5px;color:#64748b;margin-top:2px;">${a.detalle}</div>
+              </div>
+              <button onclick="${a.accion}" style="background:${nivelColor[a.nivel]};color:#fff;border:none;padding:7px 14px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;white-space:nowrap;">Ir a resolver →</button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `}
+    
+    <!-- 🏭 PRODUCCIÓN -->
+    ${_kpiSeccion('🏭', 'Producción', '#3b82f6', `
+      ${_kpiCard('Kg producidos', fmtNum(Math.round(kgProd)), `últimos ${dias === 1 ? '1 día' : dias + ' días'}`, '#1e40af')}
+      ${_kpiCard('Merma', `${pctMerma}%`, `${fmtNum(Math.round(kgMerma))} kg`, Number(pctMerma) > 5 ? '#dc2626' : '#16a34a')}
+      ${_kpiCard('ODPs en proceso', odpsEnProc.length, odpsPausadas.length > 0 ? `+ ${odpsPausadas.length} pausadas` : 'ninguna pausada', '#3b82f6', `state.vista='kanban_maquinas';render();`)}
+      ${_kpiCard('Cumplimiento ODPs', cumplProm !== null ? cumplProm + '%' : '—', `${odpsCerradasPer.length} cerradas en el periodo`, cumplProm !== null && cumplProm < 95 ? '#dc2626' : '#16a34a')}
+      ${_kpiCard('Tiempo en paros', minutosPausaTotal > 0 ? `${Math.round(minutosPausaTotal / 60)}h ${minutosPausaTotal % 60}m` : '0', 'pausas reanudadas del periodo', minutosPausaTotal > 240 ? '#dc2626' : '#0f172a')}
+    `, pausasTop.length > 0 ? `
+      <div style="margin-top:10px;padding:8px 12px;background:#f8fafc;border-radius:8px;font-size:11px;color:#475569;">
+        <strong>Paros por motivo:</strong> ${pausasTop.map(([m, min]) => `${m}: ${Math.round(min/60*10)/10}h`).join(' · ')}
+      </div>
+    ` : '')}
+    
+    <!-- ✅ CALIDAD -->
+    ${_kpiSeccion('✅', 'Calidad', '#a16207', `
+      ${_kpiCard('Esperando liberación', odpsPteCal.length, 'ODPs pendientes de Calidad', odpsPteCal.length > 2 ? '#dc2626' : '#16a34a', `state.vista='calidad';render();`)}
+      ${_kpiCard('Tasa de rechazo', `${pctRechazo}%`, `${tarimasRech} tarimas rechazadas (histórico)`, Number(pctRechazo) > 3 ? '#dc2626' : '#16a34a')}
+    `)}
+    
+    <!-- 🚚 LOGÍSTICA -->
+    ${_kpiSeccion('🚚', 'Logística y Almacenes', '#0891b2', `
+      ${_kpiCard('En planta por enviar', fmtNum(Math.round(kgPlanta)) + ' kg', 'liberado esperando OTI', kgPlanta > 5000 ? '#f59e0b' : '#0f172a', `state.vista='almacen_planta';render();`)}
+      ${_kpiCard('En tránsito', fmtNum(Math.round(kgTransito)) + ' kg', `${otisTransito} OTI(s) en camino`, '#0891b2')}
+      ${_kpiCard('Stock CEDIS-MTY', fmtNum(Math.round(kgMTY)) + ' kg', '', '#16a34a', `state.vista='cedis_mty';render();`)}
+      ${_kpiCard('Stock CEDIS-MEX', fmtNum(Math.round(kgMEX)) + ' kg', '', '#16a34a', `state.vista='cedis_mex';render();`)}
+      ${_kpiCard('OVs por embarcar', ovsPorEmbarcar, 'pendientes de asignar/cargar', ovsPorEmbarcar > 5 ? '#f59e0b' : '#0f172a', `state.vista='embarques';render();`)}
+      ${_kpiCard('Intermedio 🧵', fmtNum(Math.round(kgIntDisp)) + ' kg', `${rollosIntDisp.length} rollos por colocar`, '#7c3aed', `state.vista='almacen_intermedio';render();`)}
+    `)}
+    
+    <!-- 👥 COMERCIAL Y ENTREGAS -->
+    ${_kpiSeccion('👥', 'Comercial y Entregas', '#16a34a', `
+      ${_kpiCard('PIs por aprobar', pisPendAprob, '', pisPendAprob > 0 ? '#f59e0b' : '#16a34a', `state.vista='pedidos';render();`)}
+      ${_kpiCard('PIs activos', pisActivos, 'en flujo de producción/entrega', '#0f172a', `state.vista='seguimiento_pedidos';render();`)}
+      ${_kpiCard('Entregas a tiempo', pctOTIF !== null ? pctOTIF + '%' : '—', `${ovsEntregadasPer.length} OVs entregadas en el periodo`, pctOTIF !== null && pctOTIF < 90 ? '#dc2626' : '#16a34a')}
+      ${_kpiCard('Entregas parciales', ovsParciales, `${ovsSaldo.length} saldo(s) abiertos`, ovsSaldo.length > 0 ? '#f59e0b' : '#0f172a')}
+      ${_kpiCard('PIs vencidos', pisVencidos.length, 'pasaron fecha promesa', pisVencidos.length > 0 ? '#dc2626' : '#16a34a', `state.vista='seguimiento_pedidos';render();`)}
+    `)}
+    
+    <!-- ♻️ PELETIZADO -->
+    ${_kpiSeccion('♻️', 'Peletizado P-5', '#0e7490', `
+      ${_kpiCard('Merma acumulada', fmtNum(Math.round(kgPelStock)) + ' kg', 'en lotes por peletizar', kgPelStock > 3000 ? '#f59e0b' : '#0f172a', `state.vista='peletizado';render();`)}
+      ${_kpiCard('Pellet producido', fmtNum(Math.round(kgPelletPer)) + ' kg', `${corridasPer.length} corrida(s) en el periodo`, '#16a34a')}
+      ${_kpiCard('Eficiencia P-5', efP5 !== null ? efP5 + '%' : '—', 'promedio de corridas', efP5 !== null && efP5 < 85 ? '#dc2626' : '#16a34a')}
+      ${_kpiCard('Desecho p/venta', fmtNum(Math.round(kgDesecho)) + ' kg', 'acumulado para vender', '#0f172a')}
+    `)}
+    
+    <!-- 📈 GRÁFICAS -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px;margin-bottom:14px;">
+      
+      <div class="panel">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">📈 Producción diaria (kg)</strong>
+          <span style="font-size:10px;color:#94a3b8;margin-left:8px;">últimos ${numBarras} días</span>
+        </div>
+        <div style="padding:14px 18px;">
+          ${_graficaBarras({ datos: prodPorDia.map(d => ({ label: d.label, valor: d.valor })), color: '#3b82f6' })}
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">📉 Merma diaria (kg)</strong>
+          <span style="font-size:10px;color:#94a3b8;margin-left:8px;">objetivo: bajo 5% de lo producido</span>
+        </div>
+        <div style="padding:14px 18px;">
+          ${_graficaBarras({ datos: prodPorDia.map(d => ({ 
+            label: d.label, valor: d.merma, 
+            color: (d.valor + d.merma) > 0 && (d.merma / (d.valor + d.merma)) > 0.05 ? '#dc2626' : '#f59e0b' 
+          })), color: '#f59e0b' })}
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">🚚 Entregas diarias (OVs)</strong>
+          <span style="font-size:10px;color:#94a3b8;margin-left:8px;">verde = a tiempo · rojo = tarde</span>
+        </div>
+        <div style="padding:14px 18px;">
+          ${(() => {
+            // Barras apiladas: a tiempo (verde) + tarde (rojo) — render manual
+            const maxE = Math.max(...entregasPorDia.map(d => d.valor), 1);
+            const aB = Math.max(18, Math.min(60, Math.floor(560 / entregasPorDia.length) - 8));
+            const w = entregasPorDia.length * (aB + 8) + 50;
+            const h = 160, areaH = h - 38;
+            return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w * 1.2}px;height:auto;">
+              ${entregasPorDia.map((d, i) => {
+                const x = 46 + i * (aB + 8);
+                const hT = (d.aTiempo / maxE) * areaH;
+                const hR = (d.tarde / maxE) * areaH;
+                return `
+                  <rect x="${x}" y="${10 + areaH - hT}" width="${aB}" height="${Math.max(0, hT)}" rx="2" fill="#16a34a"><title>${d.label}: ${d.aTiempo} a tiempo</title></rect>
+                  <rect x="${x}" y="${10 + areaH - hT - hR}" width="${aB}" height="${Math.max(0, hR)}" rx="2" fill="#dc2626"><title>${d.label}: ${d.tarde} tarde</title></rect>
+                  ${d.valor > 0 ? `<text x="${x + aB/2}" y="${6 + areaH - hT - hR}" text-anchor="middle" font-size="9" font-weight="700" fill="#475569">${d.valor}</text>` : ''}
+                  <text x="${x + aB/2}" y="${h - 6}" text-anchor="middle" font-size="8" fill="#64748b">${d.label}</text>
+                `;
+              }).join('')}
+            </svg>`;
+          })()}
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">⏸ Paros por motivo (horas)</strong>
+        </div>
+        <div style="padding:14px 18px;">
+          ${_graficaBarrasH({ 
+            datos: pausasTop.map(([m, min]) => ({ label: m, valor: min / 60, color: '#a16207' })), 
+            formatoV: (v) => (Math.round(v * 10) / 10) + 'h' 
+          })}
+        </div>
+      </div>
+      
+      ${pelPorMaterial.length > 0 ? `
+        <div class="panel">
+          <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+            <strong style="font-size:13px;">♻️ Merma acumulada por material (kg)</strong>
+          </div>
+          <div style="padding:14px 18px;">
+            ${_graficaBarrasH({ datos: pelPorMaterial, formatoV: (v) => fmtNum(Math.round(v)) + ' kg' })}
+          </div>
+        </div>
+      ` : ''}
+      
+      <div class="panel">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">📦 Material por etapa (kg)</strong>
+        </div>
+        <div style="padding:14px 18px;">
+          ${_graficaBarrasH({ datos: [
+            { label: 'En planta', valor: kgPlanta, color: '#f59e0b' },
+            { label: 'En tránsito', valor: kgTransito, color: '#0891b2' },
+            { label: 'CEDIS-MTY', valor: kgMTY, color: '#16a34a' },
+            { label: 'CEDIS-MEX', valor: kgMEX, color: '#15803d' },
+            { label: 'Intermedio 🧵', valor: kgIntDisp, color: '#7c3aed' },
+          ].filter(x => x.valor > 0), formatoV: (v) => fmtNum(Math.round(v)) + ' kg' })}
+        </div>
+      </div>
+    </div>
+    
+    <!-- 📋 TABLA: ODPs cerradas del periodo -->
+    ${window._kpiDatosPDF.odpsCerradasPer.length > 0 ? `
+      <div class="panel" style="margin-bottom:14px;">
+        <div style="padding:10px 18px;border-bottom:1px solid #e2e8f0;">
+          <strong style="font-size:13px;">📋 ODPs cerradas en el periodo — detalle de cumplimiento</strong>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead><tr style="background:#f8fafc;color:#475569;text-align:left;">
+              <th style="padding:7px 12px;">ODP</th><th style="padding:7px 12px;">Producto</th><th style="padding:7px 12px;">Cliente</th>
+              <th style="padding:7px 12px;text-align:right;">Meta kg</th><th style="padding:7px 12px;text-align:right;">Producido</th>
+              <th style="padding:7px 12px;text-align:right;">Merma</th><th style="padding:7px 12px;text-align:right;">Cumplim.</th>
+            </tr></thead>
+            <tbody>
+              ${window._kpiDatosPDF.odpsCerradasPer.map(o => `
+                <tr style="border-top:1px solid #f1f5f9;">
+                  <td style="padding:6px 12px;" class="text-mono">${o.folio}</td>
+                  <td style="padding:6px 12px;" class="text-mono">${o.producto}</td>
+                  <td style="padding:6px 12px;">${o.cliente}</td>
+                  <td style="padding:6px 12px;text-align:right;">${fmtNum(o.meta)}</td>
+                  <td style="padding:6px 12px;text-align:right;font-weight:700;">${fmtNum(o.producido)}</td>
+                  <td style="padding:6px 12px;text-align:right;color:#dc2626;">${fmtNum(o.merma)}</td>
+                  <td style="padding:6px 12px;text-align:right;font-weight:800;color:${o.cumpl >= 98 ? '#16a34a' : o.cumpl >= 90 ? '#f59e0b' : '#dc2626'};">${o.cumpl}%</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+  `;
+}
+
+// ============================================================
+// 📄 REPORTE EJECUTIVO PDF — resultados por área para Dirección
+// ============================================================
+window.generarReporteEjecutivoPDF = () => {
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const D = window._kpiDatosPDF;
+  if (!D) { toast('Abre primero el Centro de Control', 'error'); return; }
+  
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210, M = 14;
+  let y = 0;
+  
+  const VERDE = [22, 101, 52], AZUL = [30, 64, 175], ROJO = [220, 38, 38], GRIS = [100, 116, 139], NEGRO = [15, 23, 42];
+  
+  // ── PORTADA / ENCABEZADO ──
+  docPDF.setFillColor(15, 23, 42);
+  docPDF.rect(0, 0, W, 34, 'F');
+  docPDF.setTextColor(255, 255, 255);
+  docPDF.setFontSize(17); docPDF.setFont(undefined, 'bold');
+  docPDF.text('NEW PACK — Reporte de Resultados por Área', M, 14);
+  docPDF.setFontSize(10); docPDF.setFont(undefined, 'normal');
+  const perTxt = D.dias === 1 ? 'Hoy' : `Últimos ${D.dias} días`;
+  docPDF.text(`Periodo: ${perTxt}  ·  Generado: ${new Date().toLocaleString('es-MX')}  ·  Por: ${state.user?.nombre || state.user?.email || ''}`, M, 22);
+  docPDF.setFontSize(8.5);
+  docPDF.text('Centro de Control NewPack ERP — información en vivo de todos los departamentos', M, 28);
+  y = 42;
+  
+  const seccion = (titulo, color = AZUL) => {
+    if (y > 262) { docPDF.addPage(); y = 16; }
+    docPDF.setFillColor(...color);
+    docPDF.rect(M, y - 4.5, 3, 6, 'F');
+    docPDF.setTextColor(...NEGRO);
+    docPDF.setFontSize(12); docPDF.setFont(undefined, 'bold');
+    docPDF.text(titulo, M + 6, y);
+    docPDF.setFont(undefined, 'normal');
+    y += 4;
+  };
+  
+  // ── 🚨 ALERTAS ──
+  if (D.alertas.length > 0) {
+    seccion('PUNTOS DE ATENCIÓN', ROJO);
+    docPDF.autoTable({
+      startY: y,
+      head: [['', 'Problema detectado', 'Detalle']],
+      body: D.alertas.map(a => [a.icono, a.txt, a.detalle.substring(0, 110)]),
+      margin: { left: M, right: M },
+      styles: { fontSize: 8, cellPadding: 2 },
+      headStyles: { fillColor: ROJO, fontSize: 8.5 },
+      columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 70, fontStyle: 'bold' } }
+    });
+    y = docPDF.lastAutoTable.finalY + 8;
+  } else {
+    seccion('PUNTOS DE ATENCIÓN', VERDE);
+    docPDF.setFontSize(10); docPDF.setTextColor(...VERDE);
+    docPDF.text('✓ Sin problemas detectados — el flujo está en orden', M, y + 4);
+    y += 12;
+  }
+  
+  // ── KPIs POR ÁREA (tabla compacta) ──
+  seccion('INDICADORES POR ÁREA');
+  const P = D.produccion, C = D.calidad, L = D.logistica, CO = D.comercial, PE = D.peletizado;
+  docPDF.autoTable({
+    startY: y,
+    head: [['Área', 'Indicador', 'Valor', 'Indicador', 'Valor']],
+    body: [
+      ['PRODUCCIÓN', 'Kg producidos', fmtNum(Math.round(P.kgProd)), 'Merma', `${P.pctMerma}% (${fmtNum(Math.round(P.kgMerma))} kg)`],
+      ['', 'ODPs en proceso', String(P.odpsEnProc), 'ODPs pausadas', String(P.pausadas)],
+      ['', 'Cumplimiento ODPs', P.cumplProm !== null ? P.cumplProm + '%' : '—', 'Horas en paros', `${Math.round(P.minutosPausaTotal / 60)}h`],
+      ['CALIDAD', 'Esperando liberación', String(C.pteCal), 'Tasa de rechazo', `${C.pctRechazo}%`],
+      ['LOGÍSTICA', 'En planta por enviar', fmtNum(Math.round(L.kgPlanta)) + ' kg', 'En tránsito', fmtNum(Math.round(L.kgTransito)) + ' kg'],
+      ['', 'Stock CEDIS-MTY', fmtNum(Math.round(L.kgMTY)) + ' kg', 'Stock CEDIS-MEX', fmtNum(Math.round(L.kgMEX)) + ' kg'],
+      ['', 'OVs por embarcar', String(L.ovsPorEmbarcar), 'Almacén Intermedio', fmtNum(Math.round(L.kgIntDisp)) + ' kg'],
+      ['COMERCIAL', 'Entregas a tiempo (OTIF)', CO.pctOTIF !== null ? CO.pctOTIF + '%' : '—', 'OVs entregadas', String(CO.entregadas)],
+      ['', 'PIs activos', String(CO.pisActivos), 'PIs vencidos', String(CO.pisVencidos)],
+      ['', 'Entregas parciales', String(CO.ovsParciales), 'Saldos abiertos', String(CO.saldosAbiertos)],
+      ['PELETIZADO', 'Merma acumulada', fmtNum(Math.round(PE.kgPelStock)) + ' kg', 'Pellet producido', fmtNum(Math.round(PE.kgPelletPer)) + ' kg'],
+      ['', 'Eficiencia P-5', PE.efP5 !== null ? PE.efP5 + '%' : '—', 'Desecho p/venta', fmtNum(Math.round(PE.kgDesecho)) + ' kg'],
+    ],
+    margin: { left: M, right: M },
+    styles: { fontSize: 8.5, cellPadding: 2 },
+    headStyles: { fillColor: AZUL },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 32 }, 2: { fontStyle: 'bold', halign: 'right' }, 4: { fontStyle: 'bold', halign: 'right' } }
+  });
+  y = docPDF.lastAutoTable.finalY + 8;
+  
+  // ── GRÁFICA: PRODUCCIÓN DIARIA (barras nativas) ──
+  const dibujarBarras = (titulo, datos, colorRGB, maxAncho = W - 2 * M, alturaG = 42) => {
+    if (y + alturaG + 16 > 282) { docPDF.addPage(); y = 16; }
+    docPDF.setFontSize(10.5); docPDF.setFont(undefined, 'bold'); docPDF.setTextColor(...NEGRO);
+    docPDF.text(titulo, M, y); 
+    docPDF.setFont(undefined, 'normal');
+    y += 3;
+    const maxV = Math.max(...datos.map(d => d.valor), 1);
+    const n = datos.length;
+    const bw = Math.min(14, (maxAncho - 10) / n - 2);
+    datos.forEach((d, i) => {
+      const bh = Math.max(0.5, (d.valor / maxV) * alturaG);
+      const x = M + 4 + i * (bw + 2);
+      docPDF.setFillColor(...(d.colorRGB || colorRGB));
+      docPDF.rect(x, y + alturaG - bh, bw, bh, 'F');
+      docPDF.setFontSize(5.5); docPDF.setTextColor(...GRIS);
+      docPDF.text(d.label, x + bw / 2, y + alturaG + 3.5, { align: 'center' });
+      if (d.valor > 0) {
+        docPDF.setFontSize(5.5); docPDF.setTextColor(...NEGRO);
+        docPDF.text(String(fmtNum(Math.round(d.valor))), x + bw / 2, y + alturaG - bh - 1, { align: 'center' });
+      }
+    });
+    y += alturaG + 10;
+  };
+  
+  seccion('TENDENCIAS DEL PERIODO');
+  dibujarBarras('Producción diaria (kg)', D.prodPorDia.map(d => ({ label: d.label, valor: d.valor })), [59, 130, 246]);
+  dibujarBarras('Merma diaria (kg)', D.prodPorDia.map(d => ({ 
+    label: d.label, valor: d.merma,
+    colorRGB: (d.valor + d.merma) > 0 && (d.merma / (d.valor + d.merma)) > 0.05 ? [220, 38, 38] : [245, 158, 11]
+  })), [245, 158, 11]);
+  dibujarBarras('Entregas diarias (OVs)', D.entregasPorDia.map(d => ({ label: d.label, valor: d.valor })), [22, 163, 74]);
+  
+  // ── TABLA: ODPs CERRADAS ──
+  if (D.odpsCerradasPer.length > 0) {
+    seccion('PRODUCCIÓN — ODPs CERRADAS EN EL PERIODO');
+    docPDF.autoTable({
+      startY: y,
+      head: [['ODP', 'Producto', 'Cliente', 'Meta kg', 'Producido', 'Merma', 'Cumplim.']],
+      body: D.odpsCerradasPer.map(o => [o.folio, o.producto, o.cliente.substring(0, 24), fmtNum(o.meta), fmtNum(o.producido), fmtNum(o.merma), o.cumpl + '%']),
+      margin: { left: M, right: M },
+      styles: { fontSize: 7.5, cellPadding: 1.6 },
+      headStyles: { fillColor: [59, 130, 246], fontSize: 8 },
+      columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right', fontStyle: 'bold' }, 5: { halign: 'right' }, 6: { halign: 'right', fontStyle: 'bold' } },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.column.index === 6) {
+          const v = parseInt(data.cell.raw, 10);
+          data.cell.styles.textColor = v >= 98 ? VERDE : v >= 90 ? [161, 98, 7] : ROJO;
+        }
+      }
+    });
+    y = docPDF.lastAutoTable.finalY + 8;
+  }
+  
+  // ── TABLA: ENTREGAS ──
+  if (D.ovsEntregadasDet.length > 0) {
+    seccion('COMERCIAL — ENTREGAS DEL PERIODO');
+    docPDF.autoTable({
+      startY: y,
+      head: [['OV', 'Cliente', 'Producto', 'Prometida', 'Entregada', 'Estado']],
+      body: D.ovsEntregadasDet.map(o => [
+        o.folio, o.cliente.substring(0, 26), o.producto.substring(0, 22), o.prometida, o.entregada,
+        (o.aTiempo ? 'A TIEMPO' : 'TARDE') + (o.parcial ? ' (parcial)' : '')
+      ]),
+      margin: { left: M, right: M },
+      styles: { fontSize: 7.5, cellPadding: 1.6 },
+      headStyles: { fillColor: [22, 163, 74], fontSize: 8 },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.column.index === 5) {
+          data.cell.styles.textColor = String(data.cell.raw).startsWith('A TIEMPO') ? VERDE : ROJO;
+          data.cell.styles.fontStyle = 'bold';
+        }
+      }
+    });
+    y = docPDF.lastAutoTable.finalY + 8;
+  }
+  
+  // ── PIE DE PÁGINA en todas las páginas ──
+  const totalPaginas = docPDF.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPaginas; p++) {
+    docPDF.setPage(p);
+    docPDF.setFontSize(7); docPDF.setTextColor(...GRIS);
+    docPDF.text(`New Pack Abastecedora de Empaques S.A. de C.V. · Reporte generado desde NewPack ERP · Página ${p} de ${totalPaginas}`, W / 2, 292, { align: 'center' });
+  }
+  
+  const filename = `Reporte_Resultados_NewPack_${D.hoy}_${D.dias}d.pdf`;
+  _mostrarVistaPreviaPDF(docPDF, filename, `Reporte de Resultados · ${perTxt}`);
+};
+
+// ============================================================
+// 🆕 HELPER CENTRAL: ¿qué flujo sigue esta ODP?
+// ============================================================
+// Retorna { tipo: 'directo' | 'intermedio' | 'secundario', badge, destinoTxt }
+// - directo:    un solo proceso → al cerrar va DIRECTO a Calidad/liberación
+// - intermedio: es P-1 pero el producto pasa a otro proceso → sus rollos van al Almacén Intermedio
+// - secundario: es la ODP del proceso P-2/P-3/P-4 (consume rollos del intermedio)
+window.flujoODP = (odp) => {
+  if (!odp) return { tipo: 'directo', badge: '', destinoTxt: '' };
+  
+  // ODP de proceso secundario (P-2/P-3/P-4 en cascada)
+  if (odp.proceso_codigo && odp.proceso_codigo !== 'P-1') {
+    return {
+      tipo: 'secundario',
+      badge: `<span style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;padding:2px 7px;border-radius:6px;font-size:9px;font-weight:800;" title="Consume rollos del Almacén Intermedio (de ${odp.odp_padre_folio || 'su ODP padre'})">⚙️ ${odp.proceso_codigo} · consume 🧵</span>`,
+      destinoTxt: `Consume rollos de ${odp.odp_padre_folio || 'ODP padre'} · al cerrar → Calidad`
+    };
+  }
+  
+  // ¿Tiene hijas o requiere proceso secundario? → sus rollos van al intermedio
+  const tieneHijas = (state.ordenes_produccion || []).some(h => h.odp_padre_id === odp.id);
+  const ruta = odp.ruta_procesos || [];
+  const esLegacyMultiproceso = ruta.length > 1;
+  
+  if (odp.requiere_proceso_secundario || tieneHijas || esLegacyMultiproceso) {
+    const hija = (state.ordenes_produccion || []).find(h => h.odp_padre_id === odp.id);
+    const procSig = hija?.proceso_codigo || 
+                    (esLegacyMultiproceso ? (getProc(ruta[1])?.nombre || ruta[1]) : '') || 
+                    'proceso secundario';
+    return {
+      tipo: 'intermedio',
+      badge: `<span style="background:#ede9fe;color:#6d28d9;border:1px solid #a78bfa;padding:2px 7px;border-radius:6px;font-size:9px;font-weight:800;" title="Sus rollos van al Almacén Intermedio y los toma ${procSig}">🧵 pasa a ${procSig}</span>`,
+      destinoTxt: `Rollos → 🧵 Almacén Intermedio → ${procSig}`
+    };
+  }
+  
+  // Directo: un solo proceso, al cerrar va a calidad
+  return {
+    tipo: 'directo',
+    badge: `<span style="background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 7px;border-radius:6px;font-size:9px;font-weight:800;" title="Producto de un solo proceso: al cerrar va directo a liberación de Calidad">🎯 directo a Calidad</span>`,
+    destinoTxt: `Al cerrar → directo a liberación de Calidad`
+  };
+};
+
+// Helper: determinar si un rollo está disponible en el almacén intermedio
+function rolloEnIntermedio(r) {
+  if (r.anulado) return false;
+  if (r.consumido_en_odp_id) return false; // ya lo tomó otro proceso
+  const odp = (state.ordenes_produccion || []).find(o => o.id === r.odp_id);
+  if (!odp) return false;
+  if (['cancelada','rechazada'].includes(odp.estatus)) return false;
+  
+  // Caso cascada (F1): la ODP P-1 cuyo producto requiere proceso secundario
+  if (odp.requiere_proceso_secundario || (state.ordenes_produccion || []).some(h => h.odp_padre_id === odp.id)) {
+    return true;
+  }
+  // Caso legacy: ODP con ruta de varios procesos y el rollo es de un proceso que NO es el último
+  const ruta = odp.ruta_procesos || [];
+  if (ruta.length > 1) {
+    const idxProcRollo = ruta.indexOf(r.proceso);
+    if (idxProcRollo >= 0 && idxProcRollo < ruta.length - 1) return true;
+  }
+  return false;
+}
+
+function renderAlmacenIntermedio() {
+  const u = state.user || {};
+  const puedeColocar = ['PRO','PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const filtro = (state.filtros.almacen_intermedio || '').toLowerCase();
+  
+  // Rollos disponibles en intermedio
+  let rollosDisp = (state.rollos_extrusion || []).filter(rolloEnIntermedio);
+  
+  // Rollos ya colocados (consumidos) — últimos 30 para historial
+  const rollosColocados = (state.rollos_extrusion || [])
+    .filter(r => !r.anulado && r.consumido_en_odp_id)
+    .slice(0, 30);
+  
+  if (filtro) {
+    rollosDisp = rollosDisp.filter(r => {
+      const odp = (state.ordenes_produccion || []).find(o => o.id === r.odp_id);
+      return ((r.odp_folio || '') + ' ' + (r.producto_codigo || '') + ' ' + (odp?.cliente_nombre || '')).toLowerCase().includes(filtro);
+    });
+  }
+  
+  // Agrupar por ODP origen
+  const porODP = {};
+  rollosDisp.forEach(r => {
+    const k = r.odp_id || 'sin_odp';
+    if (!porODP[k]) porODP[k] = [];
+    porODP[k].push(r);
+  });
+  
+  const totalKgDisp = rollosDisp.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  const tabActiva = state.tabs.almacen_intermedio || 'disponible';
+  
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;border-bottom:1px solid #e2e8f0;">
+        <div>
+          <h2 style="font-size:17px;font-weight:800;margin:0;">🧵 Almacén de Producto Intermedio</h2>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">
+            Rollos que ya salieron de extrusión pero les falta 1+ proceso(s) ·
+            <strong style="color:#0f172a;">${rollosDisp.length} rollo(s) · ${fmtNum(totalKgDisp)} kg disponibles</strong>
+          </div>
+        </div>
+        <input class="input" id="filtro-alm-int" placeholder="Buscar por ODP, producto, cliente..." value="${state.filtros.almacen_intermedio || ''}" style="max-width:280px;" autocomplete="off" />
+      </div>
+      <div style="padding:10px 20px;display:flex;gap:8px;">
+        ${[['disponible','📦 Disponible'],['colocados','✅ Colocados (historial)']].map(([k, lbl]) => `
+          <button onclick="state.tabs.almacen_intermedio='${k}';render();" style="padding:6px 14px;background:${tabActiva === k ? '#7c3aed' : '#fff'};color:${tabActiva === k ? '#fff' : '#475569'};border:1.5px solid ${tabActiva === k ? '#7c3aed' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">${lbl}</button>
+        `).join('')}
+      </div>
+    </div>
+    
+    ${tabActiva === 'disponible' ? `
+      ${Object.keys(porODP).length === 0 ? `
+        <div class="panel"><div style="padding:50px;text-align:center;color:#94a3b8;">
+          No hay rollos en el almacén intermedio.<br>
+          <span style="font-size:11px;">Los rollos aparecen aquí automáticamente al capturarlos en extrusión, si el producto requiere más procesos.</span>
+        </div></div>
+      ` : Object.entries(porODP).map(([odpId, rollos]) => {
+        const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+        if (!odp) return '';
+        const kgGrupo = rollos.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+        
+        // ¿Qué proceso le falta? Cascada: las ODPs hijas. Legacy: siguiente en ruta
+        const hijas = (state.ordenes_produccion || []).filter(h => 
+          h.odp_padre_id === odpId && !['cancelada','rechazada','completada','entregada'].includes(h.estatus)
+        );
+        const producto = window.getProductoPT(odp.producto_codigo);
+        let faltaTxt = '';
+        if (hijas.length > 0) {
+          faltaTxt = hijas.map(h => `${h.proceso_codigo || '?'} (${h.folio})`).join(', ');
+        } else if (producto?.proceso_secundario_codigo) {
+          faltaTxt = producto.proceso_secundario_codigo;
+        } else {
+          const ruta = odp.ruta_procesos || [];
+          const idxR = ruta.indexOf(rollos[0]?.proceso);
+          faltaTxt = ruta.slice(idxR + 1).map(pc => getProc(pc)?.nombre || pc).join(' → ') || '—';
+        }
+        
+        return `
+          <div class="panel" style="margin-bottom:14px;">
+            <div style="padding:12px 18px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:linear-gradient(90deg,#f5f3ff,transparent);">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span class="text-mono" style="font-weight:800;font-size:14px;">${odp.folio}</span>
+                  <span style="background:#ede9fe;color:#6d28d9;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:800;">🧵 INTERMEDIO</span>
+                </div>
+                <div style="font-size:12px;color:#475569;margin-top:3px;">
+                  <span class="text-mono">${odp.producto_codigo}</span> · ${odp.cliente_nombre || 'STOCK'}
+                </div>
+                <div style="font-size:11px;color:#7c3aed;margin-top:2px;font-weight:700;">
+                  ⏭ Le falta: ${faltaTxt}
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:20px;font-weight:800;color:#0f172a;">${fmtNum(kgGrupo)} kg</div>
+                <div style="font-size:11px;color:#64748b;">${rollos.length} rollo(s)</div>
+                ${puedeColocar && hijas.length > 0 ? `
+                  <button onclick="window.colocarRollosEnODP('${odpId}', '${hijas[0].id}')" style="margin-top:6px;background:#7c3aed;color:#fff;border:none;padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">
+                    ➡️ Colocar TODO en ${hijas[0].folio}
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+            <div style="padding:10px 18px;overflow-x:auto;">
+              <table style="width:100%;font-size:11px;border-collapse:collapse;">
+                <thead><tr style="background:#f8fafc;color:#64748b;text-align:left;">
+                  <th style="padding:6px 10px;">Rollo #</th>
+                  <th style="padding:6px 10px;text-align:right;">Kg</th>
+                  <th style="padding:6px 10px;">Fecha</th>
+                  <th style="padding:6px 10px;">Máquina</th>
+                  <th style="padding:6px 10px;">Operador</th>
+                  ${puedeColocar && hijas.length > 0 ? '<th style="padding:6px 10px;"></th>' : ''}
+                </tr></thead>
+                <tbody>
+                  ${rollos.sort((a,b) => (a.numero_rollo||0)-(b.numero_rollo||0)).map(r => `
+                    <tr style="border-top:1px solid #f1f5f9;">
+                      <td style="padding:5px 10px;font-weight:700;">R-${String(r.numero_rollo || 0).padStart(2,'0')}</td>
+                      <td style="padding:5px 10px;text-align:right;font-weight:700;">${fmtNum(r.peso_kg)}</td>
+                      <td style="padding:5px 10px;color:#64748b;">${r.fecha || ''}</td>
+                      <td style="padding:5px 10px;" class="text-mono">${r.maquina_codigo || ''}</td>
+                      <td style="padding:5px 10px;color:#64748b;">${r.operador_nombre || ''}</td>
+                      ${puedeColocar && hijas.length > 0 ? `
+                        <td style="padding:5px 10px;text-align:right;">
+                          <button onclick="window.colocarRolloIndividual('${r.id}', '${hijas[0].id}')" style="background:#fff;color:#7c3aed;border:1px solid #7c3aed;padding:3px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:10px;">➡️ Colocar</button>
+                        </td>
+                      ` : ''}
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    ` : ''}
+    
+    ${tabActiva === 'colocados' ? `
+      <div class="panel">
+        <div style="padding:12px 20px;border-bottom:1px solid #e2e8f0;"><strong style="font-size:13px;">Últimos 30 rollos colocados en proceso siguiente</strong></div>
+        ${rollosColocados.length === 0 ? `<div style="padding:40px;text-align:center;color:#94a3b8;">Sin colocaciones aún</div>` : `
+          <div style="overflow-x:auto;">
+            <table style="width:100%;font-size:11px;border-collapse:collapse;">
+              <thead><tr style="background:#f8fafc;color:#64748b;text-align:left;">
+                <th style="padding:6px 12px;">Rollo</th>
+                <th style="padding:6px 12px;">ODP origen</th>
+                <th style="padding:6px 12px;text-align:right;">Kg</th>
+                <th style="padding:6px 12px;">Colocado en</th>
+                <th style="padding:6px 12px;">Por</th>
+              </tr></thead>
+              <tbody>
+                ${rollosColocados.map(r => `
+                  <tr style="border-top:1px solid #f1f5f9;">
+                    <td style="padding:5px 12px;font-weight:700;">R-${String(r.numero_rollo || 0).padStart(2,'0')}</td>
+                    <td style="padding:5px 12px;" class="text-mono">${r.odp_folio || ''}</td>
+                    <td style="padding:5px 12px;text-align:right;">${fmtNum(r.peso_kg)}</td>
+                    <td style="padding:5px 12px;" class="text-mono" style="color:#7c3aed;font-weight:700;">${r.consumido_en_odp_folio || r.consumido_en_odp_id}</td>
+                    <td style="padding:5px 12px;color:#64748b;">${r.consumido_por || ''}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </div>
+    ` : ''}
+  `;
+}
+
+// Colocar TODOS los rollos disponibles de una ODP padre en la ODP hija (proceso siguiente)
+window.colocarRollosEnODP = async (odpPadreId, odpHijaId) => {
+  const hija = (state.ordenes_produccion || []).find(o => o.id === odpHijaId);
+  if (!hija) { toast('ODP destino no encontrada', 'error'); return; }
+  
+  const rollos = (state.rollos_extrusion || []).filter(r => r.odp_id === odpPadreId && rolloEnIntermedio(r));
+  if (rollos.length === 0) { toast('No hay rollos disponibles', 'error'); return; }
+  
+  const kgTotal = rollos.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  if (!confirm(`➡️ COLOCAR EN ${hija.folio} (${hija.proceso_codigo || ''})\n\n${rollos.length} rollo(s) · ${fmtNum(kgTotal)} kg\n\nEl material quedará asignado a ese proceso.\n¿Confirmar?`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    rollos.forEach(r => {
+      batch.update(doc(db, 'rollos_extrusion', r.id), {
+        consumido_en_odp_id: odpHijaId,
+        consumido_en_odp_folio: hija.folio,
+        consumido_at: serverTimestamp(),
+        consumido_por: state.user?.nombre || state.user?.email || '',
+        updated_at: serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast(`✅ ${rollos.length} rollo(s) (${fmtNum(kgTotal)} kg) colocados en ${hija.folio}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// Colocar UN rollo individual
+window.colocarRolloIndividual = async (rolloId, odpHijaId) => {
+  const r = (state.rollos_extrusion || []).find(x => x.id === rolloId);
+  const hija = (state.ordenes_produccion || []).find(o => o.id === odpHijaId);
+  if (!r || !hija) { toast('Datos no encontrados', 'error'); return; }
+  
+  if (!confirm(`➡️ Colocar rollo R-${String(r.numero_rollo||0).padStart(2,'0')} (${fmtNum(r.peso_kg)} kg) en ${hija.folio}?`)) return;
+  
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'rollos_extrusion', rolloId), {
+      consumido_en_odp_id: odpHijaId,
+      consumido_en_odp_folio: hija.folio,
+      consumido_at: serverTimestamp(),
+      consumido_por: state.user?.nombre || state.user?.email || '',
+      updated_at: serverTimestamp()
+    });
+    toast(`✅ Rollo colocado en ${hija.folio}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
 };
 
 // ============================================================
@@ -30428,26 +31568,49 @@ function modalEditarProductoPT() {
               <strong style="font-size:13px;">${ICONS.users} Clientes asignados</strong>
               <span style="font-size:11px;color:#64748b;">${numAsignados} cliente(s)</span>
             </div>
+            
+            ${numAsignados > 0 ? `
+              <!-- 🆕 Panel destacado: ESTOS son los clientes del producto (sin scrollear) -->
+              <div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+                <div style="font-size:10px;font-weight:800;color:#166534;text-transform:uppercase;margin-bottom:6px;">✓ Este producto pertenece a:</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  ${Object.keys(f.clientesAsignados).map(cod => {
+                    const cli = state.clientes.find(c => c.codigo === cod);
+                    return `<span style="background:#fff;border:1px solid #86efac;color:#166534;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:700;">${cod} — ${(cli?.nombre || '').slice(0, 30)}</span>`;
+                  }).join('')}
+                </div>
+              </div>
+            ` : ''}
+            
             <input class="input" id="pt-busq-cli" placeholder="Buscar cliente por código o nombre..." value="${f.busqClientes}" autocomplete="off" />
             <div style="max-height:240px;overflow-y:auto;margin-top:10px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;">
-              ${clientesFiltrados.length === 0 ? `
-                <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No se encontraron clientes</div>
-              ` : clientesFiltrados.slice(0, 80).map(c => {
-                const asignado = !!f.clientesAsignados[c.codigo];
-                const asign = f.clientesAsignados[c.codigo] || {};
-                return `
-                  <div style="padding:8px 10px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;${asignado ? 'background:#f0fdf4;' : ''}">
-                    <input type="checkbox" class="cli-asign-check" data-cliente="${c.codigo}" ${asignado ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;" />
-                    <div style="flex:1;min-width:0;">
-                      <div style="font-weight:600;font-size:12px;">${c.codigo} <span style="color:#475569;font-weight:400;">— ${c.nombre}</span></div>
-                    </div>
-                    ${asignado ? `
-                      <input type="number" class="cli-asign-precio" data-cliente="${c.codigo}" placeholder="Precio" min="0" step="0.01" value="${asign.precio || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
-                      <input type="text" class="cli-asign-codint" data-cliente="${c.codigo}" placeholder="Cód. cli." value="${asign.codigo_cliente_interno || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
-                    ` : ''}
-                  </div>
+              ${(() => {
+                // 🆕 ASIGNADOS PRIMERO, luego el resto (cada grupo en su orden)
+                const asignadosList = clientesFiltrados.filter(c => !!f.clientesAsignados[c.codigo]);
+                const noAsignados = clientesFiltrados.filter(c => !f.clientesAsignados[c.codigo]);
+                const ordenados = [...asignadosList, ...noAsignados];
+                if (ordenados.length === 0) return `
+                  <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No se encontraron clientes</div>
                 `;
-              }).join('')}
+                return ordenados.slice(0, 80).map((c, i) => {
+                  const asignado = !!f.clientesAsignados[c.codigo];
+                  const asign = f.clientesAsignados[c.codigo] || {};
+                  const esDivisor = !asignado && i === asignadosList.length && asignadosList.length > 0;
+                  return `
+                    ${esDivisor ? `<div style="padding:5px 10px;background:#f1f5f9;font-size:9.5px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;">Otros clientes disponibles</div>` : ''}
+                    <div style="padding:8px 10px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;${asignado ? 'background:#f0fdf4;' : ''}">
+                      <input type="checkbox" class="cli-asign-check" data-cliente="${c.codigo}" ${asignado ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;" />
+                      <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:12px;">${c.codigo} <span style="color:#475569;font-weight:400;">— ${c.nombre}</span></div>
+                      </div>
+                      ${asignado ? `
+                        <input type="number" class="cli-asign-precio" data-cliente="${c.codigo}" placeholder="Precio" min="0" step="0.01" value="${asign.precio || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
+                        <input type="text" class="cli-asign-codint" data-cliente="${c.codigo}" placeholder="Cód. cli." value="${asign.codigo_cliente_interno || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
+                      ` : ''}
+                    </div>
+                  `;
+                }).join('');
+              })()}
             </div>
           </div>
           
@@ -31519,8 +32682,13 @@ function modalCrearProductoPT() {
             ${f.requiere_proceso_secundario ? `
               <div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:6px;font-size:10px;color:#92400e;">
                 ⚙️ Productos con proceso secundario generan <strong>2 ODPs en cascada</strong>: una P-1 (extrusión a rollo) y otra ${f.proceso_secundario_codigo || 'P-X'} (a producto terminado).
+                Los rollos de la P-1 pasan al <strong>🧵 Almacén Intermedio</strong> y de ahí se colocan en el proceso siguiente.
               </div>
-            ` : ''}
+            ` : `
+              <div style="margin-top:8px;padding:8px;background:#dcfce7;border-radius:6px;font-size:10px;color:#166534;">
+                🎯 Producto de <strong>flujo directo</strong>: una sola ODP de extrusión; al cerrarla pasa directo a liberación de Calidad (no usa Almacén Intermedio).
+              </div>
+            `}
           </div>
           
           <!-- 5. Asignación a clientes -->
@@ -31529,26 +32697,47 @@ function modalCrearProductoPT() {
               <strong style="font-size:13px;">${ICONS.users} Asignar a clientes</strong>
               <span style="font-size:11px;color:#64748b;">${numAsignados} cliente(s) seleccionado(s)</span>
             </div>
+            
+            ${numAsignados > 0 ? `
+              <div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+                <div style="font-size:10px;font-weight:800;color:#166534;text-transform:uppercase;margin-bottom:6px;">✓ Seleccionados:</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  ${Object.keys(f.clientesAsignados).map(cod => {
+                    const cli = state.clientes.find(c => c.codigo === cod);
+                    return `<span style="background:#fff;border:1px solid #86efac;color:#166534;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:700;">${cod} — ${(cli?.nombre || '').slice(0, 30)}</span>`;
+                  }).join('')}
+                </div>
+              </div>
+            ` : ''}
+            
             <input class="input" id="pt-busq-cli" placeholder="Buscar cliente por código o nombre..." value="${f.busqClientes}" autocomplete="off" />
             <div style="max-height:240px;overflow-y:auto;margin-top:10px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;">
-              ${clientesFiltrados.length === 0 ? `
-                <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No se encontraron clientes</div>
-              ` : clientesFiltrados.slice(0, 80).map(c => {
-                const asignado = !!f.clientesAsignados[c.codigo];
-                const asign = f.clientesAsignados[c.codigo] || {};
-                return `
-                  <div style="padding:8px 10px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;${asignado ? 'background:#f0fdf4;' : ''}">
-                    <input type="checkbox" class="cli-asign-check" data-cliente="${c.codigo}" ${asignado ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;" />
-                    <div style="flex:1;min-width:0;">
-                      <div style="font-weight:600;font-size:12px;">${c.codigo} <span style="color:#475569;font-weight:400;">— ${c.nombre}</span></div>
-                    </div>
-                    ${asignado ? `
-                      <input type="number" class="cli-asign-precio" data-cliente="${c.codigo}" placeholder="Precio" min="0" step="0.01" value="${asign.precio || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
-                      <input type="text" class="cli-asign-codint" data-cliente="${c.codigo}" placeholder="Cód. cli." value="${asign.codigo_cliente_interno || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
-                    ` : ''}
-                  </div>
+              ${(() => {
+                const asignadosList = clientesFiltrados.filter(c => !!f.clientesAsignados[c.codigo]);
+                const noAsignados = clientesFiltrados.filter(c => !f.clientesAsignados[c.codigo]);
+                const ordenados = [...asignadosList, ...noAsignados];
+                if (ordenados.length === 0) return `
+                  <div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No se encontraron clientes</div>
                 `;
-              }).join('')}
+                return ordenados.slice(0, 80).map((c, i) => {
+                  const asignado = !!f.clientesAsignados[c.codigo];
+                  const asign = f.clientesAsignados[c.codigo] || {};
+                  const esDivisor = !asignado && i === asignadosList.length && asignadosList.length > 0;
+                  return `
+                    ${esDivisor ? `<div style="padding:5px 10px;background:#f1f5f9;font-size:9.5px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;">Otros clientes disponibles</div>` : ''}
+                    <div style="padding:8px 10px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;${asignado ? 'background:#f0fdf4;' : ''}">
+                      <input type="checkbox" class="cli-asign-check" data-cliente="${c.codigo}" ${asignado ? 'checked' : ''} style="cursor:pointer;width:16px;height:16px;" />
+                      <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:12px;">${c.codigo} <span style="color:#475569;font-weight:400;">— ${c.nombre}</span></div>
+                      </div>
+                      ${asignado ? `
+                        <input type="number" class="cli-asign-precio" data-cliente="${c.codigo}" placeholder="Precio" min="0" step="0.01" value="${asign.precio || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
+                        <input type="text" class="cli-asign-codint" data-cliente="${c.codigo}" placeholder="Cód. cli." value="${asign.codigo_cliente_interno || ''}" style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;" />
+                      ` : ''}
+                    </div>
+                  `;
+                }).join('');
+              })()}
             </div>
             ${clientesFiltrados.length > 80 ? `<div style="margin-top:6px;font-size:11px;color:#94a3b8;text-align:center;">Mostrando 80 de ${clientesFiltrados.length}, refina la búsqueda</div>` : ''}
           </div>
@@ -31606,6 +32795,15 @@ function attachAppEvents() {
   }
   if ($('#filtro-productos-pt-cliente')) {
     $('#filtro-productos-pt-cliente').onchange = (e) => { state.filtros.productos_pt_cliente = e.target.value; render(); };
+  }
+  if ($('#filtro-alm-int')) {
+    $('#filtro-alm-int').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.filtros.almacen_intermedio = e.target.value;
+      render();
+      const inp = $('#filtro-alm-int');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
   }
   if ($('#filtro-productos-pt-tipo')) {
     $('#filtro-productos-pt-tipo').onchange = (e) => { state.filtros.productos_pt_tipo = e.target.value; render(); };
@@ -34489,7 +35687,10 @@ window.confirmarCompletarProceso = async (odpId) => {
       cerrarModal();
       const totalMpConsumida2 = consumosMP.reduce((s, c) => s + c.kg_consumidos, 0);
       const msgMP2 = consumosMP.length > 0 ? ` · 🧪 ${fmtNum(totalMpConsumida2.toFixed(0))} kg de MP descontados` : '';
-      toast(`🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas${msgMP2}`);
+      const flujoC1 = window.flujoODP(odp);
+      toast(flujoC1.tipo === 'intermedio'
+        ? `🟡 ODP cerrada: ${fmtNum(prodKg)} kg · rollos quedan en 🧵 Intermedio para el proceso siguiente · merma ${fmtNum(totalMermasKg)} kg`
+        : `🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas${msgMP2}`);
     } else {
       // Avanzar al siguiente proceso, pero EN ESTADO ESPERANDO (no en proceso aún)
       const siguienteIdx = idx + 1;
