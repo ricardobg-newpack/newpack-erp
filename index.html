@@ -3425,14 +3425,33 @@ function renderProductosPT() {
   const filtroUM = state.filtros.productos_pt_um || '';
   const filtroMat = state.filtros.productos_pt_material || '';
   const filtroTipo = state.filtros.productos_pt_tipo || '';
+  const filtroCli = state.filtros.productos_pt_cliente || '';
+  
+  // 🆕 Mapa producto → clientes asignados (para búsqueda y display)
+  const clisPorProducto = {};
+  (state.cliente_productos || []).forEach(cp => {
+    if (cp.activo === false) return;
+    if (!clisPorProducto[cp.producto_codigo]) clisPorProducto[cp.producto_codigo] = [];
+    const cli = (state.clientes || []).find(c => c.codigo === cp.cliente_codigo);
+    clisPorProducto[cp.producto_codigo].push({
+      codigo: cp.cliente_codigo,
+      nombre: cli?.nombre || cp.cliente_codigo,
+      codigo_interno: cp.codigo_cliente_interno || ''
+    });
+  });
   
   let arr = state.productos_pt;
-  if (filtro) arr = arr.filter(p => 
-    (p.codigo + ' ' + (p.descripcion||'') + ' ' + (p.material||'') + ' ' + (p.tipo||'') + ' ' + (p.color||'') + ' ' + (p.aditivo||'')).toLowerCase().includes(filtro)
-  );
+  if (filtro) arr = arr.filter(p => {
+    // 🆕 Incluir clientes asignados (nombre, código y código interno del cliente) en la búsqueda
+    const clisTxt = (clisPorProducto[p.codigo] || [])
+      .map(c => c.codigo + ' ' + c.nombre + ' ' + c.codigo_interno).join(' ');
+    return (p.codigo + ' ' + (p.descripcion||'') + ' ' + (p.material||'') + ' ' + (p.tipo||'') + ' ' + (p.color||'') + ' ' + (p.aditivo||'') + ' ' + clisTxt).toLowerCase().includes(filtro);
+  });
   if (filtroUM) arr = arr.filter(p => (p.um || 'kg').toLowerCase() === filtroUM);
   if (filtroMat) arr = arr.filter(p => (p.material || '') === filtroMat);
   if (filtroTipo) arr = arr.filter(p => (p.tipo || '') === filtroTipo);
+  // 🆕 Filtro directo por cliente
+  if (filtroCli) arr = arr.filter(p => (clisPorProducto[p.codigo] || []).some(c => c.codigo === filtroCli));
   // 🆕 Filtro de productos sin empaque configurado
   if (state.filtros.productos_pt_sinemp === true) {
     arr = arr.filter(p => {
@@ -3461,7 +3480,14 @@ function renderProductosPT() {
   
   return `
     <div class="toolbar" style="flex-wrap:wrap;gap:10px;">
-      <input class="input" id="filtro-productos-pt" style="max-width:340px;flex:1;min-width:240px;" placeholder="Buscar por código, descripción, color, aditivo..." value="${filtro}" autocomplete="off" />
+      <input class="input" id="filtro-productos-pt" style="max-width:340px;flex:1;min-width:240px;" placeholder="Buscar por código, descripción, color, CLIENTE..." value="${filtro}" autocomplete="off" />
+      <select class="input" id="filtro-productos-pt-cliente" style="max-width:240px;">
+        <option value="">Todos los clientes</option>
+        ${state.clientes
+          .filter(c => (state.cliente_productos || []).some(cp => cp.cliente_codigo === c.codigo && cp.activo !== false))
+          .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''))
+          .map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} — ${(c.nombre || '').slice(0, 35)}</option>`).join('')}
+      </select>
       <select class="input" id="filtro-productos-pt-material" style="max-width:200px;">
         <option value="">Todos los materiales</option>
         ${matsOrdenados.map(m => `<option value="${m}" ${filtroMat === m ? 'selected' : ''}>${m}</option>`).join('')}
@@ -3474,9 +3500,9 @@ function renderProductosPT() {
         <option value="">Todas las UM</option>
         ${UM_OPCIONES.map(um => `<option value="${um}" ${filtroUM === um ? 'selected' : ''}>${UM_LABELS[um]} (${statsUM[um] || 0})</option>`).join('')}
       </select>
-      ${(filtro || filtroUM || filtroMat || filtroTipo) ? `<button class="btn-secondary" onclick="limpiarFiltrosProductos()" style="padding:8px 12px;font-size:12px;">${ICONS.x} Limpiar</button>` : ''}
+      ${(filtro || filtroUM || filtroMat || filtroTipo || filtroCli) ? `<button class="btn-secondary" onclick="limpiarFiltrosProductos()" style="padding:8px 12px;font-size:12px;">${ICONS.x} Limpiar</button>` : ''}
       ${puedeCrear ? `<button class="btn-primary" onclick="abrirModal('crear-producto-pt')">${ICONS.plus} Nuevo PT</button>` : ''}
-      <span style="font-size:12px;color:#64748b;width:100%;">${arr.length} de ${state.productos_pt.length} productos</span>
+      <span style="font-size:12px;color:#64748b;width:100%;">${arr.length} de ${state.productos_pt.length} productos${filtroCli ? ` · cliente: ${(state.clientes.find(c => c.codigo === filtroCli)?.nombre || filtroCli)}` : ''}</span>
     </div>
     
     ${(() => {
@@ -3504,12 +3530,13 @@ function renderProductosPT() {
     })()}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:center;">📦 Empaque</th><th style="text-align:right;">Cli.</th><th></th></tr></thead>
+        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:center;">📦 Empaque</th><th>👥 Clientes</th><th></th></tr></thead>
         <tbody>
           ${arr.length === 0 ? `<tr><td colspan="12" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
             arr.slice(0, 100).map(p => {
               const medida = p.fuelle > 0 ? `${p.ancho}+${p.fuelle}x${p.largo}` : `${p.ancho}x${p.largo}`;
-              const clis = state.cliente_productos.filter(cp => cp.producto_codigo === p.codigo).length;
+              const clisArr = clisPorProducto[p.codigo] || [];
+              const clis = clisArr.length;
               const umActual = (p.um || 'kg').toLowerCase();
               const umBadgeColor = { kg: '#16a34a', pza: '#3b82f6', millar: '#8b5cf6', rollo: '#f59e0b', m: '#ec4899' }[umActual] || '#64748b';
               const aditivo = p.aditivo || 'NINGUNO';
@@ -3545,7 +3572,12 @@ function renderProductosPT() {
                     <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#fee2e2;color:#dc2626;font-weight:700;">⚠ Falta</span>
                   `}
                 </td>
-                <td style="text-align:right;font-size:11px;">${clis}</td>
+                <td style="text-align:left;font-size:10px;max-width:170px;" title="${clisArr.map(c => c.codigo + ' — ' + c.nombre).join('\n')}">
+                  ${clis === 0 ? '<span style="color:#cbd5e1;">—</span>' : `
+                    ${clisArr.slice(0, 2).map(c => `<span style="display:inline-block;background:#eff6ff;color:#1e40af;padding:1px 6px;border-radius:5px;font-weight:600;margin:1px 2px 1px 0;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;">${(c.nombre || c.codigo).slice(0, 18)}</span>`).join('')}
+                    ${clis > 2 ? `<span style="color:#64748b;font-weight:700;">+${clis - 2}</span>` : ''}
+                  `}
+                </td>
                 <td style="text-align:right;">
                   ${puedeEditar ? `<button class="icon-btn" onclick="abrirModal('editar-producto-pt','${p.codigo}')" title="Editar">${ICONS.edit}</button>` : ''}
                 </td>
@@ -5141,11 +5173,40 @@ function renderFormPedido() {
               <label class="field-label">${esStockInterno ? 'Tipo' : 'Cliente *'}</label>
               ${esStockInterno ? `
                 <input class="input" value="🏭 STOCK INTERNO NEWPACK" disabled style="background:#dcfce7;font-weight:700;color:#166534;" />
+              ` : datos.cliente_codigo ? `
+                <!-- 🆕 Cliente ya seleccionado: tarjeta compacta con botón cambiar -->
+                <div style="display:flex;align-items:center;gap:8px;background:#eff6ff;border:1.5px solid #3b82f6;border-radius:8px;padding:8px 12px;">
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-weight:800;font-size:13px;color:#1e40af;" class="text-mono">${datos.cliente_codigo}</div>
+                    <div style="font-size:11px;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${datos.cliente_nombre || ''}</div>
+                  </div>
+                  <button onclick="window.cambiarClientePI()" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;">✗ Cambiar</button>
+                </div>
               ` : `
-                <select class="input" id="ped-cliente">
-                  <option value="">— Selecciona —</option>
-                  ${state.clientes.map(c => `<option value="${c.codigo}" ${datos.cliente_codigo === c.codigo ? 'selected' : ''}>${c.codigo} — ${c.nombre.slice(0,40)}</option>`).join('')}
-                </select>
+                <!-- 🆕 Typeahead: buscar cliente por código, nombre o RFC -->
+                <input class="input" id="ped-cliente-busq" placeholder="🔍 Escribe código o nombre del cliente..." value="${state.busqClientePI || ''}" autocomplete="off" style="border-color:#3b82f6;" />
+                ${(() => {
+                  const q = (state.busqClientePI || '').toLowerCase().trim();
+                  if (!q) return `<div style="font-size:10.5px;color:#94a3b8;margin-top:4px;">Escribe al menos 2 letras para buscar entre ${state.clientes.length} clientes</div>`;
+                  if (q.length < 2) return '';
+                  const matches = state.clientes.filter(c => 
+                    ((c.codigo || '') + ' ' + (c.nombre || '') + ' ' + (c.rfc || '')).toLowerCase().includes(q)
+                  ).slice(0, 8);
+                  if (matches.length === 0) return `<div style="font-size:11px;color:#dc2626;margin-top:4px;">Sin coincidencias para "${q}"</div>`;
+                  return `
+                    <div style="border:1px solid #cbd5e1;border-radius:8px;margin-top:4px;max-height:220px;overflow-y:auto;background:#fff;box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+                      ${matches.map(c => `
+                        <div onclick="window.seleccionarClientePI('${c.codigo}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;gap:8px;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='#fff'">
+                          <div style="min-width:0;">
+                            <span class="text-mono" style="font-weight:800;font-size:12px;color:#1e40af;">${c.codigo}</span>
+                            <span style="font-size:12px;color:#334155;margin-left:8px;">${(c.nombre || '').slice(0, 45)}</span>
+                          </div>
+                          ${c.cedis_asignado ? `<span style="font-size:9.5px;color:#64748b;white-space:nowrap;">${c.cedis_asignado}</span>` : ''}
+                        </div>
+                      `).join('')}
+                    </div>
+                  `;
+                })()}
               `}
             </div>
             <div class="field">
@@ -13278,6 +13339,8 @@ function renderTarjetaOV(o, subTab) {
             <span class="text-mono" style="font-size:16px;font-weight:800;">${o.folio}</span>
             <span style="background:${colorEst};color:#fff;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;">${o.estatus.replace(/_/g,' ').toUpperCase()}</span>
             ${o.tipo_origen === 'producir' ? '<span style="background:#fde68a;color:#92400e;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">🏭 PRODUCIR</span>' : '<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">📦 STOCK</span>'}
+            ${o.es_ov_saldo ? `<span style="background:#fef3c7;color:#92400e;border:1px solid #f59e0b;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:800;" title="Generada por entrega parcial de ${o.ov_origen_folio || ''}">🔁 SALDO de ${o.ov_origen_folio || ''}</span>` : ''}
+            ${o.es_entrega_parcial ? `<span style="background:#fee2e2;color:#991b1b;border:1px solid #dc2626;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:800;">⚠ ENTREGA PARCIAL</span>` : ''}
           </div>
           <div style="font-weight:600;font-size:14px;color:#475569;">${o.cliente_nombre} <span style="color:#64748b;font-weight:400;font-size:12px;">(${o.cliente_codigo})</span></div>
           <div style="font-size:12px;color:#64748b;margin-top:3px;">
@@ -26690,11 +26753,33 @@ window.confirmarAsignarTarimasOV = async () => {
   }
   
   const tarimasSel = state.tarimas.filter(t => f.tarimas_seleccionadas.includes(t.id));
+  
+  // 🆕 R5 — Una tarima solo puede estar en UN embarque a la vez
+  const ocupadas = tarimasSel.filter(t => t.ov_id && t.ov_id !== ov.id && !['entregada'].includes(t.estatus));
+  if (ocupadas.length > 0) {
+    const detalle = ocupadas.map(t => `${t.codigo} → ${t.ov_folio || t.ov_id}`).join('\n');
+    toast(`⚠ ${ocupadas.length} tarima(s) ya están asignadas a otra OV:\n${detalle}`, 'error');
+    return;
+  }
+  
   const totalAsignado = tarimasSel.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
   const cantSol = Number(ov.cantidad_solicitada) || 0;
   
   if (totalAsignado > cantSol * 1.05) {
     if (!confirm(`Estás asignando ${fmtCantidadUM(totalAsignado, ov.um)} pero el cliente solicitó ${fmtCantidadUM(cantSol, ov.um)}.\n\n¿Continuar de todos modos?`)) return;
+  }
+  
+  // 🆕 Aviso de EMBARQUE PARCIAL (asignando menos del 98% de lo solicitado)
+  const esParcialAsig = cantSol > 0 && totalAsignado < cantSol * 0.98;
+  if (esParcialAsig) {
+    const saldo = cantSol - totalAsignado;
+    if (!confirm(
+      `⚠ EMBARQUE PARCIAL\n\n` +
+      `Solicitado: ${fmtCantidadUM(cantSol, ov.um)}\n` +
+      `Asignando ahora: ${fmtCantidadUM(totalAsignado, ov.um)}\n` +
+      `SALDO PENDIENTE: ${fmtCantidadUM(saldo, ov.um)}\n\n` +
+      `Al marcar esta OV como entregada, el sistema te ofrecerá generar una OV de saldo por lo pendiente.\n\n¿Continuar con el parcial?`
+    )) return;
   }
   
   state.loadingAccion = true; render();
@@ -26995,13 +27080,36 @@ window.confirmarCargaOV = async (ovId) => {
 window.marcarOVEntregada = async (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
   if (!ov) return;
-  if (!confirm(`Confirmar que ${ov.folio} fue ENTREGADA al cliente?`)) return;
+  
+  // 🆕 EMBARQUE PARCIAL — detectar saldo pendiente
+  const cantSol = Number(ov.cantidad_solicitada) || 0;
+  const cantEnv = Number(ov.cantidad_enviada) || 0;
+  const saldo = Number((cantSol - cantEnv).toFixed(2));
+  const esParcial = cantSol > 0 && saldo > cantSol * 0.02; // tolerancia 2%
+  let generarSaldo = false;
+  
+  if (esParcial) {
+    const resp = confirm(
+      `⚠ ENTREGA PARCIAL de ${ov.folio}\n\n` +
+      `Solicitado: ${fmtCantidadUM(cantSol, ov.um)}\n` +
+      `Entregando: ${fmtCantidadUM(cantEnv, ov.um)}\n` +
+      `SALDO: ${fmtCantidadUM(saldo, ov.um)}\n\n` +
+      `ACEPTAR = generar OV de SALDO automática por ${fmtCantidadUM(saldo, ov.um)} (el PI sigue abierto)\n` +
+      `CANCELAR = abortar (no se marca entregada)`
+    );
+    if (!resp) return;
+    generarSaldo = true;
+  } else {
+    if (!confirm(`Confirmar que ${ov.folio} fue ENTREGADA al cliente?`)) return;
+  }
   
   state.loadingAccion = true; render();
   try {
     const batch = writeBatch(db);
     batch.update(doc(db, 'ordenes_venta', ov.id), {
       estatus: 'entregada',
+      es_entrega_parcial: esParcial,
+      saldo_pendiente: esParcial ? saldo : 0,
       entregada_at: serverTimestamp(),
       entregada_por: state.user.id,
       entregada_por_nombre: state.user.nombre,
@@ -27017,16 +27125,61 @@ window.marcarOVEntregada = async (ovId) => {
     // Notificar a todos
     ['CS','KAM','CEO','ALP'].forEach(d => {
       batch.set(doc(collection(db, 'notificaciones')), {
-        titulo: `🏁 ${ov.folio} ENTREGADA`,
-        mensaje: `${ov.cliente_nombre} · ${ov.pedido_folio}`,
-        depto_destino: d, tipo: 'success', folio_ref: ov.folio,
+        titulo: `🏁 ${ov.folio} ENTREGADA${esParcial ? ' (PARCIAL)' : ''}`,
+        mensaje: `${ov.cliente_nombre} · ${ov.pedido_folio}${esParcial ? ` · ⚠ Saldo: ${fmtCantidadUM(saldo, ov.um)}` : ''}`,
+        depto_destino: d, tipo: esParcial ? 'warning' : 'success', folio_ref: ov.folio,
         created_at: serverTimestamp()
       });
     });
     
+    // 🆕 Generar OV de SALDO si fue parcial
+    let folioOVSaldo = '';
+    if (generarSaldo) {
+      const numOVs = await siguienteFolio('ov');
+      folioOVSaldo = 'OV-' + String(numOVs).padStart(5, '0');
+      const refSaldo = doc(collection(db, 'ordenes_venta'));
+      batch.set(refSaldo, {
+        folio: folioOVSaldo,
+        pedido_id: ov.pedido_id || '',
+        pedido_folio: ov.pedido_folio || '',
+        pedido_linea_id: ov.pedido_linea_id || '',
+        cliente_codigo: ov.cliente_codigo,
+        cliente_nombre: ov.cliente_nombre,
+        cedis: ov.cedis || 'CEDIS-MTY',
+        producto_codigo: ov.producto_codigo,
+        descripcion: ov.descripcion,
+        cantidad_solicitada: saldo,
+        cantidad_enviada: 0,
+        cantidad: saldo,
+        um: ov.um,
+        tipo_origen: ov.tipo_origen || 'producir',
+        es_ov_saldo: true,                    // 🏷 marca de OV generada por entrega parcial
+        ov_origen_folio: ov.folio,
+        ov_origen_id: ov.id,
+        odp_folio: ov.odp_folio || '',
+        estatus: 'pendiente_asignar',        // CEDIS revisa si hay stock; si no, esperará
+        tarimas_ids: [],
+        fecha_entrega_solicitada: ov.fecha_entrega_solicitada || null,
+        observaciones: `⚠ OV de SALDO por entrega parcial de ${ov.folio} (${fmtCantidadUM(cantEnv, ov.um)} de ${fmtCantidadUM(cantSol, ov.um)})`,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      // Notificar a CS y CEDIS del saldo
+      const deptoCedisS = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
+      ['CS', 'KAM', deptoCedisS].forEach(d => {
+        batch.set(doc(collection(db, 'notificaciones')), {
+          titulo: `🔁 OV de SALDO generada ${folioOVSaldo}`,
+          mensaje: `${ov.cliente_nombre} · ${ov.producto_codigo} · ${fmtCantidadUM(saldo, ov.um)} pendientes de ${ov.folio}`,
+          depto_destino: d, tipo: 'warning', folio_ref: folioOVSaldo,
+          created_at: serverTimestamp()
+        });
+      });
+    }
+    
     // ⭐ Verificar si TODAS las OVs del PI están entregadas → cerrar PI
+    // 🆕 Si se generó OV de saldo, el PI NO se cierra (queda pendiente)
     const pedidoFolio = ov.pedido_folio;
-    if (pedidoFolio) {
+    if (pedidoFolio && !generarSaldo) {
       const pedido = state.pedidos.find(p => p.folio === pedidoFolio);
       if (pedido && pedido.estatus !== 'completado') {
         const ovsDelPedido = state.ordenes_venta.filter(o => o.pedido_folio === pedidoFolio);
@@ -27060,7 +27213,9 @@ window.marcarOVEntregada = async (ovId) => {
       console.warn('Error sincronizando ODPs tras entrega:', eSync);
     }
     
-    toast(`🏁 ${ov.folio} ENTREGADA`);
+    toast(esParcial 
+      ? `🏁 ${ov.folio} entregada PARCIAL · OV de saldo ${folioOVSaldo} por ${fmtCantidadUM(saldo, ov.um)} generada`
+      : `🏁 ${ov.folio} ENTREGADA`);
   } catch (e) {
     console.error('Error marcando entregada:', e);
     let mensaje = e.message || String(e);
@@ -27747,6 +27902,12 @@ function modalAsignarTarimasOV() {
             </div>
           </div>
           
+          ${pendiente > 0 && seleccionadas.length > 0 ? `
+            <div style="background:#fef3c7;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:11px;color:#92400e;">
+              ⚠ <strong>Embarque parcial</strong>: al entregar esta OV el sistema te ofrecerá generar una <strong>OV de saldo</strong> por ${fmtCantidadUM(pendiente, ov.um)} para completar después.
+            </div>
+          ` : ''}
+          
           ${disponibles.length === 0 ? `
             <div style="padding:40px;text-align:center;color:#94a3b8;background:#f8fafc;border-radius:10px;">
               <div style="font-size:48px;margin-bottom:10px;">📦</div>
@@ -27974,6 +28135,28 @@ function modalDetalleOV() {
             <div><strong>Cant. solicitada:</strong><br>${fmtCantidadUM(ov.cantidad_solicitada || 0, ov.um)}</div>
             <div><strong>Cant. enviada:</strong><br>${fmtCantidadUM(ov.cantidad_enviada || 0, ov.um)} (${ov.cantidad_solicitada > 0 ? Math.round((ov.cantidad_enviada || 0) / ov.cantidad_solicitada * 100) : 0}%)</div>
           </div>
+          
+          ${ov.es_ov_saldo ? `
+            <div style="background:#fef3c7;padding:10px 14px;border-radius:10px;margin-bottom:14px;border-left:4px solid #f59e0b;font-size:12px;color:#92400e;">
+              🔁 <strong>OV de SALDO</strong> — generada por entrega parcial de <span class="text-mono" style="font-weight:700;">${ov.ov_origen_folio || ''}</span>
+            </div>
+          ` : ''}
+          
+          ${(() => {
+            const _sol = Number(ov.cantidad_solicitada) || 0;
+            const _env = Number(ov.cantidad_enviada) || 0;
+            const _saldo = Number((_sol - _env).toFixed(2));
+            const _hayParcial = _sol > 0 && _saldo > _sol * 0.02 && ['preparando','lista_embarcar','enviada','entregada'].includes(ov.estatus);
+            if (!_hayParcial) return '';
+            return `
+              <div style="background:#fee2e2;padding:10px 14px;border-radius:10px;margin-bottom:14px;border-left:4px solid #dc2626;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                <div style="font-size:12px;color:#991b1b;">
+                  ⚠ <strong>EMBARQUE PARCIAL</strong> — Saldo pendiente: <strong style="font-size:14px;">${fmtCantidadUM(_saldo, ov.um)}</strong>
+                  ${ov.saldo_pendiente ? ` · OV de saldo ya generada` : ''}
+                </div>
+              </div>
+            `;
+          })()}
           
           ${ov.remision ? `
             <div style="background:#f0fdf4;padding:12px;border-radius:10px;margin-bottom:14px;border-left:4px solid #16a34a;">
@@ -31421,6 +31604,9 @@ function attachAppEvents() {
   if ($('#filtro-productos-pt-material')) {
     $('#filtro-productos-pt-material').onchange = (e) => { state.filtros.productos_pt_material = e.target.value; render(); };
   }
+  if ($('#filtro-productos-pt-cliente')) {
+    $('#filtro-productos-pt-cliente').onchange = (e) => { state.filtros.productos_pt_cliente = e.target.value; render(); };
+  }
   if ($('#filtro-productos-pt-tipo')) {
     $('#filtro-productos-pt-tipo').onchange = (e) => { state.filtros.productos_pt_tipo = e.target.value; render(); };
   }
@@ -32203,6 +32389,16 @@ function attachAppEvents() {
   });
   
   if ($('#ped-cliente')) $('#ped-cliente').onchange = () => { capturarPedido(); render(); };
+  // 🆕 Typeahead de cliente en nuevo PI
+  if ($('#ped-cliente-busq')) {
+    $('#ped-cliente-busq').oninput = (e) => {
+      const pos = e.target.selectionStart;
+      state.busqClientePI = e.target.value;
+      render();
+      const inp = $('#ped-cliente-busq');
+      if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    };
+  }
   if ($('#ped-cedis')) $('#ped-cedis').onchange = () => { capturarPedido(); };
   if ($('#ped-busq')) $('#ped-busq').oninput = (e) => {
     const pos = e.target.selectionStart;
@@ -32639,6 +32835,39 @@ window.limpiarFiltrosProductos = () => {
   state.filtros.productos_pt_um = '';
   state.filtros.productos_pt_material = '';
   state.filtros.productos_pt_tipo = '';
+  state.filtros.productos_pt_cliente = '';
+  render();
+};
+
+// 🆕 Typeahead de cliente en nuevo PI
+window.seleccionarClientePI = (codigo) => {
+  // Capturar primero lo que ya esté escrito en otros campos (ODC, fecha, obs)
+  if (!state.pedidoData) state.pedidoData = { lineas: [] };
+  const d = state.pedidoData;
+  if ($('#ped-odc')) d.odc_cliente = $('#ped-odc').value;
+  if ($('#ped-fecha')) d.fecha_requerida = $('#ped-fecha').value;
+  if ($('#ped-obs')) d.observaciones = $('#ped-obs').value;
+  
+  const c = window.getCliente(codigo);
+  d.cliente_codigo = codigo;
+  d.cliente_nombre = c?.nombre || '';
+  d.cedis_asignado = c?.cedis_asignado || d.cedis_asignado || 'CEDIS-MTY';
+  d.lineas = [];
+  state.busqProd = '';
+  state.busqClientePI = '';
+  render();
+};
+
+window.cambiarClientePI = () => {
+  if (!state.pedidoData) return;
+  if (state.pedidoData.lineas?.length > 0) {
+    if (!confirm('Al cambiar de cliente se borran las líneas capturadas.\n\n¿Continuar?')) return;
+  }
+  state.pedidoData.cliente_codigo = '';
+  state.pedidoData.cliente_nombre = '';
+  state.pedidoData.lineas = [];
+  state.busqProd = '';
+  state.busqClientePI = '';
   render();
 };
 
