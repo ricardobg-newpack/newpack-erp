@@ -11542,7 +11542,7 @@ window.agregarRolloExtrusion = async (odpId) => {
     // 🆕 F4 — Si el rollo trae merma, registrarla automáticamente en PELETIZADO
     if (Number(mermas) > 0) {
       try {
-        await window.registrarMermaPeletizado({
+        const loteRes = await window.registrarMermaPeletizado({
           kg: Number(mermas),
           odp_id: odpId,
           odp_folio: odp.folio || '',
@@ -11552,8 +11552,16 @@ window.agregarRolloExtrusion = async (odpId) => {
           motivo: 'MERMA_ROLLO',
           notas: `Rollo #${proxNum} · ${fmtNum(peso)} kg buenos`
         });
+        if (loteRes) {
+          toast(`♻️ Merma ${fmtNum(Number(mermas))} kg → ${loteRes}`, 'info');
+        }
       } catch (ePel) {
-        console.warn('No se pudo registrar merma del rollo en peletizado:', ePel);
+        console.error('Error registrar merma peletizado:', ePel);
+        if (String(ePel.message || '').includes('PERMISSION_DENIED')) {
+          toast('🔒 PELETIZADO SIN CONFIGURAR: faltan las reglas de Firestore. La merma del rollo NO se registró. Ve a Peletizado → Configuración.', 'error');
+        } else {
+          toast('⚠ No se pudo registrar la merma en peletizado: ' + ePel.message, 'error');
+        }
       }
     }
     
@@ -14502,6 +14510,132 @@ window.generarReporteEjecutivoPDF = () => {
 };
 
 // ============================================================
+// 🔧 CONFIGURACIÓN / DIAGNÓSTICO DEL MÓDULO PELETIZADO
+// ============================================================
+
+// Probar que se puede escribir/leer en las 4 colecciones de peletizado
+window.testPermisosPeletizado = async () => {
+  toast('🔍 Probando permisos de las 4 colecciones...', 'info');
+  const colecciones = ['lotes_peletizado', 'movimientos_merma', 'corridas_peletizado', 'almacen_desecho_venta'];
+  const resultados = [];
+  
+  for (const col of colecciones) {
+    try {
+      // Intentar crear un doc de prueba
+      const testRef = await addDoc(collection(db, col), {
+        _test: true,
+        _creado_por: state.user?.email || 'test',
+        created_at: serverTimestamp()
+      });
+      // Borrarlo de inmediato
+      try { await deleteDoc(doc(db, col, testRef.id)); } catch (eDel) { /* admin-only delete, ok */ }
+      resultados.push({ col, ok: true });
+    } catch (e) {
+      resultados.push({ col, ok: false, err: String(e.message || e).includes('PERMISSION_DENIED') ? 'Sin permisos (reglas no publicadas)' : e.message });
+    }
+  }
+  
+  const fallidas = resultados.filter(r => !r.ok);
+  if (fallidas.length === 0) {
+    toast('✅ Permisos OK en las 4 colecciones. El módulo está configurado correctamente.', 'success');
+  } else {
+    const detalle = fallidas.map(r => `${r.col}: ${r.err}`).join('\n');
+    alert(`🔒 PELETIZADO — Problema de permisos en ${fallidas.length} de 4 colecciones:\n\n${detalle}\n\nSOLUCIÓN:\n1. Abre Firebase Console → Firestore → Reglas\n2. Pega el contenido del archivo firestore.rules más reciente\n3. Publica\n4. Vuelve aquí y prueba de nuevo\n\nLas colecciones con problema necesitan estas reglas (ya están en tu archivo firestore.rules).`);
+    toast(`🔒 ${fallidas.length} de 4 colecciones sin permisos. Revisa el detalle.`, 'error');
+  }
+};
+
+// Registrar merma histórica de ODPs cerradas que no entraron al peletizado
+window.backfillMermaHistorica = async () => {
+  const odpsConMerma = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada) return false;
+    const m = Number(o.mermas_finales_kg) || 0;
+    if (m <= 0) return false;
+    return !(state.movimientos_merma || []).some(mv => mv.odp_id === o.id);
+  });
+  
+  if (odpsConMerma.length === 0) { toast('No hay merma histórica pendiente', 'info'); return; }
+  
+  const kgTotal = odpsConMerma.reduce((s, o) => s + (Number(o.mermas_finales_kg) || 0), 0);
+  if (!confirm(`♻️ REGISTRAR MERMA HISTÓRICA\n\n${odpsConMerma.length} ODP(s) cerradas · ${fmtNum(Math.round(kgTotal))} kg de merma\n\nSe clasificarán por material y color de cada producto y se sumarán a los lotes de peletizado.\n\n¿Continuar?`)) return;
+  
+  state.loadingAccion = true; render();
+  let ok = 0, fail = 0, noPel = 0;
+  const errores = [];
+  
+  for (const odp of odpsConMerma) {
+    try {
+      const res = await window.registrarMermaPeletizado({
+        kg: Number(odp.mermas_finales_kg),
+        odp_id: odp.id,
+        odp_folio: odp.folio || '',
+        producto_codigo: odp.producto_codigo,
+        proceso: odp.proceso_codigo || 'P-1',
+        motivo: 'BACKFILL_HISTORICO',
+        notas: `Merma histórica de ODP cerrada ${odp.folio}`
+      });
+      if (res) ok++;
+      else noPel++; // producto NO_PELETIZABLE o sin clasificar
+    } catch (e) {
+      fail++;
+      if (errores.length < 3) errores.push(`${odp.folio}: ${e.message}`);
+      if (String(e.message || '').includes('PERMISSION_DENIED')) break; // no seguir si es permisos
+    }
+  }
+  
+  state.loadingAccion = false; render();
+  
+  if (fail > 0 && errores.some(e => e.includes('PERMISSION'))) {
+    toast('🔒 Sin permisos para escribir. Publica firestore.rules primero (botón "Probar permisos").', 'error');
+  } else {
+    let msg = `✅ ${ok} ODP(s) registradas en peletizado`;
+    if (noPel > 0) msg += ` · ${noPel} no peletizables (omitidas)`;
+    if (fail > 0) msg += ` · ${fail} con error`;
+    toast(msg, ok > 0 ? 'success' : 'info');
+  }
+};
+
+// Auto-clasificar productos: asignar material/color de peletizado desde el material general
+window.clasificarProductosPeletizado = async () => {
+  const prods = (state.productos_pt || []).filter(p => 
+    p.activo !== false && (!p.tipo_material_peletizado || !p.color_peletizado)
+  );
+  if (prods.length === 0) { toast('Todos los productos ya están clasificados', 'info'); return; }
+  
+  if (!confirm(`🏷️ AUTO-CLASIFICAR PELETIZADO\n\n${prods.length} producto(s) recibirán:\n• Material: BD/AD/TE según su material general (o NO_PELETIZABLE)\n• Color: desde su color (Transparente → TPTE)\n\n¿Continuar?`)) return;
+  
+  state.loadingAccion = true; render();
+  let ok = 0, fail = 0;
+  
+  const mapMat = (m) => {
+    if (m === 'Baja Densidad') return 'BD';
+    if (m === 'Alta Densidad') return 'AD';
+    if (m === 'Termoencogible') return 'TE';
+    return 'NO_PELETIZABLE';
+  };
+  
+  for (const p of prods) {
+    try {
+      const mat = p.tipo_material_peletizado || mapMat(p.material);
+      const col = p.color_peletizado || (p.color === 'Transparente' ? 'TPTE' : (p.color || 'TPTE').toUpperCase().replace(/\s+/g, '-'));
+      await updateDoc(doc(db, 'productos_pt', p.id), {
+        tipo_material_peletizado: mat,
+        color_peletizado: col,
+        lote_peletizado_destino: mat === 'NO_PELETIZABLE' ? '' : `PEL-${mat}-${col}`,
+        updated_at: serverTimestamp()
+      });
+      ok++;
+    } catch (e) {
+      fail++;
+      if (String(e.message || '').includes('PERMISSION_DENIED')) break;
+    }
+  }
+  
+  state.loadingAccion = false; render();
+  toast(`✅ ${ok} producto(s) clasificados${fail > 0 ? ` · ${fail} con error` : ''}`, ok > 0 ? 'success' : 'error');
+};
+
+// ============================================================
 // 🆕 HELPER CENTRAL: ¿qué flujo sigue esta ODP?
 // ============================================================
 // Retorna { tipo: 'directo' | 'intermedio' | 'secundario', badge, destinoTxt }
@@ -14814,7 +14948,68 @@ function renderPeletizado() {
   
   const tabActiva = state.tabs.peletizado || 'stock';
   
-  return `
+  // 🆕 DIAGNÓSTICO: ¿el módulo está configurado?
+  const hayDatos = (state.lotes_peletizado || []).length > 0 || (state.movimientos_merma || []).length > 0;
+  const odpsConMermaSinReg = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada) return false;
+    const m = Number(o.mermas_finales_kg) || 0;
+    if (m <= 0) return false;
+    // ¿existe algún movimiento de merma con este odp_id?
+    return !(state.movimientos_merma || []).some(mv => mv.odp_id === o.id);
+  });
+  const kgMermaSinReg = odpsConMermaSinReg.reduce((s, o) => s + (Number(o.mermas_finales_kg) || 0), 0);
+  const prodsSinClasifPel = (state.productos_pt || []).filter(p => 
+    p.activo !== false && (!p.tipo_material_peletizado || !p.color_peletizado)
+  );
+  const mostrarConfig = puedeCorrer && (!hayDatos || odpsConMermaSinReg.length > 0 || prodsSinClasifPel.length > 0);
+  
+  const panelConfig = mostrarConfig ? `
+    <div class="panel" style="margin-bottom:14px;border:2px solid #f59e0b;">
+      <div style="padding:12px 18px;background:#fffbeb;border-bottom:1px solid #fcd34d;">
+        <strong style="font-size:14px;color:#92400e;">🔧 Configuración del módulo Peletizado</strong>
+        <div style="font-size:11px;color:#a16207;margin-top:2px;">Detectamos puntos pendientes para que el flujo funcione correctamente</div>
+      </div>
+      <div style="padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+        
+        ${!hayDatos ? `
+          <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px;">
+            <div style="font-weight:800;font-size:12.5px;color:#991b1b;margin-bottom:6px;">1️⃣ Verifica que las reglas de Firestore estén publicadas</div>
+            <div style="font-size:11.5px;color:#7f1d1d;line-height:1.5;">
+              El módulo usa 4 colecciones nuevas: <code style="background:#fff;padding:1px 5px;border-radius:3px;">lotes_peletizado</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">movimientos_merma</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">corridas_peletizado</code>, <code style="background:#fff;padding:1px 5px;border-radius:3px;">almacen_desecho_venta</code>.
+              Si no publicaste el archivo <strong>firestore.rules</strong> más reciente en Firebase Console, las escrituras fallan en silencio.
+            </div>
+            <button onclick="window.testPermisosPeletizado()" style="margin-top:10px;background:#dc2626;color:#fff;border:none;padding:9px 16px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11.5px;">🔍 Probar permisos ahora</button>
+          </div>
+        ` : ''}
+        
+        ${odpsConMermaSinReg.length > 0 ? `
+          <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px;">
+            <div style="font-weight:800;font-size:12.5px;color:#92400e;margin-bottom:6px;">2️⃣ Hay merma histórica sin clasificar</div>
+            <div style="font-size:11.5px;color:#78350f;line-height:1.5;">
+              <strong>${odpsConMermaSinReg.length} ODP(s)</strong> ya cerradas tienen <strong>${fmtNum(Math.round(kgMermaSinReg))} kg</strong> de merma que no entraron al peletizado
+              (se cerraron antes de configurar el módulo). Puedes registrarlas ahora de un golpe.
+            </div>
+            <button onclick="window.backfillMermaHistorica()" style="margin-top:10px;background:#a16207;color:#fff;border:none;padding:9px 16px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11.5px;">♻️ Registrar ${fmtNum(Math.round(kgMermaSinReg))} kg histórica</button>
+          </div>
+        ` : ''}
+        
+        ${prodsSinClasifPel.length > 0 ? `
+          <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:12px;">
+            <div style="font-weight:800;font-size:12.5px;color:#1e40af;margin-bottom:6px;">3️⃣ Productos sin clasificación de peletizado</div>
+            <div style="font-size:11.5px;color:#1e3a8a;line-height:1.5;">
+              <strong>${prodsSinClasifPel.length} producto(s)</strong> no tienen definido material (BD/AD/TE) y color de peletizado.
+              Su merma se intenta clasificar por el material general, pero es mejor definirlo explícito.
+              Puedo asignarlo automáticamente desde el material de cada producto.
+            </div>
+            <button onclick="window.clasificarProductosPeletizado()" style="margin-top:10px;background:#2563eb;color:#fff;border:none;padding:9px 16px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11.5px;">🏷️ Auto-clasificar ${prodsSinClasifPel.length} producto(s)</button>
+          </div>
+        ` : ''}
+        
+      </div>
+    </div>
+  ` : '';
+  
+  return panelConfig + `
     <div class="panel" style="margin-bottom:14px;">
       <div style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;border-bottom:1px solid #e2e8f0;">
         <div>
