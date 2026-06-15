@@ -1956,9 +1956,9 @@ window.TIPOS_SELLADO = TIPOS_SELLADO;
 //   - tubular_simple: rollo tubular del ancho del producto
 //   - tubular_con_fuelle: tubular con fuelle integrado (ancho del producto, fuelle = fuelle del producto)
 // Para SELLO_LATERAL:
-//   - ax1l:           Rollo abierto por 1 lado, ancho = LARGO del producto
-//   - ax1c:           Rollo abierto por el centro, ancho = LARGO × 2
-//   - tubular_doble:  Rollo tubular, ancho = LARGO × 2 (se corta por centro en BS)
+//   - ax1l:           1 rollo abierto por un lado, ancho de extrusión = LARGO del producto
+//   - ax1c:           Extruye al doble (LARGO × 2); al cortar por el centro salen 2 rollos AX1L de LARGO c/u
+//   - tubular_doble:  Rollo tubular, ancho = LARGO × 2 (se corta por centro en BS → 2 piezas tubulares)
 // Para PELICULA:
 //   - tubular:        Rollo tubular del ancho del producto
 //   - lay_flat:       Rollo lay-flat (abierto)
@@ -1968,9 +1968,9 @@ const ESTRUCTURAS_ROLLO = {
     { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle — fuelle a los lados' }
   ],
   SELLO_LATERAL: [
-    { codigo: 'ax1l',          nombre: '🔵 Sencillo abierto 1 lado — 1 bolsa por ancho (= largo)' },
-    { codigo: 'ax1c',          nombre: '🟣 Doble abierto al centro — 2 bolsas, se corta al centro (= largo × 2)' },
-    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble — 2 bolsas tubulares, se corta al centro (= largo × 2)' }
+    { codigo: 'ax1l',          nombre: '🔵 Sencillo — 1 rollo abierto por un lado (extruye al largo)' },
+    { codigo: 'ax1c',          nombre: '🟣 Doble — extruye al doble y salen 2 rollos sencillos (= largo × 2)' },
+    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble — extruye al doble, 2 piezas tubulares (= largo × 2)' }
   ],
   BOLSA_ROLLO: [
     { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple — sin fuelle' },
@@ -2039,18 +2039,18 @@ function calcularMedidasRolloExt(producto) {
     if (estructura === 'ax1l') {
       ancho_rollo = largo;
       fuelle_rollo = 0;
-      descripcion = `Sencillo abierto 1 lado · ${largo} cm`;
-      observacion = `EXTRUIR un rollo de ${largo} cm de ancho (= el largo de la bolsa). Sale 1 bolsa por ancho, abierta de un costado. BOLSEO sella los lados y corta.`;
+      descripcion = `Abierto 1 lado · 1 rollo de ${largo} cm`;
+      observacion = `EXTRUIR 1 rollo de ${largo} cm de ancho, abierto por un lado. Sale tal cual a bolseo.`;
     } else if (estructura === 'ax1c') {
       ancho_rollo = largo * 2;
       fuelle_rollo = 0;
-      descripcion = `Doble abierto al centro · ${largo * 2} cm (= ${largo}×2)`;
-      observacion = `EXTRUIR un rollo de ${largo * 2} cm de ancho (= largo ${largo} × 2). Salen 2 bolsas: BOLSEO corta el rollo por el centro a la mitad (${largo} cm c/u) y sella.`;
+      descripcion = `Doble · extruir ${largo * 2} cm → 2 rollos de ${largo} cm (= ${largo}×2)`;
+      observacion = `EXTRUIR al doble: 1 rollo de ${largo * 2} cm (= ${largo} × 2). Al cortar por el centro salen 2 rollos de ${largo} cm c/u, cada uno abierto por un lado (igual que el sencillo). Sirve para producir el doble en una sola corrida.`;
     } else if (estructura === 'tubular_doble') {
       ancho_rollo = largo * 2;
       fuelle_rollo = 0;
-      descripcion = `Tubular doble · ${largo * 2} cm (= ${largo}×2)`;
-      observacion = `EXTRUIR un rollo TUBULAR de ${largo * 2} cm de ancho (= largo ${largo} × 2). BOLSEO corta por el centro para sacar 2 piezas tubulares de ${largo} cm c/u y sella.`;
+      descripcion = `Tubular doble · extruir ${largo * 2} cm → 2 piezas de ${largo} cm`;
+      observacion = `EXTRUIR 1 rollo TUBULAR de ${largo * 2} cm de ancho (= ${largo} × 2). BOLSEO corta por el centro y saca 2 piezas tubulares de ${largo} cm c/u.`;
     }
   }
   // 🆕 ROLLO DIRECTO → el producto final ES un rollo (no se convierte en bolsa)
@@ -2136,11 +2136,25 @@ function calcularMedidasRolloExt(producto) {
     }
   }
   
+  // 🆕 Salidas EFECTIVAS: AX1C y tubular_doble producen 2 piezas de una corrida
+  let salidasEfectivas = salidas;
+  let anchoSalida = ancho; // ancho de cada pieza resultante
+  if (tipo === 'SELLO_LATERAL') {
+    if (estructura === 'ax1c' || estructura === 'tubular_doble') {
+      salidasEfectivas = 2;
+      anchoSalida = largo; // cada rollo resultante mide "largo"
+    } else if (estructura === 'ax1l') {
+      salidasEfectivas = 1;
+      anchoSalida = largo;
+    }
+  }
+  
   return {
     ancho_rollo,
     fuelle_rollo,
     calibre,
-    salidas,
+    salidas: salidasEfectivas,
+    ancho_salida: anchoSalida,
     descripcion,
     observacion,
     tipo_sellado_nombre: getTipoSellado(tipo)?.nombre || '—',
@@ -32760,9 +32774,9 @@ function renderBloqueConfigExtrusion(f, p) {
             </div>
             ${medidas.salidas > 1 ? `
               <div>
-                <div style="font-size:9.5px;opacity:0.75;font-weight:700;">SALIDAS EN BOLSEO</div>
+                <div style="font-size:9.5px;opacity:0.75;font-weight:700;">${tipoSel === 'SELLO_LATERAL' ? 'ROLLOS QUE SALEN' : 'SALIDAS EN BOLSEO'}</div>
                 <div style="font-size:22px;font-weight:900;color:#fb923c;">${medidas.salidas} rollos</div>
-                <div style="font-size:9px;opacity:0.7;margin-top:2px;">de ${p.ancho} cm c/u</div>
+                <div style="font-size:9px;opacity:0.7;margin-top:2px;">de ${medidas.ancho_salida || p.ancho} cm c/u</div>
               </div>
             ` : ''}
           </div>
