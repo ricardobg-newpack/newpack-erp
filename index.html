@@ -1946,7 +1946,8 @@ const TIPOS_SELLADO = [
   { codigo: 'SELLO_FONDO',   nombre: 'Sello de fondo (BSF)',  icono: '🎒', dimensionExt: 'ancho' },
   { codigo: 'SELLO_LATERAL', nombre: 'Sello lateral (BSL)',   icono: '🛍️', dimensionExt: 'largo' },
   { codigo: 'BOLSA_ROLLO',   nombre: 'Bolsa en rollo (BR)',   icono: '🌀', dimensionExt: 'ancho' },
-  { codigo: 'PELICULA',      nombre: 'Película sin sellar',   icono: '📦', dimensionExt: 'ancho' }
+  { codigo: 'PELICULA',      nombre: 'Película sin sellar',   icono: '📦', dimensionExt: 'ancho' },
+  { codigo: 'ROLLO_DIRECTO', nombre: 'Rollo directo (producto final)', icono: '🧻', dimensionExt: 'ancho' }
 ];
 window.TIPOS_SELLADO = TIPOS_SELLADO;
 
@@ -1963,21 +1964,27 @@ window.TIPOS_SELLADO = TIPOS_SELLADO;
 //   - lay_flat:       Rollo lay-flat (abierto)
 const ESTRUCTURAS_ROLLO = {
   SELLO_FONDO: [
-    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple (sin fuelle)' },
-    { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle integrado' }
+    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple — sin fuelle' },
+    { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle — fuelle a los lados' }
   ],
   SELLO_LATERAL: [
-    { codigo: 'ax1l',          nombre: '🔵 AX1L — Abierto por 1 lado (= largo)' },
-    { codigo: 'ax1c',          nombre: '🟣 AX1C — Abierto por el centro (= largo × 2)' },
-    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble (= largo × 2, se corta por centro)' }
+    { codigo: 'ax1l',          nombre: '🔵 Sencillo abierto 1 lado — 1 bolsa por ancho (= largo)' },
+    { codigo: 'ax1c',          nombre: '🟣 Doble abierto al centro — 2 bolsas, se corta al centro (= largo × 2)' },
+    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble — 2 bolsas tubulares, se corta al centro (= largo × 2)' }
   ],
   BOLSA_ROLLO: [
-    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple' },
+    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple — sin fuelle' },
     { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle' }
   ],
   PELICULA: [
-    { codigo: 'tubular',  nombre: '🟢 Tubular' },
-    { codigo: 'lay_flat', nombre: '🟦 Lay-flat (abierto)' }
+    { codigo: 'tubular',  nombre: '🟢 Tubular — cerrado por ambos lados' },
+    { codigo: 'lay_flat', nombre: '🟦 Lay-flat — película abierta plana' }
+  ],
+  // 🆕 ROLLO DIRECTO — producto final es un rollo (no se convierte en bolsa)
+  ROLLO_DIRECTO: [
+    { codigo: 'rd_tubular',  nombre: '🟢 Rollo directo tubular — sin fuelle' },
+    { codigo: 'rd_fuellado', nombre: '🟡 Rollo directo fuellado — con fuelle' },
+    { codigo: 'rd_lamina',   nombre: '🟦 Rollo directo lámina/abierto — película plana' }
   ]
 };
 window.ESTRUCTURAS_ROLLO = ESTRUCTURAS_ROLLO;
@@ -2018,13 +2025,13 @@ function calcularMedidasRolloExt(producto) {
     if (estructura === 'tubular_con_fuelle') {
       ancho_rollo = ancho;
       fuelle_rollo = fuelle;
-      descripcion = `Tubular ${ancho} mm con fuelle ${fuelle} mm`;
-      observacion = 'Extruir tubular con fuelle integrado por ambos lados';
+      descripcion = `Tubular ${ancho} cm con fuelle ${fuelle} cm`;
+      observacion = `EXTRUIR rollo tubular de ${ancho} cm de ancho con fuelle ${fuelle} cm a los lados. BOLSEO sella el fondo y corta a la medida del largo.`;
     } else {
       ancho_rollo = ancho;
       fuelle_rollo = 0;
-      descripcion = `Tubular simple ${ancho} mm`;
-      observacion = 'Extruir tubular simple (sin fuelle)';
+      descripcion = `Tubular simple ${ancho} cm`;
+      observacion = `EXTRUIR rollo tubular simple de ${ancho} cm de ancho (sin fuelle). BOLSEO sella el fondo y corta al largo.`;
     }
   }
   // SELLO LATERAL → extrusión al LARGO (sin multi-salida, las variantes ya lo manejan)
@@ -2032,18 +2039,52 @@ function calcularMedidasRolloExt(producto) {
     if (estructura === 'ax1l') {
       ancho_rollo = largo;
       fuelle_rollo = 0;
-      descripcion = `Abierto 1 lado · ${largo} mm`;
-      observacion = `Rollo AX1L de ${largo} mm de ancho (= largo de la bolsa). Abierto por un lado.`;
+      descripcion = `Sencillo abierto 1 lado · ${largo} cm`;
+      observacion = `EXTRUIR un rollo de ${largo} cm de ancho (= el largo de la bolsa). Sale 1 bolsa por ancho, abierta de un costado. BOLSEO sella los lados y corta.`;
     } else if (estructura === 'ax1c') {
       ancho_rollo = largo * 2;
       fuelle_rollo = 0;
-      descripcion = `Abierto centro · ${largo * 2} mm`;
-      observacion = `Rollo AX1C de ${largo * 2} mm (= largo × 2). Abierto por el centro.`;
+      descripcion = `Doble abierto al centro · ${largo * 2} cm (= ${largo}×2)`;
+      observacion = `EXTRUIR un rollo de ${largo * 2} cm de ancho (= largo ${largo} × 2). Salen 2 bolsas: BOLSEO corta el rollo por el centro a la mitad (${largo} cm c/u) y sella.`;
     } else if (estructura === 'tubular_doble') {
       ancho_rollo = largo * 2;
       fuelle_rollo = 0;
-      descripcion = `Tubular doble · ${largo * 2} mm`;
-      observacion = `Rollo tubular de ${largo * 2} mm (= largo × 2). Se corta por el centro en bolseo.`;
+      descripcion = `Tubular doble · ${largo * 2} cm (= ${largo}×2)`;
+      observacion = `EXTRUIR un rollo TUBULAR de ${largo * 2} cm de ancho (= largo ${largo} × 2). BOLSEO corta por el centro para sacar 2 piezas tubulares de ${largo} cm c/u y sella.`;
+    }
+  }
+  // 🆕 ROLLO DIRECTO → el producto final ES un rollo (no se convierte en bolsa)
+  else if (tipo === 'ROLLO_DIRECTO') {
+    if (estructura === 'rd_fuellado') {
+      ancho_rollo = ancho * salidas;
+      fuelle_rollo = fuelle;
+      if (salidas > 1) {
+        descripcion = `Rollo directo fuellado ${ancho_rollo} cm (= ${ancho}×${salidas}) c/fuelle ${fuelle} cm`;
+        observacion = `EXTRUIR rollo tubular fuellado de ${ancho_rollo} cm (= ${ancho} × ${salidas}) con fuelle ${fuelle} cm. REFILADO/CORTE: separar en ${salidas} rollos de ${ancho} cm c/u. Producto final = rollo.`;
+      } else {
+        descripcion = `Rollo directo fuellado ${ancho} cm · fuelle ${fuelle} cm`;
+        observacion = `EXTRUIR rollo tubular fuellado de ${ancho} cm con fuelle ${fuelle} cm. Producto final = rollo (no pasa a bolseo).`;
+      }
+    } else if (estructura === 'rd_lamina') {
+      ancho_rollo = ancho * salidas;
+      fuelle_rollo = 0;
+      if (salidas > 1) {
+        descripcion = `Rollo directo lámina ${ancho_rollo} cm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUIR película plana (lámina abierta) de ${ancho_rollo} cm. REFILADO: separar en ${salidas} rollos de ${ancho} cm c/u. Producto final = rollo de lámina.`;
+      } else {
+        descripcion = `Rollo directo lámina ${ancho} cm`;
+        observacion = `EXTRUIR película plana (lámina abierta) de ${ancho} cm. Producto final = rollo de lámina (no pasa a bolseo).`;
+      }
+    } else { // rd_tubular
+      ancho_rollo = ancho * salidas;
+      fuelle_rollo = 0;
+      if (salidas > 1) {
+        descripcion = `Rollo directo tubular ${ancho_rollo} cm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUIR rollo tubular de ${ancho_rollo} cm (= ${ancho} × ${salidas}). REFILADO/CORTE: separar en ${salidas} rollos de ${ancho} cm c/u. Producto final = rollo.`;
+      } else {
+        descripcion = `Rollo directo tubular ${ancho} cm`;
+        observacion = `EXTRUIR rollo tubular de ${ancho} cm. Producto final = rollo tubular (no pasa a bolseo).`;
+      }
     }
   }
   // BOLSA EN ROLLO → extrusión al ANCHO × salidas (multi-salida soportada)
@@ -2052,20 +2093,20 @@ function calcularMedidasRolloExt(producto) {
       ancho_rollo = ancho * salidas;
       fuelle_rollo = fuelle;  // El fuelle por rollo individual no se multiplica
       if (salidas > 1) {
-        descripcion = `Tubular ${ancho_rollo} mm c/fuelle ${fuelle} mm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUSIÓN: extruir tubular de ${ancho_rollo} mm con fuelle ${fuelle} mm como un solo rollo. BOLSEO: corta longitudinalmente para sacar ${salidas} rollos de ${ancho} mm c/u.`;
+        descripcion = `Tubular ${ancho_rollo} cm c/fuelle ${fuelle} cm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir tubular de ${ancho_rollo} cm con fuelle ${fuelle} cm como un solo rollo. BOLSEO: corta longitudinalmente para sacar ${salidas} rollos de ${ancho} cm c/u.`;
       } else {
-        descripcion = `Tubular ${ancho} mm con fuelle ${fuelle} mm`;
+        descripcion = `Tubular ${ancho} cm con fuelle ${fuelle} cm`;
         observacion = 'Extruir tubular con fuelle integrado (1 salida)';
       }
     } else {
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
       if (salidas > 1) {
-        descripcion = `Tubular simple ${ancho_rollo} mm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUSIÓN: extruir tubular simple de ${ancho_rollo} mm como un solo rollo. BOLSEO: corta longitudinalmente para sacar ${salidas} rollos de ${ancho} mm c/u.`;
+        descripcion = `Tubular simple ${ancho_rollo} cm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir tubular simple de ${ancho_rollo} cm como un solo rollo. BOLSEO: corta longitudinalmente para sacar ${salidas} rollos de ${ancho} cm c/u.`;
       } else {
-        descripcion = `Tubular simple ${ancho} mm`;
+        descripcion = `Tubular simple ${ancho} cm`;
         observacion = 'Extruir tubular simple (1 salida)';
       }
     }
@@ -2076,20 +2117,20 @@ function calcularMedidasRolloExt(producto) {
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
       if (salidas > 1) {
-        descripcion = `Lay-flat ${ancho_rollo} mm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUSIÓN: extruir película lay-flat de ${ancho_rollo} mm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} mm c/u.`;
+        descripcion = `Lay-flat ${ancho_rollo} cm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir película lay-flat de ${ancho_rollo} cm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} cm c/u.`;
       } else {
-        descripcion = `Lay-flat ${ancho} mm`;
+        descripcion = `Lay-flat ${ancho} cm`;
         observacion = 'Película lay-flat (abierta, 1 salida)';
       }
     } else {
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
       if (salidas > 1) {
-        descripcion = `Tubular ${ancho_rollo} mm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUSIÓN: extruir película tubular de ${ancho_rollo} mm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} mm c/u.`;
+        descripcion = `Tubular ${ancho_rollo} cm (= ${ancho}×${salidas})`;
+        observacion = `EXTRUSIÓN: extruir película tubular de ${ancho_rollo} cm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} cm c/u.`;
       } else {
-        descripcion = `Tubular ${ancho} mm`;
+        descripcion = `Tubular ${ancho} cm`;
         observacion = 'Película tubular (1 salida)';
       }
     }
@@ -9535,12 +9576,12 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
             <div style="display:grid;grid-template-columns:repeat(${medidas.salidas > 1 ? 4 : 3},1fr);gap:8px;padding:8px;background:rgba(251,191,36,0.15);border-radius:6px;border:1px solid #fbbf24;">
               <div style="text-align:center;">
                 <div style="font-size:8.5px;opacity:0.85;font-weight:700;">ANCHO ROLLO</div>
-                <div style="font-size:18px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+                <div style="font-size:18px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} cm</div>
                 ${medidas.salidas > 1 ? `<div style="font-size:8px;opacity:0.75;">${prod.ancho}×${medidas.salidas}</div>` : ''}
               </div>
               <div style="text-align:center;">
                 <div style="font-size:8.5px;opacity:0.85;font-weight:700;">FUELLE</div>
-                <div style="font-size:18px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#64748b'};">${medidas.fuelle_rollo} mm</div>
+                <div style="font-size:18px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#64748b'};">${medidas.fuelle_rollo} cm</div>
               </div>
               <div style="text-align:center;">
                 <div style="font-size:8.5px;opacity:0.85;font-weight:700;">CALIBRE</div>
@@ -9550,7 +9591,7 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
                 <div style="text-align:center;">
                   <div style="font-size:8.5px;opacity:0.85;font-weight:700;">→ A BOLSEO</div>
                   <div style="font-size:18px;font-weight:900;color:#fb923c;">${medidas.salidas} rollos</div>
-                  <div style="font-size:8px;opacity:0.75;">${prod.ancho} mm c/u</div>
+                  <div style="font-size:8px;opacity:0.75;">${prod.ancho} cm c/u</div>
                 </div>
               ` : ''}
             </div>
@@ -11329,11 +11370,11 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:10px;background:rgba(251,191,36,0.15);border-radius:6px;border:1px solid #fbbf24;">
                   <div style="text-align:center;">
                     <div style="font-size:9px;opacity:0.85;font-weight:700;">ANCHO ROLLO</div>
-                    <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+                    <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} cm</div>
                   </div>
                   <div style="text-align:center;">
                     <div style="font-size:9px;opacity:0.85;font-weight:700;">FUELLE</div>
-                    <div style="font-size:22px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#64748b'};">${medidas.fuelle_rollo} mm</div>
+                    <div style="font-size:22px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#64748b'};">${medidas.fuelle_rollo} cm</div>
                   </div>
                   <div style="text-align:center;">
                     <div style="font-size:9px;opacity:0.85;font-weight:700;">CALIBRE</div>
@@ -32706,22 +32747,22 @@ function renderBloqueConfigExtrusion(f, p) {
           <div style="display:grid;grid-template-columns:repeat(${medidas.salidas > 1 ? 4 : 3},1fr);gap:10px;">
             <div>
               <div style="font-size:9.5px;opacity:0.75;font-weight:700;">ANCHO DEL ROLLO</div>
-              <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} mm</div>
+              <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.ancho_rollo} cm</div>
               ${medidas.salidas > 1 ? `<div style="font-size:9px;opacity:0.7;margin-top:2px;">${p.ancho}×${medidas.salidas}</div>` : ''}
             </div>
             <div>
               <div style="font-size:9.5px;opacity:0.75;font-weight:700;">FUELLE</div>
-              <div style="font-size:22px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#94a3b8'};">${medidas.fuelle_rollo} mm</div>
+              <div style="font-size:22px;font-weight:900;color:${medidas.fuelle_rollo > 0 ? '#fbbf24' : '#94a3b8'};">${medidas.fuelle_rollo} cm</div>
             </div>
             <div>
               <div style="font-size:9.5px;opacity:0.75;font-weight:700;">CALIBRE</div>
-              <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
+              <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}${medidas.calibre ? ' µ' : ''}</div>
             </div>
             ${medidas.salidas > 1 ? `
               <div>
                 <div style="font-size:9.5px;opacity:0.75;font-weight:700;">SALIDAS EN BOLSEO</div>
                 <div style="font-size:22px;font-weight:900;color:#fb923c;">${medidas.salidas} rollos</div>
-                <div style="font-size:9px;opacity:0.7;margin-top:2px;">de ${p.ancho} mm c/u</div>
+                <div style="font-size:9px;opacity:0.7;margin-top:2px;">de ${p.ancho} cm c/u</div>
               </div>
             ` : ''}
           </div>
@@ -32848,10 +32889,17 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
   const ingredientes = capa.ingredientes || [];
   const totalIngrPct = ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
   const ingrOk = Math.abs(totalIngrPct - 100) < 0.01;
+  const faltaPct = Math.round((100 - totalIngrPct) * 100) / 100; // lo que falta para 100
   
-  // MPs disponibles (sin las ya agregadas a esta capa)
+  // MPs disponibles (sin las ya agregadas a esta capa), agrupadas por tipo
   const yaUsados = new Set(ingredientes.map(r => r.mp_codigo));
   const disponibles = mps.filter(mp => !yaUsados.has(mp.codigo));
+  
+  // 🆕 Dividir por tipo para selección más rápida
+  const grupoMP = disponibles.filter(mp => ['resina','reciclado','materia_prima'].includes(mp.tipo) || (!mp.tipo && !['aditivo','pigmento'].includes(mp.tipo)));
+  const grupoAditivo = disponibles.filter(mp => mp.tipo === 'aditivo');
+  const grupoPigmento = disponibles.filter(mp => mp.tipo === 'pigmento');
+  const optMP = (lista) => lista.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `<option value="${mp.codigo}">${mp.codigo} — ${(mp.descripcion||'').substring(0,40)}</option>`).join('');
   
   return `
     <div style="background:${colorBg};border:2px solid ${color};border-radius:10px;padding:12px;margin-bottom:10px;">
@@ -32870,18 +32918,29 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
         </div>
       </div>
       
-      <!-- AGREGAR INGREDIENTE A ESTA CAPA -->
+      <!-- AGREGAR INGREDIENTE A ESTA CAPA — dividido por tipo para selección rápida -->
       <div style="background:#fff;border:1px solid ${color}55;border-radius:6px;padding:8px;margin-bottom:8px;">
-        <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:6px;">
-          <select class="input" id="capa-mp-${capaIdx}" style="font-size:11px;padding:6px;">
-            <option value="">— Materia prima —</option>
-            ${disponibles.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `
-              <option value="${mp.codigo}" data-desc="${mp.descripcion}">${mp.codigo} — ${mp.descripcion}</option>
-            `).join('')}
+        <div style="font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px;">Agregar a la capa ${letra} — elige de la lista que corresponda:</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px;">
+          <select class="input" id="capa-mp-resina-${capaIdx}" onchange="window._syncSelectorMP(${capaIdx},'resina')" style="font-size:11px;padding:6px;border-left:3px solid #16a34a;">
+            <option value="">🧱 Resina / MP (${grupoMP.length})</option>
+            ${optMP(grupoMP)}
           </select>
-          <input class="input" id="capa-pct-${capaIdx}" type="number" min="0" max="100" step="0.01" placeholder="%" style="font-size:11px;padding:6px;" />
+          <select class="input" id="capa-mp-aditivo-${capaIdx}" onchange="window._syncSelectorMP(${capaIdx},'aditivo')" style="font-size:11px;padding:6px;border-left:3px solid #8b5cf6;">
+            <option value="">⚗️ Aditivo (${grupoAditivo.length})</option>
+            ${optMP(grupoAditivo)}
+          </select>
+          <select class="input" id="capa-mp-pigmento-${capaIdx}" onchange="window._syncSelectorMP(${capaIdx},'pigmento')" style="font-size:11px;padding:6px;border-left:3px solid #ec4899;">
+            <option value="">🎨 Pigmento (${grupoPigmento.length})</option>
+            ${optMP(grupoPigmento)}
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:6px;align-items:center;">
+          <div id="capa-mp-sel-txt-${capaIdx}" style="font-size:11px;color:#475569;padding:6px;background:#f8fafc;border-radius:5px;min-height:18px;">Selecciona un material arriba…</div>
+          <input class="input" id="capa-pct-${capaIdx}" type="number" min="0" max="100" step="0.01" placeholder="${faltaPct > 0 ? 'falta ' + faltaPct : '%'}" style="font-size:11px;padding:6px;text-align:right;font-weight:800;" />
           <button onclick="window.agregarIngredienteCapa(${capaIdx})" style="padding:6px;background:${color};color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">➕ Agregar</button>
         </div>
+        ${faltaPct > 0 && ingredientes.length > 0 ? `<div style="font-size:9.5px;color:#a16207;margin-top:4px;">💡 Deja el % vacío para auto-rellenar el faltante (${faltaPct}%)</div>` : ''}
       </div>
       
       ${ingredientes.length === 0 ? `
@@ -33327,49 +33386,94 @@ window.cambiarNumCapas = (n) => {
 
 window.actualizarPorcentajeCapa = (capaIdx, valor) => {
   if (!state.modalForm?.capas?.[capaIdx]) return;
-  state.modalForm.capas[capaIdx].porcentaje_capa = Number(valor) || 0;
+  const capas = state.modalForm.capas;
+  const nuevoVal = Math.min(100, Math.max(0, Number(valor) || 0));
+  capas[capaIdx].porcentaje_capa = nuevoVal;
+  
+  // 🆕 AUTO-BALANCE: si hay exactamente 2 capas, la otra toma el restante automáticamente
+  if (capas.length === 2) {
+    const otra = capaIdx === 0 ? 1 : 0;
+    capas[otra].porcentaje_capa = Math.round((100 - nuevoVal) * 100) / 100;
+  }
+  // Si hay 3 capas, repartir el restante entre las otras dos proporcionalmente (o equitativo)
+  else if (capas.length === 3) {
+    const otras = [0, 1, 2].filter(i => i !== capaIdx);
+    const restante = Math.round((100 - nuevoVal) * 100) / 100;
+    // Repartir equitativo entre las otras dos
+    const cada = Math.round((restante / 2) * 100) / 100;
+    capas[otras[0]].porcentaje_capa = cada;
+    capas[otras[1]].porcentaje_capa = Math.round((restante - cada) * 100) / 100;
+  }
+  
   // Re-render diferido: actualiza visualmente sin perder foco
   if (state._timerCapas) clearTimeout(state._timerCapas);
   state._timerCapas = setTimeout(() => {
     renderPreservandoFoco();
-  }, 400);
+  }, 500);
+};
+
+// 🆕 Sincroniza los 3 selectores: al elegir en uno, limpia los otros dos y muestra el seleccionado
+window._syncSelectorMP = (capaIdx, tipoElegido) => {
+  const tipos = ['resina', 'aditivo', 'pigmento'];
+  let seleccionado = '';
+  tipos.forEach(t => {
+    const s = $(`#capa-mp-${t}-${capaIdx}`);
+    if (!s) return;
+    if (t === tipoElegido && s.value) {
+      seleccionado = s.value;
+    } else if (t !== tipoElegido) {
+      s.value = ''; // limpiar los otros
+    }
+  });
+  // Mostrar el material elegido
+  const txt = $(`#capa-mp-sel-txt-${capaIdx}`);
+  if (txt) {
+    const mp = (state.materias_primas || []).find(m => m.codigo === seleccionado);
+    txt.textContent = mp ? `✓ ${mp.codigo} — ${mp.descripcion || ''}` : 'Selecciona un material arriba…';
+    txt.style.color = mp ? '#16a34a' : '#475569';
+    txt.style.fontWeight = mp ? '700' : '400';
+  }
+  // Enfocar el campo de porcentaje
+  const pct = $(`#capa-pct-${capaIdx}`);
+  if (pct && seleccionado) setTimeout(() => pct.focus(), 50);
 };
 
 window.agregarIngredienteCapa = (capaIdx) => {
-  const sel = $(`#capa-mp-${capaIdx}`);
+  // Leer el seleccionado de cualquiera de los 3 selectores
+  const tipos = ['resina', 'aditivo', 'pigmento'];
+  let mp_codigo = '';
+  for (const t of tipos) {
+    const s = $(`#capa-mp-${t}-${capaIdx}`);
+    if (s && s.value) { mp_codigo = s.value; break; }
+  }
   const pctInp = $(`#capa-pct-${capaIdx}`);
-  if (!sel || !pctInp) return;
-  
-  const mp_codigo = sel.value;
-  const porcentaje = Number(pctInp.value) || 0;
-  
-  if (!mp_codigo) { toast('Selecciona la materia prima', 'error'); return; }
-  if (porcentaje <= 0 || porcentaje > 100) { toast('Porcentaje debe ser entre 0 y 100', 'error'); return; }
-  
-  const opt = sel.selectedOptions[0];
-  const descripcion = opt?.dataset.desc || '';
+  if (!mp_codigo) { toast('Selecciona un material (resina, aditivo o pigmento)', 'error'); return; }
   
   if (!state.modalForm.capas[capaIdx].ingredientes) {
     state.modalForm.capas[capaIdx].ingredientes = [];
   }
-  
   const ingredientes = state.modalForm.capas[capaIdx].ingredientes;
   
   if (ingredientes.find(r => r.mp_codigo === mp_codigo)) {
-    toast(`${mp_codigo} ya está en este cañón`, 'error');
+    toast(`${mp_codigo} ya está en esta capa`, 'error');
     return;
   }
   
   const totalActual = ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
+  
+  // 🆕 AUTOCOMPLETADO: si el campo % está vacío, rellenar con el faltante para llegar a 100
+  let porcentaje = pctInp?.value !== '' ? Number(pctInp.value) : Math.round((100 - totalActual) * 100) / 100;
+  
+  if (porcentaje <= 0) { toast('El porcentaje debe ser mayor a 0', 'error'); return; }
   if (totalActual + porcentaje > 100.01) {
-    toast(`Excedes el 100% del cañón (disponible: ${(100 - totalActual).toFixed(2)}%)`, 'error');
+    toast(`Excedes el 100% de la capa (disponible: ${(100 - totalActual).toFixed(2)}%)`, 'error');
     return;
   }
   
-  ingredientes.push({ mp_codigo, descripcion, porcentaje });
+  const mp = (state.materias_primas || []).find(m => m.codigo === mp_codigo);
+  const descripcion = mp?.descripcion || '';
   
-  sel.value = '';
-  pctInp.value = '';
+  ingredientes.push({ mp_codigo, descripcion, porcentaje, tipo: mp?.tipo || '' });
   render();
 };
 
