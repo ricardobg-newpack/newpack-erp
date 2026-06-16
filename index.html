@@ -6370,60 +6370,48 @@ function renderKanbanMaquinas() {
         
         return `
           <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-            <div style="padding:12px 16px;background:linear-gradient(90deg, ${procColor}11, transparent);border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+            <div style="padding:12px 16px;background:linear-gradient(90deg, ${procColor}18, transparent);border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
               <div>
                 <div style="font-weight:800;font-size:15px;color:#0f172a;">${m.icono || '🛠️'} ${m.codigo} — ${m.nombre || ''}</div>
                 <div style="font-size:11px;color:#64748b;margin-top:2px;">
                   ${proc ? `${proc.icono} ${proc.nombre}` : ''}
-                  ${m.capacidad_kg_hora ? ` · ${m.capacidad_kg_hora} kg/hr` : ''}
+                  ${m.capacidad_kg_hr ? ` · ${m.capacidad_kg_hr} kg/hr` : ''}
                 </div>
               </div>
-              <div style="display:flex;gap:12px;font-size:11px;">
-                <span style="color:#f59e0b;font-weight:700;">📦 ${datos.en_cola.length}</span>
-                <span style="color:#3b82f6;font-weight:700;">⚙️ ${datos.en_proceso.length}</span>
-                <span style="color:#16a34a;font-weight:700;">✅ ${datos.completadas.length}</span>
+              <div style="display:flex;gap:10px;font-size:11px;align-items:center;">
+                ${datos.en_proceso.length > 0 ? `<span style="color:#16a34a;font-weight:800;background:#dcfce7;padding:3px 9px;border-radius:99px;">🟢 ${datos.en_proceso.length} corriendo</span>` : ''}
+                <span style="color:#a16207;font-weight:800;background:#fef3c7;padding:3px 9px;border-radius:99px;">📦 ${datos.en_cola.length} en cola</span>
+                ${(() => {
+                  // Carga total en kg de la cola + proceso
+                  const kgCola = [...datos.en_cola, ...datos.en_proceso].reduce((s,o) => s + (Number(o.cantidad_kg_produccion || o.cantidad) || 0), 0);
+                  const cap = Number(m.capacidad_kg_hr) || 0;
+                  const dias = cap > 0 ? (kgCola / cap / 24) : 0;
+                  return `<span style="color:#475569;font-weight:700;">${fmtNum(Math.round(kgCola))} kg${cap>0?` · ${dias.toFixed(1)} días`:''}</span>`;
+                })()}
               </div>
             </div>
             
-            <div style="display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:10px;padding:12px;background:#f8fafc;">
-              <div>
-                <div style="font-weight:800;font-size:11px;color:#f59e0b;margin-bottom:8px;padding:6px 10px;background:#fef3c7;border-radius:6px;border-left:3px solid #f59e0b;">
-                  📦 EN COLA (${datos.en_cola.length})${puedeEditarOrden ? ' <span style="font-size:9px;font-weight:600;opacity:0.7;">· arrastra ⠿ para reordenar</span>' : ''}
-                </div>
-                <div 
-                  style="display:flex;flex-direction:column;gap:6px;min-height:120px;padding:6px;border-radius:6px;${puedeEditarOrden ? 'border:2px dashed #fde68a;background:rgba(254,243,199,0.25);' : 'border:2px dashed transparent;'}transition:all 0.15s;"
-                  ${puedeEditarOrden ? `
-                    data-maquina-destino="${m.codigo}"
-                    ondragover="window.onKanbanDragOver(event)"
-                    ondragleave="window.onKanbanDragLeave(event)"
-                    ondrop="window.onKanbanDrop(event, '${m.codigo}')"
-                  ` : ''}
-                >
-                  ${datos.en_cola.length === 0 
-                    ? `<div style="padding:24px 12px;text-align:center;color:${puedeEditarOrden?'#a16207':'#cbd5e1'};font-size:11px;${puedeEditarOrden?'font-weight:700;':'font-style:italic;'}">${puedeEditarOrden ? '⬇ Suelta aquí una ODP para asignarla a ' + m.codigo : 'vacío'}</div>` 
-                    : datos.en_cola.map((odp, idx) => _renderTarjetaKanban(odp, 'cola', { draggable: puedeEditarOrden, idx, maquina: m.codigo, totalEnCola: datos.en_cola.length, puedeReordenar: puedeEditarOrden })).join('')}
-                </div>
-              </div>
-              
-              <div>
-                <div style="font-weight:800;font-size:11px;color:#3b82f6;margin-bottom:8px;padding:6px 10px;background:#dbeafe;border-radius:6px;border-left:3px solid #3b82f6;">
-                  ⚙️ EN PROCESO (${datos.en_proceso.length})
-                </div>
-                <div style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
-                  ${datos.en_proceso.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">sin actividad</div>` : datos.en_proceso.map(odp => _renderTarjetaKanban(odp, 'proceso')).join('')}
-                </div>
-              </div>
-              
-              <div>
-                <div style="font-weight:800;font-size:11px;color:#16a34a;margin-bottom:8px;padding:6px 10px;background:#dcfce7;border-radius:6px;border-left:3px solid #16a34a;">
-                  ✅ COMPLETADAS (${datos.completadas.length})
-                </div>
-                <div style="display:flex;flex-direction:column;gap:6px;min-height:60px;">
-                  ${datos.completadas.length === 0 ? `<div style="padding:12px;text-align:center;color:#cbd5e1;font-size:11px;font-style:italic;">aún ninguna</div>` : datos.completadas.slice(0, 5).map(odp => _renderTarjetaKanban(odp, 'completada')).join('')}
-                  ${datos.completadas.length > 5 ? `<div style="text-align:center;font-size:10px;color:#94a3b8;padding:4px;">+${datos.completadas.length - 5} más</div>` : ''}
-                </div>
-              </div>
+            <!-- SECUENCIA EDITABLE: corriendo arriba, luego la cola en orden -->
+            <div 
+              style="padding:10px 12px;display:flex;flex-direction:column;gap:5px;${puedeEditarOrden ? 'border:2px dashed transparent;' : ''}"
+              ${puedeEditarOrden ? `
+                data-maquina-destino="${m.codigo}"
+                ondragover="window.onKanbanDragOver(event)"
+                ondragleave="window.onKanbanDragLeave(event)"
+                ondrop="window.onKanbanDrop(event, '${m.codigo}')"
+              ` : ''}
+            >
+              ${datos.en_proceso.map(odp => _renderFilaKanbanAgil(odp, 'proceso', { maquina: m.codigo })).join('')}
+              ${datos.en_cola.length === 0 && datos.en_proceso.length === 0
+                ? `<div style="padding:18px;text-align:center;color:${puedeEditarOrden?'#a16207':'#cbd5e1'};font-size:11px;${puedeEditarOrden?'font-weight:700;':'font-style:italic;'}">${puedeEditarOrden ? '⬇ Arrastra aquí una ODP para asignarla a ' + m.codigo : 'sin órdenes'}</div>`
+                : datos.en_cola.map((odp, idx) => _renderFilaKanbanAgil(odp, 'cola', { idx, maquina: m.codigo, totalEnCola: datos.en_cola.length, puedeReordenar: puedeEditarOrden, draggable: puedeEditarOrden })).join('')}
             </div>
+            
+            ${datos.completadas.length > 0 ? `
+              <div style="padding:6px 14px;background:#f0fdf4;border-top:1px solid #e2e8f0;font-size:10px;color:#16a34a;font-weight:700;">
+                ✅ ${datos.completadas.length} completada(s) recientemente
+              </div>
+            ` : ''}
           </div>
         `;
       }).join('')}
@@ -6432,13 +6420,94 @@ function renderKanbanMaquinas() {
         <div style="background:#fef2f2;border:1.5px solid #dc2626;border-radius:12px;overflow:hidden;">
           <div style="padding:12px 16px;background:#fee2e2;border-bottom:1px solid #fecaca;">
             <div style="font-weight:800;font-size:14px;color:#991b1b;">⚠️ Sin máquina asignada (${porMaquina['_sin_asignar'].en_cola.length + porMaquina['_sin_asignar'].en_proceso.length})</div>
-            <div style="font-size:11px;color:#7f1d1d;margin-top:2px;">Estas ODPs requieren asignación de máquina en Programación.</div>
+            <div style="font-size:11px;color:#7f1d1d;margin-top:2px;">Arrastra cada una a la máquina que le toca, o usa el botón 🔀.</div>
           </div>
-          <div style="padding:12px;display:flex;flex-wrap:wrap;gap:6px;">
-            ${[...porMaquina['_sin_asignar'].en_cola, ...porMaquina['_sin_asignar'].en_proceso].map(odp => _renderTarjetaKanban(odp, 'cola')).join('')}
+          <div style="padding:10px 12px;display:flex;flex-direction:column;gap:5px;">
+            ${[...porMaquina['_sin_asignar'].en_cola, ...porMaquina['_sin_asignar'].en_proceso].map(odp => _renderFilaKanbanAgil(odp, 'cola', { maquina: '', sinMaquina: true, puedeReordenar: false, draggable: puedeEditarOrden })).join('')}
           </div>
         </div>
       ` : ''}
+    </div>
+  `;
+}
+
+// 🆕 Fila ágil del Kanban — compacta, secuencia clara, reordenamiento rápido
+function _renderFilaKanbanAgil(odp, columna, opts) {
+  opts = opts || {};
+  const idx = opts.idx !== undefined ? opts.idx : 0;
+  const maquina = opts.maquina || '';
+  const totalEnCola = opts.totalEnCola || 0;
+  const puedeReordenar = opts.puedeReordenar === true && columna === 'cola';
+  const draggable = opts.draggable === true && columna === 'cola';
+  const enProceso = columna === 'proceso';
+  
+  const procIdx = odp.proceso_actual_idx ?? 0;
+  const procEst = odp.proceso_estatus_actual || '';
+  const um = (odp.um || 'kg').toLowerCase();
+  const cantTotal = Number(odp.cantidad_kg_produccion || odp.cantidad) || 0;
+  const cliente = odp.cliente_nombre || 'STOCK';
+  const fechaEnt = odp.fecha_entrega_solicitada || odp.fecha_requerida || '';
+  const hoy = new Date().toISOString().split('T')[0];
+  const vencida = fechaEnt && fechaEnt < hoy && columna !== 'completada';
+  const esPausada = procEst === 'pausado';
+  
+  const esPrimera = idx === 0;
+  const esUltima = idx === totalEnCola - 1;
+  
+  // Color del indicador de posición
+  const bgFila = enProceso ? '#f0fdf4' : esPausada ? '#fef2f2' : vencida ? '#fff7ed' : '#fff';
+  const bordeFila = enProceso ? '#86efac' : esPausada ? '#fca5a5' : vencida ? '#fed7aa' : '#e2e8f0';
+  
+  const dragAttrs = draggable ? `
+    draggable="true" data-odp-id="${odp.id}" data-maquina-origen="${maquina}" data-idx-origen="${idx}"
+    ondragstart="window.onKanbanDragStart(event)" ondragend="window.onKanbanDragEnd(event)"
+  ` : '';
+  
+  return `
+    <div ${dragAttrs} onclick="abrirModal('detalle-odp','${odp.id}')" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:${bgFila};border:1px solid ${bordeFila};border-radius:8px;cursor:pointer;${draggable?'cursor:grab;':''}">
+      <!-- Indicador de posición / estado -->
+      <div style="min-width:30px;text-align:center;">
+        ${enProceso 
+          ? '<div style="font-size:16px;">🟢</div>' 
+          : `<div style="font-size:16px;font-weight:900;color:#7c3aed;">${idx + 1}</div>`}
+      </div>
+      
+      <!-- Info principal -->
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:13px;font-weight:900;font-family:monospace;color:#0f172a;">${odp.folio}</span>
+          ${enProceso ? '<span style="font-size:9px;font-weight:800;color:#16a34a;background:#dcfce7;padding:1px 7px;border-radius:99px;">CORRIENDO</span>' : ''}
+          ${esPausada ? '<span style="font-size:9px;font-weight:800;color:#dc2626;background:#fee2e2;padding:1px 7px;border-radius:99px;">⏸ PAUSADA</span>' : ''}
+          ${vencida ? '<span style="font-size:9px;font-weight:800;color:#dc2626;">🔴 VENCIDA</span>' : ''}
+          ${odp.prioridad === 'urgente' ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#dc2626;padding:1px 7px;border-radius:99px;">🔥 URGENTE</span>' : ''}
+        </div>
+        <div style="font-size:11px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          ${(odp.producto_descripcion || odp.producto_codigo || '').slice(0,50)} · ${cliente.length > 16 ? cliente.slice(0,15)+'…' : cliente}
+        </div>
+      </div>
+      
+      <!-- Kg + fecha -->
+      <div style="text-align:right;min-width:70px;">
+        <div style="font-size:13px;font-weight:800;color:#0f172a;">${fmtNum(cantTotal)} ${um}</div>
+        ${fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#94a3b8'};">📅 ${fechaEnt}</div>` : ''}
+      </div>
+      
+      <!-- Controles de reordenamiento rápido -->
+      ${puedeReordenar ? `
+        <div style="display:flex;flex-direction:column;gap:2px;" onclick="event.stopPropagation();">
+          <button onclick="event.stopPropagation();window.moverODPCola('${odp.id}','arriba')" 
+            style="background:${esPrimera||totalEnCola<2?'#e2e8f0':'#3b82f6'};color:#fff;border:none;width:30px;height:20px;border-radius:4px;cursor:${esPrimera||totalEnCola<2?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
+            ${esPrimera||totalEnCola<2?'disabled':''} title="Subir (entra antes)">▲</button>
+          <button onclick="event.stopPropagation();window.moverODPCola('${odp.id}','abajo')" 
+            style="background:${esUltima||totalEnCola<2?'#e2e8f0':'#3b82f6'};color:#fff;border:none;width:30px;height:20px;border-radius:4px;cursor:${esUltima||totalEnCola<2?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
+            ${esUltima||totalEnCola<2?'disabled':''} title="Bajar (entra después)">▼</button>
+        </div>
+        <button onclick="event.stopPropagation();window.moverODPaOtraMaquina('${odp.id}','${maquina}')" 
+          style="background:#fff;color:#7c3aed;border:1.5px solid #c4b5fd;width:34px;height:42px;border-radius:6px;cursor:pointer;font-size:15px;" title="Mover a otra máquina">🔀</button>
+      ` : (opts.sinMaquina ? `
+        <button onclick="event.stopPropagation();window.asignarMaquinaRapido('${odp.id}')" 
+          style="background:#dc2626;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:800;" title="Asignar máquina">📍 Asignar</button>
+      ` : '')}
     </div>
   `;
 }
@@ -6751,6 +6820,65 @@ window.onKanbanDrop = async (event, maqDestino) => {
 
 // 🆕 Mover ODP arriba/abajo en la cola de su máquina (botones ↑↓)
 // Más confiable que drag&drop. Funciona en cualquier dispositivo (móvil/tablet/desktop).
+// 🆕 Asignar máquina rápido a una ODP sin máquina (desde el Kanban)
+window.asignarMaquinaRapido = async (odpId) => {
+  const u = state.user || {};
+  const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
+  if (!puedeEditar) {
+    toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden asignar máquina. Tu depto: ${u.depto || '?'}`, 'error');
+    return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const idxProc = odp.proceso_actual_idx ?? 0;
+  const procCodigo = (odp.ruta_procesos || [])[idxProc];
+  if (!procCodigo) { toast('La ODP no tiene proceso actual', 'error'); return; }
+  
+  const maqsProc = (state.maquinas || []).filter(m => 
+    m.activa !== false && 
+    (m.proceso_codigo === procCodigo || (m.procesos_compatibles || []).includes(procCodigo))
+  ).sort((a, b) => a.codigo.localeCompare(b.codigo));
+  
+  if (maqsProc.length === 0) {
+    toast(`No hay máquinas para ${getProc(procCodigo)?.nombre || procCodigo}`, 'error');
+    return;
+  }
+  
+  const opciones = maqsProc.map((m, i) => {
+    const enEsa = (state.ordenes_produccion || []).filter(o => 
+      !o.archivada && o.maquinas_asignadas?.[procCodigo] === m.codigo &&
+      ['programada','en_produccion'].includes(o.estatus)
+    ).length;
+    return `${i + 1}. ${m.codigo}${m.nombre ? ' ('+m.nombre+')' : ''} — ${enEsa} orden(es)${m.capacidad_kg_hr ? ' · '+m.capacidad_kg_hr+' kg/hr' : ''}`;
+  }).join('\n');
+  
+  const resp = prompt(
+    `📍 ASIGNAR MÁQUINA a ${odp.folio}\n` +
+    `Proceso: ${getProc(procCodigo)?.nombre || procCodigo}\n\n` +
+    `Escribe el NÚMERO de la máquina:\n\n${opciones}`
+  );
+  if (resp === null) return;
+  const num = parseInt(resp.trim(), 10);
+  if (!num || num < 1 || num > maqsProc.length) { toast('Número inválido', 'error'); return; }
+  const maqDestino = maqsProc[num - 1];
+  
+  try {
+    state.loadingAccion = true; render();
+    const nuevasMaqs = { ...(odp.maquinas_asignadas || {}) };
+    nuevasMaqs[procCodigo] = maqDestino.codigo;
+    const updates = { maquinas_asignadas: nuevasMaqs, prioridad_cola: Number.MAX_SAFE_INTEGER, updated_at: serverTimestamp() };
+    // Si estaba pendiente de planeación, pasarla a programada
+    if (odp.estatus === 'pendiente_planeacion') updates.estatus = 'programada';
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
+    toast(`✅ ${odp.folio} asignada a ${maqDestino.codigo}`, 'success');
+  } catch (e) {
+    toast('Error al asignar: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 // 🆕 Mover una ODP a otra máquina del mismo proceso (reasignar carga entre máquinas)
 window.moverODPaOtraMaquina = async (odpId, maqOrigen) => {
   const u = state.user || {};
@@ -12409,7 +12537,7 @@ window.agregarRolloExtrusion = async (odpId) => {
   
   state.loadingAccion = true; render();
   try {
-    await addDoc(collection(db, 'rollos_extrusion'), {
+    const nuevoRollo = {
       odp_id: odpId,
       odp_folio: odp.folio || '',
       producto_codigo: odp.producto_codigo || '',
@@ -12433,7 +12561,15 @@ window.agregarRolloExtrusion = async (odpId) => {
       capturado_por_nombre: state.user.nombre || state.user.email,
       created_at: serverTimestamp(),
       updated_at: serverTimestamp()
-    });
+    };
+    const refRollo = await addDoc(collection(db, 'rollos_extrusion'), nuevoRollo);
+    
+    // 🆕 OPTIMISTIC UPDATE: agregar el rollo al state local de INMEDIATO,
+    //    para que el avance y el material disponible se actualicen sin esperar el snapshot.
+    if (!state.rollos_extrusion) state.rollos_extrusion = [];
+    if (!state.rollos_extrusion.some(r => r.id === refRollo.id)) {
+      state.rollos_extrusion.unshift({ id: refRollo.id, ...nuevoRollo, created_at: { seconds: Math.floor(Date.now()/1000) } });
+    }
     
     // 🆕 Auto-iniciar producción si la ODP estaba en cola (primer rollo)
     if (odp.estatus === 'programada' || odp.proceso_estatus_actual === 'esperando') {
@@ -12445,6 +12581,9 @@ window.agregarRolloExtrusion = async (odpId) => {
           iniciado_por: odp.iniciado_por || state.user.id,
           updated_at: serverTimestamp()
         });
+        // Optimistic: reflejar en state local
+        const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+        if (odpLocal) { odpLocal.estatus = 'en_produccion'; odpLocal.proceso_estatus_actual = 'en_proceso'; }
       } catch (e) {
         console.warn('No se pudo auto-iniciar la ODP:', e.message);
       }
@@ -12517,7 +12656,14 @@ window.agregarRolloExtrusion = async (odpId) => {
   } catch (e) {
     toast('Error: ' + (e.message?.includes('PERMISSION_DENIED') ? '🔒 Sin permisos para registrar rollos' : e.message), 'error');
   } finally {
-    state.loadingAccion = false; render();
+    state.loadingAccion = false;
+    // 🆕 Reconstruir SOLO el modal (preserva foco/scroll) con el rollo recién agregado,
+    //    así el avance y el material disponible se actualizan al instante.
+    if (state.modal === 'capturar-turno') {
+      window.renderSoloModal();
+    } else {
+      window.forzarRender();
+    }
   }
 };
 
@@ -27172,7 +27318,7 @@ window.imprimirEtiquetasRollosWIP = (odpId) => {
     
     // Mismo formato físico que las etiquetas de cliente
     const MARG_TOP = 12.5, MARG_LEFT = 5, MARG_RIGHT = 4, MARG_BOTTOM = 15, GAP_X = 5;
-    const COLS = 2, FILAS = 5, PORHOJA = COLS * FILAS;
+    const COLS = 2, FILAS = 4, PORHOJA = COLS * FILAS;
     const W_PAGE = 215.9, H_PAGE = 279.4;
     const ETIQ_W = (W_PAGE - MARG_LEFT - MARG_RIGHT - GAP_X) / COLS;
     const ETIQ_H = (H_PAGE - MARG_TOP - MARG_BOTTOM) / FILAS;
@@ -27254,45 +27400,41 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.text(`${fmtNum(rollo.peso_kg || 0)} kg`, x + w - 3, yt, { align: 'right' });
   doc.setTextColor(0, 0, 0);
   
-  // ===== DATOS TÉCNICOS (2 columnas compactas, sin empalme) =====
+  // ===== DATOS TÉCNICOS (1 columna por fila — nunca se empalma) =====
   yt = y + 25;
-  const lineH = 3.8;
-  // Columna izquierda: etiqueta en xL1, valor en xV1 (máx hasta antes de la columna derecha)
-  const xL1 = x + 3;
-  const xV1 = x + 16;
-  const anchoValIzq = (x + w/2) - xV1 - 2;  // espacio disponible para el valor izquierdo
-  // Columna derecha: etiqueta en xL2, valor en xV2
-  const xL2 = x + w/2 + 2;
-  const xV2 = x + w/2 + 17;
-  const anchoValDer = (x + w) - xV2 - 3;
+  const lineH = 4.0;
+  const xLab = x + 3;
+  const xVal = x + 22;                  // los valores arrancan parejos
+  const anchoVal = (x + w) - xVal - 3;  // todo el ancho restante para el valor
   
   // Recorta el texto al ancho disponible (en mm) según el tamaño de fuente
   function recortar(txt, anchoMM, fontSize) {
     txt = String(txt || '—');
+    doc.setFont('helvetica', 'bold');
     doc.setFontSize(fontSize);
-    while (txt.length > 1 && doc.getTextWidth(txt) > anchoMM) {
+    if (doc.getTextWidth(txt) <= anchoMM) return txt;
+    while (txt.length > 1 && doc.getTextWidth(txt + '…') > anchoMM) {
       txt = txt.slice(0, -1);
     }
-    return txt;
+    return txt + '…';
   }
   
-  function filaIzq(label, valor) {
+  function fila(label, valor) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(90, 90, 90);
-    doc.text(label, xL1, yt);
-    doc.setFont('helvetica', 'bold'); doc.setTextColor(0, 0, 0);
-    doc.text(recortar(valor, anchoValIzq, 7.5), xV1, yt);
-  }
-  function filaDer(label, valor) {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(90, 90, 90);
-    doc.text(label, xL2, yt);
-    doc.setFont('helvetica', 'bold'); doc.setTextColor(0, 0, 0);
-    doc.text(recortar(valor, anchoValDer, 7.5), xV2, yt);
+    doc.text(label, xLab, yt);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(0, 0, 0);
+    doc.text(recortar(valor, anchoVal, 7.5), xVal, yt);
+    yt += lineH;
   }
   
-  filaIzq('Producto:', d.producto_codigo);  filaDer('Calibre:', d.calibre);        yt += lineH;
-  filaIzq('Medida:', d.medida);             filaDer('Densidad:', d.densidad);      yt += lineH;
-  filaIzq('Color:', d.color);               filaDer('Material:', d.material);      yt += lineH;
-  filaIzq('Cliente:', d.cliente);           filaDer('Fecha:', rollo.fecha || ''); yt += lineH;
+  fila('Producto:', d.producto_codigo);
+  fila('Medida:', d.medida);
+  fila('Calibre:', d.calibre);
+  fila('Densidad:', d.densidad);
+  fila('Color:', d.color);
+  fila('Material:', d.material);
+  fila('Cliente:', d.cliente);
+  fila('Fecha:', rollo.fecha || '');
   
   // ===== PIE: ODP + rollo X de N + operador =====
   yt = y + h - 4;
