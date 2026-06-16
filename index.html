@@ -502,11 +502,13 @@ window.avanceProcesosODP = (odp) => {
     let producido = caps.filter(c => c.proceso === cod)
       .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
     
-    // Para extrusión (idx 0), también cuentan los rollos capturados
+    // Para extrusión (idx 0), sumar los rollos NO consolidados (los consolidados
+    // ya se contaron en las capturas al cerrar el turno → evita duplicar).
     if (i === 0) {
-      const rollos = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
-      const kgRollos = rollos.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-      if (kgRollos > producido) producido = kgRollos;
+      const kgRollosSinConsolidar = (state.rollos_extrusion || [])
+        .filter(r => r.odp_id === odp.id && r.proceso === cod && !r.anulado && !r.consolidado_en_turno)
+        .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+      producido += kgRollosSinConsolidar;
     }
     
     return {
@@ -9992,11 +9994,17 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
 // Tarjeta de la orden ACTIVA dentro de una columna de máquina (compacta pero con acciones clave)
 function _tableroTarjetaActiva(o, procSel, proc) {
   const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === o.id && c.proceso === procSel);
-  const prod = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  let prod = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const esExtrusion = procSel === 'P1-EXT';
+  // 🆕 En extrusión, sumar rollos no consolidados (avance inmediato sin cerrar turno)
+  if (esExtrusion) {
+    prod += (state.rollos_extrusion || [])
+      .filter(r => r.odp_id === o.id && r.proceso === procSel && !r.anulado && !r.consolidado_en_turno)
+      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  }
   const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
   const pct = meta > 0 ? Math.min(100, Math.round((prod / meta) * 100)) : 0;
   const rollos = (state.rollos_extrusion || []).filter(r => !r.anulado && r.odp_id === o.id).length;
-  const esExtrusion = procSel === 'P1-EXT';
   const urgente = o.prioridad === 'urgente';
   
   return `
@@ -10068,7 +10076,16 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
   const capturas = capturasValidas(state.capturas_produccion).filter(c => 
     c.odp_id === o.id && c.proceso === procSel
   );
-  const prodKg = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  let prodKg = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  // 🆕 EXTRUSIÓN: la producción se registra rollo por rollo (rollos_extrusion).
+  //    Sumar los rollos NO consolidados (aún no cerrados en turno) para que el
+  //    avance se vea de inmediato al capturar, sin esperar a cerrar el turno.
+  if (procSel === 'P1-EXT') {
+    const kgRollosSinConsolidar = (state.rollos_extrusion || [])
+      .filter(r => r.odp_id === o.id && r.proceso === procSel && !r.anulado && !r.consolidado_en_turno)
+      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+    prodKg += kgRollosSinConsolidar;
+  }
   
   // 🆕 kgMeta robusto: si la ODP no tiene cantidad_kg_produccion calculada, intentar recalcular on-the-fly
   let kgMeta = Number(o.cantidad_kg_produccion) || 0;
