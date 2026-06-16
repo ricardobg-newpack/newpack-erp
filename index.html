@@ -2982,6 +2982,45 @@ function _doRender() {
 }
 window.render = render;
 
+// 🆕 Render AISLADO del modal: solo reconstruye el contenedor del modal,
+//    sin tocar las 40k líneas del resto de la app. Mucho más rápido y NO
+//    pierde los clics. Lo usan los handlers internos del modal de producto.
+window.renderSoloModal = () => {
+  const cont = document.getElementById('modal-container');
+  if (!cont) { state._forzarRender = true; render(); return; }
+  // Preservar scroll del modal body
+  const modalBodyOld = cont.querySelector('.modal-body');
+  const scroll = modalBodyOld ? modalBodyOld.scrollTop : null;
+  // Preservar foco
+  const activo = document.activeElement;
+  const idActivo = activo?.id || null;
+  const esInput = activo && (activo.tagName === 'INPUT' || activo.tagName === 'TEXTAREA');
+  const posSel = (esInput && activo.selectionStart != null) ? activo.selectionStart : null;
+  
+  cont.innerHTML = state.modal ? renderModal() : '';
+  
+  // 🆕 Reenganchar los listeners del modal (búsqueda de clientes, checkboxes, etc.)
+  try { attachAppEvents(); } catch (e) {}
+  
+  // Restaurar scroll
+  if (scroll != null) {
+    const nuevo = cont.querySelector('.modal-body');
+    if (nuevo) nuevo.scrollTop = scroll;
+  }
+  // Restaurar foco
+  if (idActivo) {
+    const nuevo = document.getElementById(idActivo);
+    if (nuevo) {
+      try {
+        nuevo.focus();
+        if (posSel != null && typeof nuevo.setSelectionRange === 'function') {
+          nuevo.setSelectionRange(posSel, posSel);
+        }
+      } catch (e) {}
+    }
+  }
+};
+
 // ============================================================
 // Helper: render() que preserva foco correctamente en inputs numéricos
 // Úsalo cuando hagas re-renders manuales fuera del flujo normal
@@ -3293,7 +3332,7 @@ function renderApp() {
       </main>
     </div>
     
-    ${state.modal ? renderModal() : ''}
+    <div id="modal-container">${state.modal ? renderModal() : ''}</div>
     ${state.modalImportarClientes ? renderModalImportarClientes() : ''}
     ${state.waterfallPedidoId ? renderModalWaterfallPedido() : ''}
     ${state.loadingAccion ? `<div class="loading-overlay"><div class="loading-content"><div class="spinner"></div><div>Procesando...</div></div></div>` : ''}
@@ -32945,33 +32984,33 @@ window.setTipoSellado = (codigo) => {
   state.modalForm.tipo_sellado = codigo;
   state.modalForm.estructura_rollo_ext = '';
   _capturarFormPT();
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 window.setEstructuraRollo = (codigo) => {
   if (!state.modalForm) return;
   state.modalForm.estructura_rollo_ext = codigo;
   _capturarFormPT();
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 window.setSalidasExtrusion = (n) => {
   if (!state.modalForm) return;
   state.modalForm.salidas_extrusion = Math.max(1, Number(n) || 1);
   if (state.modalForm.salidas_extrusion === 1) state.modalForm.corte_salidas = 'bolseo';
   _capturarFormPT();
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 window.setCorteSalidas = (donde) => {
   if (!state.modalForm) return;
   state.modalForm.corte_salidas = donde === 'extrusion' ? 'extrusion' : 'bolseo';
   _capturarFormPT();
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 // 🆕 Marca que el usuario sobrescribió manualmente el flujo (deja de ser automático)
 window._marcarFlujoManual = () => {
   if (!state.modalForm) return;
   _capturarFormPT();
   state.modalForm._flujo_definido_manual = true;
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 
 // Helper: captura valores de inputs del modal PT antes de re-render
@@ -33550,7 +33589,7 @@ window.cambiarNumCapas = (n) => {
   }
   
   state.modalForm.num_capas = n;
-  render();
+  window.renderSoloModal();
 };
 
 window.actualizarPorcentajeCapa = (capaIdx, valor) => {
@@ -33643,7 +33682,7 @@ window.agregarIngredienteCapa = (capaIdx) => {
   const descripcion = mp?.descripcion || '';
   
   ingredientes.push({ mp_codigo, descripcion, porcentaje, tipo: mp?.tipo || '' });
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 
 window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
@@ -33659,7 +33698,7 @@ window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
 window.quitarIngredienteCapa = (capaIdx, ingrIdx) => {
   if (!state.modalForm?.capas?.[capaIdx]?.ingredientes) return;
   state.modalForm.capas[capaIdx].ingredientes.splice(ingrIdx, 1);
-  state._forzarRender = true; render();
+  window.renderSoloModal();
 };
 
 // ============================================================
