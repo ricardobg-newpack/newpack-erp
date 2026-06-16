@@ -1016,10 +1016,12 @@ window.generarODPFaltante = async (lineaId) => {
     const procSecCod = flujoDed.proceso || producto?.proceso_secundario_codigo || '';
     
     // 🆕 MODELO 1 ODP: ruta + avance independiente por proceso
+    // El proceso secundario ya viene con código de ruta correcto (P3-BS/P4-BR/P6-REF/P2-IMP).
+    // Compatibilidad: códigos viejos (P-2/P-3/P-4) se mapean.
     const PROC_SEC_A_RUTA = { 'P-2': 'P3-BS', 'P-3': 'P2-IMP', 'P-4': 'P3-BS' };
     const rutaProcesos = ['P1-EXT'];
     if (requiereSec && procSecCod) {
-      const codRuta = PROC_SEC_A_RUTA[procSecCod] || 'P3-BS';
+      const codRuta = PROC_SEC_A_RUTA[procSecCod] || procSecCod; // usa el código tal cual si ya es de ruta
       if (!rutaProcesos.includes(codRuta)) rutaProcesos.push(codRuta);
     }
     const avanceProcesos = {};
@@ -2002,27 +2004,27 @@ window.TIPOS_SELLADO = TIPOS_SELLADO;
 //   - lay_flat:       Rollo lay-flat (abierto)
 const ESTRUCTURAS_ROLLO = {
   SELLO_FONDO: [
-    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple — sin fuelle' },
-    { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle — fuelle a los lados' }
+    { codigo: 'tubular_simple',     nombre: '🟢 Tubular — burbuja cerrada en ambos lados (es un tubo)' },
+    { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle — tubo con fuelle metido a los lados' }
   ],
   SELLO_LATERAL: [
-    { codigo: 'ax1l',          nombre: '🔵 Sencillo — 1 rollo abierto por un lado (extruye al largo)' },
-    { codigo: 'ax1c',          nombre: '🟣 Doble — extruye al doble y salen 2 rollos sencillos (= largo × 2)' },
-    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble — extruye al doble, 2 piezas tubulares (= largo × 2)' }
+    { codigo: 'ax1l',          nombre: '🔵 AX1L (abierto por un lado) — burbuja cortada por UN lado antes de embobinar' },
+    { codigo: 'ax1c',          nombre: '🟣 AX1C (abierto por el centro) — extruye al DOBLE, corta al centro = 2 rollos AX1L' },
+    { codigo: 'tubular_doble', nombre: '🟠 Tubular doble — extruye al doble, queda tubular (se corta en BS)' }
   ],
   BOLSA_ROLLO: [
-    { codigo: 'tubular_simple',     nombre: '🟢 Tubular simple — sin fuelle' },
+    { codigo: 'tubular_simple',     nombre: '🟢 Tubular — burbuja cerrada en ambos lados' },
     { codigo: 'tubular_con_fuelle', nombre: '🟡 Tubular con fuelle' }
   ],
   PELICULA: [
-    { codigo: 'tubular',  nombre: '🟢 Tubular — cerrado por ambos lados' },
-    { codigo: 'lay_flat', nombre: '🟦 Lay-flat — película abierta plana' }
+    { codigo: 'tubular',  nombre: '🟢 Tubular — burbuja cerrada en ambos lados (es un tubo)' },
+    { codigo: 'lay_flat', nombre: '🟦 Película plana — burbuja abierta por AMBOS lados = 2 telas sencillas' }
   ],
   // 🆕 ROLLO DIRECTO — producto final es un rollo (no se convierte en bolsa)
   ROLLO_DIRECTO: [
-    { codigo: 'rd_tubular',  nombre: '🟢 Rollo directo tubular — sin fuelle' },
-    { codigo: 'rd_fuellado', nombre: '🟡 Rollo directo fuellado — con fuelle' },
-    { codigo: 'rd_lamina',   nombre: '🟦 Rollo directo lámina/abierto — película plana' }
+    { codigo: 'rd_tubular',  nombre: '🟢 Rollo directo tubular — burbuja cerrada (tubo)' },
+    { codigo: 'rd_fuellado', nombre: '🟡 Rollo directo fuellado — tubo con fuelle' },
+    { codigo: 'rd_lamina',   nombre: '🟦 Rollo directo lámina — abierto por un lado (AX1L)' }
   ]
 };
 window.ESTRUCTURAS_ROLLO = ESTRUCTURAS_ROLLO;
@@ -2079,18 +2081,18 @@ function calcularMedidasRolloExt(producto) {
     if (estructura === 'ax1l') {
       ancho_rollo = largo;
       fuelle_rollo = 0;
-      descripcion = `Abierto 1 lado · 1 rollo de ${largo} cm`;
-      observacion = `EXTRUIR 1 rollo de ${largo} cm de ancho, abierto por un lado. Sale tal cual a bolseo.`;
+      descripcion = `AX1L · rollo de ${largo} cm abierto por un lado`;
+      observacion = `🔵 AX1L (abierto por un lado):\n1) Extruir burbuja tubular de ${largo} cm de ancho.\n2) ANTES de embobinar, cortar la burbuja por UN solo lado.\n3) Embobinar → 1 rollo de ${largo} cm abierto por un lado (las 2 caras siguen unidas por el doblez del otro lado).\n→ Pasa a bolseo tal cual.`;
     } else if (estructura === 'ax1c') {
       ancho_rollo = largo * 2;
       fuelle_rollo = 0;
-      descripcion = `Doble · extruir ${largo * 2} cm → 2 rollos de ${largo} cm (= ${largo}×2)`;
-      observacion = `EXTRUIR al doble: 1 rollo de ${largo * 2} cm (= ${largo} × 2). Al cortar por el centro salen 2 rollos de ${largo} cm c/u, cada uno abierto por un lado (igual que el sencillo). Sirve para producir el doble en una sola corrida.`;
+      descripcion = `AX1C · extruir ${largo * 2} cm → 2 rollos AX1L de ${largo} cm (= ${largo}×2)`;
+      observacion = `🟣 AX1C (abierto por el centro) — producir 2 AX1L de un jalón:\n1) Extruir burbuja tubular al DOBLE: ${largo * 2} cm de ancho (= ${largo} × 2).\n2) Cortar la burbuja por el CENTRO.\n3) Embobinar por separado → 2 rollos AX1L de ${largo} cm c/u, cada uno abierto por un lado (idéntico al AX1L sencillo).\n→ Cada rollo pasa a bolseo.`;
     } else if (estructura === 'tubular_doble') {
       ancho_rollo = largo * 2;
       fuelle_rollo = 0;
-      descripcion = `Tubular doble · extruir ${largo * 2} cm → 2 piezas de ${largo} cm`;
-      observacion = `EXTRUIR 1 rollo TUBULAR de ${largo * 2} cm de ancho (= ${largo} × 2). BOLSEO corta por el centro y saca 2 piezas tubulares de ${largo} cm c/u.`;
+      descripcion = `Tubular doble · extruir ${largo * 2} cm → 2 piezas tubulares de ${largo} cm`;
+      observacion = `🟠 Tubular doble:\n1) Extruir burbuja tubular al DOBLE: ${largo * 2} cm (= ${largo} × 2), SIN cortar (queda tubo cerrado).\n2) Embobinar tubular.\n→ BOLSEO corta por el centro y saca 2 piezas tubulares de ${largo} cm c/u.`;
     }
   }
   // 🆕 ROLLO DIRECTO → el producto final ES un rollo (no se convierte en bolsa)
@@ -2159,24 +2161,26 @@ function calcularMedidasRolloExt(producto) {
   // PELÍCULA → tubular o lay-flat × salidas
   else if (tipo === 'PELICULA') {
     if (estructura === 'lay_flat') {
+      // Película plana = burbuja abierta por ambos lados → 2 telas sencillas
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
       if (salidas > 1) {
-        descripcion = `Lay-flat ${ancho_rollo} cm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUSIÓN: extruir película lay-flat de ${ancho_rollo} cm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} cm c/u.`;
+        descripcion = `Película plana ${ancho_rollo} cm (= ${ancho}×${salidas})`;
+        observacion = `🟦 PELÍCULA PLANA:\n1) Extruir burbuja de ${ancho_rollo} cm.\n2) Abrir la burbuja por AMBOS lados → quedan 2 telas planas sencillas.\n3) REFILADO: cortar longitudinalmente en ${salidas} rollos de ${ancho} cm c/u.`;
       } else {
-        descripcion = `Lay-flat ${ancho} cm`;
-        observacion = 'Película lay-flat (abierta, 1 salida)';
+        descripcion = `Película plana ${ancho} cm`;
+        observacion = `🟦 PELÍCULA PLANA:\n1) Extruir burbuja de ${ancho} cm.\n2) Abrir por AMBOS lados → tela plana sencilla de ${ancho} cm.\n→ Sale terminada de extrusión.`;
       }
     } else {
+      // Tubular = burbuja cerrada (tubo)
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
       if (salidas > 1) {
         descripcion = `Tubular ${ancho_rollo} cm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUSIÓN: extruir película tubular de ${ancho_rollo} cm. REFILADO: corta longitudinalmente en ${salidas} rollos de ${ancho} cm c/u.`;
+        observacion = `🟢 PELÍCULA TUBULAR:\n1) Extruir burbuja tubular de ${ancho_rollo} cm (queda como tubo cerrado).\n2) REFILADO: cortar longitudinalmente en ${salidas} rollos de ${ancho} cm c/u.`;
       } else {
         descripcion = `Tubular ${ancho} cm`;
-        observacion = 'Película tubular (1 salida)';
+        observacion = `🟢 PELÍCULA TUBULAR:\n1) Extruir burbuja tubular de ${ancho} cm (tubo cerrado en ambos lados).\n→ Sale terminada de extrusión.`;
       }
     }
   }
@@ -2343,18 +2347,44 @@ window.deduceRequiereProcesoSecundario = (producto) => {
   const tipo = (producto.tipo || '').toUpperCase().trim();
   const forma = tipoFormaProducto(producto);
   
-  // ROLLO DIRECTO, PELÍCULA, MANGA, HOJA → flujo directo (salen terminados de extrusión)
-  if (tipo.includes('ROLLO DIRECTO') || tipo.includes('PELICULA') || tipo.includes('FILM') ||
-      tipo.includes('ROLLO MANUAL') || tipo.includes('ROLLO AUTOMATICO') ||
-      forma === 'rollo' || forma === 'hoja') {
+  // ───── PELÍCULA PLANA con acabado especial → sí lleva 2º proceso ─────
+  // Película plana REFILADA:
+  //   - refilacion_modo='extrusion' → se refila EN la misma corrida → flujo directo
+  //   - refilacion_modo='independiente' (o sin definir) → pasa a Refilación/Embobinado (P6-REF)
+  if (tipo.includes('PELICULA') && (tipo.includes('REFILAD') || tipo.includes('REFILE'))) {
+    if (producto.refilacion_modo === 'extrusion') {
+      return { requiere: false, proceso: '', origen: 'auto-tipo' }; // refila en extrusión, sale terminada
+    }
+    return { requiere: true, proceso: 'P6-REF', origen: 'auto-tipo' }; // refila aparte
+  }
+  // Película plana PUNTEADA / PERFORADA → Bolsa en Rollo (P4-BR), ahí se puntea
+  if (tipo.includes('PELICULA') && (tipo.includes('PUNTEAD') || tipo.includes('PERFORAD'))) {
+    return { requiere: true, proceso: 'P4-BR', origen: 'auto-tipo' };
+  }
+  // Película plana lisa / film simple → flujo directo (sale terminada de extrusión)
+  if (tipo.includes('PELICULA') || tipo.includes('FILM')) {
     return { requiere: false, proceso: '', origen: 'auto-tipo' };
   }
   
-  // BOLSAS y MANGAS (que se sellan) → pasan a bolseo
-  if (tipo.includes('BOLSA') || forma === 'bolsa_suelta' || forma === 'bolsa_fuelle' || 
-      forma === 'bolsa_rollo' || forma === 'manga') {
-    // Bolsa en rollo → P-2 Bolseo; manga también bolseo/sellado
-    return { requiere: true, proceso: 'P-2', origen: 'auto-tipo' };
+  // ───── ROLLO DIRECTO → flujo directo ─────
+  if (tipo.includes('ROLLO DIRECTO') || tipo.includes('ROLLO MANUAL') || tipo.includes('ROLLO AUTOMATICO')) {
+    return { requiere: false, proceso: '', origen: 'auto-tipo' };
+  }
+  
+  // ───── BOLSA EN ROLLO → Bolsa en Rollo (P4-BR) ─────
+  if ((tipo.includes('BOLSA') && (tipo.includes('ROLLO') || tipo.includes('BR'))) || forma === 'bolsa_rollo') {
+    return { requiere: true, proceso: 'P4-BR', origen: 'auto-tipo' };
+  }
+  
+  // ───── BOLSA SUELTA / FUELLE / MANGA → Bolsa Suelta (P3-BS) ─────
+  if (tipo.includes('BOLSA') || tipo.includes('MANGA') || 
+      forma === 'bolsa_suelta' || forma === 'bolsa_fuelle' || forma === 'manga') {
+    return { requiere: true, proceso: 'P3-BS', origen: 'auto-tipo' };
+  }
+  
+  // ───── ROLLO genérico / HOJA → flujo directo ─────
+  if (forma === 'rollo' || forma === 'hoja') {
+    return { requiere: false, proceso: '', origen: 'auto-tipo' };
   }
   
   // Default: directo
@@ -9660,21 +9690,24 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
       </div>
       
       ${(() => {
-        // 🆕 ODP secundaria (P-2/P-3/P-4): mostrar material disponible del Almacén Intermedio
-        if (!o.proceso_codigo || o.proceso_codigo === 'P-1') return '';
-        if (!o.odp_padre_id) return '';
-        const rollosColocados = (state.rollos_extrusion || []).filter(r => !r.anulado && r.consumido_en_odp_id === o.id);
-        const rollosDispPadre = (state.rollos_extrusion || []).filter(r => !r.anulado && !r.consumido_en_odp_id && r.odp_id === o.odp_padre_id);
-        const kgColocados = rollosColocados.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-        const kgDispPadre = rollosDispPadre.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-        if (kgColocados === 0 && kgDispPadre === 0) {
+        // 🆕 MODELO 1 ODP: si el panel actual es un proceso posterior (bolseo) en una ODP
+        //    con ruta de varios procesos, mostrar el colchón disponible (extrusión manda)
+        const procPanel = state.panelOpProc;
+        const ruta = o.ruta_procesos || [];
+        const idxPanel = ruta.indexOf(procPanel);
+        if (idxPanel <= 0) return ''; // solo procesos posteriores a extrusión
+        const av = window.avanceProcesosODP(o);
+        const miProc = av?.procesos?.[idxPanel];
+        if (!miProc) return '';
+        const disp = miProc.disponible_para_trabajar;
+        const extProd = av.procesos[0]?.producido_kg || 0;
+        if (extProd === 0 && disp === 0) {
           return `<div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e;">
-            ⏳ Sin rollos disponibles aún — esperando que ${o.odp_padre_folio || 'extrusión'} produzca material
+            ⏳ Sin material aún — esperando que extrusión produzca rollos
           </div>`;
         }
-        return `<div style="background:#f5f3ff;border:1.5px solid #a78bfa;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#5b21b6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-          <span>🧵 <strong>Material:</strong> ${fmtNum(kgColocados)} kg colocados${kgDispPadre > 0 ? ` · ${fmtNum(kgDispPadre)} kg más disponibles en Intermedio` : ''}</span>
-          ${kgDispPadre > 0 ? `<button onclick="event.stopPropagation();window.colocarRollosEnODP('${o.odp_padre_id}','${o.id}')" style="background:#7c3aed;color:#fff;border:none;padding:4px 12px;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">➡️ Traer rollos</button>` : ''}
+        return `<div style="background:${disp > 0 ? '#dcfce7' : '#f5f3ff'};border:1.5px solid ${disp > 0 ? '#86efac' : '#a78bfa'};border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:${disp > 0 ? '#166534' : '#5b21b6'};">
+          🧵 <strong>Disponible para trabajar:</strong> ${fmtNum(disp)} kg ${disp > 0 ? 'listos' : '· espera más extrusión'} · 🔥 Extrusión lleva ${fmtNum(extProd)} kg. Los rollos se consumen solos al capturar.
         </div>`;
       })()}
       
@@ -9767,7 +9800,7 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
                 </div>
               ` : ''}
             </div>
-            <div style="margin-top:6px;font-size:10.5px;font-style:italic;opacity:0.9;line-height:1.4;">💡 ${medidas.observacion}</div>
+            <div style="margin-top:6px;font-size:10.5px;font-style:italic;opacity:0.9;line-height:1.5;white-space:pre-line;">💡 ${medidas.observacion}</div>
             ${prod.obs_extrusion ? `
               <div style="margin-top:6px;padding:8px;background:#fef3c7;color:#92400e;border-radius:5px;border-left:3px solid #f59e0b;font-size:11px;line-height:1.4;">
                 <strong>📝 NOTA:</strong> ${prod.obs_extrusion}
@@ -11553,7 +11586,7 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
                     <div style="font-size:22px;font-weight:900;color:#fbbf24;">${medidas.calibre || '—'}</div>
                   </div>
                 </div>
-                <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;line-height:1.4;">
+                <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;line-height:1.5;white-space:pre-line;">
                   💡 ${medidas.observacion}
                 </div>
                 ${prod.obs_extrusion ? `
@@ -11786,7 +11819,12 @@ window.guardarCapturaTurno = async (odpId) => {
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
   const ruta = odp.ruta_procesos || [];
-  const idx = odp.proceso_actual_idx ?? 0;
+  // 🆕 MODELO PARALELO: capturar en el proceso del PANEL del operador (extrusión o bolseo)
+  let idx = odp.proceso_actual_idx ?? 0;
+  const procPanel = state.panelOpProc;
+  if (procPanel && ruta.includes(procPanel)) {
+    idx = ruta.indexOf(procPanel);
+  }
   const procActual = ruta[idx];
   
   // 🛡 VALIDACIONES DE ESTADO ANTES de crear la captura (evita capturas huérfanas)
@@ -11851,6 +11889,23 @@ window.guardarCapturaTurno = async (odpId) => {
   // Guardar valor convertido también en f.producido_kg para compatibilidad
   f.producido_kg = prodKg;
   
+  // 🆕 PUNTO 7 — "EXTRUSIÓN MANDA": si es un proceso posterior (bolseo), no puede
+  //    capturar más de lo que extrusión ya produjo (el colchón disponible).
+  if (procActual !== 'P1-EXT' && idx > 0) {
+    const av = window.avanceProcesosODP(odp);
+    const miProc = av?.procesos?.[idx];
+    if (miProc) {
+      const disponible = miProc.disponible_para_trabajar;
+      if (prodKg > disponible + 0.5) {
+        const msg = `⚠ EXTRUSIÓN MANDA\n\nEstás capturando ${fmtNum(prodKg)} kg en ${getProc(procActual)?.nombre}, pero extrusión solo ha liberado ${fmtNum(disponible)} kg disponibles.\n\nBolseo no puede trabajar material que aún no se ha extruido.\n\n¿Capturar de todos modos? (No recomendado)`;
+        if (!confirm(msg)) {
+          state.loadingAccion = false; render();
+          return;
+        }
+      }
+    }
+  }
+  
   // Obtener nombres (modo normal vs rápido)
   let opNombre, opId, supNombre, supId;
   if (modoRapido) {
@@ -11907,6 +11962,38 @@ window.guardarCapturaTurno = async (odpId) => {
     }
     await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     
+    // 🆕 PUNTO 7: Si este proceso NO es extrusión (es bolseo/impresión), consume
+    //    automáticamente los rollos de extrusión de la misma ODP (FIFO), limitado
+    //    a lo que acaba de bolsear. "Extrusión manda": no puede consumir más de lo disponible.
+    let kgConsumidosRollos = 0;
+    if (procActual !== 'P1-EXT' && idx > 0) {
+      try {
+        // Rollos de extrusión de ESTA ODP, no consumidos, ordenados FIFO (más viejo primero)
+        const rollosDisp = (state.rollos_extrusion || [])
+          .filter(r => r.odp_id === odpId && !r.anulado && !r.consumido_en_odp_id && r.proceso === 'P1-EXT')
+          .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0));
+        
+        let porConsumir = prodKg; // consumir tantos kg de rollos como se bolsearon
+        const batchRollos = writeBatch(db);
+        for (const r of rollosDisp) {
+          if (porConsumir <= 0.01) break;
+          // Consumir el rollo completo (los rollos se toman enteros para bolsear)
+          batchRollos.update(doc(db, 'rollos_extrusion', r.id), {
+            consumido_en_odp_id: odpId,
+            consumido_en_odp_folio: odp.folio,
+            consumido_en_proceso: procActual,
+            consumido_at: serverTimestamp(),
+            consumido_por: state.user.nombre || state.user.email
+          });
+          kgConsumidosRollos += Number(r.peso_kg) || 0;
+          porConsumir -= Number(r.peso_kg) || 0;
+        }
+        if (kgConsumidosRollos > 0) await batchRollos.commit();
+      } catch (eRollos) {
+        console.warn('No se pudieron consumir rollos automáticamente:', eRollos);
+      }
+    }
+    
     cerrarModal();
     // 🆕 Toast con la UM de captura
     const lblToast = umCaptura === 'kg' 
@@ -11914,7 +12001,8 @@ window.guardarCapturaTurno = async (odpId) => {
       : umCaptura === 'pza' 
         ? `${fmtNum(prodUM)} pza (${fmtNum(prodKg)} kg)` 
         : `${fmtNum(prodUM)} millares (${fmtNum(prodKg)} kg)`;
-    toast(`✅ Turno guardado: ${lblToast} · ${opNombre} · Grupo ${f.grupo}`);
+    const msgRollos = kgConsumidosRollos > 0 ? ` · 🧵 ${fmtNum(kgConsumidosRollos)} kg de rollos consumidos (FIFO)` : '';
+    toast(`✅ Turno guardado: ${lblToast} · ${opNombre} · Grupo ${f.grupo}${msgRollos}`);
   } catch (e) {
     console.error('Error guardar turno:', e);
     let mensaje = e.message || String(e);
@@ -12240,7 +12328,13 @@ function modalCompletarProceso() {
   if (!odp) return '';
   
   const ruta = odp.ruta_procesos || [];
-  const idx = odp.proceso_actual_idx ?? 0;
+  // 🆕 MODELO PARALELO: el proceso a cerrar es el del PANEL donde está el operador
+  //    (extrusión o bolseo), no necesariamente el proceso_actual_idx.
+  let idx = odp.proceso_actual_idx ?? 0;
+  const procPanel = state.panelOpProc;
+  if (procPanel && ruta.includes(procPanel)) {
+    idx = ruta.indexOf(procPanel);
+  }
   const procActual = getProc(ruta[idx]);
   if (!procActual) return '';
   
@@ -12411,12 +12505,16 @@ function modalCompletarProceso() {
             <textarea class="input" id="comp-notas-cierre" style="min-height:50px;" placeholder="Observaciones finales del proceso..."></textarea>
           </div>
           
-          <!-- INFO ÚLTIMO PASO -->
-          <div style="margin-top:10px;padding:10px;background:${esUltimo ? '#fef3c7' : '#eff6ff'};border-radius:8px;font-size:11px;color:#475569;">
-            ${esUltimo 
-              ? '🏁 <strong>Es el último proceso.</strong> Al cerrar, la ODP pasará a <strong>Calidad</strong> con los acumulados actuales.'
-              : `➡ Al cerrar, el material pasará a <strong>${getProc(ruta[idx+1])?.icono || ''} ${getProc(ruta[idx+1])?.nombre || ''}</strong> con ${fmtNum(totalProducidoKg)} kg como entrada.`}
-          </div>
+          <!-- INFO ÚLTIMO PASO (considerando avance paralelo) -->
+          ${(() => {
+            const av = window.avanceProcesosODP(odp);
+            const otrosNoCompletos = av ? av.procesos.filter((pp, i) => i !== idx && !pp.completado) : [];
+            const esUltimoReal = otrosNoCompletos.length === 0;
+            if (esUltimoReal) {
+              return `<div style="margin-top:10px;padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;color:#475569;">🏁 <strong>Es el último proceso que falta.</strong> Al cerrar, la ODP pasará a <strong>Calidad</strong> con los acumulados.</div>`;
+            }
+            return `<div style="margin-top:10px;padding:10px;background:#eff6ff;border-radius:8px;font-size:11px;color:#475569;">➡ Al cerrar ${procActual.nombre}, la ODP sigue abierta porque falta: ${otrosNoCompletos.map(pp => `${pp.icono} ${pp.nombre}`).join(', ')}. Cada proceso cierra por separado.</div>`;
+          })()}
           
           <!-- 🆕 OPCIÓN PARCIAL: si produjo menos que la meta del proceso -->
           ${(() => {
@@ -15192,20 +15290,20 @@ window.flujoODP = (odp) => {
 // Helper: determinar si un rollo está disponible en el almacén intermedio
 function rolloEnIntermedio(r) {
   if (r.anulado) return false;
-  if (r.consumido_en_odp_id) return false; // ya lo tomó otro proceso
+  if (r.consumido_en_odp_id) return false; // ya lo tomó otro proceso (bolseo)
   const odp = (state.ordenes_produccion || []).find(o => o.id === r.odp_id);
   if (!odp) return false;
   if (['cancelada','rechazada'].includes(odp.estatus)) return false;
   
-  // Caso cascada (F1): la ODP P-1 cuyo producto requiere proceso secundario
-  if (odp.requiere_proceso_secundario || (state.ordenes_produccion || []).some(h => h.odp_padre_id === odp.id)) {
-    return true;
-  }
-  // Caso legacy: ODP con ruta de varios procesos y el rollo es de un proceso que NO es el último
+  // 🆕 MODELO 1 ODP: el rollo está en intermedio si su ODP tiene ruta de varios
+  //    procesos y el rollo es de extrusión (proceso que NO es el último de la ruta).
   const ruta = odp.ruta_procesos || [];
   if (ruta.length > 1) {
     const idxProcRollo = ruta.indexOf(r.proceso);
+    // Rollo de extrusión (idx 0) y la ruta tiene procesos posteriores → en intermedio
     if (idxProcRollo >= 0 && idxProcRollo < ruta.length - 1) return true;
+    // Fallback: si el rollo no tiene proceso marcado pero la ODP requiere secundario
+    if (idxProcRollo < 0 && (odp.requiere_proceso_secundario || ruta.length > 1)) return true;
   }
   return false;
 }
@@ -15522,18 +15620,26 @@ function renderAlmacenIntermedio() {
         if (!odp) return '';
         const kgGrupo = rollos.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
         
-        // ¿Qué proceso le falta? Cascada: las ODPs hijas. Legacy: siguiente en ruta
-        const hijas = (state.ordenes_produccion || []).filter(h => 
-          h.odp_padre_id === odpId && !['cancelada','rechazada','completada','entregada'].includes(h.estatus)
-        );
         const producto = window.getProductoPT(odp.producto_codigo);
-        let faltaTxt = '';
-        if (hijas.length > 0) {
-          faltaTxt = hijas.map(h => `${h.proceso_codigo || '?'} (${h.folio})`).join(', ');
-        } else if (producto?.proceso_secundario_codigo) {
-          faltaTxt = producto.proceso_secundario_codigo;
+        
+        // 🆕 MODELO 1 ODP: calcular el colchón (extrusión produjo X, bolseo tomó Y, queda Z)
+        const av = window.avanceProcesosODP(odp);
+        const ruta = odp.ruta_procesos || [];
+        // Proceso siguiente (el que consume estos rollos): el primero después de extrusión no completado
+        let faltaTxt = '—';
+        let colchon = null;
+        if (av && av.procesos.length > 1) {
+          const procExt = av.procesos[0];           // extrusión
+          const procSig = av.procesos[1];           // bolseo (o el siguiente)
+          colchon = {
+            extrusion_kg: procExt.producido_kg,
+            siguiente_kg: procSig.producido_kg,
+            disponible_kg: procSig.disponible_para_trabajar,
+            nombre_sig: procSig.nombre,
+            icono_sig: procSig.icono
+          };
+          faltaTxt = `${procSig.icono} ${procSig.nombre}`;
         } else {
-          const ruta = odp.ruta_procesos || [];
           const idxR = ruta.indexOf(rollos[0]?.proceso);
           faltaTxt = ruta.slice(idxR + 1).map(pc => getProc(pc)?.nombre || pc).join(' → ') || '—';
         }
@@ -15550,19 +15656,40 @@ function renderAlmacenIntermedio() {
                   <span class="text-mono">${odp.producto_codigo}</span> · ${odp.cliente_nombre || 'STOCK'}
                 </div>
                 <div style="font-size:11px;color:#7c3aed;margin-top:2px;font-weight:700;">
-                  ⏭ Le falta: ${faltaTxt}
+                  ⏭ Pasa a: ${faltaTxt}
                 </div>
               </div>
               <div style="text-align:right;">
                 <div style="font-size:20px;font-weight:800;color:#0f172a;">${fmtNum(kgGrupo)} kg</div>
-                <div style="font-size:11px;color:#64748b;">${rollos.length} rollo(s)</div>
-                ${puedeColocar && hijas.length > 0 ? `
-                  <button onclick="window.colocarRollosEnODP('${odpId}', '${hijas[0].id}')" style="margin-top:6px;background:#7c3aed;color:#fff;border:none;padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">
-                    ➡️ Colocar TODO en ${hijas[0].folio}
-                  </button>
-                ` : ''}
+                <div style="font-size:11px;color:#64748b;">${rollos.length} rollo(s) en espera</div>
               </div>
             </div>
+            
+            ${colchon ? `
+              <!-- 🆕 COLCHÓN: extrusión manda, bolseo trabaja lo disponible -->
+              <div style="padding:12px 18px;background:#fafaf9;border-bottom:1px solid #f1f5f9;">
+                <div style="font-size:10px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">📊 Avance en paralelo (meta ${fmtNum(av.meta_kg)} kg)</div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+                  <div style="background:#fff;border:1.5px solid #fed7aa;border-radius:8px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:9.5px;color:#9a3412;font-weight:700;">🔥 EXTRUSIÓN PRODUJO</div>
+                    <div style="font-size:18px;font-weight:900;color:#ea580c;">${fmtNum(colchon.extrusion_kg)}</div>
+                    <div style="font-size:9px;color:#9a3412;">kg</div>
+                  </div>
+                  <div style="background:#fff;border:1.5px solid #bfdbfe;border-radius:8px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:9.5px;color:#1e40af;font-weight:700;">${colchon.icono_sig} ${colchon.nombre_sig.toUpperCase()} HIZO</div>
+                    <div style="font-size:18px;font-weight:900;color:#3b82f6;">${fmtNum(colchon.siguiente_kg)}</div>
+                    <div style="font-size:9px;color:#1e40af;">kg</div>
+                  </div>
+                  <div style="background:${colchon.disponible_kg > 0 ? '#dcfce7' : '#f1f5f9'};border:1.5px solid ${colchon.disponible_kg > 0 ? '#86efac' : '#e2e8f0'};border-radius:8px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:9.5px;color:${colchon.disponible_kg > 0 ? '#166534' : '#94a3b8'};font-weight:700;">📦 DISPONIBLE P/ ${colchon.nombre_sig.toUpperCase()}</div>
+                    <div style="font-size:18px;font-weight:900;color:${colchon.disponible_kg > 0 ? '#16a34a' : '#94a3b8'};">${fmtNum(colchon.disponible_kg)}</div>
+                    <div style="font-size:9px;color:${colchon.disponible_kg > 0 ? '#166534' : '#94a3b8'};">kg ${colchon.disponible_kg > 0 ? 'listos' : '· espera más extrusión'}</div>
+                  </div>
+                </div>
+                <div style="font-size:10px;color:#64748b;margin-top:8px;font-style:italic;">💡 Bolseo consume estos rollos automáticamente al capturar su producción (FIFO). "Extrusión manda": bolseo solo trabaja hasta lo que extrusión ya produjo.</div>
+              </div>
+            ` : ''}
+            
             <div style="padding:10px 18px;overflow-x:auto;">
               <table style="width:100%;font-size:11px;border-collapse:collapse;">
                 <thead><tr style="background:#f8fafc;color:#64748b;text-align:left;">
@@ -15571,7 +15698,6 @@ function renderAlmacenIntermedio() {
                   <th style="padding:6px 10px;">Fecha</th>
                   <th style="padding:6px 10px;">Máquina</th>
                   <th style="padding:6px 10px;">Operador</th>
-                  ${puedeColocar && hijas.length > 0 ? '<th style="padding:6px 10px;"></th>' : ''}
                 </tr></thead>
                 <tbody>
                   ${rollos.sort((a,b) => (a.numero_rollo||0)-(b.numero_rollo||0)).map(r => `
@@ -15581,11 +15707,6 @@ function renderAlmacenIntermedio() {
                       <td style="padding:5px 10px;color:#64748b;">${r.fecha || ''}</td>
                       <td style="padding:5px 10px;" class="text-mono">${r.maquina_codigo || ''}</td>
                       <td style="padding:5px 10px;color:#64748b;">${r.operador_nombre || ''}</td>
-                      ${puedeColocar && hijas.length > 0 ? `
-                        <td style="padding:5px 10px;text-align:right;">
-                          <button onclick="window.colocarRolloIndividual('${r.id}', '${hijas[0].id}')" style="background:#fff;color:#7c3aed;border:1px solid #7c3aed;padding:3px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:10px;">➡️ Colocar</button>
-                        </td>
-                      ` : ''}
                     </tr>
                   `).join('')}
                 </tbody>
@@ -32662,6 +32783,7 @@ function modalEditarProductoPT() {
       estructura_rollo_ext: p.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(p.salidas_extrusion) || 1),
       corte_salidas: p.corte_salidas || 'bolseo',
+      refilacion_modo: p.refilacion_modo || 'independiente',
       obs_extrusion: p.obs_extrusion || '',
       // 🆕 F3 — Cargar campos de peletizado existentes
       tipo_material_peletizado: p.tipo_material_peletizado || (
@@ -32962,11 +33084,33 @@ function renderBloqueConfigExtrusion(f, p) {
               </div>
             ` : ''}
           </div>
-          <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;line-height:1.4;">
+          <div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.1);border-radius:6px;font-size:11px;font-style:italic;line-height:1.5;white-space:pre-line;">
             💡 ${medidas.observacion}
           </div>
         </div>
       ` : ''}
+      
+      <!-- 🆕 MODO DE REFILACIÓN — solo para productos refilados -->
+      ${(() => {
+        const tipoProd = (f.tipo || p?.tipo || '').toUpperCase();
+        const esRefilado = tipoProd.includes('REFILAD') || tipoProd.includes('REFILE');
+        if (!esRefilado) return '';
+        const modo = f.refilacion_modo !== undefined ? f.refilacion_modo : (p?.refilacion_modo || 'independiente');
+        return `
+          <div style="margin-top:10px;padding:12px;background:#fffbeb;border-radius:10px;border:1.5px solid #f59e0b;">
+            <label style="font-size:12px;font-weight:800;color:#92400e;display:block;margin-bottom:6px;">✂️ ¿Dónde se refila este producto?</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <button type="button" onclick="window.setRefilacionModo('extrusion')" style="padding:10px 8px;background:${modo === 'extrusion' ? '#16a34a' : '#fff'};color:${modo === 'extrusion' ? '#fff' : '#166534'};border:1.5px solid ${modo === 'extrusion' ? '#16a34a' : '#86efac'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;text-align:left;">
+                🔥 En EXTRUSIÓN<br><span style="font-weight:500;font-size:9.5px;opacity:0.85;">Se refila en la misma corrida. Sale terminado → directo a Calidad.</span>
+              </button>
+              <button type="button" onclick="window.setRefilacionModo('independiente')" style="padding:10px 8px;background:${modo === 'independiente' ? '#f59e0b' : '#fff'};color:${modo === 'independiente' ? '#fff' : '#92400e'};border:1.5px solid ${modo === 'independiente' ? '#f59e0b' : '#fcd34d'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;text-align:left;">
+                ✂️ EMBOBINADO aparte<br><span style="font-weight:500;font-size:9.5px;opacity:0.85;">El rollo pasa a Refilación/Embobinado (P6-REF) como 2º proceso.</span>
+              </button>
+            </div>
+            <div style="font-size:10px;color:#92400e;margin-top:6px;">💡 Define el flujo: en extrusión = 1 ODP directa; embobinado aparte = pasa al Almacén Intermedio y luego a Refilación.</div>
+          </div>
+        `;
+      })()}
       
       <!-- Notas técnicas libres -->
       <div class="field" style="margin-top:10px;">
@@ -33002,6 +33146,13 @@ window.setSalidasExtrusion = (n) => {
 window.setCorteSalidas = (donde) => {
   if (!state.modalForm) return;
   state.modalForm.corte_salidas = donde === 'extrusion' ? 'extrusion' : 'bolseo';
+  _capturarFormPT();
+  window.renderSoloModal();
+};
+// 🆕 Modo de refilación: en extrusión (sale terminado) o independiente (P6-REF)
+window.setRefilacionModo = (modo) => {
+  if (!state.modalForm) return;
+  state.modalForm.refilacion_modo = modo === 'extrusion' ? 'extrusion' : 'independiente';
   _capturarFormPT();
   window.renderSoloModal();
 };
@@ -35506,6 +35657,7 @@ window.crearProductoPT = async () => {
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
       corte_salidas: f.corte_salidas || 'bolseo',
+      refilacion_modo: f.refilacion_modo || 'independiente',
       obs_extrusion: f.obs_extrusion || '',
       obs_tecnicas: f.obs_tecnicas || '',
       presentacion,
@@ -35635,6 +35787,7 @@ window.guardarProductoPT = async (codigo) => {
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
       corte_salidas: f.corte_salidas || 'bolseo',
+      refilacion_modo: f.refilacion_modo || 'independiente',
       obs_extrusion: f.obs_extrusion || '',
       obs_tecnicas: f.obs_tecnicas || '',
       num_capas: Number(f.num_capas) || 1,
@@ -36158,7 +36311,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
         const PROC_SEC_A_RUTA = { 'P-2': 'P3-BS', 'P-3': 'P2-IMP', 'P-4': 'P3-BS' };
         const rutaProcesos = ['P1-EXT'];
         if (requiereSec && procSecCod) {
-          const codRuta = PROC_SEC_A_RUTA[procSecCod] || 'P3-BS';
+          const codRuta = PROC_SEC_A_RUTA[procSecCod] || procSecCod;
           if (!rutaProcesos.includes(codRuta)) rutaProcesos.push(codRuta);
         }
         // 🆕 Avance independiente por proceso (permite extrusión y bolseo en paralelo)
@@ -36631,7 +36784,12 @@ window.confirmarCompletarProceso = async (odpId) => {
   const odp = state.ordenes_produccion.find(o => o.id === odpId);
   if (!odp) return;
   const ruta = odp.ruta_procesos || [];
-  const idx = odp.proceso_actual_idx ?? 0;
+  // 🆕 MODELO PARALELO: cerrar el proceso del PANEL del operador (extrusión o bolseo)
+  let idx = odp.proceso_actual_idx ?? 0;
+  const procPanel = state.panelOpProc;
+  if (procPanel && ruta.includes(procPanel)) {
+    idx = ruta.indexOf(procPanel);
+  }
   const proc = getProc(ruta[idx]);
   if (!proc) { toast('Error en la ruta del proceso', 'error'); return; }
   
@@ -36741,7 +36899,16 @@ window.confirmarCompletarProceso = async (odpId) => {
     mermas_kg: Number(c.mermas_kg) || 0
   }));
   
-  const esUltimo = idx === ruta.length - 1;
+  // 🆕 MODELO PARALELO: marcar este proceso como completado en avance_procesos.
+  //    La ODP solo va a Calidad cuando TODOS los procesos de la ruta están completos.
+  const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
+  const codProcCerrado = ruta[idx];
+  if (!avanceProc[codProcCerrado]) avanceProc[codProcCerrado] = {};
+  avanceProc[codProcCerrado].producido_kg = Math.round(prodKg);
+  avanceProc[codProcCerrado].completado = true;
+  avanceProc[codProcCerrado].estatus = 'completado';
+  const todosCompletos = ruta.every(cod => avanceProc[cod]?.completado === true);
+  const esUltimo = todosCompletos;
   
   // ====================================================
   // 🧪 DESCUENTO AUTOMÁTICO DE MP (solo al cerrar Extrusión)
@@ -36985,6 +37152,7 @@ window.confirmarCompletarProceso = async (odpId) => {
         estatus: 'pendiente_calidad',
         proceso_estatus_actual: 'completado',
         proceso_actual: null,
+        avance_procesos: avanceProc,
         procesos_completados: procesosCompletados,
         cantidad_producida_final: prodEnUM,
         cantidad_producida_final_kg: prodKg,
@@ -37091,23 +37259,34 @@ window.confirmarCompletarProceso = async (odpId) => {
         ? `🟡 ODP cerrada: ${fmtNum(prodKg)} kg · rollos quedan en 🧵 Intermedio para el proceso siguiente · merma ${fmtNum(totalMermasKg)} kg`
         : `🟡 ODP enviada a Calidad: ${fmtNum(prodKg)} kg producidos (${capturasProcActual.length} turnos) · ${fmtNum(totalMermasKg)} kg mermas${msgMP2}`);
     } else {
-      // Avanzar al siguiente proceso, pero EN ESTADO ESPERANDO (no en proceso aún)
-      const siguienteIdx = idx + 1;
-      const siguienteProc = getProc(ruta[siguienteIdx]);
+      // 🆕 MODELO PARALELO: este proceso se completó, pero AÚN FALTAN otros procesos.
+      //    NO forzamos avanzar a un idx secuencial: guardamos el avance del proceso
+      //    cerrado en avance_procesos. El siguiente proceso (bolseo) ya puede estar
+      //    trabajando en paralelo, o arrancará cuando el operador lo inicie.
       
-      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      // Encontrar el siguiente proceso NO completado de la ruta (para informar)
+      const idxSiguienteNoCompleto = ruta.findIndex(cod => !avanceProc[cod]?.completado);
+      const siguienteProc = idxSiguienteNoCompleto >= 0 ? getProc(ruta[idxSiguienteNoCompleto]) : null;
+      
+      const updates = {
         estatus: 'en_produccion',
-        proceso_estatus_actual: 'esperando',
+        avance_procesos: avanceProc,
         procesos_completados: procesosCompletados,
-        proceso_actual_idx: siguienteIdx,
-        proceso_actual: ruta[siguienteIdx],
-        proceso_actual_inicio: null,
         updated_at: serverTimestamp()
-      });
+      };
+      // Si el proceso que cerró era el "actual", mover el puntero al siguiente no completado
+      if ((odp.proceso_actual_idx ?? 0) === idx && idxSiguienteNoCompleto >= 0) {
+        updates.proceso_actual_idx = idxSiguienteNoCompleto;
+        updates.proceso_actual = ruta[idxSiguienteNoCompleto];
+        updates.proceso_estatus_actual = 'esperando';
+        updates.proceso_actual_inicio = null;
+      }
+      
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
       
       await addDoc(collection(db, 'notificaciones'), {
-        titulo: `${proc.icono} ${proc.nombre} cerrado en ${odp.folio}`,
-        mensaje: `${capturasProcActual.length} turno(s) · ${fmtNum(prodKg)} kg producidos · Pasa a ${siguienteProc?.icono || ''} ${siguienteProc?.nombre || ruta[siguienteIdx]}`,
+        titulo: `${proc.icono} ${proc.nombre} completado en ${odp.folio}`,
+        mensaje: `${capturasProcActual.length} turno(s) · ${fmtNum(prodKg)} kg${siguienteProc ? ` · falta ${siguienteProc.icono} ${siguienteProc.nombre}` : ''}`,
         depto_destino: 'PRO', tipo: 'info', folio_ref: odp.folio,
         vista_destino: 'captura_produccion',
         leida: false, created_at: serverTimestamp()
@@ -37116,14 +37295,15 @@ window.confirmarCompletarProceso = async (odpId) => {
       cerrarModal();
       const totalMpConsumida = consumosMP.reduce((s, c) => s + c.kg_consumidos, 0);
       const msgMP = consumosMP.length > 0 ? ` · 🧪 ${fmtNum(totalMpConsumida.toFixed(0))} kg de MP descontados (FIFO)` : '';
-      toast(`✅ ${proc.nombre} cerrado · ${fmtNum(prodKg)} kg de ${capturasProcActual.length} turno(s) pasan a ${siguienteProc?.nombre || ''}${msgMP}`);
+      toast(`✅ ${proc.nombre} completado · ${fmtNum(prodKg)} kg${siguienteProc ? ` · falta ${siguienteProc.nombre}` : ''}${msgMP}`);
       
-      // 🆕 Generar PDF de pase al siguiente proceso automáticamente
-      // Le da al operador la hoja para entregar físicamente
-      setTimeout(() => {
-        try { window.imprimirPaseSiguienteProceso(odpId, ruta[idx]); }
-        catch (e) { console.error('Error generando PDF de pase:', e); }
-      }, 500);
+      // 🆕 Generar PDF de pase al siguiente proceso (si lo hay)
+      if (siguienteProc) {
+        setTimeout(() => {
+          try { window.imprimirPaseSiguienteProceso(odpId, ruta[idx]); }
+          catch (e) { console.error('Error generando PDF de pase:', e); }
+        }, 500);
+      }
     }
   } catch (e) {
     console.error('Error cerrar proceso:', e);
