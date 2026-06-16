@@ -6469,6 +6469,8 @@ function renderKanbanMaquinas() {
       o._kanHoras = horas;
     });
   });
+  // KPIs (se recalculan después de toda la clasificación)
+  const totalEnCola = Object.values(porMaquina).reduce((s, m) => s + m.en_cola.length, 0);
   const totalEnProceso = Object.values(porMaquina).reduce((s, m) => s + m.en_proceso.length, 0);
   const totalCompletadas = Object.values(porMaquina).reduce((s, m) => s + m.completadas.length, 0);
   
@@ -6487,10 +6489,26 @@ function renderKanbanMaquinas() {
         <div style="font-size:10px;color:#64748b;font-weight:700;">COMPLETADAS</div>
         <div style="font-size:24px;font-weight:800;color:#16a34a;">${totalCompletadas}</div>
       </div>
-      <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #7c3aed;border-radius:8px;">
-        <div style="font-size:10px;color:#64748b;font-weight:700;">MÁQUINAS MOSTRADAS</div>
-        <div style="font-size:24px;font-weight:800;color:#7c3aed;">${maquinas.length}</div>
-      </div>
+      ${(() => {
+        // 🆕 Total general de kg PENDIENTES por producir (todas las máquinas mostradas)
+        const totalKgPorProducir = Object.values(porMaquina).reduce((tot, datos) => {
+          const sub = [...(datos.en_cola || []), ...(datos.en_proceso || [])].reduce((s, o) => {
+            const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
+            const av = window.avanceProcesosODP(o);
+            const idxP = o.proceso_actual_idx ?? 0;
+            const prod = av?.procesos?.[idxP]?.producido_kg || 0;
+            return s + Math.max(0, meta - prod);
+          }, 0);
+          return tot + sub;
+        }, 0);
+        return `
+          <div style="padding:12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid #7c3aed;border-radius:8px;">
+            <div style="font-size:10px;color:#64748b;font-weight:700;">KG POR PRODUCIR</div>
+            <div style="font-size:24px;font-weight:800;color:#7c3aed;">${fmtNum(Math.round(totalKgPorProducir))}</div>
+            <div style="font-size:9px;color:#94a3b8;">${maquinas.length} máquina(s)</div>
+          </div>
+        `;
+      })()}
     </div>
     
     <!-- KANBAN POR MÁQUINA -->
@@ -6515,11 +6533,17 @@ function renderKanbanMaquinas() {
                 ${datos.en_proceso.length > 0 ? `<span style="color:#16a34a;font-weight:800;background:#dcfce7;padding:3px 9px;border-radius:99px;">🟢 ${datos.en_proceso.length} corriendo</span>` : ''}
                 <span style="color:#a16207;font-weight:800;background:#fef3c7;padding:3px 9px;border-radius:99px;">📦 ${datos.en_cola.length} en cola</span>
                 ${(() => {
-                  // Carga total en kg de la cola + proceso
-                  const kgCola = [...datos.en_cola, ...datos.en_proceso].reduce((s,o) => s + (Number(o.cantidad_kg_produccion || o.cantidad) || 0), 0);
+                  // 🆕 Carga = kg PENDIENTES por producir (meta − ya producido), no la meta total
+                  const kgPendientes = [...datos.en_cola, ...datos.en_proceso].reduce((s, o) => {
+                    const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
+                    const av = window.avanceProcesosODP(o);
+                    const idxP = o.proceso_actual_idx ?? 0;
+                    const prod = av?.procesos?.[idxP]?.producido_kg || 0;
+                    return s + Math.max(0, meta - prod);
+                  }, 0);
                   const cap = Number(m.capacidad_kg_hr) || 0;
-                  const dias = cap > 0 ? (kgCola / cap / 24) : 0;
-                  return `<span style="color:#475569;font-weight:700;">${fmtNum(Math.round(kgCola))} kg${cap>0?` · ${dias.toFixed(1)} días`:''}</span>`;
+                  const dias = cap > 0 ? (kgPendientes / cap / 24) : 0;
+                  return `<span style="color:#475569;font-weight:700;">${fmtNum(Math.round(kgPendientes))} kg x producir${cap > 0 ? ` · ${dias.toFixed(1)} días` : ''}</span>`;
                 })()}
               </div>
             </div>
