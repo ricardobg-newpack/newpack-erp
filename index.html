@@ -5853,6 +5853,201 @@ function renderListaODPs(odps) {
 // ============================================================
 // VISTA: PROGRAMACIÓN DE PRODUCCIÓN (PLN/CEO/ADMIN)
 // ============================================================
+// ============================================================
+// 📊 VISTA JUNTA — Carga por máquina (para proyectar en juntas)
+// ============================================================
+// Combina: carga por máquina (kg + días), atrasados vs a tiempo, secuencia
+// de órdenes, y fecha estimada de término. Pensada para verse proyectada.
+function renderVistaJuntaCarga(odpsBase) {
+  const HORAS_TURNO = 12, TURNOS_DIA = 2; // 24h productivas/día (2 turnos de 12 hr)
+  const hoy = new Date();
+  
+  // ODPs activas (programadas o en producción) — las que cargan las máquinas
+  const odpsActivas = odpsBase.filter(o => 
+    ['programada', 'en_produccion'].includes(o.estatus)
+  );
+  
+  // Agrupar por máquina (según maquinas_asignadas del primer proceso de su ruta)
+  const maquinas = (state.maquinas || []).filter(m => m.activa !== false)
+    .sort((a, b) => a.codigo.localeCompare(b.codigo));
+  
+  // Helper: kg pendientes de una ODP (meta − producido)
+  const kgPendiente = (o) => {
+    const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
+    const av = window.avanceProcesosODP(o);
+    const prod = av?.procesos?.[0]?.producido_kg || 0;
+    return Math.max(0, meta - prod);
+  };
+  
+  // Construir carga por máquina
+  const cargaMaq = {};
+  maquinas.forEach(m => { cargaMaq[m.codigo] = { maquina: m, odps: [], kgTotal: 0, horasTotal: 0 }; });
+  const sinAsignar = [];
+  
+  odpsActivas.forEach(o => {
+    // Determinar máquina del proceso actual/primero
+    const ruta = o.ruta_procesos || [];
+    const procActual = o.proceso_actual || ruta[o.proceso_actual_idx || 0] || ruta[0];
+    const maqCod = o.maquinas_asignadas?.[procActual] || '';
+    if (maqCod && cargaMaq[maqCod]) {
+      cargaMaq[maqCod].odps.push(o);
+    } else {
+      sinAsignar.push(o);
+    }
+  });
+  
+  // Calcular horas y fechas estimadas por máquina (secuencial)
+  Object.values(cargaMaq).forEach(c => {
+    const cap = Number(c.maquina.capacidad_kg_hr) || 0;
+    let acumHoras = 0;
+    // ODP en producción primero, luego programadas
+    c.odps.sort((a, b) => {
+      if (a.estatus === 'en_produccion' && b.estatus !== 'en_produccion') return -1;
+      if (b.estatus === 'en_produccion' && a.estatus !== 'en_produccion') return 1;
+      return 0;
+    });
+    c.odps.forEach(o => {
+      const kg = kgPendiente(o);
+      c.kgTotal += kg;
+      const horas = cap > 0 ? kg / cap : 0;
+      o._horasEstimadas = horas;
+      o._horaInicioAcum = acumHoras;
+      acumHoras += horas;
+      o._horaFinAcum = acumHoras;
+      // Fecha estimada de término (sumando horas productivas)
+      const diasProductivos = acumHoras / (HORAS_TURNO * TURNOS_DIA);
+      const fechaFin = new Date(hoy);
+      fechaFin.setDate(fechaFin.getDate() + Math.ceil(diasProductivos));
+      o._fechaEstimadaFin = fechaFin;
+      // ¿Atrasada? compara fecha estimada vs fecha requerida
+      if (o.fecha_entrega_programada) {
+        o._atrasada = fechaFin > new Date(o.fecha_entrega_programada);
+      }
+    });
+    c.horasTotal = acumHoras;
+    c.diasCarga = acumHoras / (HORAS_TURNO * TURNOS_DIA);
+  });
+  
+  const fmtFecha = (d) => d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—';
+  const totalKgGlobal = Object.values(cargaMaq).reduce((s, c) => s + c.kgTotal, 0);
+  const totalAtrasadas = odpsActivas.filter(o => o._atrasada).length;
+  
+  return `
+    <!-- RESUMEN GLOBAL PARA JUNTA -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px;">
+      <div style="background:#1e293b;color:#fff;border-radius:12px;padding:16px;text-align:center;">
+        <div style="font-size:11px;opacity:0.8;font-weight:700;">CARGA TOTAL EN PISO</div>
+        <div style="font-size:28px;font-weight:900;">${fmtNum(Math.round(totalKgGlobal))}</div>
+        <div style="font-size:11px;opacity:0.8;">kg pendientes</div>
+      </div>
+      <div style="background:#16a34a;color:#fff;border-radius:12px;padding:16px;text-align:center;">
+        <div style="font-size:11px;opacity:0.9;font-weight:700;">MÁQUINAS ACTIVAS</div>
+        <div style="font-size:28px;font-weight:900;">${Object.values(cargaMaq).filter(c => c.odps.length > 0).length}/${maquinas.length}</div>
+        <div style="font-size:11px;opacity:0.9;">con trabajo</div>
+      </div>
+      <div style="background:${totalAtrasadas > 0 ? '#dc2626' : '#64748b'};color:#fff;border-radius:12px;padding:16px;text-align:center;">
+        <div style="font-size:11px;opacity:0.9;font-weight:700;">ÓRDENES EN RIESGO</div>
+        <div style="font-size:28px;font-weight:900;">${totalAtrasadas}</div>
+        <div style="font-size:11px;opacity:0.9;">no llegan a fecha</div>
+      </div>
+      <div style="background:#f59e0b;color:#fff;border-radius:12px;padding:16px;text-align:center;">
+        <div style="font-size:11px;opacity:0.9;font-weight:700;">SIN MÁQUINA</div>
+        <div style="font-size:28px;font-weight:900;">${sinAsignar.length}</div>
+        <div style="font-size:11px;opacity:0.9;">por asignar</div>
+      </div>
+    </div>
+    
+    <!-- CARRILES POR MÁQUINA -->
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      ${maquinas.map(m => {
+        const c = cargaMaq[m.codigo];
+        const tieneCarga = c.odps.length > 0;
+        const cap = Number(m.capacidad_kg_hr) || 0;
+        return `
+          <div style="background:#fff;border:2px solid ${tieneCarga ? '#7c3aed' : '#e2e8f0'};border-radius:14px;overflow:hidden;">
+            <!-- Cabecera de máquina con su carga total -->
+            <div style="background:${tieneCarga ? 'linear-gradient(90deg,#7c3aed,#a78bfa)' : '#f1f5f9'};color:${tieneCarga ? '#fff' : '#94a3b8'};padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+              <div>
+                <span style="font-size:18px;font-weight:900;">🛠️ ${m.codigo}</span>
+                <span style="font-size:12px;opacity:0.85;margin-left:8px;">${m.nombre || ''} ${cap > 0 ? `· ${cap} kg/hr` : ''}</span>
+              </div>
+              <div style="display:flex;gap:18px;align-items:center;">
+                <div style="text-align:right;">
+                  <div style="font-size:9px;opacity:0.85;font-weight:700;">CARGA</div>
+                  <div style="font-size:18px;font-weight:900;">${fmtNum(Math.round(c.kgTotal))} kg</div>
+                </div>
+                <div style="text-align:right;">
+                  <div style="font-size:9px;opacity:0.85;font-weight:700;">DÍAS DE TRABAJO</div>
+                  <div style="font-size:18px;font-weight:900;">${cap > 0 ? c.diasCarga.toFixed(1) : '—'}</div>
+                </div>
+                <div style="text-align:right;">
+                  <div style="font-size:9px;opacity:0.85;font-weight:700;">ÓRDENES</div>
+                  <div style="font-size:18px;font-weight:900;">${c.odps.length}</div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Secuencia de órdenes (carril) -->
+            ${tieneCarga ? `
+              <div style="padding:10px 14px;display:flex;flex-direction:column;gap:6px;">
+                ${c.odps.map((o, idx) => {
+                  const enProd = o.estatus === 'en_produccion';
+                  const kg = kgPendiente(o);
+                  return `
+                    <div onclick="abrirModal('detalle-odp','${o.id}')" style="display:flex;align-items:center;gap:12px;padding:9px 12px;background:${enProd ? '#f0fdf4' : o._atrasada ? '#fef2f2' : '#fafafa'};border:1px solid ${enProd ? '#86efac' : o._atrasada ? '#fca5a5' : '#e2e8f0'};border-radius:9px;cursor:pointer;">
+                      <div style="font-size:13px;font-weight:900;color:#7c3aed;min-width:24px;text-align:center;">${enProd ? '▶' : '#'+(idx+1)}</div>
+                      <div style="flex:1;min-width:0;">
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                          <span style="font-size:13px;font-weight:800;font-family:monospace;">${o.folio}</span>
+                          ${enProd ? '<span style="font-size:9px;font-weight:800;color:#16a34a;background:#dcfce7;padding:1px 7px;border-radius:99px;">CORRIENDO</span>' : ''}
+                          ${o._atrasada ? '<span style="font-size:9px;font-weight:800;color:#dc2626;background:#fee2e2;padding:1px 7px;border-radius:99px;">⚠ EN RIESGO</span>' : ''}
+                        </div>
+                        <div style="font-size:11px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(o.descripcion || o.producto_codigo || '').slice(0,55)} · ${o.cliente_nombre || 'STOCK'}</div>
+                      </div>
+                      <div style="text-align:right;min-width:70px;">
+                        <div style="font-size:13px;font-weight:800;">${fmtNum(Math.round(kg))} kg</div>
+                        <div style="font-size:10px;color:#64748b;">${cap > 0 ? '~'+o._horasEstimadas.toFixed(1)+' hr' : ''}</div>
+                      </div>
+                      <div style="text-align:right;min-width:80px;">
+                        <div style="font-size:9px;color:#94a3b8;font-weight:700;">TERMINA ~</div>
+                        <div style="font-size:12px;font-weight:800;color:${o._atrasada ? '#dc2626' : '#16a34a'};">${cap > 0 ? fmtFecha(o._fechaEstimadaFin) : '—'}</div>
+                        ${o.fecha_entrega_programada ? `<div style="font-size:9px;color:#94a3b8;">req: ${fmtFecha(new Date(o.fecha_entrega_programada))}</div>` : ''}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            ` : `
+              <div style="padding:18px;text-align:center;color:#cbd5e1;font-size:13px;font-weight:700;">Sin órdenes asignadas</div>
+            `}
+          </div>
+        `;
+      }).join('')}
+    </div>
+    
+    ${sinAsignar.length > 0 ? `
+      <div style="background:#fffbeb;border:2px solid #f59e0b;border-radius:14px;padding:14px;margin-top:14px;">
+        <div style="font-size:14px;font-weight:900;color:#92400e;margin-bottom:8px;">⚠ ${sinAsignar.length} ODP(s) sin máquina asignada — requieren decisión en junta</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${sinAsignar.map(o => `
+            <div onclick="abrirModal('detalle-odp','${o.id}')" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#fff;border:1px solid #fcd34d;border-radius:8px;cursor:pointer;">
+              <div>
+                <span style="font-size:12px;font-weight:800;font-family:monospace;">${o.folio}</span>
+                <span style="font-size:11px;color:#64748b;margin-left:8px;">${(o.descripcion || o.producto_codigo || '').slice(0,45)} · ${o.cliente_nombre || 'STOCK'}</span>
+              </div>
+              <span style="font-size:12px;font-weight:800;">${fmtNum(o.cantidad_kg_produccion || o.cantidad)} kg</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
+    
+    <div style="margin-top:14px;font-size:11px;color:#94a3b8;text-align:center;">
+      💡 Fechas estimadas calculadas con la capacidad de cada máquina (kg/hr) y 24 horas productivas al día (2 turnos de 12 hr). Las órdenes "en riesgo" no llegan a su fecha requerida al ritmo actual.
+    </div>
+  `;
+}
+
 function renderProgramacion() {
   const u = state.user || {};
   const esPLN = ['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
@@ -5916,10 +6111,13 @@ function renderProgramacion() {
       <button onclick="cambiarVistaProgramacion('proceso')" style="padding:6px 12px;background:${vistaModo==='proceso'?'#3b82f6':'#fff'};color:${vistaModo==='proceso'?'#fff':'#475569'};border:2px solid ${vistaModo==='proceso'?'#3b82f6':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
         🔥 Por proceso → máquina
       </button>
+      <button onclick="cambiarVistaProgramacion('junta')" style="padding:6px 12px;background:${vistaModo==='junta'?'#7c3aed':'#fff'};color:${vistaModo==='junta'?'#fff':'#475569'};border:2px solid ${vistaModo==='junta'?'#7c3aed':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+        📊 Vista Junta (carga por máquina)
+      </button>
       ${kpiAtrasadas > 0 ? `<span style="background:#fef2f2;color:#dc2626;padding:4px 10px;border-radius:6px;font-weight:700;font-size:11px;border:1px solid #fecaca;margin-left:auto;">⚠ ${kpiAtrasadas} atrasada(s)</span>` : ''}
     </div>
     
-    ${vistaModo === 'kanban' ? renderKanbanMaquinas() : `
+    ${vistaModo === 'junta' ? renderVistaJuntaCarga(odpsBase) : vistaModo === 'kanban' ? renderKanbanMaquinas() : `
     <!-- FILTROS -->
     <div class="toolbar" style="flex-wrap:wrap;">
       <input class="input" id="filtro-programacion" style="max-width:280px;flex:1;min-width:200px;" placeholder="🔍 Folio, cliente, producto..." value="${filtro}" autocomplete="off" />
@@ -9468,6 +9666,14 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
   
   const odpDeMaq = (arr, maqCod) => arr.filter(o => (o.maquinas_asignadas?.[procSel] || '') === maqCod);
   
+  // 🆕 ODPs SIN máquina asignada a este proceso (no caen en ninguna columna).
+  //    Antes desaparecían del tablero; ahora se muestran en una sección aparte para
+  //    que el operador pueda capturarlas/iniciarlas igual que en la vista lista.
+  const codigosMaq = maqs.map(m => m.codigo);
+  const sinMaq = (arr) => arr.filter(o => !codigosMaq.includes(o.maquinas_asignadas?.[procSel] || ''));
+  const trabajandoSinMaq = sinMaq(enProduccion);
+  const colaSinMaq = sinMaq(enCola);
+  
   return `
     <div style="display:grid;grid-template-columns:repeat(${cols},minmax(0,1fr));gap:12px;margin-bottom:16px;align-items:start;">
       ${maqs.map(m => {
@@ -9476,64 +9682,114 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
         const term = odpDeMaq(completadas, m.codigo);
         const activa = trabajando[0]; // la que está corriendo ahora
         const hayActividad = trabajando.length > 0;
+        const siguiente = cola[0]; // la próxima en cola
+        const esPausadaSig = siguiente?.proceso_estatus_actual === 'pausado';
+        
+        // Estado de la máquina para el operador: CORRIENDO / LISTA PARA INICIAR / LIBRE
+        let estadoMaq, colorMaq, lblEstado;
+        if (hayActividad) { estadoMaq = 'corriendo'; colorMaq = '#16a34a'; lblEstado = '🟢 CORRIENDO'; }
+        else if (siguiente) { estadoMaq = 'lista'; colorMaq = '#f59e0b'; lblEstado = '🟡 LISTA PARA INICIAR'; }
+        else { estadoMaq = 'libre'; colorMaq = '#94a3b8'; lblEstado = '⚪ SIN TRABAJO'; }
         
         return `
-          <div style="background:#fff;border:2.5px solid ${hayActividad ? '#16a34a' : '#e2e8f0'};border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:200px;">
+          <div style="background:#fff;border:3px solid ${colorMaq};border-radius:14px;overflow:hidden;display:flex;flex-direction:column;min-height:200px;">
             <!-- Cabecera de la máquina -->
-            <div style="background:${hayActividad ? '#16a34a' : '#94a3b8'};color:#fff;padding:12px 14px;">
+            <div style="background:${colorMaq};color:#fff;padding:14px;">
               <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div style="font-size:17px;font-weight:900;">🛠️ ${m.codigo}</div>
-                <div style="font-size:10px;font-weight:800;background:rgba(255,255,255,0.25);padding:3px 9px;border-radius:99px;">
-                  ${hayActividad ? '🟢 CORRIENDO' : '⚪ LIBRE'}
+                <div style="font-size:19px;font-weight:900;">🛠️ ${m.codigo}</div>
+                <div style="font-size:11px;font-weight:900;background:rgba(255,255,255,0.25);padding:4px 11px;border-radius:99px;">
+                  ${lblEstado}
                 </div>
               </div>
               ${m.nombre ? `<div style="font-size:11px;opacity:0.9;margin-top:2px;">${m.nombre}</div>` : ''}
             </div>
             
-            <!-- Orden corriendo AHORA en esta máquina -->
-            <div style="padding:12px;flex:1;">
-              ${activa ? _tableroTarjetaActiva(activa, procSel, proc) : `
-                <div style="text-align:center;padding:24px 10px;color:#cbd5e1;">
-                  <div style="font-size:36px;">${proc.icono}</div>
-                  <div style="font-size:12px;font-weight:700;color:#94a3b8;margin-top:6px;">Máquina libre</div>
-                  ${cola.length > 0 ? `<div style="font-size:11px;color:#f59e0b;font-weight:700;margin-top:4px;">${cola.length} en cola ↓</div>` : ''}
+            <!-- CONTENIDO PRINCIPAL: qué hacer AHORA -->
+            <div style="padding:14px;flex:1;">
+              ${activa ? _tableroTarjetaActiva(activa, procSel, proc) : siguiente ? `
+                <!-- LISTA PARA INICIAR: la siguiente en cola, con botón gigante -->
+                <div style="text-align:center;padding:4px 0 10px 0;">
+                  <div style="font-size:11px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">👉 Empezar esta orden:</div>
+                  <div style="font-size:20px;font-weight:900;font-family:monospace;color:#0f172a;">${siguiente.folio}</div>
+                  <div style="font-size:13px;font-weight:700;color:#334155;line-height:1.3;margin:6px 0;">${(siguiente.descripcion || siguiente.producto_codigo || '').slice(0,70)}</div>
+                  <div style="font-size:12px;color:#64748b;">Meta: <strong>${fmtNum(siguiente.cantidad_kg_produccion || siguiente.cantidad)} kg</strong></div>
+                </div>
+                ${esPausadaSig 
+                  ? `<button onclick="event.stopPropagation();window.reanudarODP('${siguiente.id}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ REANUDAR</button>`
+                  : `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${siguiente.id}','${procSel}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ INICIAR ESTA</button>`}
+              ` : `
+                <!-- SIN TRABAJO -->
+                <div style="text-align:center;padding:28px 10px;color:#cbd5e1;">
+                  <div style="font-size:40px;">${proc.icono}</div>
+                  <div style="font-size:13px;font-weight:700;color:#94a3b8;margin-top:8px;">Sin órdenes asignadas</div>
                 </div>
               `}
             </div>
             
-            <!-- Cola de esta máquina (compacta) -->
-            ${cola.length > 0 ? `
+            <!-- Cola de esta máquina (solo si HAY algo corriendo, para no competir con el botón grande) -->
+            ${activa && cola.length > 0 ? `
               <div style="border-top:1px solid #e2e8f0;background:#fffbeb;padding:10px 12px;">
-                <div style="font-size:10px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">📋 Siguen en cola (${cola.length})</div>
-                <div style="display:flex;flex-direction:column;gap:6px;">
-                  ${cola.slice(0, 4).map((o, idx) => {
-                    const esPausada = o.proceso_estatus_actual === 'pausado';
-                    return `
-                      <div onclick="abrirModal('detalle-odp','${o.id}')" style="background:#fff;border:1px solid ${esPausada ? '#fca5a5' : '#fde68a'};border-radius:7px;padding:7px 9px;cursor:pointer;">
-                        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
-                          <span style="font-size:12px;font-weight:800;font-family:monospace;color:#0f172a;">${o.folio}</span>
-                          ${esPausada ? '<span style="font-size:9px;font-weight:800;color:#dc2626;">⏸ PAUSADA</span>' : `<span style="font-size:9px;font-weight:700;color:#a16207;">#${idx + 1}</span>`}
-                        </div>
-                        <div style="font-size:10px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${o.producto_codigo} · ${fmtNum(o.cantidad_kg_produccion || o.cantidad)} kg</div>
-                        ${idx === 0 && !esPausada && !activa ? `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${o.id}')" style="margin-top:5px;width:100%;background:#16a34a;color:#fff;border:none;padding:5px;border-radius:5px;cursor:pointer;font-weight:800;font-size:10px;">▶️ INICIAR</button>` : ''}
-                        ${esPausada ? `<button onclick="event.stopPropagation();window.reanudarODP('${o.id}')" style="margin-top:5px;width:100%;background:#16a34a;color:#fff;border:none;padding:5px;border-radius:5px;cursor:pointer;font-weight:800;font-size:10px;">▶️ REANUDAR</button>` : ''}
+                <div style="font-size:10px;font-weight:800;color:#92400e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">📋 Después siguen (${cola.length})</div>
+                <div style="display:flex;flex-direction:column;gap:5px;">
+                  ${cola.slice(0, 3).map((o, idx) => `
+                    <div onclick="abrirModal('detalle-odp','${o.id}')" style="background:#fff;border:1px solid #fde68a;border-radius:7px;padding:6px 9px;cursor:pointer;">
+                      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                        <span style="font-size:11px;font-weight:800;font-family:monospace;color:#0f172a;">#${idx + 1} · ${o.folio}</span>
                       </div>
-                    `;
-                  }).join('')}
-                  ${cola.length > 4 ? `<div style="text-align:center;font-size:10px;color:#a16207;font-weight:700;">+${cola.length - 4} más</div>` : ''}
+                      <div style="font-size:10px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(o.descripcion || o.producto_codigo || '').slice(0,40)} · ${fmtNum(o.cantidad_kg_produccion || o.cantidad)} kg</div>
+                    </div>
+                  `).join('')}
+                  ${cola.length > 3 ? `<div style="text-align:center;font-size:10px;color:#a16207;font-weight:700;">+${cola.length - 3} más en cola</div>` : ''}
                 </div>
               </div>
             ` : ''}
             
+            ${(estadoMaq === 'lista' && cola.length > 1) ? `
+              <div style="border-top:1px solid #e2e8f0;background:#fafaf9;padding:6px 12px;">
+                <div style="font-size:10px;color:#94a3b8;font-weight:700;">+${cola.length - 1} más esperando turno</div>
+              </div>
+            ` : ''}
+            
             ${term.length > 0 ? `
-              <div style="border-top:1px solid #e2e8f0;padding:6px 12px;background:#f8fafc;">
-                <div style="font-size:10px;color:#64748b;font-weight:700;">✓ ${term.length} terminada(s) hoy</div>
+              <div style="border-top:1px solid #e2e8f0;padding:6px 12px;background:#f0fdf4;">
+                <div style="font-size:10px;color:#16a34a;font-weight:700;">✓ ${term.length} terminada(s) hoy</div>
               </div>
             ` : ''}
           </div>
         `;
       }).join('')}
     </div>
+    
+    ${(trabajandoSinMaq.length > 0 || colaSinMaq.length > 0) ? `
+      <!-- 🆕 ODPs SIN máquina asignada a este proceso -->
+      <div style="background:#fffbeb;border:2px solid #f59e0b;border-radius:12px;padding:14px;margin-bottom:16px;">
+        <div style="font-size:13px;font-weight:900;color:#92400e;margin-bottom:4px;">⚠ ${trabajandoSinMaq.length + colaSinMaq.length} ODP(s) sin máquina asignada en ${proc.nombre}</div>
+        <div style="font-size:11px;color:#78350f;margin-bottom:10px;">Estas órdenes no tienen máquina fija. Puedes capturar/iniciar igual, o pedir a Planeación que les asigne una.</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;">
+          ${[...trabajandoSinMaq, ...colaSinMaq].map(o => {
+            const corriendo = trabajandoSinMaq.includes(o);
+            return `
+              <div style="background:#fff;border:1.5px solid ${corriendo ? '#16a34a' : '#fcd34d'};border-radius:10px;padding:10px;">
+                <div onclick="abrirModal('detalle-odp','${o.id}')" style="cursor:pointer;margin-bottom:8px;">
+                  <div style="font-size:15px;font-weight:900;font-family:monospace;">${o.folio} ${corriendo ? '<span style=\"font-size:9px;color:#16a34a;\">🟢 CORRIENDO</span>' : ''}</div>
+                  <div style="font-size:11px;color:#64748b;">${(o.descripcion || o.producto_codigo || '').slice(0,50)} · ${fmtNum(o.cantidad_kg_produccion || o.cantidad)} kg</div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr;gap:6px;">
+                  ${corriendo ? `
+                    ${procSel === 'P1-EXT' 
+                      ? `<button onclick="event.stopPropagation();window.capturarDesdeTablero('${o.id}','${procSel}','rollo')" style="background:${proc.color};color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;">➕ CAPTURAR ROLLO</button>`
+                      : `<button onclick="event.stopPropagation();window.capturarDesdeTablero('${o.id}','${procSel}','turno')" style="background:${proc.color};color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;">➕ CAPTURAR TURNO</button>`}
+                    <button onclick="event.stopPropagation();window.cerrarDesdeTablero('${o.id}','${procSel}')" style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:7px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✓ Terminar</button>
+                  ` : `
+                    <button onclick="event.stopPropagation();window.iniciarProduccionODP('${o.id}','${procSel}')" style="background:#16a34a;color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;">▶️ INICIAR</button>
+                  `}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -9567,19 +9823,38 @@ function _tableroTarjetaActiva(o, procSel, proc) {
         </div>
       </div>
       
-      <!-- Botones de acción rápida -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+      <!-- Botón principal GRANDE: lo que el operador hace seguido -->
+      <div style="display:flex;flex-direction:column;gap:6px;">
         ${esExtrusion ? `
-          <button onclick="event.stopPropagation();window.agregarRolloExtrusion('${o.id}')" style="grid-column:1 / -1;background:${proc.color};color:#fff;border:none;padding:11px;border-radius:8px;cursor:pointer;font-weight:900;font-size:13px;">➕ CAPTURAR ROLLO</button>
+          <button onclick="event.stopPropagation();window.capturarDesdeTablero('${o.id}','${procSel}','rollo')" style="background:${proc.color};color:#fff;border:none;padding:15px;border-radius:10px;cursor:pointer;font-weight:900;font-size:15px;">➕ CAPTURAR ROLLO</button>
         ` : `
-          <button onclick="event.stopPropagation();abrirModal('capturar-turno','${o.id}')" style="grid-column:1 / -1;background:${proc.color};color:#fff;border:none;padding:11px;border-radius:8px;cursor:pointer;font-weight:900;font-size:13px;">➕ CAPTURAR TURNO</button>
+          <button onclick="event.stopPropagation();window.capturarDesdeTablero('${o.id}','${procSel}','turno')" style="background:${proc.color};color:#fff;border:none;padding:15px;border-radius:10px;cursor:pointer;font-weight:900;font-size:15px;">➕ CAPTURAR TURNO</button>
         `}
-        <button onclick="event.stopPropagation();window.pausarODP('${o.id}')" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:8px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">⏸ Pausar</button>
-        <button onclick="event.stopPropagation();abrirModal('completar-proceso','${o.id}')" style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:8px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✓ Terminar</button>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <button onclick="event.stopPropagation();window.pausarODP('${o.id}')" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">⏸ Pausar</button>
+          ${prod > 0 
+            ? `<button onclick="event.stopPropagation();window.cerrarDesdeTablero('${o.id}','${procSel}')" style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✓ Terminar</button>`
+            : `<button disabled title="Captura producción antes de terminar" style="background:#f1f5f9;color:#cbd5e1;border:1.5px solid #e2e8f0;padding:9px;border-radius:7px;cursor:not-allowed;font-weight:800;font-size:11px;">✓ Terminar</button>`}
+        </div>
       </div>
     </div>
   `;
 }
+
+// 🆕 Capturar desde el tablero: fija el proceso de la columna antes de abrir el modal,
+//    para que la captura sepa exactamente a qué proceso pertenece (extrusión o bolseo).
+window.capturarDesdeTablero = (odpId, procCod, tipo) => {
+  state.panelOpProc = procCod; // fijar proceso del tablero
+  if (tipo === 'rollo') {
+    window.agregarRolloExtrusion(odpId);
+  } else {
+    abrirModal('capturar-turno', odpId);
+  }
+};
+window.cerrarDesdeTablero = (odpId, procCod) => {
+  state.panelOpProc = procCod;
+  abrirModal('completar-proceso', odpId);
+};
 
 // Helper: tarjeta grande de una ODP para el panel operador
 function _tarjetaOperador(o, procSel, modo, posicion) {
@@ -11158,7 +11433,12 @@ function modalCapturarTurno() {
   if (!odp) return '';
   
   const ruta = odp.ruta_procesos || [];
-  const idx = odp.proceso_actual_idx ?? 0;
+  // 🆕 MODELO PARALELO: el formato del modal es el del proceso del PANEL (extrusión o bolseo)
+  let idx = odp.proceso_actual_idx ?? 0;
+  const procPanel = state.panelOpProc;
+  if (procPanel && ruta.includes(procPanel)) {
+    idx = ruta.indexOf(procPanel);
+  }
   const procActual = getProc(ruta[idx]);
   if (!procActual) return '';
   
@@ -16201,9 +16481,9 @@ window.actualizarCodigosMaquinas = async () => {
     const codigosExistentes = new Set((state.maquinas || []).filter(m => !CODIGOS_ANTIGUOS.includes(m.codigo)).map(m => m.codigo));
     
     const MAQS_NUEVAS = [
-      { codigo: 'COEX01', nombre: 'Coextrusora 01', nombre_anterior: 'E01', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 62 },
-      { codigo: 'COEX02', nombre: 'Coextrusora 02', nombre_anterior: 'E02', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 58 },
-      { codigo: 'COEX03', nombre: 'Coextrusora 03', nombre_anterior: 'E03', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 153 },
+      { codigo: 'COEX01', nombre: 'Coextrusora 01', nombre_anterior: 'E01', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 60 },
+      { codigo: 'COEX02', nombre: 'Coextrusora 02', nombre_anterior: 'E02', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 60 },
+      { codigo: 'COEX03', nombre: 'Coextrusora 03', nombre_anterior: 'E03', proceso_codigo: 'P1-EXT', capacidad_kg_hr: 200 },
       { codigo: 'BS01-2000', nombre: 'Bolsa Suelta 2000', nombre_anterior: 'BS01-2000', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
       { codigo: 'BS02-1400', nombre: 'Bolsa Suelta 1400', nombre_anterior: 'BS02-1400', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
       { codigo: 'BS03-600', nombre: 'Bolsa Suelta 600', nombre_anterior: 'SANTO', proceso_codigo: 'P3-BS', capacidad_kg_hr: 0 },
@@ -25395,13 +25675,15 @@ window.imprimirOrdenProduccionPDF = (odpId) => {
     // ============= PÁGINA 1: ORDEN DE PRODUCCIÓN =============
     _renderHojaOrdenProduccion(docPDF, odp, producto, pedido);
     
-    // ============= PÁGINA 2: HOJA DE ESPECIFICACIONES =============
-    docPDF.addPage('letter', 'portrait');
-    _renderHojaEspecificaciones(docPDF, odp, producto);
-    
-    // ============= PÁGINA 3: REGISTRO DETALLADO (ROLLO POR ROLLO + BULTO POR BULTO) =============
+    // ============= PÁGINA 2: REGISTRO DETALLADO =============
+    // (Orden + Registro van juntas para imprimir por ambas caras de una hoja)
     docPDF.addPage('letter', 'portrait');
     _renderHojaRegistroDetallado(docPDF, odp, producto, pedido);
+    
+    // ============= PÁGINA 3: HOJA DE ESPECIFICACIONES =============
+    // (Especificaciones aparte, en su propia hoja)
+    docPDF.addPage('letter', 'portrait');
+    _renderHojaEspecificaciones(docPDF, odp, producto);
     
     // Mostrar preview en modal
     const blob = docPDF.output('blob');
