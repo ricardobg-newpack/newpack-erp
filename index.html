@@ -2952,6 +2952,8 @@ function render() {
     if (state._snapRenderTimer) clearTimeout(state._snapRenderTimer);
     state._snapRenderTimer = setTimeout(() => {
       state._snapRenderTimer = null;
+      // No renderizar si hay un modal abierto (lo pisaría y se pierden los clics)
+      if (state.modal || state.modalForm) return;
       // No renderizar si el usuario está escribiendo
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -3404,7 +3406,7 @@ function renderApp() {
     <div id="modal-container">${state.modal ? renderModal() : ''}</div>
     ${state.modalImportarClientes ? renderModalImportarClientes() : ''}
     ${state.waterfallPedidoId ? renderModalWaterfallPedido() : ''}
-    ${state.loadingAccion ? `<div class="loading-overlay"><div class="loading-content"><div class="spinner"></div><div>Procesando...</div></div></div>` : ''}
+    ${state.loadingAccion ? `<div class="loading-overlay" onclick="state.loadingAccion=false;window.forzarRender();" title="Clic para cerrar si se quedó pegado"><div class="loading-content"><div class="spinner"></div><div>Procesando...</div><div style="font-size:10px;color:#94a3b8;margin-top:6px;">(si tarda, haz clic para continuar)</div></div></div>${(() => { if (state._loadingTimer) clearTimeout(state._loadingTimer); state._loadingTimer = setTimeout(() => { if (state.loadingAccion) { state.loadingAccion = false; window.forzarRender(); } }, 8000); return ''; })()}` : ''}
   `;
 }
 
@@ -11739,8 +11741,10 @@ function modalCapturarTurno() {
     metaKg = Number(odp.cantidad_kg_produccion) || window.convertirAKg(odp.cantidad, um, producto) || 0;
     if (metaKg <= 0 && um === 'kg') metaKg = Number(odp.cantidad) || 0;
   } else {
-    const procesoAnterior = (odp.procesos_completados || [])[odp.procesos_completados.length - 1];
-    metaKg = procesoAnterior ? (Number(procesoAnterior.cantidad_producida_kg) || 0) : 0;
+    // 🆕 MODELO PARALELO: la meta de bolseo es la meta total de la ODP
+    //    (lo que debe bolsear al final), igual que extrusión.
+    metaKg = Number(odp.cantidad_kg_produccion) || window.convertirAKg(odp.cantidad, um, producto) || 0;
+    if (metaKg <= 0 && um === 'kg') metaKg = Number(odp.cantidad) || 0;
   }
   
   const pctAvance = metaKg > 0 ? Math.min(100, (totalProducidoKg / metaKg) * 100) : 0;
@@ -12618,9 +12622,8 @@ window.agregarRolloExtrusion = async (odpId) => {
   const operador = (state.operadores || []).find(o => o.id === f.operador_id);
   const supervisor = (state.supervisores || []).find(s => s.id === f.supervisor_id);
   
-  // No forzamos render completo aquí (sería lento con tantos datos); el modal
-  // ya muestra "guardando" vía el botón. El render se hace al final.
-  state.loadingAccion = true;
+  // El guardado es instantáneo (Firestore offline-first), no necesitamos overlay
+  // de "Procesando" — ese overlay bloqueaba la pantalla si quedaba activo.
   try {
     const nuevoRollo = {
       odp_id: odpId,
