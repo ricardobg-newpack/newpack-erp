@@ -5500,24 +5500,19 @@ function renderFormPedido() {
     ` : ''}
     
     <!-- TOGGLE TIPO DE PI -->
-    <div style="background:#fff;border:2px solid ${esStockInterno ? '#3fd34b' : (esComercializado ? '#16a34a' : '#3b82f6')};border-radius:14px;padding:14px;margin-bottom:14px;">
+    <div style="background:#fff;border:2px solid ${esStockInterno ? '#3fd34b' : '#3b82f6'};border-radius:14px;padding:14px;margin-bottom:14px;">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-        <span style="font-weight:800;color:#475569;font-size:13px;">📋 TIPO DE PEDIDO INTERNO:</span>
-        <button onclick="cambiarTipoPI('cliente')" style="padding:10px 18px;background:${!esStockInterno && !esComercializado ?'#3b82f6':'#fff'};color:${!esStockInterno && !esComercializado ?'#fff':'#475569'};border:2px solid ${!esStockInterno && !esComercializado ?'#3b82f6':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
-          👥 PT Fabricado
-        </button>
-        <button onclick="cambiarTipoPI('comercializado')" style="padding:10px 18px;background:${esComercializado?'#16a34a':'#fff'};color:${esComercializado?'#fff':'#475569'};border:2px solid ${esComercializado?'#16a34a':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
-          🛒 Comercializado
+        <span style="font-weight:800;color:#475569;font-size:13px;">📋 TIPO DE PEDIDO:</span>
+        <button onclick="cambiarTipoPI('cliente')" style="padding:10px 18px;background:${!esStockInterno ?'#3b82f6':'#fff'};color:${!esStockInterno ?'#fff':'#475569'};border:2px solid ${!esStockInterno ?'#3b82f6':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
+          👥 Pedido de Cliente
         </button>
         <button onclick="cambiarTipoPI('stock_interno')" style="padding:10px 18px;background:${esStockInterno?'#3fd34b':'#fff'};color:${esStockInterno?'#fff':'#475569'};border:2px solid ${esStockInterno?'#3fd34b':'#cbd5e1'};border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;">
           🏭 Producción para Stock
         </button>
-        <span style="font-size:11px;color:#64748b;margin-left:auto;">
+        <span style="font-size:11px;color:#64748b;margin-left:auto;max-width:300px;">
           ${esStockInterno 
-            ? '🏭 Las tarimas quedarán disponibles en CEDIS para futuras OVs' 
-            : esComercializado
-              ? '🛒 Productos que NewPack revende (compra-venta, NO fabricamos)'
-              : '👥 Pedido normal con cliente final'}
+            ? '🏭 Fabricas sin cliente. Las tarimas quedan en CEDIS para vender después.' 
+            : '👥 Pedido para un cliente. Cada producto puede salir de stock o fabricarse.'}
         </span>
       </div>
     </div>
@@ -5679,20 +5674,60 @@ function renderFormPedido() {
                     </div>
                     <input type="hidden" data-idx="${i}" class="ped-origen-hidden" data-origen="stock" />
                   ` : `
-                    <div class="field" style="margin-bottom:0;">
-                      <label class="field-label">Origen *</label>
-                      <select class="input ped-origen" data-idx="${i}">
-                        <option value="stock" ${l.tipo_origen === 'stock' ? 'selected' : ''}>📦 De Stock</option>
-                        <option value="producir" ${l.tipo_origen === 'producir' ? 'selected' : ''}>🏭 Producir</option>
-                        <option value="mixto" ${l.tipo_origen === 'mixto' ? 'selected' : ''}>🔀 Mixto</option>
-                      </select>
-                    </div>
-                    ${l.tipo_origen === 'mixto' ? `
-                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-                        <input class="input ped-stock" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="Stock" value="${l.cantidad_stock || ''}" />
-                        <input class="input ped-prod" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="Producir" value="${l.cantidad_producir || ''}" />
-                      </div>
-                    ` : ''}
+                    <!-- 🆕 ORIGEN AUTOEXPLICATIVO: muestra el stock disponible y guía la decisión -->
+                    ${(() => {
+                      const prodPT = window.getProductoPT(l.producto_codigo);
+                      // Stock disponible en CEDIS de este producto
+                      const stockDisp = (state.tarimas || []).filter(t => 
+                        t.producto_codigo === l.producto_codigo && 
+                        ['en_cedis_mty','en_cedis_mex','en_almacen_planta'].includes(t.estatus) &&
+                        !t.reservada
+                      ).reduce((s, t) => s + (Number(t.cantidad_actual ?? t.cantidad) || 0), 0);
+                      const pedido = Number(l.cantidad_solicitada) || 0;
+                      const hayStock = stockDisp > 0;
+                      const origen = l.tipo_origen || 'producir';
+                      
+                      return `
+                        <!-- Aviso de stock disponible -->
+                        <div style="background:${hayStock ? '#dcfce7' : '#fef3c7'};border:1px solid ${hayStock ? '#86efac' : '#fcd34d'};border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11px;color:${hayStock ? '#166534' : '#92400e'};">
+                          ${hayStock 
+                            ? `📦 Hay <strong>${fmtNum(stockDisp)} ${UM_LABELS[umLinea]}</strong> en stock de este producto` 
+                            : `🏭 No hay stock de este producto — se tendrá que fabricar`}
+                        </div>
+                        
+                        <div class="field" style="margin-bottom:0;">
+                          <label class="field-label">¿De dónde sale este producto? *</label>
+                          <select class="input ped-origen" data-idx="${i}">
+                            <option value="producir" ${origen === 'producir' ? 'selected' : ''}>🏭 Fabricar todo (va a producción)</option>
+                            <option value="stock" ${origen === 'stock' ? 'selected' : ''} ${!hayStock ? 'disabled' : ''}>📦 Tomar de stock${!hayStock ? ' (no hay)' : ` (hay ${fmtNum(stockDisp)})`}</option>
+                            <option value="mixto" ${origen === 'mixto' ? 'selected' : ''} ${!hayStock ? 'disabled' : ''}>🔀 Una parte de stock y otra fabricar</option>
+                          </select>
+                        </div>
+                        
+                        ${origen === 'producir' ? `
+                          <div style="font-size:10.5px;color:#92400e;margin-top:6px;">→ Se creará una orden de producción (ODP) por las ${fmtNum(pedido)} ${UM_LABELS[umLinea]}.</div>
+                        ` : ''}
+                        ${origen === 'stock' ? `
+                          <div style="font-size:10.5px;color:#166534;margin-top:6px;">→ Se tomará del stock existente. No se fabrica nada.</div>
+                        ` : ''}
+                        ${origen === 'mixto' ? `
+                          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px;margin-top:8px;">
+                            <div style="font-size:10.5px;color:#1e40af;font-weight:700;margin-bottom:6px;">Reparte las ${fmtNum(pedido)} ${UM_LABELS[umLinea]}:</div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                              <div>
+                                <label style="font-size:10px;color:#166534;font-weight:700;">📦 De stock</label>
+                                <input class="input ped-stock" data-idx="${i}" type="number" min="0" max="${stockDisp}" step="${stepCant}" placeholder="0" value="${l.cantidad_stock || ''}" />
+                              </div>
+                              <div>
+                                <label style="font-size:10px;color:#92400e;font-weight:700;">🏭 Fabricar</label>
+                                <input class="input ped-prod" data-idx="${i}" type="number" min="0" step="${stepCant}" placeholder="0" value="${l.cantidad_producir || ''}" />
+                              </div>
+                            </div>
+                            <div style="font-size:9.5px;color:#64748b;margin-top:5px;">💡 La suma de ambos debe dar ${fmtNum(pedido)} ${UM_LABELS[umLinea]}.</div>
+                          </div>
+                        ` : ''}
+                      `;
+                    })()}
                   `}
                 </div>
               `;}).join('')}
@@ -5912,11 +5947,13 @@ function renderVistaJuntaCarga(odpsBase) {
   const maquinas = (state.maquinas || []).filter(m => m.activa !== false)
     .sort((a, b) => a.codigo.localeCompare(b.codigo));
   
-  // Helper: kg pendientes de una ODP (meta − producido)
+  // Helper: kg pendientes de una ODP en un proceso específico (meta − producido de ESE proceso)
   const kgPendiente = (o) => {
     const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
     const av = window.avanceProcesosODP(o);
-    const prod = av?.procesos?.[0]?.producido_kg || 0;
+    // Usar el proceso específico de esta máquina si está marcado, si no el primero
+    const idxProc = o._idxProcEstaMaq != null ? o._idxProcEstaMaq : 0;
+    const prod = av?.procesos?.[idxProc]?.producido_kg || 0;
     return Math.max(0, meta - prod);
   };
   
@@ -5926,15 +5963,22 @@ function renderVistaJuntaCarga(odpsBase) {
   const sinAsignar = [];
   
   odpsActivas.forEach(o => {
-    // Determinar máquina del proceso actual/primero
     const ruta = o.ruta_procesos || [];
-    const procActual = o.proceso_actual || ruta[o.proceso_actual_idx || 0] || ruta[0];
-    const maqCod = o.maquinas_asignadas?.[procActual] || '';
-    if (maqCod && cargaMaq[maqCod]) {
-      cargaMaq[maqCod].odps.push(o);
-    } else {
-      sinAsignar.push(o);
-    }
+    const av = window.avanceProcesosODP(o);
+    // 🆕 MODELO PARALELO: la ODP aparece en la máquina de CADA proceso que sigue
+    //    activo (no completado), para coordinar extrusión y bolseo a la vez.
+    let asignadaEnAlguna = false;
+    ruta.forEach((procCod, i) => {
+      const procAv = av?.procesos?.[i];
+      if (procAv?.completado) return; // ese proceso ya terminó, no carga la máquina
+      const maqCod = o.maquinas_asignadas?.[procCod] || '';
+      if (maqCod && cargaMaq[maqCod]) {
+        // Clonar la ODP con el proceso específico para esta máquina
+        cargaMaq[maqCod].odps.push({ ...o, _procEnEstaMaq: procCod, _idxProcEstaMaq: i });
+        asignadaEnAlguna = true;
+      }
+    });
+    if (!asignadaEnAlguna) sinAsignar.push(o);
   });
   
   // Calcular horas y fechas estimadas por máquina (secuencial)
@@ -6204,20 +6248,21 @@ function renderKanbanMaquinas() {
   let todasODPs = (state.ordenes_produccion || []).filter(o => !o.archivada);
   const cantArchivadas = (state.ordenes_produccion || []).filter(o => o.archivada).length;
   
-  // 🆕 Si hay filtro por proceso, SOLO mostrar ODPs cuyo PROCESO ACTUAL sea el filtrado
-  // Esto evita confusión: si una ODP está en EXT, no debe aparecer en el Kanban de BS
+  // 🆕 Si hay filtro por proceso, mostrar las ODPs cuyo proceso filtrado esté
+  //    ACTIVO (en su ruta y no completado). En el modelo paralelo, una ODP puede
+  //    estar en extrusión Y bolseo a la vez, así que aparece en ambos filtros.
   if (procFiltro !== 'todos') {
     todasODPs = todasODPs.filter(o => {
       const ruta = o.ruta_procesos || [];
-      const idx = o.proceso_actual_idx ?? 0;
-      const procActual = ruta[idx];
-      // Solo mostrar si su proceso actual coincide con el filtro
-      // (excepto si está completada, que va en completadas)
-      if (['completada', 'liberada', 'pendiente_calidad'].includes(o.estatus)) {
-        // Para completadas, mostrar si la ruta incluye el proceso filtrado
-        return ruta.includes(procFiltro);
+      if (!ruta.includes(procFiltro)) return false; // el proceso no es parte de su ruta
+      // Completadas/calidad: mostrar si la ruta incluye el proceso (histórico)
+      if (['completada', 'liberada', 'liberada_empaque', 'pendiente_calidad'].includes(o.estatus)) {
+        return true;
       }
-      return procActual === procFiltro;
+      // Activas: mostrar si ese proceso NO está completado todavía
+      const av = o.avance_procesos || {};
+      const procCompletado = av[procFiltro]?.completado === true;
+      return !procCompletado;
     });
   }
   
@@ -9614,14 +9659,13 @@ function renderPanelOperador() {
       else if (procEst === 'pausado' && (o.proceso_actual_idx ?? 0) === 0) enCola.push(o);
       else enCola.push(o);
     } else {
-      // Proceso posterior (bolseo): solo si HAY material disponible del anterior
-      if (miProc.disponible_para_trabajar > 0) {
-        // Hay colchón → puede trabajar. ¿Está corriendo este proceso ahora?
-        const trabajandoEsteProc = o.proceso_estatus_actual === 'en_proceso' && o.proceso_actual === procSel;
-        if (trabajandoEsteProc) enProduccion.push(o);
-        else enCola.push(o);
-      }
-      // Si no hay material disponible, NO aparece (espera a que extrusión produzca más)
+      // 🆕 Proceso posterior (bolseo): SIEMPRE visible para coordinación.
+      //    Si hay material disponible → puede trabajar (corriendo o en cola lista).
+      //    Si NO hay material aún → aparece en cola con estado "esperando material",
+      //    para que bolseo VEA la orden que le viene y se coordine con extrusión.
+      const trabajandoEsteProc = o.proceso_estatus_actual === 'en_proceso' && o.proceso_actual === procSel;
+      if (trabajandoEsteProc) enProduccion.push(o);
+      else enCola.push(o);
     }
   });
   
@@ -37501,9 +37545,59 @@ window.confirmarCompletarProceso = async (odpId) => {
   const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
   const codProcCerrado = ruta[idx];
   if (!avanceProc[codProcCerrado]) avanceProc[codProcCerrado] = {};
+  
+  // 🆕 DETECTAR CIERRE PARCIAL: ¿este proceso produjo menos que su meta?
+  //    Si sí, NO lo marcamos completado a la fuerza — preguntamos al operador.
+  const metaProcesoKg = Number(odp.cantidad_kg_produccion) || 
+                        window.convertirAKg(odp.cantidad, um, producto) || 0;
+  const esCierreParcial = metaProcesoKg > 0 && prodKg < metaProcesoKg * 0.98;
+  let marcarCompletado = true;
+  
+  if (esCierreParcial) {
+    const faltanKg = Math.round(metaProcesoKg - prodKg);
+    const opcion = confirm(
+      `⚠ CIERRE PARCIAL de ${proc.nombre} — ${odp.folio}\n\n` +
+      `Meta: ${fmtNum(metaProcesoKg)} kg\n` +
+      `Produjiste: ${fmtNum(prodKg)} kg\n` +
+      `FALTAN: ${fmtNum(faltanKg)} kg\n\n` +
+      `¿Ya TERMINASTE de producir este proceso?\n\n` +
+      `• Aceptar (OK) = SÍ terminé, cerrar con menos (el saldo NO se producirá)\n` +
+      `• Cancelar = NO, solo estoy guardando avance — la orden SIGUE pendiente para producir el resto`
+    );
+    if (!opcion) {
+      // El operador NO terminó: guardar avance pero dejar el proceso ABIERTO (sigue pendiente)
+      marcarCompletado = false;
+    }
+  }
+  
   avanceProc[codProcCerrado].producido_kg = Math.round(prodKg);
-  avanceProc[codProcCerrado].completado = true;
-  avanceProc[codProcCerrado].estatus = 'completado';
+  avanceProc[codProcCerrado].completado = marcarCompletado;
+  avanceProc[codProcCerrado].estatus = marcarCompletado ? 'completado' : 'en_proceso';
+  
+  // 🆕 Si es cierre parcial SIN terminar: guardar avance y mantener la ODP en producción
+  //    en el MISMO proceso, para que NO desaparezca del Kanban ni de Programación.
+  if (!marcarCompletado) {
+    try {
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        avance_procesos: avanceProc,
+        estatus: 'en_produccion',
+        proceso_estatus_actual: 'en_proceso',
+        proceso_actual: codProcCerrado,
+        proceso_actual_idx: idx,
+        updated_at: serverTimestamp()
+      });
+      const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+      if (odpLocal) { odpLocal.avance_procesos = avanceProc; odpLocal.proceso_actual_idx = idx; odpLocal.proceso_actual = codProcCerrado; }
+      cerrarModal();
+      toast(`💾 Avance guardado: ${fmtNum(prodKg)} kg de ${fmtNum(metaProcesoKg)} kg · ${proc.nombre} sigue PENDIENTE (faltan ${fmtNum(Math.round(metaProcesoKg - prodKg))} kg)`, 'info');
+    } catch (e) {
+      toast('Error guardando avance: ' + e.message, 'error');
+    } finally {
+      state.loadingAccion = false; window.forzarRender();
+    }
+    return; // ⛔ No continuar al flujo de cierre completo
+  }
+  
   const todosCompletos = ruta.every(cod => avanceProc[cod]?.completado === true);
   const esUltimo = todosCompletos;
   
