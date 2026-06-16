@@ -2508,6 +2508,25 @@ function fmtCantidadUM(n, um) {
 }
 window.fmtCantidadUM = fmtCantidadUM;
 
+// 🆕 Muestra la cantidad de una ODP en su UM original Y su equivalente.
+//    Ej: pedido en piezas → "30,000 pza · 1,590 kg". Pedido en kg → "1,590 kg".
+//    Devuelve { principal, secundaria } para mostrar ambas medidas.
+function fmtCantidadDual(odp) {
+  const um = (odp.um || 'kg').toLowerCase();
+  const cantUM = Number(odp.cantidad) || 0;
+  const kg = Number(odp.cantidad_kg_produccion) || Number(odp.cantidad_kg) || 0;
+  
+  // Si la UM es kg, solo mostramos kg
+  if (um === 'kg') {
+    return { principal: fmtCantidadUM(cantUM || kg, 'kg'), secundaria: '' };
+  }
+  // UM en pza/millar/etc: principal en su UM, secundaria en kg (si lo tenemos)
+  const principal = fmtCantidadUM(cantUM, um);
+  const secundaria = kg > 0 ? fmtCantidadUM(kg, 'kg') : '';
+  return { principal, secundaria };
+}
+window.fmtCantidadDual = fmtCantidadDual;
+
 // 🧮 Redondear kg a múltiplo de 5 hacia arriba (para EXT siempre)
 function redondearKgExtrusion(kg) {
   const n = Number(kg) || 0;
@@ -2917,15 +2936,33 @@ window.siguienteFolio = siguienteFolio;
 // ============================================================
 // RENDER
 // ============================================================
+// 🆕 Debounce para renders que vienen de snapshots de Firestore.
+//    Cuando llegan varios snapshots seguidos (al guardar, se actualizan varias
+//    colecciones), en vez de hacer N renders completos del app (lento), se agrupan
+//    en UN solo render. Los renders de interacción del usuario son inmediatos.
 function render() {
-  // 🆕 Si hay un MODAL abierto y el render viene de un snapshot de fondo de Firestore,
-  //    NO reconstruir el DOM (pisaría el modal y se pierden los clics). Las interacciones
-  //    del usuario usan forzarRender/_forzarRender y SÍ pasan.
-  const hayModalAbierto = !!(state.modal || state.modalForm);
-  if (hayModalAbierto && state._renderDesdeSnapshot === true && state._forzarRender !== true && state._renderModalInterno !== true && state._renderProgrammatic !== true) {
+  // Si el render viene de un snapshot, lo agrupamos (debounce)
+  if (state._renderDesdeSnapshot === true && state._forzarRender !== true && 
+      state._renderModalInterno !== true && state._renderProgrammatic !== true) {
     state._renderDesdeSnapshot = false;
+    // Si hay modal abierto, NO renderizar (pisaría el modal y se pierden clics)
+    const hayModal = !!(state.modal || state.modalForm);
+    if (hayModal) return;
+    // Agrupar: cancelar el render pendiente y programar uno nuevo
+    if (state._snapRenderTimer) clearTimeout(state._snapRenderTimer);
+    state._snapRenderTimer = setTimeout(() => {
+      state._snapRenderTimer = null;
+      // No renderizar si el usuario está escribiendo
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      _doRender();
+    }, 90);
     return;
   }
+  _renderImpl();
+}
+
+function _renderImpl() {
   state._renderDesdeSnapshot = false;
   
   // Si el usuario está escribiendo en un input, posponer el render
@@ -6488,9 +6525,13 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
         </div>
       </div>
       
-      <!-- Kg + fecha -->
-      <div style="text-align:right;min-width:70px;">
-        <div style="font-size:13px;font-weight:800;color:#0f172a;">${fmtNum(cantTotal)} ${um}</div>
+      <!-- Cantidad: UM original + equivalente en kg -->
+      <div style="text-align:right;min-width:80px;">
+        ${(() => {
+          const dual = window.fmtCantidadDual(odp);
+          return `<div style="font-size:13px;font-weight:800;color:#0f172a;">${dual.principal}</div>
+            ${dual.secundaria ? `<div style="font-size:10px;color:#64748b;font-weight:600;">${dual.secundaria}</div>` : ''}`;
+        })()}
         ${fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#94a3b8'};">📅 ${fechaEnt}</div>` : ''}
       </div>
       
@@ -8062,11 +8103,25 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   // 🆕 Un proceso posterior (bolseo) puede iniciar si hay material disponible aunque extrusión siga
   const av = window.avanceProcesosODP(odp);
   const miProc = av?.procesos?.[idxProc];
-  const esProcesoParalelo = idxProc > 0 && miProc && miProc.disponible_para_trabajar > 0 && !miProc.completado;
+  const esProcesoParalelo = idxProc > 0 && miProc && !miProc.completado;
+  const disponibleAhora = miProc?.disponible_para_trabajar || 0;
   
   if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo) {
     toast('Esta ODP no se puede iniciar en su estado actual', 'error');
     return;
+  }
+  
+  // 🆕 Si es un proceso posterior (bolseo) y aún no hay material de extrusión, avisar pero permitir
+  if (idxProc > 0 && disponibleAhora <= 0) {
+    const extProd = av?.procesos?.[0]?.producido_kg || 0;
+    const seguir = confirm(
+      `⚠ ${getProc(procAIniciar)?.nombre || procAIniciar} — ${odp.folio}\n\n` +
+      `Extrusión lleva ${fmtNum(extProd)} kg y bolseo ya trabajó lo disponible.\n` +
+      `Ahorita NO hay material listo para bolsear (colchón en 0).\n\n` +
+      `Puedes iniciar de todos modos y capturar conforme extrusión vaya produciendo.\n\n` +
+      `¿Iniciar ${getProc(procAIniciar)?.nombre || 'el proceso'} igual?`
+    );
+    if (!seguir) return;
   }
   
   const maqCodigo = odp.maquinas_asignadas?.[procAIniciar] || '';
@@ -8082,23 +8137,34 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   if (!ok) return;
   
   try {
-    state.loadingAccion = true; render();
+    state.loadingAccion = true;
     const updates = {
       estatus: 'en_produccion',
-      proceso_estatus_actual: 'en_proceso',
-      proceso_actual: procAIniciar,
-      proceso_actual_idx: idxProc >= 0 ? idxProc : (odp.proceso_actual_idx || 0),
       updated_at: serverTimestamp()
     };
+    // 🆕 MODELO PARALELO: solo mover el puntero global si es el proceso actual o extrusión.
+    //    Si es un proceso posterior (bolseo) trabajando en paralelo, NO movemos el puntero
+    //    (extrusión sigue siendo el proceso "actual"), solo marcamos que bolseo arrancó.
+    if (idxProc === 0 || idxProc === (odp.proceso_actual_idx ?? 0)) {
+      updates.proceso_estatus_actual = 'en_proceso';
+      updates.proceso_actual = procAIniciar;
+      updates.proceso_actual_idx = idxProc >= 0 ? idxProc : (odp.proceso_actual_idx || 0);
+    }
+    // Marcar el avance del proceso que arranca
+    const avProc = { ...(odp.avance_procesos || {}) };
+    if (!avProc[procAIniciar]) avProc[procAIniciar] = { producido_kg: 0, liberado_kg: 0, estatus: 'en_proceso', completado: false };
+    else avProc[procAIniciar].estatus = 'en_proceso';
+    updates.avance_procesos = avProc;
+    
     if (esProgramada && !odp.inicio_real_at) {
       updates.inicio_real_at = serverTimestamp();
       updates.inicio_real_por = state.user?.nombre || state.user?.email || 'sistema';
     }
-    if (esProcesoEsperando || esProcesoParalelo) {
-      updates.proceso_actual_inicio = serverTimestamp();
-    }
     await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
-    toast(`✅ ${odp.folio} · ${getProc(procAIniciar)?.nombre || ''} iniciada en ${maqCodigo}`, 'success');
+    // Optimistic local
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) { odpLocal.estatus = 'en_produccion'; if (updates.proceso_actual) odpLocal.proceso_actual_idx = updates.proceso_actual_idx; }
+    toast(`✅ ${odp.folio} · ${getProc(procAIniciar)?.nombre || ''} iniciada${maqCodigo ? ' en ' + maqCodigo : ''}`, 'success');
   } catch (e) {
     console.error('Error iniciar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
@@ -8106,7 +8172,7 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
       : 'Error: ' + e.message;
     toast(msgErr, 'error');
   } finally {
-    state.loadingAccion = false; render();
+    state.loadingAccion = false; window.forzarRender();
   }
 };
 
@@ -12552,7 +12618,9 @@ window.agregarRolloExtrusion = async (odpId) => {
   const operador = (state.operadores || []).find(o => o.id === f.operador_id);
   const supervisor = (state.supervisores || []).find(s => s.id === f.supervisor_id);
   
-  state.loadingAccion = true; render();
+  // No forzamos render completo aquí (sería lento con tantos datos); el modal
+  // ya muestra "guardando" vía el botón. El render se hace al final.
+  state.loadingAccion = true;
   try {
     const nuevoRollo = {
       odp_id: odpId,
@@ -12579,83 +12647,56 @@ window.agregarRolloExtrusion = async (odpId) => {
       created_at: serverTimestamp(),
       updated_at: serverTimestamp()
     };
-    const refRollo = await addDoc(collection(db, 'rollos_extrusion'), nuevoRollo);
-    
-    // 🆕 OPTIMISTIC UPDATE: agregar el rollo al state local de INMEDIATO,
-    //    para que el avance y el material disponible se actualicen sin esperar el snapshot.
-    if (!state.rollos_extrusion) state.rollos_extrusion = [];
-    if (!state.rollos_extrusion.some(r => r.id === refRollo.id)) {
-      state.rollos_extrusion.unshift({ id: refRollo.id, ...nuevoRollo, created_at: { seconds: Math.floor(Date.now()/1000) } });
-    }
-    
-    // 🆕 Auto-iniciar producción si la ODP estaba en cola (primer rollo)
-    if (odp.estatus === 'programada' || odp.proceso_estatus_actual === 'esperando') {
-      try {
-        await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-          estatus: 'en_produccion',
-          proceso_estatus_actual: 'en_proceso',
-          iniciado_at: odp.iniciado_at || serverTimestamp(),
-          iniciado_por: odp.iniciado_por || state.user.id,
-          updated_at: serverTimestamp()
-        });
-        // Optimistic: reflejar en state local
-        const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
-        if (odpLocal) { odpLocal.estatus = 'en_produccion'; odpLocal.proceso_estatus_actual = 'en_proceso'; }
-      } catch (e) {
-        console.warn('No se pudo auto-iniciar la ODP:', e.message);
+    // Guardar el rollo SIN bloquear: Firestore confirma local de inmediato y
+    // sincroniza con el servidor en segundo plano. El optimistic update de abajo
+    // muestra el rollo al instante; si falla la sync, el snapshot lo corrige.
+    const refRollo = doc(collection(db, 'rollos_extrusion'));
+    setDoc(refRollo, nuevoRollo).catch(err => {
+      console.error('Error sincronizando rollo:', err);
+      if (String(err.message || '').includes('PERMISSION_DENIED')) {
+        toast('🔒 Sin permisos para registrar rollos', 'error');
       }
+    });
+    
+    // Optimistic ligero: push al final del array existente (no reemplaza el array)
+    if (state.rollos_extrusion && !state.rollos_extrusion.some(r => r.id === refRollo.id)) {
+      state.rollos_extrusion.push({ id: refRollo.id, ...nuevoRollo, created_at: { seconds: Math.floor(Date.now()/1000) } });
     }
     
-    // 🆕 F4 — Si el rollo trae merma, registrarla automáticamente en PELETIZADO
+    // 🆕 Auto-iniciar producción si la ODP estaba en cola (primer rollo) — sin bloquear
+    if (odp.estatus === 'programada' || odp.proceso_estatus_actual === 'esperando') {
+      // Optimistic local inmediato
+      const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+      if (odpLocal) { odpLocal.estatus = 'en_produccion'; odpLocal.proceso_estatus_actual = 'en_proceso'; }
+      // Guardar en segundo plano (no esperamos, no bloquea la UI)
+      updateDoc(doc(db, 'ordenes_produccion', odpId), {
+        estatus: 'en_produccion',
+        proceso_estatus_actual: 'en_proceso',
+        iniciado_at: odp.iniciado_at || serverTimestamp(),
+        iniciado_por: odp.iniciado_por || state.user.id,
+        updated_at: serverTimestamp()
+      }).catch(e => console.warn('No se pudo auto-iniciar la ODP:', e.message));
+    }
+    
+    // 🆕 F4 — Si el rollo trae merma, registrarla en PELETIZADO en segundo plano (no bloquea)
     if (Number(mermas) > 0) {
-      try {
-        const loteRes = await window.registrarMermaPeletizado({
-          kg: Number(mermas),
-          odp_id: odpId,
-          odp_folio: odp.folio || '',
-          rollo_folio: `R-${odp.folio}-${proxNum}`,
-          producto_codigo: odp.producto_codigo,
-          proceso: 'P-1',
-          motivo: 'MERMA_ROLLO',
-          notas: `Rollo #${proxNum} · ${fmtNum(peso)} kg buenos`
-        });
-        if (loteRes) {
-          toast(`♻️ Merma ${fmtNum(Number(mermas))} kg → ${loteRes}`, 'info');
-        }
-      } catch (ePel) {
+      window.registrarMermaPeletizado({
+        kg: Number(mermas),
+        odp_id: odpId,
+        odp_folio: odp.folio || '',
+        rollo_folio: `R-${odp.folio}-${proxNum}`,
+        producto_codigo: odp.producto_codigo,
+        proceso: 'P-1',
+        motivo: 'MERMA_ROLLO',
+        notas: `Rollo #${proxNum} · ${fmtNum(peso)} kg buenos`
+      }).then(loteRes => {
+        if (loteRes) toast(`♻️ Merma ${fmtNum(Number(mermas))} kg → ${loteRes}`, 'info');
+      }).catch(ePel => {
         console.error('Error registrar merma peletizado:', ePel);
         if (String(ePel.message || '').includes('PERMISSION_DENIED')) {
-          toast('🔒 PELETIZADO SIN CONFIGURAR: faltan las reglas de Firestore. La merma del rollo NO se registró. Ve a Peletizado → Configuración.', 'error');
-        } else {
-          toast('⚠ No se pudo registrar la merma en peletizado: ' + ePel.message, 'error');
+          toast('🔒 PELETIZADO SIN CONFIGURAR: la merma del rollo NO se registró. Ve a Peletizado → Configuración.', 'error');
         }
-      }
-    }
-    
-    // 🆕 ALMACÉN INTERMEDIO — Si esta ODP P-1 tiene hijas esperando, desbloquearlas con el PRIMER ROLLO
-    // (el material parcial ya está disponible: el siguiente proceso puede ir trabajando)
-    try {
-      const hijasEsperando = (state.ordenes_produccion || []).filter(o2 => 
-        o2.odp_padre_id === odpId && o2.estatus === 'esperando_padre'
-      );
-      for (const hija of hijasEsperando) {
-        await updateDoc(doc(db, 'ordenes_produccion', hija.id), {
-          estatus: 'pendiente_planeacion',
-          desbloqueada_por_rollo: true,
-          padre_primer_rollo_at: serverTimestamp(),
-          updated_at: serverTimestamp()
-        });
-        await window.notificarEvento({
-          evento: 'odp_p2_lista_iniciar',
-          folio: hija.folio,
-          extra: { 
-            cliente: hija.cliente_nombre, 
-            detalle: `${hija.proceso_codigo} desbloqueada — ya hay rollo disponible de ${odp.folio} en Almacén Intermedio` 
-          }
-        });
-      }
-    } catch (eHija) {
-      console.warn('Error desbloqueando hijas por rollo:', eHija);
+      });
     }
     
     // Reset el form del próximo rollo
@@ -27335,7 +27376,7 @@ window.imprimirEtiquetasRollosWIP = (odpId) => {
     
     // Mismo formato físico que las etiquetas de cliente
     const MARG_TOP = 12.5, MARG_LEFT = 5, MARG_RIGHT = 4, MARG_BOTTOM = 15, GAP_X = 5;
-    const COLS = 2, FILAS = 4, PORHOJA = COLS * FILAS;
+    const COLS = 2, FILAS = 5, PORHOJA = COLS * FILAS;
     const W_PAGE = 215.9, H_PAGE = 279.4;
     const ETIQ_W = (W_PAGE - MARG_LEFT - MARG_RIGHT - GAP_X) / COLS;
     const ETIQ_H = (H_PAGE - MARG_TOP - MARG_BOTTOM) / FILAS;
@@ -27395,34 +27436,52 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.setTextColor(0, 0, 0);
   
   // ===== DESTINO (lo más importante: a dónde va) =====
-  let yt = y + 13;
   doc.setFillColor(237, 233, 254); // morado claro
   doc.rect(x + 2, y + 10.5, w - 4, 6, 'F');
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(91, 33, 182);
-  doc.text(`➡ PASA A: ${(d.destino_proceso || '').toUpperCase()}${d.destino_folio ? ' (' + d.destino_folio + ')' : ''}`, x + 4, y + 14.5);
+  const destinoTxt = `PASA A: ${(d.destino_proceso || 'PROCESO SIGUIENTE').toUpperCase()}`;
+  doc.text(`➡ ${destinoTxt}`, x + 4, y + 14.6);
   doc.setTextColor(0, 0, 0);
   
-  // ===== IDENTIFICADOR GRANDE DEL ROLLO =====
-  yt = y + 20;
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15);
-  doc.setTextColor(15, 23, 42);
+  // ===== IDENTIFICADOR DEL ROLLO + PESO (en líneas separadas para que no se empalmen) =====
+  let yt = y + 21;
+  // ID del rollo (se ajusta el tamaño de fuente si el folio es largo)
   const idRollo = `${d.odp_folio}-R${String(rollo.numero_rollo || 0).padStart(2, '0')}`;
+  const pesoTxt = `${fmtNum(rollo.peso_kg || 0)} kg`;
+  // Calcular si el ID + peso caben en la misma línea sin chocar
+  doc.setFont('helvetica', 'bold');
+  let fsId = 15;
+  doc.setFontSize(fsId);
+  const wId = doc.getTextWidth(idRollo);
+  doc.setFontSize(13);
+  const wPeso = doc.getTextWidth(pesoTxt);
+  const espacioDisponible = w - 6 - wPeso - 4; // ancho menos margen, peso y separación
+  // Si el ID no cabe junto al peso, reducir su tamaño de fuente
+  while (fsId > 10 && doc.getTextWidth(idRollo) > espacioDisponible) {
+    fsId -= 0.5;
+    doc.setFontSize(fsId);
+  }
+  doc.setFontSize(fsId);
+  doc.setTextColor(15, 23, 42);
   doc.text(idRollo, x + 3, yt);
   // Peso grande a la derecha
-  doc.setFontSize(15);
+  doc.setFontSize(13);
   doc.setTextColor(124, 58, 237);
-  doc.text(`${fmtNum(rollo.peso_kg || 0)} kg`, x + w - 3, yt, { align: 'right' });
+  doc.text(pesoTxt, x + w - 3, yt, { align: 'right' });
   doc.setTextColor(0, 0, 0);
   
-  // ===== DATOS TÉCNICOS (1 columna por fila — nunca se empalma) =====
-  yt = y + 25;
-  const lineH = 4.0;
-  const xLab = x + 3;
-  const xVal = x + 22;                  // los valores arrancan parejos
-  const anchoVal = (x + w) - xVal - 3;  // todo el ancho restante para el valor
+  // ===== DATOS TÉCNICOS (2 columnas, sin empalme) =====
+  yt = y + 27;
+  const lineH = 4.2;
+  const midX = x + w / 2;
+  // Columna izquierda: etiqueta + valor (valor no pasa de la mitad)
+  const xLabL = x + 3, xValL = x + 17;
+  const anchoValL = midX - xValL - 2;
+  // Columna derecha: etiqueta + valor (valor no pasa del borde)
+  const xLabR = midX + 2, xValR = midX + 18;
+  const anchoValR = (x + w) - xValR - 3;
   
   // Recorta el texto al ancho disponible (en mm) según el tamaño de fuente
   function recortar(txt, anchoMM, fontSize) {
@@ -27436,22 +27495,26 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
     return txt + '…';
   }
   
-  function fila(label, valor) {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(90, 90, 90);
-    doc.text(label, xLab, yt);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(0, 0, 0);
-    doc.text(recortar(valor, anchoVal, 7.5), xVal, yt);
+  function par(labelL, valL, labelR, valR) {
+    // Izquierda
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(110, 110, 110);
+    doc.text(labelL, xLabL, yt);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.3); doc.setTextColor(0, 0, 0);
+    doc.text(recortar(valL, anchoValL, 7.3), xValL, yt);
+    // Derecha
+    if (labelR !== null) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(110, 110, 110);
+      doc.text(labelR, xLabR, yt);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7.3); doc.setTextColor(0, 0, 0);
+      doc.text(recortar(valR, anchoValR, 7.3), xValR, yt);
+    }
     yt += lineH;
   }
   
-  fila('Producto:', d.producto_codigo);
-  fila('Medida:', d.medida);
-  fila('Calibre:', d.calibre);
-  fila('Densidad:', d.densidad);
-  fila('Color:', d.color);
-  fila('Material:', d.material);
-  fila('Cliente:', d.cliente);
-  fila('Fecha:', rollo.fecha || '');
+  par('Producto:', d.producto_codigo, 'Calibre:', d.calibre);
+  par('Medida:', d.medida, 'Densidad:', d.densidad);
+  par('Color:', d.color, 'Material:', d.material);
+  par('Cliente:', d.cliente, 'Fecha:', rollo.fecha || '');
   
   // ===== PIE: ODP + rollo X de N + operador =====
   yt = y + h - 4;
@@ -27460,7 +27523,8 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6);
   doc.setTextColor(80, 80, 80);
-  doc.text(`ODP ${d.odp_folio} · Rollo ${rollo.numero_rollo} de ${totalRollos} · ${rollo.operador_nombre || rollo.operador || ''}`, x + 3, yt);
+  const pieTxt = recortar(`Rollo ${rollo.numero_rollo} de ${totalRollos} · ${rollo.operador_nombre || rollo.operador || ''}`, w - 6, 6);
+  doc.text(pieTxt, x + 3, yt);
   doc.setTextColor(0, 0, 0);
 }
 
