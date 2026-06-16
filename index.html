@@ -6521,6 +6521,7 @@ function _renderTarjetaKanban(odp, columna, opts) {
         style="background:${esUltima?'#e2e8f0':'#3b82f6'};color:${esUltima?'#94a3b8':'#fff'};border:none;padding:4px 10px;border-radius:4px;cursor:${esUltima?'not-allowed':'pointer'};font-size:13px;font-weight:800;line-height:1;min-width:32px;" 
         ${esUltima || totalEnCola < 2 ? 'disabled' : ''} title="${esUltima?'Ya está en la última posición':'Mover abajo (entra después)'}">▼</button>
     </div>
+    <button onclick="event.stopPropagation();window.moverODPaOtraMaquina('${odp.id}','${maquina}')" style="margin-top:4px;width:100%;background:#fff;color:#7c3aed;border:1.5px solid #c4b5fd;padding:5px;border-radius:5px;cursor:pointer;font-weight:800;font-size:10px;">🔀 Mover a otra máquina</button>
   ` : (columna === 'cola' && totalEnCola > 0 ? `
     <div style="margin-top:5px;">
       <span style="font-size:9.5px;color:#475569;font-weight:800;background:#fef3c7;padding:2px 6px;border-radius:4px;">📋 ${idx + 1} de ${totalEnCola}</span>
@@ -6750,6 +6751,73 @@ window.onKanbanDrop = async (event, maqDestino) => {
 
 // 🆕 Mover ODP arriba/abajo en la cola de su máquina (botones ↑↓)
 // Más confiable que drag&drop. Funciona en cualquier dispositivo (móvil/tablet/desktop).
+// 🆕 Mover una ODP a otra máquina del mismo proceso (reasignar carga entre máquinas)
+window.moverODPaOtraMaquina = async (odpId, maqOrigen) => {
+  const u = state.user || {};
+  const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
+  if (!puedeEditar) {
+    toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden mover ODPs. Tu depto: ${u.depto || '?'}`, 'error');
+    return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const idxProc = odp.proceso_actual_idx ?? 0;
+  const procCodigo = (odp.ruta_procesos || [])[idxProc];
+  if (!procCodigo) { toast('La ODP no tiene proceso actual', 'error'); return; }
+  
+  // Máquinas del MISMO proceso (a las que se puede mover), excepto la actual
+  const maqsProc = (state.maquinas || []).filter(m => 
+    m.activa !== false && 
+    (m.proceso_codigo === procCodigo || (m.procesos_compatibles || []).includes(procCodigo)) &&
+    m.codigo !== maqOrigen
+  ).sort((a, b) => a.codigo.localeCompare(b.codigo));
+  
+  if (maqsProc.length === 0) {
+    toast(`No hay otras máquinas para ${getProc(procCodigo)?.nombre || procCodigo}`, 'error');
+    return;
+  }
+  
+  // Construir lista para que el usuario elija
+  const opciones = maqsProc.map((m, i) => {
+    // Cuántas ODPs ya tiene en cola esa máquina (para mostrar carga)
+    const enEsa = (state.ordenes_produccion || []).filter(o => 
+      !o.archivada && o.maquinas_asignadas?.[procCodigo] === m.codigo &&
+      ['programada','en_produccion'].includes(o.estatus)
+    ).length;
+    return `${i + 1}. ${m.codigo}${m.nombre ? ' ('+m.nombre+')' : ''} — ${enEsa} orden(es)${m.capacidad_kg_hr ? ' · '+m.capacidad_kg_hr+' kg/hr' : ''}`;
+  }).join('\n');
+  
+  const resp = prompt(
+    `🔀 MOVER ${odp.folio} a otra máquina\n` +
+    `Proceso: ${getProc(procCodigo)?.nombre || procCodigo}\n` +
+    `Actualmente en: ${maqOrigen}\n\n` +
+    `Escribe el NÚMERO de la máquina destino:\n\n${opciones}`
+  );
+  if (resp === null) return; // canceló
+  const num = parseInt(resp.trim(), 10);
+  if (!num || num < 1 || num > maqsProc.length) {
+    toast('Número inválido', 'error'); return;
+  }
+  const maqDestino = maqsProc[num - 1];
+  
+  try {
+    state.loadingAccion = true; render();
+    const nuevasMaqs = { ...(odp.maquinas_asignadas || {}) };
+    nuevasMaqs[procCodigo] = maqDestino.codigo;
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      maquinas_asignadas: nuevasMaqs,
+      prioridad_cola: Number.MAX_SAFE_INTEGER, // entra al final de la cola de la nueva máquina
+      updated_at: serverTimestamp()
+    });
+    toast(`✅ ${odp.folio} movida de ${maqOrigen} a ${maqDestino.codigo}`, 'success');
+  } catch (e) {
+    toast('Error al mover: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 window.moverODPCola = async (odpId, direccion) => {
   const u = state.user || {};
   const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
@@ -12026,15 +12094,15 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
           
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;background:#f8fafc;">
-          <div style="font-size:11px;color:#64748b;">
-            💡 Cierra el turno cuando termines tu jornada. Esto sumará los rollos a la producción total de la ODP.
+          <div style="font-size:11px;color:#16a34a;font-weight:700;">
+            ✅ Puedes capturar rollos e irte — la ODP sigue produciendo. Solo cierra el turno al terminar tu jornada o cambio de grupo.
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="btn-secondary" onclick="cerrarModal()">Salir sin cerrar</button>
-            <button class="btn-primary" onclick="window.cerrarTurnoExtrusion('${odp.id}')" 
-              style="background:#16a34a;${rollosDelTurno.length === 0 ? 'opacity:0.5;cursor:not-allowed;' : ''}" 
+            <button class="btn-secondary" onclick="cerrarModal()" style="background:#16a34a;color:#fff;border:none;">✓ Listo (sigue produciendo)</button>
+            <button onclick="window.cerrarTurnoExtrusion('${odp.id}')" 
+              style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:9px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;${rollosDelTurno.length === 0 ? 'opacity:0.4;cursor:not-allowed;' : ''}" 
               ${rollosDelTurno.length === 0 ? 'disabled' : ''}>
-              🔒 CERRAR TURNO (${numRollos} rollos · ${fmtNum(totalKgTurno)} kg)
+              🔒 Cerrar turno (${numRollos} rollos · ${fmtNum(totalKgTurno)} kg)
             </button>
           </div>
         </div>
@@ -12321,7 +12389,12 @@ window.agregarRolloExtrusion = async (odpId) => {
   if (peso > 5000) { toast('Peso sospechosamente alto (>5000 kg). Verifica.', 'error'); return; }
   
   const ruta = odp.ruta_procesos || [];
-  const idx = odp.proceso_actual_idx ?? 0;
+  // 🆕 MODELO PARALELO: capturar rollo en el proceso del panel (normalmente extrusión)
+  let idx = odp.proceso_actual_idx ?? 0;
+  const procPanelR = state.panelOpProc;
+  if (procPanelR && ruta.includes(procPanelR)) {
+    idx = ruta.indexOf(procPanelR);
+  }
   const procCodigo = ruta[idx] || 'P1-EXT';
   
   // Calcular número de rollo (consecutivo por ODP)
@@ -27107,7 +27180,7 @@ window.imprimirEtiquetasRollosWIP = (odpId) => {
     const datosComunes = {
       odp_folio: odp.folio || '',
       producto_codigo: odp.producto_codigo || '',
-      cliente: odp.cliente_nombre || odp.cliente_codigo || 'STOCK',
+      cliente: odp.cliente_codigo || 'STOCK',  // 🔒 solo código (el operador no ve nombre de cliente)
       medida: _medidaProductoTxt(producto),
       color: _colorProductoTxt(producto),
       calibre: producto?.calibre ? `${producto.calibre} µ` : (producto?.calibre_micras ? `${producto.calibre_micras} µ` : '—'),
@@ -27181,23 +27254,39 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.text(`${fmtNum(rollo.peso_kg || 0)} kg`, x + w - 3, yt, { align: 'right' });
   doc.setTextColor(0, 0, 0);
   
-  // ===== DATOS TÉCNICOS (2 columnas compactas) =====
+  // ===== DATOS TÉCNICOS (2 columnas compactas, sin empalme) =====
   yt = y + 25;
-  const lineH = 3.6;
-  const xL1 = x + 3, xV1 = x + 22;       // columna izquierda
-  const xL2 = x + w/2 + 1, xV2 = x + w/2 + 16; // columna derecha
+  const lineH = 3.8;
+  // Columna izquierda: etiqueta en xL1, valor en xV1 (máx hasta antes de la columna derecha)
+  const xL1 = x + 3;
+  const xV1 = x + 16;
+  const anchoValIzq = (x + w/2) - xV1 - 2;  // espacio disponible para el valor izquierdo
+  // Columna derecha: etiqueta en xL2, valor en xV2
+  const xL2 = x + w/2 + 2;
+  const xV2 = x + w/2 + 17;
+  const anchoValDer = (x + w) - xV2 - 3;
+  
+  // Recorta el texto al ancho disponible (en mm) según el tamaño de fuente
+  function recortar(txt, anchoMM, fontSize) {
+    txt = String(txt || '—');
+    doc.setFontSize(fontSize);
+    while (txt.length > 1 && doc.getTextWidth(txt) > anchoMM) {
+      txt = txt.slice(0, -1);
+    }
+    return txt;
+  }
   
   function filaIzq(label, valor) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(90, 90, 90);
     doc.text(label, xL1, yt);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(0, 0, 0);
-    doc.text(String(valor || '—').substring(0, 18), xV1, yt);
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(0, 0, 0);
+    doc.text(recortar(valor, anchoValIzq, 7.5), xV1, yt);
   }
   function filaDer(label, valor) {
     doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(90, 90, 90);
     doc.text(label, xL2, yt);
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(0, 0, 0);
-    doc.text(String(valor || '—').substring(0, 16), xV2, yt);
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(0, 0, 0);
+    doc.text(recortar(valor, anchoValDer, 7.5), xV2, yt);
   }
   
   filaIzq('Producto:', d.producto_codigo);  filaDer('Calibre:', d.calibre);        yt += lineH;
