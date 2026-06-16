@@ -7574,6 +7574,88 @@ function modalVerCapturas() {
 window.modalVerCapturas = modalVerCapturas;
 
 // 🔧 Recalcular cantidad_kg de una ODP (para arreglar ODPs creadas con bug del cálculo)
+// 🆕 REPARAR el avance de una ODP: recalcula lo realmente producido en cada proceso
+//    (desde capturas + rollos) y REABRE los procesos que no llegaron a su meta.
+//    Útil para ODPs que quedaron mal cerradas (proceso marcado completo sin llegar a meta).
+window.repararAvanceODP = async (odpId) => {
+  const u = state.user || {};
+  const puede = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden reparar ODPs. Tu depto: ${u.depto || '?'}`, 'error'); return; }
+  
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const ruta = odp.ruta_procesos || [];
+  if (ruta.length === 0) { toast('La ODP no tiene ruta de procesos', 'error'); return; }
+  
+  const metaKg = Number(odp.cantidad_kg_produccion) || 0;
+  const producto = window.getProductoPT?.(odp.producto_codigo);
+  
+  // Calcular el producido REAL de cada proceso
+  const nuevoAvance = {};
+  let resumen = [];
+  ruta.forEach((cod, i) => {
+    let producido = capturasValidas(state.capturas_produccion)
+      .filter(c => c.odp_id === odpId && c.proceso === cod)
+      .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+    // Extrusión: sumar rollos no consolidados
+    if (i === 0) {
+      producido += (state.rollos_extrusion || [])
+        .filter(r => r.odp_id === odpId && r.proceso === cod && !r.anulado && !r.consolidado_en_turno)
+        .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+    }
+    const completado = metaKg > 0 && producido >= metaKg * 0.98;
+    nuevoAvance[cod] = {
+      producido_kg: Math.round(producido),
+      liberado_kg: (odp.avance_procesos?.[cod]?.liberado_kg) || 0,
+      estatus: completado ? 'completado' : (producido > 0 ? 'en_proceso' : 'esperando'),
+      completado
+    };
+    resumen.push(`${getProc(cod)?.nombre || cod}: ${fmtNum(Math.round(producido))} de ${fmtNum(metaKg)} kg ${completado ? '✓ completo' : '⏳ pendiente'}`);
+  });
+  
+  // El proceso actual = el primer proceso NO completado de la ruta
+  const idxActual = ruta.findIndex(cod => !nuevoAvance[cod].completado);
+  const todosCompletos = idxActual < 0;
+  
+  const conf = confirm(
+    `🔧 REPARAR AVANCE — ${odp.folio}\n\n` +
+    `Recalculando lo realmente producido en cada proceso:\n\n${resumen.join('\n')}\n\n` +
+    (todosCompletos 
+      ? `Todos los procesos están completos → la ODP irá a Calidad.\n\n`
+      : `Se REABRIRÁ en: ${getProc(ruta[idxActual])?.nombre || ruta[idxActual]} (para producir lo que falta).\n\n`) +
+    `¿Aplicar la corrección?`
+  );
+  if (!conf) return;
+  
+  try {
+    state.loadingAccion = true;
+    const updates = {
+      avance_procesos: nuevoAvance,
+      updated_at: serverTimestamp()
+    };
+    if (todosCompletos) {
+      updates.estatus = 'pendiente_calidad';
+      updates.proceso_estatus_actual = 'completado';
+      updates.proceso_actual = null;
+    } else {
+      updates.estatus = 'en_produccion';
+      updates.proceso_actual_idx = idxActual;
+      updates.proceso_actual = ruta[idxActual];
+      updates.proceso_estatus_actual = nuevoAvance[ruta[idxActual]].producido_kg > 0 ? 'en_proceso' : 'esperando';
+    }
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
+    // Optimistic local
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) { Object.assign(odpLocal, updates); }
+    toast(`✅ ${odp.folio} reparada. ${todosCompletos ? 'Va a Calidad.' : 'Reabierta en ' + (getProc(ruta[idxActual])?.nombre || '')}`, 'success');
+  } catch (e) {
+    toast('Error al reparar: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
 window.recalcularKgODP = async (odpId) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
@@ -32517,6 +32599,54 @@ function modalDetalleODP() {
             ${odp.descripcion ? `<div style="margin-top:8px;"><strong>Descripción:</strong> ${odp.descripcion}</div>` : ''}
             ${odp.planeacion_notas ? `<div style="margin-top:8px;padding:8px;background:#fffbeb;border-radius:6px;"><strong>Notas:</strong> ${odp.planeacion_notas}</div>` : ''}
           </div>
+          
+          <!-- 🆕 AVANCE POR PROCESO (modelo paralelo) -->
+          ${(() => {
+            const ruta = odp.ruta_procesos || [];
+            if (ruta.length === 0) return '';
+            const av = window.avanceProcesosODP(odp);
+            if (!av) return '';
+            const u = state.user || {};
+            const puedeReparar = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+            return `
+              <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">🏭 Avance por proceso</h3>
+              <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+                ${av.procesos.map((p, i) => {
+                  const meta = av.meta_kg;
+                  const falta = Math.max(0, meta - p.producido_kg);
+                  const colorBarra = p.completado ? '#16a34a' : (p.producido_kg > 0 ? '#f59e0b' : '#cbd5e1');
+                  return `
+                    <div style="background:#fff;border:1.5px solid ${p.completado ? '#86efac' : '#e2e8f0'};border-radius:10px;padding:10px 12px;">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <span style="font-weight:800;font-size:13px;">${p.icono} ${p.nombre}</span>
+                        <span style="font-size:11px;font-weight:800;color:${colorBarra};">
+                          ${p.completado ? '✓ Completo' : (p.producido_kg > 0 ? '⏳ En proceso' : '○ Sin iniciar')}
+                        </span>
+                      </div>
+                      <div style="background:#f1f5f9;border-radius:99px;height:18px;overflow:hidden;position:relative;">
+                        <div style="background:${colorBarra};height:100%;width:${p.pct}%;transition:width 0.3s;"></div>
+                        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#0f172a;">
+                          ${fmtNum(p.producido_kg)} / ${fmtNum(meta)} kg (${p.pct}%)
+                        </div>
+                      </div>
+                      ${!p.completado && falta > 0 ? `
+                        <div style="font-size:10.5px;color:#92400e;margin-top:4px;font-weight:600;">
+                          ${i === 0 
+                            ? `🔥 Falta fabricar ${fmtNum(falta)} kg en extrusión` 
+                            : `📦 Disponible para ${p.nombre}: ${fmtNum(p.disponible_para_trabajar || 0)} kg · falta ${fmtNum(falta)} kg`}
+                        </div>
+                      ` : ''}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+              ${puedeReparar ? `
+                <button onclick="window.repararAvanceODP('${odp.id}')" style="width:100%;background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;margin-bottom:14px;">
+                  🔧 Reparar avance (si quedó mal cerrada)
+                </button>
+              ` : ''}
+            `;
+          })()}
           
           <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">📊 Avances capturados (${capturas.length})</h3>
           ${capturas.length === 0 ? `
