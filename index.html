@@ -5981,39 +5981,49 @@ function renderVistaJuntaCarga(odpsBase) {
     if (!asignadaEnAlguna) sinAsignar.push(o);
   });
   
-  // Calcular horas y fechas estimadas por máquina (secuencial)
+  // 🆕 Helper: convierte horas-productivas-acumuladas en una fecha/hora real,
+  //    respetando 24 h productivas/día (2 turnos de 12 hr = trabaja todo el día).
+  //    Como se trabaja 24h, cada hora productiva = 1 hora de reloj.
+  const fechaDesdeHoras = (horasAcum) => {
+    const d = new Date(hoy);
+    d.setHours(d.getHours() + Math.round(horasAcum));
+    return d;
+  };
+  
+  // Calcular inicio→fin en CASCADA por máquina: cada orden empieza cuando
+  // termina la anterior en esa misma máquina.
   Object.values(cargaMaq).forEach(c => {
     const cap = Number(c.maquina.capacidad_kg_hr) || 0;
     let acumHoras = 0;
-    // ODP en producción primero, luego programadas
+    // La que está corriendo va primero; luego respeta prioridad_cola
     c.odps.sort((a, b) => {
       if (a.estatus === 'en_produccion' && b.estatus !== 'en_produccion') return -1;
       if (b.estatus === 'en_produccion' && a.estatus !== 'en_produccion') return 1;
-      return 0;
+      const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : 9e9;
+      const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : 9e9;
+      return pcA - pcB;
     });
     c.odps.forEach(o => {
       const kg = kgPendiente(o);
       c.kgTotal += kg;
       const horas = cap > 0 ? kg / cap : 0;
       o._horasEstimadas = horas;
-      o._horaInicioAcum = acumHoras;
+      // Inicio = cuando termina la anterior; Fin = inicio + sus horas
+      o._fechaInicioEstimada = cap > 0 ? fechaDesdeHoras(acumHoras) : null;
       acumHoras += horas;
-      o._horaFinAcum = acumHoras;
-      // Fecha estimada de término (sumando horas productivas)
-      const diasProductivos = acumHoras / (HORAS_TURNO * TURNOS_DIA);
-      const fechaFin = new Date(hoy);
-      fechaFin.setDate(fechaFin.getDate() + Math.ceil(diasProductivos));
-      o._fechaEstimadaFin = fechaFin;
-      // ¿Atrasada? compara fecha estimada vs fecha requerida
-      if (o.fecha_entrega_programada) {
-        o._atrasada = fechaFin > new Date(o.fecha_entrega_programada);
+      o._fechaEstimadaFin = cap > 0 ? fechaDesdeHoras(acumHoras) : null;
+      // ¿Atrasada? compara fecha fin estimada vs fecha requerida
+      const fReq = o.fecha_entrega_programada || o.fecha_entrega_solicitada;
+      if (fReq && o._fechaEstimadaFin) {
+        o._atrasada = o._fechaEstimadaFin > new Date(fReq);
       }
     });
     c.horasTotal = acumHoras;
-    c.diasCarga = acumHoras / (HORAS_TURNO * TURNOS_DIA);
+    c.diasCarga = acumHoras / 24; // 24 h productivas al día
   });
   
   const fmtFecha = (d) => d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—';
+  const fmtFechaHr = (d) => d ? d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) + ' ' + d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
   const totalKgGlobal = Object.values(cargaMaq).reduce((s, c) => s + c.kgTotal, 0);
   const totalAtrasadas = odpsActivas.filter(o => o._atrasada).length;
   
@@ -6093,10 +6103,13 @@ function renderVistaJuntaCarga(odpsBase) {
                         <div style="font-size:13px;font-weight:800;">${fmtNum(Math.round(kg))} kg</div>
                         <div style="font-size:10px;color:#64748b;">${cap > 0 ? '~'+o._horasEstimadas.toFixed(1)+' hr' : ''}</div>
                       </div>
-                      <div style="text-align:right;min-width:80px;">
-                        <div style="font-size:9px;color:#94a3b8;font-weight:700;">TERMINA ~</div>
-                        <div style="font-size:12px;font-weight:800;color:${o._atrasada ? '#dc2626' : '#16a34a'};">${cap > 0 ? fmtFecha(o._fechaEstimadaFin) : '—'}</div>
-                        ${o.fecha_entrega_programada ? `<div style="font-size:9px;color:#94a3b8;">req: ${fmtFecha(new Date(o.fecha_entrega_programada))}</div>` : ''}
+                      <div style="text-align:right;min-width:130px;">
+                        ${cap > 0 ? `
+                          <div style="font-size:9px;color:#94a3b8;font-weight:700;">INICIA → TERMINA</div>
+                          <div style="font-size:10.5px;font-weight:700;color:#475569;">${fmtFechaHr(o._fechaInicioEstimada)}</div>
+                          <div style="font-size:11px;font-weight:800;color:${o._atrasada ? '#dc2626' : '#16a34a'};">↳ ${fmtFechaHr(o._fechaEstimadaFin)}</div>
+                        ` : `<div style="font-size:11px;color:#94a3b8;">— sin kg/hr —</div>`}
+                        ${(o.fecha_entrega_programada || o.fecha_entrega_solicitada) ? `<div style="font-size:9px;color:#94a3b8;">req: ${fmtFecha(new Date(o.fecha_entrega_programada || o.fecha_entrega_solicitada))}</div>` : ''}
                       </div>
                     </div>
                   `;
@@ -6375,43 +6388,53 @@ function renderKanbanMaquinas() {
     const maq = getMaquinaActualODP(odp);
     const key = maq && porMaquina[maq] ? maq : '_sin_asignar';
     const estatus = odp.estatus || '';
-    const procEst = odp.proceso_estatus_actual || ''; // 🔀 estado granular: 'esperando' | 'en_proceso' | 'completado'
+    const procEst = odp.proceso_estatus_actual || ''; // 'esperando' | 'en_proceso' | 'pausado' | 'completado'
     
     if (estatus === 'cancelada') continue;
     
     // ✅ COMPLETADAS: ODP cerrada (liberada o pendiente_calidad)
-    if (estatus === 'completada' || estatus === 'liberada' || estatus === 'pendiente_calidad') {
+    if (estatus === 'completada' || estatus === 'liberada' || estatus === 'liberada_empaque' || estatus === 'pendiente_calidad') {
       porMaquina[key].completadas.push(odp);
     }
     // ⏸ PAUSADA: REGRESA A LA COLA — la máquina queda libre para la siguiente orden
     else if (procEst === 'pausado') {
       porMaquina[key].en_cola.push(odp);
     }
-    // ⚙️ EN PROCESO: el proceso tiene capturas activas
-    else if (procEst === 'en_proceso' || estatus === 'en_produccion' && procEst !== 'esperando' && procEst !== 'completado') {
-      // Si tiene capturas en este proceso = en proceso
-      const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === odp.proceso_actual);
-      if (capturas.length > 0 || procEst === 'en_proceso') {
-        porMaquina[key].en_proceso.push(odp);
-      } else {
-        porMaquina[key].en_cola.push(odp);
-      }
+    // ⚙️ EN PROCESO: SOLO si su estado granular es explícitamente 'en_proceso'
+    //    (NO basta con estatus 'en_produccion' — una ODP en paralelo puede estar
+    //    'en_produccion' pero su proceso en esta máquina estar 'esperando' o 'pausado').
+    else if (procEst === 'en_proceso') {
+      porMaquina[key].en_proceso.push(odp);
     }
-    // 📦 EN COLA: programada o esperando inicio de proceso (incluye "esperando turno tras cerrar anterior")
-    else if (estatus === 'aprobada' || estatus === 'pendiente_planeacion' || estatus === 'programada' || procEst === 'esperando' || estatus === 'en_produccion') {
+    // 📦 EN COLA: todo lo demás que está activo pero no corriendo
+    else if (['aprobada','pendiente_planeacion','programada','en_produccion'].includes(estatus) || procEst === 'esperando') {
       porMaquina[key].en_cola.push(odp);
     }
   }
   
-  // 🔢 Ordenar cada cola por prioridad_cola (menor = más arriba). 
-  // ⏸ PAUSADAS van hasta arriba (para no olvidarlas), luego por prioridad
+  // 🆕 GARANTÍA FÍSICA: una máquina solo puede tener UNA orden corriendo a la vez.
+  //    Si por algún estado inconsistente hay más de una en "en_proceso", dejamos
+  //    corriendo solo la que de verdad tiene producción reciente (o la primera) y
+  //    las demás bajan a la cola para que el operador decida.
+  Object.keys(porMaquina).forEach(k => {
+    const enProc = porMaquina[k].en_proceso;
+    if (enProc.length > 1) {
+      // Ordenar: la que tiene inicio_real más reciente se queda corriendo
+      enProc.sort((a, b) => {
+        const ta = a.proceso_actual_inicio?.seconds || a.inicio_real_at?.seconds || 0;
+        const tb = b.proceso_actual_inicio?.seconds || b.inicio_real_at?.seconds || 0;
+        return tb - ta; // más reciente primero
+      });
+      const sobran = enProc.splice(1); // dejar solo la primera corriendo
+      sobran.forEach(o => porMaquina[k].en_cola.push(o));
+    }
+  });
+  
+  // 🔢 Ordenar cada cola por prioridad_cola (menor = más arriba).
+  //    Las pausadas YA NO se fuerzan arriba: respetan su posición como cualquier
+  //    otra, para que el planeador pueda colocarlas donde quiera (▲▼ o arrastrar).
   Object.keys(porMaquina).forEach(k => {
     porMaquina[k].en_cola.sort((a, b) => {
-      // Pausadas primero (visibles, pendientes de reanudar)
-      const pauA = a.proceso_estatus_actual === 'pausado' ? 0 : 1;
-      const pauB = b.proceso_estatus_actual === 'pausado' ? 0 : 1;
-      if (pauA !== pauB) return pauA - pauB;
-      // Usar MAX_SAFE_INTEGER en vez de Infinity para evitar NaN en restas
       const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
       const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
       if (pa !== pb) return pa - pb;
@@ -6420,8 +6443,32 @@ function renderKanbanMaquinas() {
     });
   });
   
-  // KPIs
-  const totalEnCola = Object.values(porMaquina).reduce((s, m) => s + m.en_cola.length, 0);
+  // 🆕 Calcular fechas de inicio→fin en CASCADA por máquina (igual que la Vista Junta).
+  //    Cada orden empieza cuando termina la anterior en esa máquina.
+  const ahoraKanban = new Date();
+  const fechaDesdeHorasK = (h) => { const d = new Date(ahoraKanban); d.setHours(d.getHours() + Math.round(h)); return d; };
+  const metaKgODP = (o) => Number(o.cantidad_kg_produccion) || 0;
+  const prodKgProcODP = (o) => {
+    const av = window.avanceProcesosODP(o);
+    const idx = o.proceso_actual_idx ?? 0;
+    return av?.procesos?.[idx]?.producido_kg || 0;
+  };
+  maquinas.forEach(m => {
+    const cap = Number(m.capacidad_kg_hr) || 0;
+    const datos = porMaquina[m.codigo];
+    if (!datos) return;
+    let acum = 0;
+    // Secuencia real: la que está en proceso primero, luego la cola en orden
+    const secuencia = [...datos.en_proceso, ...datos.en_cola];
+    secuencia.forEach(o => {
+      const kgPend = Math.max(0, metaKgODP(o) - prodKgProcODP(o));
+      const horas = cap > 0 ? kgPend / cap : 0;
+      o._kanIni = cap > 0 ? fechaDesdeHorasK(acum) : null;
+      acum += horas;
+      o._kanFin = cap > 0 ? fechaDesdeHorasK(acum) : null;
+      o._kanHoras = horas;
+    });
+  });
   const totalEnProceso = Object.values(porMaquina).reduce((s, m) => s + m.en_proceso.length, 0);
   const totalCompletadas = Object.values(porMaquina).reduce((s, m) => s + m.completadas.length, 0);
   
@@ -6551,11 +6598,13 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
   
   return `
     <div ${dragAttrs} onclick="abrirModal('detalle-odp','${odp.id}')" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:${bgFila};border:1px solid ${bordeFila};border-radius:8px;cursor:pointer;${draggable?'cursor:grab;':''}">
-      <!-- Indicador de posición / estado -->
+      <!-- Indicador de posición / estado (clic en el número = mover a posición exacta) -->
       <div style="min-width:30px;text-align:center;">
         ${enProceso 
           ? '<div style="font-size:16px;">🟢</div>' 
-          : `<div style="font-size:16px;font-weight:900;color:#7c3aed;">${idx + 1}</div>`}
+          : (puedeReordenar 
+            ? `<div onclick="event.stopPropagation();window.moverODPaPosicion('${odp.id}','${maquina}')" title="Clic para mover a una posición específica" style="font-size:16px;font-weight:900;color:#7c3aed;cursor:pointer;background:#f5f3ff;border-radius:6px;padding:2px 0;border:1px solid #ddd6fe;">${idx + 1}</div>`
+            : `<div style="font-size:16px;font-weight:900;color:#7c3aed;">${idx + 1}</div>`)}
       </div>
       
       <!-- Info principal -->
@@ -6579,8 +6628,17 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
           return `<div style="font-size:13px;font-weight:800;color:#0f172a;">${dual.principal}</div>
             ${dual.secundaria ? `<div style="font-size:10px;color:#64748b;font-weight:600;">${dual.secundaria}</div>` : ''}`;
         })()}
-        ${fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#94a3b8'};">📅 ${fechaEnt}</div>` : ''}
+        ${fechaEnt ? `<div style="font-size:9px;color:${vencida ? '#dc2626' : '#94a3b8'};">📅 req: ${fechaEnt}</div>` : ''}
       </div>
+      
+      <!-- 🆕 Inicio → Fin estimados (cascada) -->
+      ${(odp._kanIni && odp._kanFin) ? `
+        <div style="text-align:right;min-width:110px;">
+          <div style="font-size:8.5px;color:#94a3b8;font-weight:700;">INICIA → TERMINA</div>
+          <div style="font-size:10px;font-weight:700;color:#475569;">${(() => { const d=odp._kanIni; return d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hour12:false}); })()}</div>
+          <div style="font-size:11px;font-weight:800;color:${vencida ? '#dc2626' : '#16a34a'};">↳ ${(() => { const d=odp._kanFin; return d.toLocaleDateString('es-MX',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hour12:false}); })()}</div>
+        </div>
+      ` : ''}
       
       <!-- Controles de reordenamiento rápido -->
       ${puedeReordenar ? `
@@ -7033,6 +7091,70 @@ window.moverODPaOtraMaquina = async (odpId, maqOrigen) => {
     toast('Error al mover: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
+  }
+};
+
+// 🆕 Mover una ODP a una POSICIÓN específica de la cola (ej: a la posición 24)
+window.moverODPaPosicion = async (odpId, maqCod) => {
+  const u = state.user || {};
+  const puede = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden reordenar. Tu depto: ${u.depto || '?'}`, 'error'); return; }
+  
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  // Obtener la cola de la misma máquina (mismo criterio que moverODPCola)
+  const odpsEnCola = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada) return false;
+    const idx2 = o.proceso_actual_idx ?? 0;
+    const maqs2 = o.maquinas_asignadas || {};
+    const proc2 = (o.ruta_procesos || [])[idx2];
+    let maq2 = (typeof maqs2 === 'object' && !Array.isArray(maqs2)) ? maqs2[proc2] : (Array.isArray(maqs2) ? maqs2[idx2] : maqs2);
+    if (maq2 !== maqCod) return false;
+    const est = o.estatus || '';
+    const procEst = o.proceso_estatus_actual || '';
+    return ['aprobada','pendiente','programada','pendiente_planeacion'].includes(est) 
+        || (est === 'en_produccion' && procEst !== 'en_proceso' && procEst !== 'completado');
+  }).sort((a, b) => {
+    const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    return (a.fecha_entrega_solicitada || '').localeCompare(b.fecha_entrega_solicitada || '');
+  });
+  
+  const total = odpsEnCola.length;
+  const posActual = odpsEnCola.findIndex(o => o.id === odpId) + 1;
+  
+  const resp = prompt(
+    `↕ MOVER ${odp.folio} en la cola de ${maqCod}\n\n` +
+    `Posición actual: ${posActual} de ${total}\n\n` +
+    `Escribe la nueva posición (1 = primero, ${total} = último):`,
+    String(posActual)
+  );
+  if (resp === null) return;
+  let nuevaPos = parseInt(resp.trim(), 10);
+  if (!nuevaPos || nuevaPos < 1) { toast('Posición inválida', 'error'); return; }
+  if (nuevaPos > total) nuevaPos = total;
+  
+  // Reordenar: sacar la ODP de su posición y meterla en la nueva
+  const sinLaODP = odpsEnCola.filter(o => o.id !== odpId);
+  sinLaODP.splice(nuevaPos - 1, 0, odp);
+  
+  try {
+    state.loadingAccion = true;
+    const batch = writeBatch(db);
+    sinLaODP.forEach((o, i) => {
+      const nuevaPrio = (i + 1) * 10; // 10, 20, 30... deja hueco para insertar
+      batch.update(doc(db, 'ordenes_produccion', o.id), { prioridad_cola: nuevaPrio, updated_at: serverTimestamp() });
+      const oLocal = state.ordenes_produccion.find(x => x.id === o.id);
+      if (oLocal) oLocal.prioridad_cola = nuevaPrio;
+    });
+    await batch.commit();
+    toast(`✅ ${odp.folio} movida a la posición ${nuevaPos} de ${total}`, 'success');
+  } catch (e) {
+    toast('Error al mover: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
   }
 };
 
@@ -8289,6 +8411,34 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
       updates.inicio_real_at = serverTimestamp();
       updates.inicio_real_por = state.user?.nombre || state.user?.email || 'sistema';
     }
+    
+    // 🆕 REGLA FÍSICA: una máquina solo corre UNA orden a la vez.
+    //    Si hay otra ODP corriendo en ESTA misma máquina/proceso, pausarla
+    //    automáticamente antes de iniciar la nueva (no se pierde, vuelve a la cola).
+    if (maqCodigo) {
+      const otrasCorriendo = (state.ordenes_produccion || []).filter(o =>
+        o.id !== odpId &&
+        !o.archivada &&
+        o.estatus === 'en_produccion' &&
+        o.proceso_estatus_actual === 'en_proceso' &&
+        (o.maquinas_asignadas?.[procAIniciar] === maqCodigo)
+      );
+      for (const otra of otrasCorriendo) {
+        await updateDoc(doc(db, 'ordenes_produccion', otra.id), {
+          proceso_estatus_actual: 'pausado',
+          pausa_motivo: `Pausada automáticamente al iniciar ${odp.folio} en ${maqCodigo}`,
+          pausa_iniciada_at: serverTimestamp(),
+          pausa_por: state.user?.nombre || state.user?.email || 'sistema',
+          updated_at: serverTimestamp()
+        });
+        const otraLocal = state.ordenes_produccion.find(x => x.id === otra.id);
+        if (otraLocal) otraLocal.proceso_estatus_actual = 'pausado';
+      }
+      if (otrasCorriendo.length > 0) {
+        toast(`⏸ ${otrasCorriendo.map(o => o.folio).join(', ')} pausada(s) — ${maqCodigo} solo corre una a la vez`, 'info');
+      }
+    }
+    
     await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     // Optimistic local
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
