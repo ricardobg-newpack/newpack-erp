@@ -6153,8 +6153,8 @@ function renderProgramacion() {
   const subTab = state.tabs.programacion || 'pendientes';
   const vistaModo = state.vistaModo?.programacion || 'lista'; // 'lista' | 'proceso'
   
-  // 🗄️ Excluir ODPs archivadas (uso en vivo)
-  const odpsBase = state.ordenes_produccion.filter(o => !o.archivada);
+  // 🗄️ Excluir ODPs archivadas Y canceladas (uso en vivo)
+  const odpsBase = state.ordenes_produccion.filter(o => !o.archivada && o.estatus !== 'cancelada');
   const odpsPend = odpsBase.filter(o => o.estatus === 'pendiente_planeacion');
   const odpsProg = odpsBase.filter(o => o.estatus === 'programada');
   const odpsEnProd = odpsBase.filter(o => o.estatus === 'en_produccion');
@@ -6258,7 +6258,7 @@ function renderKanbanMaquinas() {
   const procFiltro = state.kanban_proceso || 'todos';
   
   // Obtener ODPs activas (NO archivadas)
-  let todasODPs = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  let todasODPs = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus !== 'cancelada');
   const cantArchivadas = (state.ordenes_produccion || []).filter(o => o.archivada).length;
   
   // 🆕 Si hay filtro por proceso, mostrar las ODPs cuyo proceso filtrado esté
@@ -6924,7 +6924,7 @@ window.onKanbanDrop = async (event, maqDestino) => {
     
     // ODPs actuales en la máquina destino (excluyendo la que movemos)
     const odpsEnDestino = (state.ordenes_produccion || []).filter(o => {
-      if (o.archivada) return false;
+      if (o.archivada || o.estatus === 'cancelada') return false;
       if (o.id === odpId) return false;
       const idx = o.proceso_actual_idx ?? 0;
       const maqs = o.maquinas_asignadas || {};
@@ -7129,7 +7129,7 @@ window.moverODPaPosicion = async (odpId, maqCod) => {
   
   // Obtener la cola de la misma máquina (mismo criterio que moverODPCola)
   const odpsEnCola = (state.ordenes_produccion || []).filter(o => {
-    if (o.archivada) return false;
+    if (o.archivada || o.estatus === 'cancelada') return false;
     const idx2 = o.proceso_actual_idx ?? 0;
     const maqs2 = o.maquinas_asignadas || {};
     const proc2 = (o.ruta_procesos || [])[idx2];
@@ -7208,7 +7208,7 @@ window.moverODPCola = async (odpId, direccion) => {
   
   // Obtener todas las ODPs en cola de la misma máquina (mismo conjunto que ve en el Kanban)
   const odpsEnCola = (state.ordenes_produccion || []).filter(o => {
-    if (o.archivada) return false;
+    if (o.archivada || o.estatus === 'cancelada') return false;
     const idx2 = o.proceso_actual_idx ?? 0;
     const maqs2 = o.maquinas_asignadas || {};
     const proc2 = (o.ruta_procesos || [])[idx2];
@@ -8330,6 +8330,13 @@ window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
     });
     
     await batch.commit();
+    // Optimistic: reflejar cancelaciones en el state local de inmediato
+    odpsHijas.forEach(o => {
+      const l = state.ordenes_produccion.find(x => x.id === o.id);
+      if (l) { l.estatus = 'cancelada'; l.archivada = true; }
+    });
+    const pLocal = state.pedidos.find(x => x.id === pedidoId);
+    if (pLocal) pLocal.estatus = 'cancelado';
     toast(`✅ PI ${folio} cancelado. ${tarimasRelacionadas.length} tarima(s) regresaron a stock libre.`, 'success');
   } catch (e) {
     console.error('Error cancelar PI:', e);
@@ -8682,7 +8689,7 @@ window.reanudarODP = async (odpId) => {
     console.error('Error reanudar ODP:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
-    state.loadingAccion = false; render();
+    state.loadingAccion = false; window.forzarRender();
   }
 };
 
@@ -8735,12 +8742,15 @@ window.cancelarODPConDevolucion = async (odpId) => {
     });
     
     await batch.commit();
+    // Optimistic: reflejar la cancelación en el state local de inmediato
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) { odpLocal.estatus = 'cancelada'; odpLocal.archivada = true; }
     toast(`✅ ODP ${odp.folio} cancelada. ${tarimas.length} tarima(s) liberadas a stock.`, 'success');
   } catch (e) {
     console.error('Error cancelar ODP:', e);
     toast('Error: ' + e.message, 'error');
   } finally {
-    state.loadingAccion = false; render();
+    state.loadingAccion = false; window.forzarRender();
   }
 };
 
@@ -10496,11 +10506,31 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
       <button onclick="abrirModal('capturar-turno','${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR Y CAPTURAR PRIMER TURNO</button>
     `;
   } else if (modo === 'cola' && procIdx > idxActual) {
-    // Mi proceso aún no llega (proceso anterior todavía trabajando)
+    // 🆕 MODELO PARALELO: mi proceso (bolseo) viene después de extrusión, PERO si ya
+    //    hay material disponible (colchón), bolseo SÍ puede empezar a trabajar aunque
+    //    extrusión siga siendo el "proceso actual". Solo esperar si NO hay material.
     const procAnt = ruta[idxActual];
     const procAntInfo = PROCESOS.find(p => p.codigo === procAnt);
     const maqAnt = o.maquinas_asignadas?.[procAnt];
-    botonPrincipal = `<div style="background:#f1f5f9;color:#475569;padding:14px;border-radius:8px;text-align:center;font-weight:700;font-size:13px;border:1.5px dashed #cbd5e1;">⏳ Esperando ${procAntInfo?.icono || ''} ${procAntInfo?.nombre || procAnt}${maqAnt ? ` (${maqAnt})` : ''}</div>`;
+    const avPar = window.avanceProcesosODP(o);
+    const miProcPar = avPar?.procesos?.[procIdx];
+    const dispParalelo = miProcPar?.disponible_para_trabajar || 0;
+    const yaArranco = o.avance_procesos?.[procSel]?.estatus === 'en_proceso' || (miProcPar?.producido_kg || 0) > 0;
+    
+    if (dispParalelo > 0) {
+      // Hay material → bolseo puede iniciar/capturar
+      botonPrincipal = `
+        <div style="background:#dcfce7;border:1.5px solid #86efac;border-radius:8px;padding:10px;margin-bottom:8px;text-align:center;font-size:11px;color:#166534;font-weight:700;">
+          📦 Hay ${fmtNum(dispParalelo)} kg listos de ${procAntInfo?.nombre || 'extrusión'}. Puedes empezar a ${getProc(procSel)?.nombre || 'trabajar'}.
+        </div>
+        <button onclick="${yaArranco ? `abrirModal('capturar-turno','${o.id}')` : `window.iniciarProduccionODP('${o.id}','${procSel}')`}" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">
+          ${yaArranco ? '📋 CAPTURAR TURNO' : '▶️ INICIAR Y CAPTURAR'}
+        </button>
+      `;
+    } else {
+      // No hay material todavía → esperar a que extrusión produzca
+      botonPrincipal = `<div style="background:#f1f5f9;color:#475569;padding:14px;border-radius:8px;text-align:center;font-weight:700;font-size:13px;border:1.5px dashed #cbd5e1;">⏳ Esperando ${procAntInfo?.icono || ''} ${procAntInfo?.nombre || procAnt}${maqAnt ? ` (${maqAnt})` : ''} — aún sin material</div>`;
+    }
   } else if (modo === 'trabajando' && estaPausada) {
     botonPrincipal = `<button onclick="window.reanudarODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;width:100%;">▶️ REANUDAR</button>`;
   } else if (modo === 'trabajando' && !estaPausada) {
@@ -12553,8 +12583,8 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
           <!-- LISTA DE ROLLOS DEL TURNO -->
           ${rollosDelTurno.length > 0 ? `
             <div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:12px;">
-              <div style="background:#f8fafc;padding:8px 12px;font-size:11.5px;font-weight:800;color:#475569;border-bottom:1px solid #e2e8f0;">
-                📋 Rollos capturados en este turno (${rollosDelTurno.length})
+              <div style="background:#dcfce7;padding:8px 12px;font-size:11.5px;font-weight:800;color:#166534;border-bottom:1px solid #e2e8f0;">
+                ✅ ${rollosDelTurno.length} rollo(s) GUARDADO(S) en este turno · ${fmtNum(totalKgTurno)} kg · puedes cerrar sin perder nada
               </div>
               <table style="width:100%;border-collapse:collapse;font-size:12px;">
                 <thead style="background:#f1f5f9;">
