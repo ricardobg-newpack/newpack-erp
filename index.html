@@ -511,6 +511,13 @@ window.avanceProcesosODP = (odp) => {
       producido += kgRollosSinConsolidar;
     }
     
+    // 🆕 'completado' es la verdad del CIERRE guardado (avance_procesos[cod].completado).
+    //    Si no hay cierre guardado, se infiere por producción vs meta. Esto evita que
+    //    el cálculo dinámico contradiga el cierre manual (causa de tener que "reparar").
+    const cierreGuardado = odp.avance_procesos?.[cod];
+    const completadoGuardado = cierreGuardado?.completado === true;
+    const completadoInferido = producido >= meta * 0.98 && meta > 0;
+    
     return {
       codigo: cod,
       nombre: getProc(cod)?.nombre || cod,
@@ -518,7 +525,7 @@ window.avanceProcesosODP = (odp) => {
       idx: i,
       producido_kg: Math.round(producido),
       meta_kg: Math.round(meta),
-      completado: producido >= meta * 0.98 && meta > 0,
+      completado: completadoGuardado || completadoInferido,
       pct: meta > 0 ? Math.min(100, Math.round((producido / meta) * 100)) : 0
     };
   });
@@ -6392,21 +6399,36 @@ function renderKanbanMaquinas() {
     
     if (estatus === 'cancelada') continue;
     
-    // ✅ COMPLETADAS: ODP cerrada (liberada o pendiente_calidad)
+    // 🆕 Determinar el proceso relevante para esta vista:
+    //    - Si hay filtro de proceso, usar ese proceso específico
+    //    - Si no, usar el proceso actual de la ODP
+    const ruta = odp.ruta_procesos || [];
+    const procRelevante = (procFiltro !== 'todos') ? procFiltro : (odp.proceso_actual || ruta[odp.proceso_actual_idx ?? 0]);
+    const avProc = odp.avance_procesos?.[procRelevante];
+    const procRelevanteCompletado = avProc?.completado === true;
+    const esProcActual = procRelevante === (odp.proceso_actual || ruta[odp.proceso_actual_idx ?? 0]);
+    
+    // ✅ COMPLETADAS: la ODP entera cerró, O este proceso específico ya se completó
     if (estatus === 'completada' || estatus === 'liberada' || estatus === 'liberada_empaque' || estatus === 'pendiente_calidad') {
       porMaquina[key].completadas.push(odp);
     }
-    // ⏸ PAUSADA: REGRESA A LA COLA — la máquina queda libre para la siguiente orden
-    else if (procEst === 'pausado') {
+    else if (procRelevanteCompletado) {
+      // Este proceso ya terminó (aunque la ODP siga en otro proceso) → va a completadas de ESTA máquina
+      porMaquina[key].completadas.push(odp);
+    }
+    // ⏸ PAUSADA: regresa a la cola (solo si el proceso relevante es el actual y está pausado)
+    else if (procEst === 'pausado' && esProcActual) {
       porMaquina[key].en_cola.push(odp);
     }
-    // ⚙️ EN PROCESO: SOLO si su estado granular es explícitamente 'en_proceso'
-    //    (NO basta con estatus 'en_produccion' — una ODP en paralelo puede estar
-    //    'en_produccion' pero su proceso en esta máquina estar 'esperando' o 'pausado').
-    else if (procEst === 'en_proceso') {
+    // ⚙️ EN PROCESO: el proceso relevante está corriendo
+    else if (esProcActual && procEst === 'en_proceso') {
       porMaquina[key].en_proceso.push(odp);
     }
-    // 📦 EN COLA: todo lo demás que está activo pero no corriendo
+    else if (!esProcActual && avProc?.estatus === 'en_proceso') {
+      // Proceso paralelo (ej. bolseo) corriendo aunque no sea el "actual" global
+      porMaquina[key].en_proceso.push(odp);
+    }
+    // 📦 EN COLA: activo pero no corriendo este proceso
     else if (['aprobada','pendiente_planeacion','programada','en_produccion'].includes(estatus) || procEst === 'esperando') {
       porMaquina[key].en_cola.push(odp);
     }
@@ -7723,6 +7745,73 @@ window.modalVerCapturas = modalVerCapturas;
 // 🆕 REPARAR el avance de una ODP: recalcula lo realmente producido en cada proceso
 //    (desde capturas + rollos) y REABRE los procesos que no llegaron a su meta.
 //    Útil para ODPs que quedaron mal cerradas (proceso marcado completo sin llegar a meta).
+// 🆕 CERRAR ODP CON SALDO PENDIENTE — decisión de Planeación/Producción.
+//    Cuando se produjo menos de la meta (ej: 700 de 1000) y deciden NO producir
+//    el resto, se cierra la ODP con lo que hay y se registra el saldo no producido.
+window.cerrarODPConSaldo = async (odpId) => {
+  const u = state.user || {};
+  const puede = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden cerrar con saldo. Tu depto: ${u.depto || '?'}`, 'error'); return; }
+  
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const av = window.avanceProcesosODP(odp);
+  const meta = av?.meta_kg || Number(odp.cantidad_kg_produccion) || 0;
+  // El producido real = el menor avance entre los procesos (lo que de verdad salió completo)
+  const ruta = odp.ruta_procesos || [];
+  const ultimoProc = ruta[ruta.length - 1];
+  const idxUltimo = ruta.length - 1;
+  const producidoFinal = av?.procesos?.[idxUltimo]?.producido_kg || av?.procesos?.[0]?.producido_kg || 0;
+  const saldo = Math.max(0, meta - producidoFinal);
+  
+  const conf = confirm(
+    `✓ CERRAR CON SALDO — ${odp.folio}\n\n` +
+    `Meta: ${fmtNum(meta)} kg\n` +
+    `Producido: ${fmtNum(producidoFinal)} kg\n` +
+    `SALDO NO PRODUCIDO: ${fmtNum(saldo)} kg\n\n` +
+    `Esta es una decisión de Planeación/Producción.\n` +
+    `La ODP se cerrará con los ${fmtNum(producidoFinal)} kg que sí se produjeron y pasará a Calidad.\n` +
+    `El saldo de ${fmtNum(saldo)} kg quedará registrado como NO producido.\n\n` +
+    `¿Confirmar el cierre?`
+  );
+  if (!conf) return;
+  
+  const motivo = prompt('Motivo del cierre con saldo (ej: "cliente acepta cantidad parcial", "se suspende el resto"):', '');
+  if (motivo === null) return;
+  
+  try {
+    state.loadingAccion = true;
+    // Marcar todos los procesos como completados con lo que hay
+    const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
+    ruta.forEach(cod => {
+      if (!avanceProc[cod]) avanceProc[cod] = {};
+      avanceProc[cod].completado = true;
+      avanceProc[cod].estatus = 'completado';
+    });
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      estatus: 'pendiente_calidad',
+      proceso_estatus_actual: 'completado',
+      proceso_actual: null,
+      avance_procesos: avanceProc,
+      cantidad_producida_final_kg: producidoFinal,
+      cerrado_con_saldo: true,
+      saldo_no_producido_kg: saldo,
+      cerrado_con_saldo_motivo: motivo.trim(),
+      cerrado_con_saldo_por: u.nombre || u.email,
+      cerrado_con_saldo_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) { odpLocal.estatus = 'pendiente_calidad'; odpLocal.proceso_estatus_actual = 'completado'; odpLocal.avance_procesos = avanceProc; }
+    toast(`✅ ${odp.folio} cerrada con ${fmtNum(producidoFinal)} kg. Saldo registrado: ${fmtNum(saldo)} kg no producidos.`, 'success');
+  } catch (e) {
+    toast('Error al cerrar: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
 window.repararAvanceODP = async (odpId) => {
   const u = state.user || {};
   const puede = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
@@ -8575,52 +8664,14 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
       updated_at: serverTimestamp()
     });
     state.modal = null; state.modalData = null; state.modalForm = null;
-    toast(`⏸ ${odp.folio} pausada · ${motivoTxt}`, 'info');
+    // Optimistic local
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) odpLocal.proceso_estatus_actual = 'pausado';
+    toast(`⏸ ${odp.folio} pausada · ${motivoTxt}. La máquina queda libre — inicia la siguiente cuando arranques.`, 'info');
     
-    // 🆕 EL MOVIMIENTO — buscar la SIGUIENTE orden en cola de la MISMA máquina y ofrecer iniciarla
-    try {
-      const idx = odp.proceso_actual_idx ?? 0;
-      const procCod = (odp.ruta_procesos || [])[idx] || '';
-      const maqActual = odp.maquinas_asignadas?.[procCod] || '';
-      
-      if (maqActual) {
-        // Candidatas: programadas en la misma máquina (mismo proceso), ordenadas por prioridad de cola
-        const candidatas = (state.ordenes_produccion || []).filter(o2 => {
-          if (o2.id === odpId || o2.archivada) return false;
-          if (o2.estatus !== 'programada') return false;
-          const i2 = o2.proceso_actual_idx ?? 0;
-          const p2 = (o2.ruta_procesos || [])[i2] || '';
-          return (o2.maquinas_asignadas?.[p2] || '') === maqActual;
-        }).sort((a, b) => {
-          const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
-          const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
-          if (pa !== pb) return pa - pb;
-          return (a.fecha_entrega_solicitada || '9999').localeCompare(b.fecha_entrega_solicitada || '9999');
-        });
-        
-        const siguiente = candidatas[0];
-        if (siguiente) {
-          const iniciarYa = confirm(
-            `⏭ SIGUIENTE EN COLA DE ${maqActual}\n\n` +
-            `${siguiente.folio} · ${siguiente.producto_codigo}\n` +
-            `${siguiente.cliente_nombre || 'STOCK'} · ${fmtNum(siguiente.cantidad_kg_produccion || siguiente.cantidad)} ${siguiente.um || 'kg'}\n\n` +
-            `¿INICIARLA AHORA en ${maqActual}?`
-          );
-          if (iniciarYa) {
-            await updateDoc(doc(db, 'ordenes_produccion', siguiente.id), {
-              estatus: 'en_produccion',
-              proceso_estatus_actual: 'en_proceso',
-              inicio_real_at: siguiente.inicio_real_at || serverTimestamp(),
-              inicio_real_por: state.user?.nombre || state.user?.email || 'sistema',
-              updated_at: serverTimestamp()
-            });
-            toast(`▶️ ${siguiente.folio} iniciada en ${maqActual}`, 'success');
-          }
-        }
-      }
-    } catch (eSig) {
-      console.warn('No se pudo ofrecer la siguiente orden:', eSig);
-    }
+    // 🆕 NO se inicia ninguna orden automáticamente. El operador inicia la siguiente
+    //    MANUALMENTE cuando la máquina realmente arranca (pudo pararse 1 hora para
+    //    resolver un tema). Así el tiempo de inicio queda correcto.
   } catch (e) {
     console.error('Error pausar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
@@ -12996,8 +13047,9 @@ window.agregarRolloExtrusion = async (odpId) => {
       state.rollos_extrusion.push({ id: refRollo.id, ...nuevoRollo, created_at: { seconds: Math.floor(Date.now()/1000) } });
     }
     
-    // 🆕 Auto-iniciar producción si la ODP estaba en cola (primer rollo) — sin bloquear
-    if (odp.estatus === 'programada' || odp.proceso_estatus_actual === 'esperando') {
+    // 🆕 Auto-iniciar producción si la ODP estaba en cola/esperando (primer rollo).
+    //    NO reactivar si estaba PAUSADA (eso lo decide el operador con "Reanudar").
+    if ((odp.estatus === 'programada' || odp.proceso_estatus_actual === 'esperando') && odp.proceso_estatus_actual !== 'pausado') {
       // Optimistic local inmediato
       const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
       if (odpLocal) { odpLocal.estatus = 'en_produccion'; odpLocal.proceso_estatus_actual = 'en_proceso'; }
@@ -13005,8 +13057,8 @@ window.agregarRolloExtrusion = async (odpId) => {
       updateDoc(doc(db, 'ordenes_produccion', odpId), {
         estatus: 'en_produccion',
         proceso_estatus_actual: 'en_proceso',
-        iniciado_at: odp.iniciado_at || serverTimestamp(),
-        iniciado_por: odp.iniciado_por || state.user.id,
+        inicio_real_at: odp.inicio_real_at || serverTimestamp(),
+        inicio_real_por: odp.inicio_real_por || state.user.id,
         updated_at: serverTimestamp()
       }).catch(e => console.warn('No se pudo auto-iniciar la ODP:', e.message));
     }
@@ -32845,9 +32897,16 @@ function modalDetalleODP() {
                 }).join('')}
               </div>
               ${puedeReparar ? `
-                <button onclick="window.repararAvanceODP('${odp.id}')" style="width:100%;background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;margin-bottom:14px;">
-                  🔧 Reparar avance (si quedó mal cerrada)
-                </button>
+                <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+                  <button onclick="window.repararAvanceODP('${odp.id}')" style="flex:1;min-width:140px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                    🔧 Reparar avance
+                  </button>
+                  ${(odp.estatus === 'en_produccion' || odp.proceso_estatus_actual === 'pausado') ? `
+                    <button onclick="window.cerrarODPConSaldo('${odp.id}')" style="flex:1;min-width:140px;background:#fff;color:#92400e;border:1.5px solid #f59e0b;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                      ✓ Cerrar con saldo (decisión PLN/PRO)
+                    </button>
+                  ` : ''}
+                </div>
               ` : ''}
             `;
           })()}
@@ -37908,6 +37967,18 @@ window.confirmarCompletarProceso = async (odpId) => {
   avanceProc[codProcCerrado].completado = marcarCompletado;
   avanceProc[codProcCerrado].estatus = marcarCompletado ? 'completado' : 'en_proceso';
   
+  // 🆕 DETECTAR SOBREPRODUCCIÓN: si se produjo más del 110% (tolerancia 10%),
+  //    el excedente por encima del 110% se separa en una ODP automática para STOCK.
+  const TOLERANCIA_SOBRE = 0.10; // 10%
+  const topePermitido = metaProcesoKg * (1 + TOLERANCIA_SOBRE);
+  let kgSobrante = 0;
+  if (marcarCompletado && metaProcesoKg > 0 && prodKg > topePermitido) {
+    kgSobrante = Math.round(prodKg - topePermitido);
+    // El proceso registra como producido el tope permitido (110%); el resto es sobrante
+    avanceProc[codProcCerrado].producido_kg = Math.round(topePermitido);
+    avanceProc[codProcCerrado].sobrante_kg = kgSobrante;
+  }
+  
   // 🆕 Si es cierre parcial SIN terminar: guardar avance y mantener la ODP en producción
   //    en el MISMO proceso, para que NO desaparezca del Kanban ni de Programación.
   if (!marcarCompletado) {
@@ -38190,6 +38261,45 @@ window.confirmarCompletarProceso = async (odpId) => {
         notas_produccion_finales: notasCierre,
         updated_at: serverTimestamp()
       });
+      
+      // 🆕 SOBREPRODUCCIÓN: si se produjo más del 110%, crear ODP automática para STOCK con el sobrante
+      const sobranteTotal = Object.values(avanceProc).reduce((s, p) => s + (Number(p.sobrante_kg) || 0), 0);
+      if (sobranteTotal > 0) {
+        try {
+          const folioStock = `ODP-STK-${Date.now().toString().slice(-6)}`;
+          const nuevaODPStock = {
+            folio: folioStock,
+            tipo: 'stock_interno',
+            origen_sobrante_de: odp.folio,
+            origen_sobrante_odp_id: odpId,
+            producto_codigo: odp.producto_codigo,
+            producto_descripcion: odp.producto_descripcion || '',
+            cliente_codigo: '',
+            cliente_nombre: 'STOCK (sobrante de produccion)',
+            cantidad: sobranteTotal,
+            um: 'kg',
+            cantidad_kg_produccion: sobranteTotal,
+            ruta_procesos: [],
+            proceso_actual_idx: 0,
+            proceso_actual: null,
+            avance_procesos: {},
+            estatus: 'pendiente_calidad',
+            proceso_estatus_actual: 'completado',
+            cantidad_producida_final_kg: sobranteTotal,
+            es_sobrante_automatico: true,
+            creado_at: serverTimestamp(),
+            creado_por: state.user.id,
+            creado_por_nombre: state.user.nombre || state.user.email,
+            notas_planeacion: `Sobrante automatico de ${odp.folio}: se produjeron ${fmtNum(prodKg)} kg de meta ${fmtNum(metaProcesoKg)} kg (tope 110% = ${fmtNum(Math.round(topePermitido))} kg). Los ${fmtNum(sobranteTotal)} kg extra van a stock.`,
+            updated_at: serverTimestamp()
+          };
+          await addDoc(collection(db, 'ordenes_produccion'), nuevaODPStock);
+          toast(`📦 Sobrante de ${fmtNum(sobranteTotal)} kg -> nueva ODP de stock ${folioStock}`, 'info');
+        } catch (eSob) {
+          console.error('Error creando ODP de sobrante:', eSob);
+          toast('No se pudo crear la ODP de sobrante: ' + eSob.message, 'error');
+        }
+      }
       
       // 🆕 F4 — Capturar merma al almacén de PELETIZADO (clasificación automática)
       // ⚠ Anti doble-conteo: en P-1 la merma se registra POR ROLLO al capturarlo.
