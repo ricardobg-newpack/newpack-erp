@@ -2600,6 +2600,35 @@ function almacenDeTarima(t) {
   }
 }
 window.almacenDeTarima = almacenDeTarima;
+
+// 🆕 STOCK LIBRE de un producto (en la UM del producto) — tarimas disponibles para
+//    cualquier OV: están físicamente almacenadas y NO asignadas a un pedido/OV.
+//    Incluye sobrante de sobreproducción, ODP-STK y devoluciones a stock.
+window.stockLibreProducto = (productoCodigo) => {
+  if (!productoCodigo) return 0;
+  return (state.tarimas || []).filter(t => {
+    if (t.producto_codigo !== productoCodigo) return false;
+    if (t.activo === false) return false;
+    if (t.reservada) return false;
+    // Debe estar físicamente disponible (no embarcada/entregada/en empaque)
+    const enStock = ['en_cedis_mty', 'en_cedis_mex', 'en_almacen_planta'].includes(t.estatus);
+    if (!enStock) return false;
+    // LIBRE = sin pedido ni OV asignados (es stock, no de un cliente específico)
+    const sinPedido = !t.pedido_id && !t.pedido_folio;
+    const sinOV = !t.ov_id && !t.ov_folio;
+    return sinPedido && sinOV;
+  }).reduce((s, t) => s + (Number(t.cantidad_actual ?? t.cantidad) || 0), 0);
+};
+
+// 🆕 STOCK TOTAL de un producto (libre + reservado) — para reporting/inventario
+window.stockTotalProducto = (productoCodigo) => {
+  if (!productoCodigo) return 0;
+  return (state.tarimas || []).filter(t => 
+    t.producto_codigo === productoCodigo && t.activo !== false &&
+    ['en_cedis_mty', 'en_cedis_mex', 'en_almacen_planta'].includes(t.estatus)
+  ).reduce((s, t) => s + (Number(t.cantidad_actual ?? t.cantidad) || 0), 0);
+};
+
 function fmtCantidadUM(n, um) {
   const umLow = (um || 'kg').toLowerCase();
   const label = UM_LABELS[umLow] || um || 'Kg';
@@ -5808,12 +5837,9 @@ function renderFormPedido() {
                     <!-- 🆕 ORIGEN AUTOEXPLICATIVO: muestra el stock disponible y guía la decisión -->
                     ${(() => {
                       const prodPT = window.getProductoPT(l.producto_codigo);
-                      // Stock disponible en CEDIS de este producto
-                      const stockDisp = (state.tarimas || []).filter(t => 
-                        t.producto_codigo === l.producto_codigo && 
-                        ['en_cedis_mty','en_cedis_mex','en_almacen_planta'].includes(t.estatus) &&
-                        !t.reservada
-                      ).reduce((s, t) => s + (Number(t.cantidad_actual ?? t.cantidad) || 0), 0);
+                      // 🆕 Stock LIBRE de este producto = tarimas en almacén/CEDIS que NO están
+                      //    asignadas a un pedido/OV (incluye sobrante de sobreproducción y ODP-STK).
+                      const stockDisp = window.stockLibreProducto(l.producto_codigo);
                       const pedido = Number(l.cantidad_solicitada) || 0;
                       const hayStock = stockDisp > 0;
                       const origen = l.tipo_origen || 'producir';
@@ -6443,6 +6469,9 @@ function renderKanbanMaquinas() {
         ${puedeEditarOrden && todasODPs.length > 0 ? `
           <button onclick="window.archivarTodasODPsViejas()" style="padding:8px 14px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">🗄️ Archivar ODPs viejas</button>
         ` : ''}
+        ${(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin') ? `
+          <button onclick="window.reiniciarCapturasProduccion()" style="padding:8px 14px;background:#7c2d12;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;" title="Borra todo lo capturado pero conserva la programación">🔄 Reiniciar capturas</button>
+        ` : ''}
         <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#1e40af;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">🖨️ Imprimir</button>
       </div>
     </div>
@@ -6458,6 +6487,19 @@ function renderKanbanMaquinas() {
         return `<button onclick="state.kanban_proceso='${p.codigo}';render();" style="padding:8px 14px;border-radius:99px;border:2px solid ${activo?p.color:'#cbd5e1'};background:${activo?p.color:'#fff'};color:${activo?'#fff':p.color};cursor:pointer;font-weight:800;font-size:12px;">${p.icono} ${p.nombre} <span style="opacity:0.8;font-weight:600;">(${maqsProc})</span></button>`;
       }).join('')}
     </div>
+    
+    <!-- 🆕 BARRA DE SELECCIÓN MÚLTIPLE: mover varias órdenes juntas como Excel -->
+    ${puedeEditarOrden && (state.kanbanSeleccion || []).length > 0 ? `
+      <div style="background:#7c3aed;color:#fff;border-radius:10px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <div style="font-weight:800;font-size:13px;">
+          ✓ ${(state.kanbanSeleccion || []).length} orden(es) seleccionada(s)
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="window.moverVariasODPaPosicion()" style="padding:8px 16px;background:#fff;color:#7c3aed;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">↕ Mover todas a posición…</button>
+          <button onclick="state.kanbanSeleccion=[];render();" style="padding:8px 16px;background:rgba(255,255,255,0.2);color:#fff;border:1px solid rgba(255,255,255,0.4);border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✕ Limpiar selección</button>
+        </div>
+      </div>
+    ` : ''}
     
     ${!puedeEditarOrden ? `
       <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;padding:12px 16px;margin-bottom:14px;color:#92400e;font-size:12.5px;">
@@ -6753,8 +6795,16 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
     ondragstart="window.onKanbanDragStart(event)" ondragend="window.onKanbanDragEnd(event)"
   ` : '';
   
+  const estaSeleccionada = (state.kanbanSeleccion || []).includes(odp.id);
   return `
-    <div ${dragAttrs} onclick="abrirModal('detalle-odp','${odp.id}')" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:${bgFila};border:1px solid ${bordeFila};border-radius:8px;cursor:pointer;${draggable?'cursor:grab;':''}">
+    <div ${dragAttrs} onclick="abrirModal('detalle-odp','${odp.id}')" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:${estaSeleccionada ? '#ede9fe' : bgFila};border:1px solid ${estaSeleccionada ? '#7c3aed' : bordeFila};border-radius:8px;cursor:pointer;${draggable?'cursor:grab;':''}">
+      ${puedeReordenar ? `
+        <!-- Checkbox de selección múltiple (mover varias como Excel) -->
+        <input type="checkbox" ${estaSeleccionada ? 'checked' : ''} 
+          onclick="event.stopPropagation();window.toggleSeleccionODP('${odp.id}');" 
+          style="width:18px;height:18px;cursor:pointer;accent-color:#7c3aed;flex-shrink:0;" 
+          title="Seleccionar para mover varias juntas" />
+      ` : ''}
       <!-- Indicador de posición / estado (clic en el número = mover a posición exacta) -->
       <div style="min-width:30px;text-align:center;">
         ${enProceso 
@@ -7405,6 +7455,102 @@ window.moverODPCola = async (odpId, direccion) => {
     toast(msgErr, 'error');
   } finally {
     state.loadingAccion = false; render();
+  }
+};
+
+// 🆕 SELECCIÓN MÚLTIPLE — marcar/desmarcar una ODP para mover varias juntas (tipo Excel)
+window.toggleSeleccionODP = (odpId) => {
+  if (!Array.isArray(state.kanbanSeleccion)) state.kanbanSeleccion = [];
+  const i = state.kanbanSeleccion.indexOf(odpId);
+  if (i >= 0) state.kanbanSeleccion.splice(i, 1);
+  else state.kanbanSeleccion.push(odpId);
+  render();
+};
+
+// 🆕 MOVER VARIAS ODP a una posición — toma todas las seleccionadas y las inserta
+//    juntas en la posición indicada (deben ser de la MISMA máquina/cola).
+window.moverVariasODPaPosicion = async () => {
+  const u = state.user || {};
+  const puede = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast(`🔒 Solo PLN, PRO, CEO o ADMIN pueden reordenar.`, 'error'); return; }
+  
+  const seleccion = state.kanbanSeleccion || [];
+  if (seleccion.length === 0) { toast('No hay órdenes seleccionadas', 'info'); return; }
+  
+  const odpsSeleccionadas = (state.ordenes_produccion || []).filter(o => seleccion.includes(o.id));
+  
+  // Determinar la máquina/cola de las seleccionadas (deben ser la misma)
+  const maqDe = (o) => {
+    const idx2 = o.proceso_actual_idx ?? 0;
+    const maqs2 = o.maquinas_asignadas || {};
+    const proc2 = (o.ruta_procesos || [])[idx2];
+    return (typeof maqs2 === 'object' && !Array.isArray(maqs2)) ? maqs2[proc2] : (Array.isArray(maqs2) ? maqs2[idx2] : maqs2);
+  };
+  const maquinas = [...new Set(odpsSeleccionadas.map(maqDe))];
+  if (maquinas.length > 1) {
+    toast('⚠ Las órdenes seleccionadas están en máquinas distintas. Selecciona solo de una máquina.', 'error');
+    return;
+  }
+  const maqCod = maquinas[0];
+  
+  // La cola completa de esa máquina (mismo criterio que moverODPaPosicion)
+  const odpsEnCola = (state.ordenes_produccion || []).filter(o => {
+    if (o.archivada || o.estatus === 'cancelada') return false;
+    if (maqDe(o) !== maqCod) return false;
+    const est = o.estatus || '';
+    const procEst = o.proceso_estatus_actual || '';
+    return ['aprobada','pendiente','programada','pendiente_planeacion'].includes(est) 
+        || (est === 'en_produccion' && procEst !== 'en_proceso' && procEst !== 'completado');
+  }).sort((a, b) => {
+    const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    return (a.fecha_entrega_solicitada || '').localeCompare(b.fecha_entrega_solicitada || '');
+  });
+  
+  const total = odpsEnCola.length;
+  const nSel = odpsSeleccionadas.length;
+  
+  const resp = prompt(
+    `↕ MOVER ${nSel} ÓRDENES juntas en la cola de ${maqCod}\n\n` +
+    `Total en cola: ${total}\n\n` +
+    `Escribe la posición donde quieres INSERTAR el grupo\n` +
+    `(1 = al inicio, ${total} = al final):`,
+    '1'
+  );
+  if (resp === null) return;
+  let nuevaPos = parseInt(resp.trim(), 10);
+  if (!nuevaPos || nuevaPos < 1) { toast('Posición inválida', 'error'); return; }
+  if (nuevaPos > total) nuevaPos = total;
+  
+  // Ids seleccionados, en el ORDEN actual de la cola (para preservar su orden relativo)
+  const idsSelEnOrden = odpsEnCola.filter(o => seleccion.includes(o.id)).map(o => o.id);
+  // La cola sin las seleccionadas
+  const sinSeleccion = odpsEnCola.filter(o => !seleccion.includes(o.id));
+  // Insertar el bloque seleccionado en la nueva posición
+  const bloque = idsSelEnOrden.map(id => odpsEnCola.find(o => o.id === id));
+  sinSeleccion.splice(nuevaPos - 1, 0, ...bloque);
+  
+  try {
+    state.loadingAccion = true; render();
+    // Reescribir prioridad_cola en lotes de 400
+    for (let i = 0; i < sinSeleccion.length; i += 400) {
+      const lote = sinSeleccion.slice(i, i + 400);
+      const batch = writeBatch(db);
+      lote.forEach((o, j) => {
+        const nuevaPrio = (i + j + 1) * 10;
+        batch.update(doc(db, 'ordenes_produccion', o.id), { prioridad_cola: nuevaPrio, updated_at: serverTimestamp() });
+        const oLocal = state.ordenes_produccion.find(x => x.id === o.id);
+        if (oLocal) oLocal.prioridad_cola = nuevaPrio;
+      });
+      await batch.commit();
+    }
+    state.kanbanSeleccion = []; // limpiar selección
+    toast(`✅ ${nSel} órdenes movidas juntas a la posición ${nuevaPos}`, 'success');
+  } catch (e) {
+    toast('Error al mover: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
   }
 };
 
@@ -8919,6 +9065,127 @@ window.desarchivarODP = async (odpId) => {
     toast(`📤 ${odp.folio} recuperada a la programación`, 'success');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// 🆕 REINICIAR CAPTURAS DE PRODUCCIÓN — borra TODO lo capturado/producido pero
+//    CONSERVA la programación (las ODP siguen, con su producto, máquina y posición).
+//    Resetea cada ODP a "programada sin avance". Solo Admin, CEO, Planeación.
+window.reiniciarCapturasProduccion = async () => {
+  const u = state.user || {};
+  if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Admin, CEO o Planeación pueden reiniciar. Tu depto: ${u.depto || '?'}`, 'error'); return;
+  }
+  
+  // Conteo de lo que se va a borrar
+  const nRollos = (state.rollos_extrusion || []).length;
+  const nCapturas = (state.capturas_produccion || []).length;
+  const nTarimas = (state.tarimas || []).length;
+  const nLotes = (state.lotes || []).length;
+  const nPKL = (state.packing_lists || []).length;
+  const nMerma = (state.movimientos_merma || []).length;
+  const nOdpStock = (state.ordenes_produccion || []).filter(o => o.es_sobrante_automatico || o.tipo === 'stock_interno').length;
+  
+  if (!confirm(
+    `🔄 REINICIAR CAPTURAS DE PRODUCCIÓN\n\n` +
+    `Esto BORRA todo lo capturado/producido y deja la programación como recién creada:\n\n` +
+    `Se ELIMINARÁ:\n` +
+    `• ${nRollos} rollo(s) de extrusión\n` +
+    `• ${nCapturas} captura(s) de turno\n` +
+    `• ${nTarimas} tarima(s) (stock/almacén/embarque)\n` +
+    `• ${nLotes} lote(s)\n` +
+    `• ${nPKL} packing list(s)\n` +
+    `• ${nMerma} movimiento(s) de merma\n` +
+    `• ${nOdpStock} ODP de stock/sobrante (generadas en pruebas)\n\n` +
+    `Se CONSERVA:\n` +
+    `• Las órdenes de producción y su posición en la cola\n` +
+    `• Producto, máquina asignada, cantidades\n\n` +
+    `Cada ODP volverá a "programada" sin avance.\n\n` +
+    `¿Continuar?`
+  )) return;
+  
+  // Segunda confirmación: escribir REINICIAR
+  const conf = prompt(`Para confirmar, escribe: REINICIAR`);
+  if (conf === null) return;
+  if (conf.trim().toUpperCase() !== 'REINICIAR') {
+    toast('Texto incorrecto. Reinicio cancelado.', 'info'); return;
+  }
+  
+  try {
+    state.loadingAccion = true; render();
+    
+    // Helper para borrar una colección completa en lotes de 400 (límite de writeBatch es 500)
+    const borrarDocs = async (docs, nombreColeccion) => {
+      for (let i = 0; i < docs.length; i += 400) {
+        const lote = docs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        lote.forEach(d => batch.delete(doc(db, nombreColeccion, d.id)));
+        await batch.commit();
+      }
+    };
+    
+    // 1) Borrar todas las colecciones de producción/embarque
+    await borrarDocs(state.rollos_extrusion || [], 'rollos_extrusion');
+    await borrarDocs(state.capturas_produccion || [], 'capturas_produccion');
+    await borrarDocs(state.tarimas || [], 'tarimas');
+    await borrarDocs(state.lotes || [], 'lotes');
+    await borrarDocs(state.packing_lists || [], 'packing_lists');
+    await borrarDocs(state.movimientos_merma || [], 'movimientos_merma');
+    // OTIs y remisiones de embarque (pruebas)
+    await borrarDocs(state.oti || [], 'oti');
+    await borrarDocs(state.remisiones || [], 'remisiones');
+    
+    // 2) Borrar las ODP de stock/sobrante (no son programación real, son resultado de pruebas)
+    const odpsStock = (state.ordenes_produccion || []).filter(o => o.es_sobrante_automatico || o.tipo === 'stock_interno');
+    await borrarDocs(odpsStock, 'ordenes_produccion');
+    
+    // 3) Resetear cada ODP de programación a "programada sin avance"
+    const odpsProgramacion = (state.ordenes_produccion || []).filter(o => 
+      !o.es_sobrante_automatico && o.tipo !== 'stock_interno' && !o.es_continuacion_parcial
+    );
+    for (let i = 0; i < odpsProgramacion.length; i += 400) {
+      const lote = odpsProgramacion.slice(i, i + 400);
+      const batch = writeBatch(db);
+      lote.forEach(o => {
+        batch.update(doc(db, 'ordenes_produccion', o.id), {
+          estatus: 'programada',
+          proceso_estatus_actual: 'esperando',
+          proceso_actual_idx: 0,
+          proceso_actual: (o.ruta_procesos || [])[0] || null,
+          avance_procesos: {},
+          procesos_completados: [],
+          cantidad_producida_final: 0,
+          cantidad_producida_final_kg: 0,
+          cantidad_producida_kg_total: 0,
+          mermas_finales: 0,
+          mermas_finales_kg: 0,
+          // Limpiar marcas de cierre/parcial/saldo
+          cerrado_con_saldo: false,
+          saldo_no_producido_kg: 0,
+          es_cierre_parcial: false,
+          odp_continuacion_id: null,
+          odp_continuacion_folio: null,
+          saldo_enviado_a_continuacion_kg: 0,
+          inicio_real_at: null,
+          produccion_terminada_at: null,
+          liberacion_calidad: null,
+          packing_list: null,
+          pausa_motivo: null, pausa_iniciada_at: null, pausa_por: null,
+          historial_pausas: [],
+          reiniciada_at: serverTimestamp(),
+          updated_at: serverTimestamp()
+        });
+      });
+      await batch.commit();
+    }
+    
+    toast(`✅ Reinicio completo. Programación conservada (${odpsProgramacion.length} ODP en cola), todo lo capturado eliminado.`, 'success');
+    cerrarModal();
+  } catch (e) {
+    console.error('Error en reinicio:', e);
+    toast('Error en el reinicio: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; window.forzarRender();
   }
@@ -38298,16 +38565,38 @@ window.confirmarCompletarProceso = async (odpId) => {
   avanceProc[codProcCerrado].completado = marcarCompletado;
   avanceProc[codProcCerrado].estatus = marcarCompletado ? 'completado' : 'en_proceso';
   
-  // 🆕 DETECTAR SOBREPRODUCCIÓN: si se produjo más del 110% (tolerancia 10%),
-  //    el excedente por encima del 110% se separa en una ODP automática para STOCK.
-  const TOLERANCIA_SOBRE = 0.10; // 10%
+  // 🆕 SOBREPRODUCCIÓN — DECISIÓN: si se produjo de más, preguntar cuánto recibe el
+  //    cliente y cuánto va a stock. A veces el cliente acepta hasta +10%, a veces solo
+  //    su pedido exacto. El resto queda como stock LIBRE del producto.
+  const TOLERANCIA_SOBRE = 0.10; // referencia del 10%
   const topePermitido = metaProcesoKg * (1 + TOLERANCIA_SOBRE);
   let kgSobrante = 0;
-  if (marcarCompletado && metaProcesoKg > 0 && prodKg > topePermitido) {
-    kgSobrante = Math.round(prodKg - topePermitido);
-    // El proceso registra como producido el tope permitido (110%); el resto es sobrante
-    avanceProc[codProcCerrado].producido_kg = Math.round(topePermitido);
-    avanceProc[codProcCerrado].sobrante_kg = kgSobrante;
+  if (marcarCompletado && metaProcesoKg > 0 && prodKg > metaProcesoKg + 1) {
+    const excedente = Math.round(prodKg - metaProcesoKg);
+    const hastaTope = Math.round(Math.min(prodKg, topePermitido) - metaProcesoKg); // lo que cabe en +10%
+    const resp = prompt(
+      `📦 SE PRODUJO DE MÁS — ${odp.folio}\n\n` +
+      `Pedido (meta): ${fmtNum(metaProcesoKg)} kg\n` +
+      `Producido: ${fmtNum(prodKg)} kg\n` +
+      `Excedente: ${fmtNum(excedente)} kg\n\n` +
+      `¿Cuántos kg recibe el CLIENTE en total?\n` +
+      `(El resto quedará como STOCK libre de este producto)\n\n` +
+      `• Su pedido exacto: ${fmtNum(metaProcesoKg)} kg\n` +
+      `• Pedido + 10%: ${fmtNum(Math.round(topePermitido))} kg\n` +
+      `• Todo: ${fmtNum(Math.round(prodKg))} kg\n\n` +
+      `Escribe los kg para el cliente:`,
+      String(Math.round(Math.min(prodKg, topePermitido)))
+    );
+    if (resp !== null) {
+      let kgCliente = Number(resp) || metaProcesoKg;
+      // No puede ser más de lo producido ni menos que 0
+      kgCliente = Math.max(0, Math.min(kgCliente, Math.round(prodKg)));
+      kgSobrante = Math.round(prodKg - kgCliente);
+      if (kgSobrante > 0) {
+        avanceProc[codProcCerrado].producido_kg = Math.round(kgCliente);
+        avanceProc[codProcCerrado].sobrante_kg = kgSobrante;
+      }
+    }
   }
   
   // 🆕 Si es cierre parcial SIN terminar: guardar avance y mantener la ODP en producción
@@ -38628,7 +38917,7 @@ window.confirmarCompletarProceso = async (odpId) => {
             creado_at: serverTimestamp(),
             creado_por: state.user.id,
             creado_por_nombre: state.user.nombre || state.user.email,
-            notas_planeacion: `Sobrante automatico de ${odp.folio}: se produjeron ${fmtNum(prodKg)} kg de meta ${fmtNum(metaProcesoKg)} kg (tope 110% = ${fmtNum(Math.round(topePermitido))} kg). Los ${fmtNum(sobranteTotal)} kg extra van a stock.`,
+            notas_planeacion: `Sobrante de ${odp.folio}: se produjeron ${fmtNum(prodKg)} kg, el cliente recibió ${fmtNum(prodKg - sobranteTotal)} kg y ${fmtNum(sobranteTotal)} kg quedan como STOCK libre de este producto.`,
             updated_at: serverTimestamp()
           };
           await addDoc(collection(db, 'ordenes_produccion'), nuevaODPStock);
