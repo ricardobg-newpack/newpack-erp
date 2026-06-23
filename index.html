@@ -486,6 +486,24 @@ window.calcularWaterfallLinea = calcularWaterfallLinea;
 // Para una ODP con cascada (P-1 → P-2 → ...) calcula cuánto produjo cada
 // eslabón, qué dejó disponible para el siguiente, y el saldo del pedido.
 
+// 🆕 HELPER ÚNICO — kg producidos REALES de un proceso (captura cerrada + rollos EN VIVO).
+//    Esta es la única fuente para el seguimiento en vivo. Cuenta:
+//    - Capturas de turno guardadas (cualquier proceso)
+//    - Rollos de extrusión aún NO consolidados (en vivo, sin cerrar turno)
+//    Así los kg se reflejan apenas se registran, sin tener que cerrar turno.
+window.kgProducidoProceso = (odp, procCod) => {
+  if (!odp || !procCod) return 0;
+  // Capturas de turno de este proceso (ya guardadas)
+  const kgCapturas = capturasValidas(state.capturas_produccion)
+    .filter(c => c.odp_id === odp.id && c.proceso === procCod)
+    .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  // Rollos de extrusión en vivo (no consolidados) de este proceso
+  const kgRollosVivo = (state.rollos_extrusion || [])
+    .filter(r => r.odp_id === odp.id && r.proceso === procCod && !r.anulado && !r.consolidado_en_turno)
+    .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  return kgCapturas + kgRollosVivo;
+};
+
 // 🆕 MODELO 1 ODP — Avance independiente por proceso (procesos en paralelo)
 // Calcula, para cada proceso de la ruta, cuánto produjo y cuánto puede aún
 // trabajar el siguiente (regla: EXTRUSIÓN MANDA, el siguiente no se adelanta).
@@ -496,20 +514,10 @@ window.avanceProcesosODP = (odp) => {
   
   // kg producidos por proceso, desde las capturas reales
   const caps = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id);
-  
-  const procesos = ruta.map((cod, i) => {
-    // Producido en este proceso = suma de capturas de ese proceso
-    let producido = caps.filter(c => c.proceso === cod)
-      .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
     
-    // Para extrusión (idx 0), sumar los rollos NO consolidados (los consolidados
-    // ya se contaron en las capturas al cerrar el turno → evita duplicar).
-    if (i === 0) {
-      const kgRollosSinConsolidar = (state.rollos_extrusion || [])
-        .filter(r => r.odp_id === odp.id && r.proceso === cod && !r.anulado && !r.consolidado_en_turno)
-        .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-      producido += kgRollosSinConsolidar;
-    }
+  const procesos = ruta.map((cod, i) => {
+    // 🆕 Producido REAL = capturas + rollos en vivo (helper único, seguimiento en vivo)
+    let producido = window.kgProducidoProceso(odp, cod);
     
     // 🆕 'completado' es la verdad del CIERRE guardado (avance_procesos[cod].completado).
     //    Si no hay cierre guardado, se infiere por producción vs meta. Esto evita que
@@ -544,6 +552,70 @@ window.avanceProcesosODP = (odp) => {
   
   const todosCompletos = procesos.every(p => p.completado);
   return { procesos, meta_kg: Math.round(meta), todos_completos: todosCompletos };
+};
+
+// ============================================================
+// 🆕 FUNCIÓN CENTRAL DE ESTADO — única fuente de verdad para el Kanban/tableros.
+//    Dada una ODP y (opcionalmente) un proceso específico, devuelve:
+//    { columna, maquina, proceso, producido, meta, completado, corriendo, pausado }
+//    Esto evita las inconsistencias de clasificar con muchos campos sueltos.
+// ============================================================
+window.estadoODPenProceso = (odp, procCodigo = null) => {
+  const ruta = odp.ruta_procesos || [];
+  const estatus = odp.estatus || '';
+  const procEstGlobal = odp.proceso_estatus_actual || '';
+  
+  // Si la ODP está cerrada/cancelada o ya pasó a Calidad, no aparece en producción
+  if (['cancelada', 'completada', 'liberada', 'liberada_empaque', 'entregada', 'pendiente_calidad'].includes(estatus)) {
+    return { columna: 'fuera', maquina: null, proceso: procCodigo, completado: true };
+  }
+  
+  // Proceso a evaluar: el específico (si se filtra) o el actual de la ODP
+  const idxActual = odp.proceso_actual_idx ?? 0;
+  const proc = procCodigo || odp.proceso_actual || ruta[idxActual];
+  const idxProc = ruta.indexOf(proc);
+  if (idxProc < 0) return { columna: 'fuera', maquina: null, proceso: proc };
+  
+  // Máquina de ESTE proceso (no del actual)
+  const maqs = odp.maquinas_asignadas || {};
+  let maquina = null;
+  if (typeof maqs === 'object' && !Array.isArray(maqs)) maquina = maqs[proc] || null;
+  else if (Array.isArray(maqs)) maquina = maqs[idxProc] || null;
+  else if (typeof maqs === 'string') maquina = maqs;
+  
+  // Avance de este proceso (fuente: avanceProcesosODP, que respeta cierres guardados)
+  const av = window.avanceProcesosODP(odp);
+  const pAv = av?.procesos?.[idxProc] || {};
+  const producido = pAv.producido_kg || 0;
+  const meta = av?.meta_kg || 0;
+  const completado = pAv.completado === true;
+  
+  // ¿Este proceso es el "actual" (el que tiene el puntero global)?
+  const esActual = idxProc === idxActual;
+  // Estado granular: si es el actual, usa proceso_estatus_actual; si no, usa el del avance
+  const procEst = esActual ? procEstGlobal : (odp.avance_procesos?.[proc]?.estatus || '');
+  
+  // DECIDIR COLUMNA (orden de prioridad claro):
+  let columna;
+  if (completado) {
+    columna = 'completadas';           // este proceso ya terminó
+  } else if (pausado(procEst)) {
+    columna = 'cola';                  // pausado → vuelve a la cola
+  } else if (procEst === 'en_proceso') {
+    columna = 'proceso';               // corriendo
+  } else {
+    columna = 'cola';                  // esperando / programada / en cola
+  }
+  
+  function pausado(s) { return s === 'pausado'; }
+  
+  return {
+    columna, maquina, proceso: proc, idxProceso: idxProc,
+    producido, meta, completado,
+    corriendo: columna === 'proceso',
+    pausado: pausado(procEst),
+    disponible_para_trabajar: pAv.disponible_para_trabajar || 0
+  };
 };
 
 window.cadenaAvanceODP = (odpP1) => {
@@ -2677,6 +2749,13 @@ async function cargarPerfil(uid) {
   }
   state.user = { id: uid, ...docSnap.data() };
   
+  // 🆕 Si es supervisor restringido (Producción con proceso asignado), aterriza
+  //    directo en su Panel de Operador, ya fijado en su proceso.
+  if (state.user.depto === 'PRO' && state.user.proceso_asignado && state.user.rol !== 'admin') {
+    state.vista = 'panel_operador';
+    state.panelOpProc = state.user.proceso_asignado;
+  }
+  
   // ⚡ AUTO-FIX: Si el perfil no tiene email (común en usuarios creados manualmente en Firebase Console),
   // lo tomamos del Auth y lo guardamos en Firestore para evitar errores futuros
   const emailAuth = auth.currentUser?.email;
@@ -3248,6 +3327,9 @@ function renderApp() {
   const esCOMP = u.depto === 'COMP' || esCEO;
   const esMTTO = u.depto === 'MTTO' || esCEO;
   const esADMIN = u.depto === 'ADMIN' || esCEO || u.rol === 'admin';
+  // 🆕 SUPERVISOR RESTRINGIDO: usuario de Producción con un proceso asignado específico.
+  //    Solo verá el Panel de Operador de SU proceso, nada más del menú.
+  const supervisorRestringido = u.depto === 'PRO' && !!u.proceso_asignado && !esCEO && u.rol !== 'admin';
   const esVerCompras = esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS; // Todos los deptos que pueden crear RCs
   const esVerMTTO = esMTTO || esCOMP || esCEO; // Quien puede VER catálogo MTTO
   // 📦 EMPAQUE: ALP, CEDMTY, CEDMEX, COMP, CEO, ADMIN
@@ -3280,14 +3362,14 @@ function renderApp() {
         ` : ''}
         
         ${esPLN || esPRO || esCAL ? `<div class="sidebar-section">Producción</div>` : ''}
-        ${esPLN ? `
+        ${esPLN && !supervisorRestringido ? `
           <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
         ` : ''}
         ${esPRO ? `
-          <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador</button>
-          <button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>
+          <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador${supervisorRestringido ? ` · ${getProc(u.proceso_asignado)?.nombre || ''}` : ''}</button>
+          ${!supervisorRestringido ? `<button class="nav-item ${state.vista === 'captura_produccion' ? 'active' : ''}" data-vista="captura_produccion">🔄 Captura Producción</button>` : ''}
         ` : ''}
-        ${esPLN || esPRO ? `
+        ${(esPLN || esPRO) && !supervisorRestringido ? `
           <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
           <button class="nav-item ${state.vista === 'seguimiento_parcialidades' ? 'active' : ''}" data-vista="seguimiento_parcialidades">🔗 Seguimiento Parcialidades</button>
           <button class="nav-item ${state.vista === 'almacen_intermedio' ? 'active' : ''}" data-vista="almacen_intermedio">🧵 Almacén Intermedio</button>
@@ -6392,46 +6474,21 @@ function renderKanbanMaquinas() {
   porMaquina['_sin_asignar'] = { en_cola: [], en_proceso: [], completadas: [] };
   
   for (const odp of todasODPs) {
-    const maq = getMaquinaActualODP(odp);
-    const key = maq && porMaquina[maq] ? maq : '_sin_asignar';
     const estatus = odp.estatus || '';
-    const procEst = odp.proceso_estatus_actual || ''; // 'esperando' | 'en_proceso' | 'pausado' | 'completado'
-    
     if (estatus === 'cancelada') continue;
     
-    // 🆕 Determinar el proceso relevante para esta vista:
-    //    - Si hay filtro de proceso, usar ese proceso específico
-    //    - Si no, usar el proceso actual de la ODP
-    const ruta = odp.ruta_procesos || [];
-    const procRelevante = (procFiltro !== 'todos') ? procFiltro : (odp.proceso_actual || ruta[odp.proceso_actual_idx ?? 0]);
-    const avProc = odp.avance_procesos?.[procRelevante];
-    const procRelevanteCompletado = avProc?.completado === true;
-    const esProcActual = procRelevante === (odp.proceso_actual || ruta[odp.proceso_actual_idx ?? 0]);
+    // 🆕 Usar la función CENTRAL de estado. Si hay filtro de proceso, evalúa ESE
+    //    proceso; si no, el proceso actual de la ODP.
+    const procAEvaluar = (procFiltro !== 'todos') ? procFiltro : null;
+    const est = window.estadoODPenProceso(odp, procAEvaluar);
     
-    // ✅ COMPLETADAS: la ODP entera cerró, O este proceso específico ya se completó
-    if (estatus === 'completada' || estatus === 'liberada' || estatus === 'liberada_empaque' || estatus === 'pendiente_calidad') {
-      porMaquina[key].completadas.push(odp);
-    }
-    else if (procRelevanteCompletado) {
-      // Este proceso ya terminó (aunque la ODP siga en otro proceso) → va a completadas de ESTA máquina
-      porMaquina[key].completadas.push(odp);
-    }
-    // ⏸ PAUSADA: regresa a la cola (solo si el proceso relevante es el actual y está pausado)
-    else if (procEst === 'pausado' && esProcActual) {
-      porMaquina[key].en_cola.push(odp);
-    }
-    // ⚙️ EN PROCESO: el proceso relevante está corriendo
-    else if (esProcActual && procEst === 'en_proceso') {
-      porMaquina[key].en_proceso.push(odp);
-    }
-    else if (!esProcActual && avProc?.estatus === 'en_proceso') {
-      // Proceso paralelo (ej. bolseo) corriendo aunque no sea el "actual" global
-      porMaquina[key].en_proceso.push(odp);
-    }
-    // 📦 EN COLA: activo pero no corriendo este proceso
-    else if (['aprobada','pendiente_planeacion','programada','en_produccion'].includes(estatus) || procEst === 'esperando') {
-      porMaquina[key].en_cola.push(odp);
-    }
+    if (est.columna === 'fuera') continue; // cerrada/cancelada, no va al Kanban de producción
+    
+    const key = est.maquina && porMaquina[est.maquina] ? est.maquina : '_sin_asignar';
+    
+    if (est.columna === 'completadas') porMaquina[key].completadas.push(odp);
+    else if (est.columna === 'proceso') porMaquina[key].en_proceso.push(odp);
+    else porMaquina[key].en_cola.push(odp);
   }
   
   // 🆕 GARANTÍA FÍSICA: una máquina solo puede tener UNA orden corriendo a la vez.
@@ -9864,6 +9921,13 @@ function renderTarjetaODP(o, contexto) {
 function renderPanelOperador() {
   const u = state.user || {};
   
+  // 🆕 SUPERVISOR RESTRINGIDO: si el usuario tiene un proceso asignado, forzar SIEMPRE
+  //    ese proceso (no puede ver ni elegir otros). Es supervisor de SU área.
+  const procAsignado = (u.depto === 'PRO' && u.proceso_asignado && u.rol !== 'admin' && u.depto !== 'CEO') ? u.proceso_asignado : '';
+  if (procAsignado) {
+    state.panelOpProc = procAsignado;
+  }
+  
   // Proceso seleccionado se guarda en state.panelOpProc (persiste vía localStorage)
   if (!state.panelOpProc) {
     state.panelOpProc = localStorage.getItem('newpack_panel_op_proc') || '';
@@ -10053,7 +10117,7 @@ function renderPanelOperador() {
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
-          <button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>
+          ${!procAsignado ? `<button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>` : `<div style="background:rgba(255,255,255,0.15);color:#fff;padding:8px 14px;border-radius:8px;font-size:11px;font-weight:700;">🔒 Tu área asignada</div>`}
           ${maquinasProc.length > 1 ? `
             <div style="display:flex;gap:6px;align-items:center;">
               <button onclick="window.vistaPanelOp('tablero')" style="background:${state.panelOpVista === 'tablero' ? '#fff' : 'rgba(255,255,255,0.2)'};color:${state.panelOpVista === 'tablero' ? proc.color : '#fff'};border:1.5px solid #fff;padding:7px 12px;border-radius:6px;cursor:pointer;font-weight:800;font-size:12px;" title="Una columna por máquina">▦ Tablero</button>
@@ -10422,15 +10486,9 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
 
 // Tarjeta de la orden ACTIVA dentro de una columna de máquina (compacta pero con acciones clave)
 function _tableroTarjetaActiva(o, procSel, proc) {
-  const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === o.id && c.proceso === procSel);
-  let prod = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  // 🆕 Producido REAL en vivo (capturas + rollos sin consolidar) vía helper único
+  const prod = window.kgProducidoProceso(o, procSel);
   const esExtrusion = procSel === 'P1-EXT';
-  // 🆕 En extrusión, sumar rollos no consolidados (avance inmediato sin cerrar turno)
-  if (esExtrusion) {
-    prod += (state.rollos_extrusion || [])
-      .filter(r => r.odp_id === o.id && r.proceso === procSel && !r.anulado && !r.consolidado_en_turno)
-      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-  }
   const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
   const pct = meta > 0 ? Math.min(100, Math.round((prod / meta) * 100)) : 0;
   const rollos = (state.rollos_extrusion || []).filter(r => !r.anulado && r.odp_id === o.id).length;
@@ -10501,20 +10559,8 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
   const esMiTurnoAhora = procIdx === idxActual;
   const estaPausada = o.proceso_estatus_actual === 'pausado';
   
-  // Calcular kg producidos en mi proceso
-  const capturas = capturasValidas(state.capturas_produccion).filter(c => 
-    c.odp_id === o.id && c.proceso === procSel
-  );
-  let prodKg = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
-  // 🆕 EXTRUSIÓN: la producción se registra rollo por rollo (rollos_extrusion).
-  //    Sumar los rollos NO consolidados (aún no cerrados en turno) para que el
-  //    avance se vea de inmediato al capturar, sin esperar a cerrar el turno.
-  if (procSel === 'P1-EXT') {
-    const kgRollosSinConsolidar = (state.rollos_extrusion || [])
-      .filter(r => r.odp_id === o.id && r.proceso === procSel && !r.anulado && !r.consolidado_en_turno)
-      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-    prodKg += kgRollosSinConsolidar;
-  }
+  // 🆕 Calcular kg producidos en mi proceso (capturas + rollos en vivo) vía helper único
+  const prodKg = window.kgProducidoProceso(o, procSel);
   
   // 🆕 kgMeta robusto: si la ODP no tiene cantidad_kg_produccion calculada, intentar recalcular on-the-fly
   let kgMeta = Number(o.cantidad_kg_produccion) || 0;
@@ -17856,6 +17902,7 @@ function modalUsuario(esEdicion) {
       depto: usr.depto || '',
       ubicacion: usr.ubicacion || '',
       rol: usr.rol || 'usuario',
+      proceso_asignado: usr.proceso_asignado || '',
       // 🆕 Si el email termina en @newpack.local es un operador (login con código)
       sinCorreo: (usr.email || '').endsWith(DOMINIO_INTERNO),
       codigoOperador: (usr.email || '').endsWith(DOMINIO_INTERNO) ? (usr.email || '').replace(DOMINIO_INTERNO, '').toUpperCase() : ''
@@ -17867,6 +17914,7 @@ function modalUsuario(esEdicion) {
       depto: '',
       ubicacion: '',
       rol: 'usuario',
+      proceso_asignado: '',
       // 🆕 Campos para operadores sin correo
       sinCorreo: false,
       codigoOperador: ''
@@ -17962,6 +18010,22 @@ function modalUsuario(esEdicion) {
               ${DEPARTAMENTOS.filter(d => !d.deprecated || f.depto === d.codigo).map(d => `<option value="${d.codigo}" ${f.depto === d.codigo ? 'selected' : ''}>${d.codigo} — ${d.nombre}</option>`).join('')}
             </select>
           </div>
+          
+          ${f.depto === 'PRO' ? `
+            <!-- 🆕 Proceso asignado: limita al supervisor a ver SOLO su proceso -->
+            <div class="field">
+              <label class="field-label">Proceso asignado <span style="font-weight:400;color:#94a3b8;">(supervisor de planta)</span></label>
+              <select class="input" id="usr-proceso" onchange="window.modalFormSet('proceso_asignado', this.value)">
+                <option value="">🏭 Todos los procesos (supervisor general)</option>
+                ${PROCESOS.map(p => `<option value="${p.codigo}" ${f.proceso_asignado === p.codigo ? 'selected' : ''}>${p.icono} ${p.nombre}</option>`).join('')}
+              </select>
+              <div style="font-size:10.5px;color:#64748b;margin-top:4px;">
+                ${f.proceso_asignado 
+                  ? `Este supervisor verá SOLO el Panel de Operador de ${getProc(f.proceso_asignado)?.nombre || f.proceso_asignado}.` 
+                  : 'Si dejas "Todos", verá todo el piso. Si eliges un proceso, solo verá ese.'}
+              </div>
+            </div>
+          ` : ''}
           
           <div class="field">
             <label class="field-label">Ubicación física *</label>
@@ -18402,6 +18466,7 @@ window.crearUsuarioNuevo = async () => {
   const depto = state.modalForm?.depto || '';
   const ubicacion = state.modalForm?.ubicacion || '';
   const rol = state.modalForm?.rol || 'usuario';
+  const procesoAsignado = (depto === 'PRO') ? (state.modalForm?.proceso_asignado || '') : '';
   
   // 🆕 Construir email y password según el modo
   let email, password, codigoOperador;
@@ -18464,6 +18529,7 @@ window.crearUsuarioNuevo = async () => {
         depto: depto,
         ubicacion: ubicacion,
         rol: rol,
+        proceso_asignado: procesoAsignado,
         // 🆕 Marca de operador sin correo (para diferenciar en UI)
         es_operador_planta: sinCorreo,
         codigo_operador: sinCorreo ? codigoOperador : '',
@@ -18544,6 +18610,7 @@ window.actualizarUsuario = async (id) => {
   const depto = state.modalForm?.depto || '';
   const ubicacion = state.modalForm?.ubicacion || '';
   const rol = state.modalForm?.rol || 'usuario';
+  const procesoAsignado = (depto === 'PRO') ? (state.modalForm?.proceso_asignado || '') : '';
   
   if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
   if (!depto) { toast('Selecciona departamento', 'error'); return; }
@@ -18553,6 +18620,7 @@ window.actualizarUsuario = async (id) => {
   try {
     await updateDoc(doc(db, 'usuarios', id), {
       nombre, telefono, depto, ubicacion, rol,
+      proceso_asignado: procesoAsignado,
       updated_at: serverTimestamp()
     });
     toast(`✅ Usuario actualizado`);
@@ -38261,8 +38329,15 @@ window.confirmarCompletarProceso = async (odpId) => {
         notas_produccion_finales: notasCierre,
         updated_at: serverTimestamp()
       });
+      // 🆕 Optimistic local: la ODP pasa a Calidad → sale del Kanban de inmediato
+      const odpLocalFin = state.ordenes_produccion.find(o => o.id === odpId);
+      if (odpLocalFin) {
+        odpLocalFin.estatus = 'pendiente_calidad';
+        odpLocalFin.proceso_estatus_actual = 'completado';
+        odpLocalFin.proceso_actual = null;
+        odpLocalFin.avance_procesos = avanceProc;
+      }
       
-      // 🆕 SOBREPRODUCCIÓN: si se produjo más del 110%, crear ODP automática para STOCK con el sobrante
       const sobranteTotal = Object.values(avanceProc).reduce((s, p) => s + (Number(p.sobrante_kg) || 0), 0);
       if (sobranteTotal > 0) {
         try {
@@ -38418,6 +38493,16 @@ window.confirmarCompletarProceso = async (odpId) => {
       }
       
       await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
+      // 🆕 Optimistic local: reflejar el cierre del proceso de inmediato en el Kanban
+      const odpLocalCierre = state.ordenes_produccion.find(o => o.id === odpId);
+      if (odpLocalCierre) {
+        odpLocalCierre.avance_procesos = avanceProc;
+        if (updates.proceso_actual_idx != null) {
+          odpLocalCierre.proceso_actual_idx = updates.proceso_actual_idx;
+          odpLocalCierre.proceso_actual = updates.proceso_actual;
+          odpLocalCierre.proceso_estatus_actual = updates.proceso_estatus_actual;
+        }
+      }
       
       await addDoc(collection(db, 'notificaciones'), {
         titulo: `${proc.icono} ${proc.nombre} completado en ${odp.folio}`,
