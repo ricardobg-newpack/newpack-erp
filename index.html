@@ -10128,6 +10128,15 @@ function renderPanelOperador() {
             <div style="font-size:11px;font-weight:700;opacity:0.85;letter-spacing:0.1em;">ÁREA DE TRABAJO</div>
             <div style="font-size:32px;font-weight:900;">${proc.nombre}</div>
             ${maqSel ? `<div style="font-size:14px;font-weight:700;margin-top:4px;background:rgba(255,255,255,0.2);padding:3px 10px;border-radius:6px;display:inline-block;">🛠️ Máquina: ${maqSel}</div>` : ''}
+            ${(() => {
+              // 🆕 Contexto del supervisor logueado: nombre, grupo y turno detectado
+              const ahoraH = new Date().getHours();
+              const turnoActual = (ahoraH >= 7 && ahoraH < 19) ? '☀️ Turno Día' : '🌙 Turno Noche';
+              const grupoU = u.grupo_turno ? `Grupo ${u.grupo_turno}` : '';
+              return `<div style="font-size:12px;font-weight:600;margin-top:6px;opacity:0.92;">
+                👤 ${u.nombre || ''}${grupoU ? ` · ${grupoU}` : ''} · ${turnoActual}
+              </div>`;
+            })()}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
@@ -12197,13 +12206,25 @@ function modalCapturarTurno() {
   const hora = ahora.getHours();
   const turnoSugerido = (hora >= 7 && hora < 19) ? 'dia' : 'noche';
   
+  // 🆕 MENOS CLICS: pre-llenar con los datos del supervisor que inició sesión.
+  //    Su grupo fijo (grupo_turno del perfil) y él mismo como supervisor.
+  const usrLogin = state.user || {};
+  const grupoDelSupervisor = usrLogin.grupo_turno || '';
+  // Buscar el registro de supervisor que corresponde al usuario logueado (por nombre/grupo)
+  const supervisorAuto = (state.supervisores || []).find(s => 
+    s.activo !== false &&
+    (s.usuario_id === usrLogin.id || 
+     (grupoDelSupervisor && s.grupo === grupoDelSupervisor && 
+      (s.nombre || '').toLowerCase().trim() === (usrLogin.nombre || '').toLowerCase().trim()))
+  );
+  
   if (!state.modalForm) {
     state.modalForm = {
       fecha: ahora.toISOString().split('T')[0],
       turno: turnoSugerido,
-      grupo: '',
+      grupo: grupoDelSupervisor,                    // 🆕 pre-llenado
       operador_id: '',
-      supervisor_id: '',
+      supervisor_id: supervisorAuto?.id || '',       // 🆕 pre-llenado si se encontró
       producido_um: '', // 🆕 captura en UM del proceso (kg/pza/millar)
       producido_kg: '', // se calcula automáticamente al guardar
       mermas_kg: '',
@@ -17919,6 +17940,7 @@ function modalUsuario(esEdicion) {
       ubicacion: usr.ubicacion || '',
       rol: usr.rol || 'usuario',
       proceso_asignado: usr.proceso_asignado || '',
+      grupo_turno: usr.grupo_turno || '',
       // 🆕 Si el email termina en @newpack.local es un operador (login con código)
       sinCorreo: (usr.email || '').endsWith(DOMINIO_INTERNO),
       codigoOperador: (usr.email || '').endsWith(DOMINIO_INTERNO) ? (usr.email || '').replace(DOMINIO_INTERNO, '').toUpperCase() : ''
@@ -17931,6 +17953,7 @@ function modalUsuario(esEdicion) {
       ubicacion: '',
       rol: 'usuario',
       proceso_asignado: '',
+      grupo_turno: '',
       // 🆕 Campos para operadores sin correo
       sinCorreo: false,
       codigoOperador: ''
@@ -18039,6 +18062,20 @@ function modalUsuario(esEdicion) {
                 ${f.proceso_asignado 
                   ? `Este supervisor verá SOLO el Panel de Operador de ${getProc(f.proceso_asignado)?.nombre || f.proceso_asignado}.` 
                   : 'Si dejas "Todos", verá todo el piso. Si eliges un proceso, solo verá ese.'}
+              </div>
+            </div>
+            
+            <!-- 🆕 Grupo de turno fijo del supervisor (se pre-llena al capturar) -->
+            <div class="field">
+              <label class="field-label">Grupo de turno <span style="font-weight:400;color:#94a3b8;">(su equipo fijo)</span></label>
+              <div style="display:flex;gap:8px;">
+                <button type="button" onclick="window.modalFormSet('grupo_turno','')" style="flex:1;padding:10px;border:2px solid ${!f.grupo_turno?'#64748b':'#cbd5e1'};background:${!f.grupo_turno?'#64748b':'#fff'};color:${!f.grupo_turno?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">— Sin grupo fijo</button>
+                ${TURNOS.map(t => `<button type="button" onclick="window.modalFormSet('grupo_turno','${t.codigo}')" style="flex:1;padding:10px;border:2px solid ${f.grupo_turno===t.codigo?t.color:'#cbd5e1'};background:${f.grupo_turno===t.codigo?t.color:'#fff'};color:${f.grupo_turno===t.codigo?'#fff':t.color};border-radius:8px;font-weight:800;font-size:14px;cursor:pointer;">${t.codigo}</button>`).join('')}
+              </div>
+              <div style="font-size:10.5px;color:#64748b;margin-top:4px;">
+                ${f.grupo_turno 
+                  ? `Al capturar, su grupo (${f.grupo_turno}) y su nombre ya vendrán puestos — menos clics.` 
+                  : 'Si le asignas un grupo fijo, al capturar ya viene seleccionado.'}
               </div>
             </div>
           ` : ''}
@@ -18483,6 +18520,7 @@ window.crearUsuarioNuevo = async () => {
   const ubicacion = state.modalForm?.ubicacion || '';
   const rol = state.modalForm?.rol || 'usuario';
   const procesoAsignado = (depto === 'PRO') ? (state.modalForm?.proceso_asignado || '') : '';
+  const grupoTurno = (depto === 'PRO') ? (state.modalForm?.grupo_turno || '') : '';
   
   // 🆕 Construir email y password según el modo
   let email, password, codigoOperador;
@@ -18546,6 +18584,7 @@ window.crearUsuarioNuevo = async () => {
         ubicacion: ubicacion,
         rol: rol,
         proceso_asignado: procesoAsignado,
+        grupo_turno: grupoTurno,
         // 🆕 Marca de operador sin correo (para diferenciar en UI)
         es_operador_planta: sinCorreo,
         codigo_operador: sinCorreo ? codigoOperador : '',
@@ -18627,6 +18666,7 @@ window.actualizarUsuario = async (id) => {
   const ubicacion = state.modalForm?.ubicacion || '';
   const rol = state.modalForm?.rol || 'usuario';
   const procesoAsignado = (depto === 'PRO') ? (state.modalForm?.proceso_asignado || '') : '';
+  const grupoTurno = (depto === 'PRO') ? (state.modalForm?.grupo_turno || '') : '';
   
   if (!nombre) { toast('Nombre obligatorio', 'error'); return; }
   if (!depto) { toast('Selecciona departamento', 'error'); return; }
@@ -18637,6 +18677,7 @@ window.actualizarUsuario = async (id) => {
     await updateDoc(doc(db, 'usuarios', id), {
       nombre, telefono, depto, ubicacion, rol,
       proceso_asignado: procesoAsignado,
+      grupo_turno: grupoTurno,
       updated_at: serverTimestamp()
     });
     toast(`✅ Usuario actualizado`);
