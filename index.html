@@ -6416,6 +6416,18 @@ function renderKanbanMaquinas() {
       </div>
     </div>
     
+    <!-- 🆕 CHIPS RÁPIDOS DE PROCESO: cambiar de proceso con un clic (sin dropdown) -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+      <button onclick="state.kanban_proceso='todos';render();" style="padding:8px 14px;border-radius:99px;border:2px solid ${procFiltro==='todos'?'#1e40af':'#cbd5e1'};background:${procFiltro==='todos'?'#1e40af':'#fff'};color:${procFiltro==='todos'?'#fff':'#475569'};cursor:pointer;font-weight:800;font-size:12px;">🏭 Todos</button>
+      ${PROCESOS.map(p => {
+        // Contar máquinas y ODPs activas de este proceso
+        const maqsProc = (state.maquinas || []).filter(m => m.activa !== false && m.proceso_codigo === p.codigo).length;
+        if (maqsProc === 0) return ''; // no mostrar procesos sin máquinas
+        const activo = procFiltro === p.codigo;
+        return `<button onclick="state.kanban_proceso='${p.codigo}';render();" style="padding:8px 14px;border-radius:99px;border:2px solid ${activo?p.color:'#cbd5e1'};background:${activo?p.color:'#fff'};color:${activo?'#fff':p.color};cursor:pointer;font-weight:800;font-size:12px;">${p.icono} ${p.nombre} <span style="opacity:0.8;font-weight:600;">(${maqsProc})</span></button>`;
+      }).join('')}
+    </div>
+    
     ${!puedeEditarOrden ? `
       <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;padding:12px 16px;margin-bottom:14px;color:#92400e;font-size:12.5px;">
         <div style="font-weight:800;margin-bottom:4px;">🔒 Tu usuario no tiene permiso para reordenar el Kanban</div>
@@ -8813,6 +8825,114 @@ window.reanudarODP = async (odpId) => {
   } catch (e) {
     console.error('Error reanudar ODP:', e);
     toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// 🆕 ARCHIVAR ODP — la oculta de programación/Kanban pero NO la borra (recuperable).
+//    Solo Planeación, CEO y Admin.
+window.archivarODP = async (odpId) => {
+  const u = state.user || {};
+  if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Planeación, CEO o Admin pueden archivar. Tu depto: ${u.depto || '?'}`, 'error'); return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  if (odp.archivada) { toast('Esta ODP ya está archivada', 'info'); return; }
+  
+  if (!confirm(
+    `🗄️ ARCHIVAR ${odp.folio}\n\n` +
+    `${odp.producto_codigo} · ${odp.cliente_nombre || 'STOCK'}\n\n` +
+    `Se OCULTA de programación y Kanban pero NO se borra.\n` +
+    `Puedes recuperarla después desde "Archivadas".\n\n` +
+    `¿Archivar?`
+  )) return;
+  
+  try {
+    state.loadingAccion = true;
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      archivada: true,
+      archivada_at: serverTimestamp(),
+      archivada_por: u.nombre || u.email || '',
+      updated_at: serverTimestamp()
+    });
+    const local = state.ordenes_produccion.find(o => o.id === odpId);
+    if (local) local.archivada = true;
+    cerrarModal();
+    toast(`🗄️ ${odp.folio} archivada (recuperable)`, 'success');
+  } catch (e) {
+    toast('Error al archivar: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// 🆕 DESARCHIVAR ODP — la regresa a la programación.
+window.desarchivarODP = async (odpId) => {
+  const u = state.user || {};
+  if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Planeación, CEO o Admin.`, 'error'); return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  try {
+    state.loadingAccion = true;
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      archivada: false,
+      desarchivada_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    const local = state.ordenes_produccion.find(o => o.id === odpId);
+    if (local) local.archivada = false;
+    toast(`📤 ${odp.folio} recuperada a la programación`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// 🆕 ELIMINAR ODP PERMANENTE — la borra de la base. NO se recupera.
+//    Doble confirmación + escribir el folio para evitar accidentes.
+window.eliminarODPPermanente = async (odpId) => {
+  const u = state.user || {};
+  if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Planeación, CEO o Admin pueden eliminar. Tu depto: ${u.depto || '?'}`, 'error'); return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  // Advertir si tiene producción registrada (no perder datos sin querer)
+  const tieneProd = Number(odp.cantidad_producida_final_kg) > 0 || 
+    (state.rollos_extrusion || []).some(r => r.odp_id === odpId && !r.anulado) ||
+    capturasValidas(state.capturas_produccion).some(c => c.odp_id === odpId);
+  
+  if (!confirm(
+    `🗑️ ELIMINAR PERMANENTE ${odp.folio}\n\n` +
+    `${odp.producto_codigo} · ${odp.cliente_nombre || 'STOCK'}\n\n` +
+    `⚠️ Esto BORRA la orden de la base de datos. NO se puede recuperar.\n` +
+    (tieneProd ? `\n⚠️⚠️ Esta orden TIENE producción registrada (rollos/capturas). Si solo quieres ordenar, mejor ARCHÍVALA.\n` : '') +
+    `\nSi solo quieres limpiarla de la vista, usa "Archivar" en su lugar.\n\n` +
+    `¿Eliminar permanentemente?`
+  )) return;
+  
+  // Segunda confirmación: escribir el folio
+  const conf = prompt(`Para confirmar la ELIMINACIÓN PERMANENTE, escribe el folio exacto:\n\n${odp.folio}`);
+  if (conf === null) return;
+  if (conf.trim().toUpperCase() !== (odp.folio || '').toUpperCase()) {
+    toast('El folio no coincide. Eliminación cancelada.', 'info'); return;
+  }
+  
+  try {
+    state.loadingAccion = true;
+    await deleteDoc(doc(db, 'ordenes_produccion', odpId));
+    // Quitar del state local de inmediato
+    state.ordenes_produccion = state.ordenes_produccion.filter(o => o.id !== odpId);
+    cerrarModal();
+    toast(`🗑️ ${odp.folio} eliminada permanentemente`, 'success');
+  } catch (e) {
+    toast('Error al eliminar: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; window.forzarRender();
   }
@@ -33084,6 +33204,21 @@ function modalDetalleODP() {
                       ✓ Cerrar con saldo (decisión PLN/PRO)
                     </button>
                   ` : ''}
+                </div>
+              ` : ''}
+              ${(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin') ? `
+                <!-- 🆕 Gestión de la orden: archivar (recuperable) o eliminar (permanente) -->
+                <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:14px;">
+                  <div style="font-size:10.5px;color:#991b1b;font-weight:800;margin-bottom:6px;">⚙️ GESTIÓN (Planeación / Admin)</div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button onclick="window.archivarODP('${odp.id}')" style="flex:1;min-width:130px;background:#fff;color:#64748b;border:1.5px solid #cbd5e1;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                      🗄️ Archivar (recuperable)
+                    </button>
+                    <button onclick="window.eliminarODPPermanente('${odp.id}')" style="flex:1;min-width:130px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                      🗑️ Eliminar permanente
+                    </button>
+                  </div>
+                  <div style="font-size:10px;color:#64748b;margin-top:6px;">Archivar la oculta sin borrarla. Eliminar la borra de la base (no se recupera).</div>
                 </div>
               ` : ''}
             `;
