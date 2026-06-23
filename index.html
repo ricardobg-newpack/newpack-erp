@@ -504,6 +504,37 @@ window.kgProducidoProceso = (odp, procCod) => {
   return kgCapturas + kgRollosVivo;
 };
 
+// 🆕 HELPER ÚNICO de conversión kg → UM del producto (pza/millar/kg).
+//    Centraliza la conversión para que NUNCA se calcule mal (ej. el bug de millar×1000).
+window.kgAUM = (kg, um, producto) => {
+  const u = (um || 'kg').toLowerCase();
+  if (u === 'kg' || !producto) return kg;
+  if (u === 'pza' || u === 'pz' || u === 'pieza') {
+    const pp = window.calcularPesoPieza ? window.calcularPesoPieza(producto) : 0;
+    return pp > 0 ? Math.round(kg / pp) : kg;
+  }
+  if (u === 'millar') {
+    const pm = window.calcularPesoMillar ? window.calcularPesoMillar(producto) : 0;
+    return pm > 0 ? Math.round((kg / pm) * 1000) / 1000 : kg;
+  }
+  return kg;
+};
+
+// 🆕 HELPER ÚNICO — cantidad producida FINAL de una ODP, en la UM del pedido.
+//    Toma SIEMPRE el último proceso de la ruta (el que entrega el PT terminado),
+//    NUNCA suma extrusión + bolseo (eso duplicaba). Convierte kg → UM correctamente.
+//    Esta es la única fuente para mostrar avance en pza/millar/kg.
+window.cantidadProducidaFinalUM = (odp) => {
+  if (!odp) return { um: 0, kg: 0 };
+  const ruta = odp.ruta_procesos || [];
+  const ultimoProc = ruta.length > 0 ? ruta[ruta.length - 1] : (odp.proceso_codigo || 'P1-EXT');
+  // kg del último proceso (capturas + rollos en vivo, sin duplicar)
+  const kgFinal = window.kgProducidoProceso(odp, ultimoProc) || Number(odp.cantidad_producida_final_kg) || 0;
+  const producto = window.getProductoPT ? window.getProductoPT(odp.producto_codigo) : null;
+  const enUM = window.kgAUM(kgFinal, odp.um, producto);
+  return { um: enUM, kg: Math.round(kgFinal) };
+};
+
 // 🆕 MODELO 1 ODP — Avance independiente por proceso (procesos en paralelo)
 // Calcula, para cada proceso de la ruta, cuánto produjo y cuánto puede aún
 // trabajar el siguiente (regla: EXTRUSIÓN MANDA, el siguiente no se adelanta).
@@ -9810,31 +9841,21 @@ function renderTarjetaODP(o, contexto) {
   }
   const pctProcActual = metaProcKg > 0 ? Math.min(100, Math.round((acumProcActualKg / metaProcKg) * 100)) : 0;
   
-  // Cálculo legacy + 🆕 robusto: priorizar KG (dato real) y convertir a UM si es posible
-  let totalProducidoKg = 0;
-  let totalProducidoFinal = 0;
-  let totalMermasKg = 0;
-  let totalMermasFinal = 0;
-  if (procesosCompletados.length > 0) {
-    const ultimo = procesosCompletados[procesosCompletados.length - 1];
-    totalProducidoKg = Number(ultimo.cantidad_producida_kg) || Number(ultimo.cantidad_producida) || 0;
-    totalProducidoFinal = Number(ultimo.cantidad_producida) || 0;
-    totalMermasKg = procesosCompletados.reduce((s, p) => s + (Number(p.mermas_kg) || 0), 0);
-    totalMermasFinal = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
-  }
+  // 🆕 Producido FINAL vía helper único (último proceso, conversión correcta, sin duplicar).
+  //    Esto es más confiable que los campos guardados (que pueden tener valores viejos mal).
+  const finalUMcalc = window.cantidadProducidaFinalUM(o);
+  let totalProducidoKg = finalUMcalc.kg;
+  let totalProducidoFinal = finalUMcalc.um;
+  let totalMermasKg = (o.procesos_completados || []).reduce((s, p) => s + (Number(p.mermas_kg) || 0), 0);
+  let totalMermasFinal = (o.procesos_completados || []).reduce((s, p) => s + (Number(p.mermas) || 0), 0);
   
-  // 🆕 Convertir KG a UM del pedido en tiempo de display (más confiable que el valor guardado)
+  // Convertir KG a UM del pedido en tiempo de display (helper, sin el bug de millar)
   const umLowDisp = (o.um || '').toLowerCase();
-  let producidoEnUMReal = totalProducidoKg;
+  let producidoEnUMReal = finalUMcalc.um;
   let conversionPosible = true;
-  if (umLowDisp === 'pza' && producto) {
-    const pp = window.calcularPesoPieza(producto);
-    if (pp > 0) producidoEnUMReal = Math.round(totalProducidoKg / pp);
-    else conversionPosible = false;
-  } else if (umLowDisp === 'millar' && producto) {
-    const pm = window.calcularPesoMillar(producto);
-    if (pm > 0) producidoEnUMReal = Math.round((totalProducidoKg / pm) * 1000) / 1000;
-    else conversionPosible = false;
+  if ((umLowDisp === 'pza' || umLowDisp === 'millar') && producto) {
+    const factor = umLowDisp === 'pza' ? window.calcularPesoPieza(producto) : window.calcularPesoMillar(producto);
+    if (!(factor > 0)) conversionPosible = false;
   }
   
   // Porcentaje basado en la UM correcta (con conversión)
@@ -13472,26 +13493,21 @@ window.cerrarTurnoExtrusion = async (odpId) => {
       });
     });
     
-    // 3. Recalcular cantidad_producida_final de la ODP (suma todas las capturas válidas del proceso)
+    // 3. Recalcular cantidad_producida_final de la ODP — vía helper único (conversión correcta).
+    //    Extrusión guarda en kg; el cantidad_producida_final debe ser del ÚLTIMO proceso.
     const todasCapturasOdp = capturasValidas(state.capturas_produccion)
       .filter(c => c.odp_id === odpId && c.proceso === procCodigo)
       .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
     const totalConNueva = todasCapturasOdp + totalKg;
     
-    const producto = state.productos_pt.find(p => p.codigo === odp.producto_codigo);
-    const umODP = (odp.um || 'kg').toLowerCase();
-    let prodEnUM = totalConNueva;
-    if (umODP !== 'kg' && producto) {
-      // Convertir kg a la UM de la ODP usando el peso del producto
-      const pesoMillar = window.calcularPesoMillar ? window.calcularPesoMillar(producto) : null;
-      if (pesoMillar && pesoMillar > 0) {
-        prodEnUM = umODP === 'millar' ? (totalConNueva / pesoMillar) : (totalConNueva / pesoMillar * 1000);
-      }
-    }
+    // cantidad_producida_final en UM del último proceso (helper único, sin el bug de millar×1000)
+    const finalUM = window.cantidadProducidaFinalUM(odp);
     
     batch.update(doc(db, 'ordenes_produccion', odpId), {
       cantidad_producida_kg_total: Number(totalConNueva) || 0,
-      cantidad_producida_final: Number(prodEnUM) || 0,
+      // El proceso de extrusión guarda sus kg; el "final" en UM se calcula del último proceso
+      cantidad_producida_final: Number(finalUM.um) || 0,
+      cantidad_producida_final_kg: Number(finalUM.kg) || Number(totalConNueva) || 0,
       proceso_estatus_actual: 'en_proceso',
       updated_at: serverTimestamp()
     });
@@ -33607,13 +33623,9 @@ function renderTrazProduccion(p, lineas, odps) {
   }
   
   return odps.map(odp => {
-    let prod = 0;
-    if (odp.cantidad_producida_final !== undefined && odp.cantidad_producida_final !== null) {
-      prod = Number(odp.cantidad_producida_final) || 0;
-    } else if (odp.procesos_completados && odp.procesos_completados.length > 0) {
-      const ultimo = odp.procesos_completados[odp.procesos_completados.length - 1];
-      prod = Number(ultimo.cantidad_producida) || 0;
-    }
+    // 🆕 Recalcular en vivo con el helper único (corrige ODPs con campo viejo mal guardado)
+    const finalUM = window.cantidadProducidaFinalUM(odp);
+    const prod = finalUM.um;
     const pct = odp.cantidad > 0 ? Math.min(100, Math.round((prod / odp.cantidad) * 100)) : 0;
     const colorODP = { pendiente_planeacion: '#f59e0b', programada: '#3b82f6', en_produccion: '#8b5cf6', pendiente_calidad: '#f59e0b', liberada_empaque: '#16a34a', rechazada: '#dc2626' }[odp.estatus] || '#64748b';
     const ruta = odp.ruta_procesos || [];
@@ -33888,26 +33900,12 @@ function modalDetallePedido() {
           ${odps.length > 0 ? `
             <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">🏭 Producción (${odps.length} ODP)</h3>
             ${odps.map(o => {
-              // 🆕 Avance REAL del último proceso (lo que de verdad salió terminado).
-              //    Usamos el helper central que cuenta capturas + rollos en vivo, SIN duplicar.
+              // 🆕 Avance REAL vía helper único (último proceso, conversión correcta, sin duplicar)
+              const finalUM = window.cantidadProducidaFinalUM(o);
               const av = window.avanceProcesosODP(o);
-              const ruta = o.ruta_procesos || [];
-              const idxUltimo = ruta.length - 1;
-              // kg producidos del ÚLTIMO proceso de la ruta (el que entrega el PT final)
-              const prodKgUltimo = av?.procesos?.[idxUltimo]?.producido_kg || av?.procesos?.[0]?.producido_kg || 0;
               const metaKgODP = av?.meta_kg || Number(o.cantidad_kg_produccion) || 0;
-              
-              // Convertir kg → UM del pedido (pza/millar) para mostrar correctamente
-              const umODP = (o.um || 'kg').toLowerCase();
-              const prodPT = window.getProductoPT ? window.getProductoPT(o.producto_codigo) : null;
-              let prodEnUM = prodKgUltimo; // por defecto kg
-              if (umODP === 'pza' && prodPT) {
-                const pp = window.calcularPesoPieza(prodPT) || 0;
-                prodEnUM = pp > 0 ? prodKgUltimo / pp : prodKgUltimo;
-              } else if (umODP === 'millar' && prodPT) {
-                const pm = window.calcularPesoMillar(prodPT) || 0;
-                prodEnUM = pm > 0 ? prodKgUltimo / pm : prodKgUltimo;
-              }
+              const prodEnUM = finalUM.um;
+              const prodKgUltimo = finalUM.kg;
               const metaUM = Number(o.cantidad) || 0;
               const pct = metaUM > 0 ? Math.min(100, Math.round((prodEnUM / metaUM) * 100)) : 0;
               return `
@@ -33916,7 +33914,7 @@ function modalDetallePedido() {
                     <span><span class="text-mono" style="font-weight:700;">${o.folio}</span> · ${o.estatus}</span>
                     <span>${fmtCantidadUM(Math.round(prodEnUM), o.um)} / ${fmtCantidadUM(metaUM, o.um)} (${pct}%)</span>
                   </div>
-                  <div style="font-size:10.5px;color:#64748b;margin-top:2px;">${fmtNum(Math.round(prodKgUltimo))} / ${fmtNum(Math.round(metaKgODP))} kg reales</div>
+                  <div style="font-size:10.5px;color:#64748b;margin-top:2px;">${fmtNum(prodKgUltimo)} / ${fmtNum(Math.round(metaKgODP))} kg reales</div>
                   ${o.maquina_asignada ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${o.maquina_asignada}</div>` : ''}
                 </div>
               `;
@@ -38162,13 +38160,19 @@ window.confirmarCompletarProceso = async (odpId) => {
     c.odp_id === odp.id && c.proceso === ruta[idx]
   );
   
-  if (capturasProcActual.length === 0) {
-    toast('Primero registra al menos un turno de producción', 'error');
+  // Hay producción si hay capturas O rollos en vivo (extrusión registra rollo por rollo)
+  const hayRollosVivo = (state.rollos_extrusion || []).some(r => 
+    r.odp_id === odp.id && r.proceso === ruta[idx] && !r.anulado && !r.consolidado_en_turno
+  );
+  if (capturasProcActual.length === 0 && !hayRollosVivo) {
+    toast('Primero registra al menos un turno o rollo de producción', 'error');
     return;
   }
   
-  const prodKg = capturasProcActual.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
-  const mermKg = capturasProcActual.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  const prodKg = window.kgProducidoProceso(odp, ruta[idx]);
+  const mermKg = capturasProcActual.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0) +
+    (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && r.proceso === ruta[idx] && !r.anulado && !r.consolidado_en_turno)
+      .reduce((s, r) => s + (Number(r.mermas_kg) || 0), 0);
   
   if (prodKg <= 0) {
     toast('Los turnos capturados no tienen producción válida', 'error');
