@@ -621,16 +621,13 @@ window.estadoODPenProceso = (odp, procCodigo = null) => {
 window.cadenaAvanceODP = (odpP1) => {
   if (!odpP1) return null;
   
-  // kg producidos de una ODP (cerrada usa final, activa suma rollos/capturas)
+  // kg producidos de una ODP (cerrada usa final; activa usa helper único sin duplicar)
   const kgProducido = (o) => {
     if (Number(o.cantidad_producida_final_kg) > 0) return Number(o.cantidad_producida_final_kg);
-    const porRollos = (state.rollos_extrusion || [])
-      .filter(r => r.odp_id === o.id && !r.anulado)
-      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-    if (porRollos > 0) return porRollos;
-    return capturasValidas(state.capturas_produccion)
-      .filter(c => c.odp_id === o.id)
-      .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+    // 🆕 Helper único: capturas + rollos en vivo del proceso, SIN doble conteo
+    const ruta = o.ruta_procesos || [];
+    const procActual = o.proceso_actual || ruta[o.proceso_actual_idx ?? 0] || ruta[0] || 'P1-EXT';
+    return window.kgProducidoProceso(o, procActual);
   };
   
   const meta = Number(odpP1.cantidad_kg_produccion) || Number(odpP1.cantidad) || 0;
@@ -8635,6 +8632,12 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
     if (odpLocal) { odpLocal.estatus = 'en_produccion'; if (updates.proceso_actual) odpLocal.proceso_actual_idx = updates.proceso_actual_idx; }
     toast(`✅ ${odp.folio} · ${getProc(procAIniciar)?.nombre || ''} iniciada${maqCodigo ? ' en ' + maqCodigo : ''}`, 'success');
+    // 🆕 UN SOLO PASO: tras iniciar, abrir DIRECTO la captura para registrar de inmediato.
+    //    Así el operador no tiene que buscar otro botón — inicia y ya está capturando.
+    state.panelOpProc = procAIniciar;
+    state.modal = 'capturar-turno';
+    state.modalData = odpId;
+    state.modalForm = null; // se reinicia para que el modal lo pre-llene (grupo/turno auto)
   } catch (e) {
     console.error('Error iniciar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
@@ -10614,8 +10617,8 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
       <button onclick="window.reanudarODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;width:100%;">▶️ REANUDAR</button>
     `;
   } else if (modo === 'cola' && o.estatus === 'programada' && procIdx === 0) {
-    // Primer proceso, ODP recién programada (nunca iniciada)
-    botonPrincipal = `<button onclick="window.iniciarProduccionODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR PRODUCCIÓN</button>`;
+    // Primer proceso, ODP recién programada (nunca iniciada) → iniciar y capturar en un paso
+    botonPrincipal = `<button onclick="window.iniciarProduccionODP('${o.id}')" style="background:#16a34a;color:#fff;border:none;padding:18px 30px;border-radius:10px;font-size:18px;font-weight:900;cursor:pointer;box-shadow:0 3px 8px rgba(22,163,74,0.3);width:100%;">▶️ INICIAR Y CAPTURAR</button>`;
   } else if (modo === 'cola' && esMiTurnoYEsperando && procIdx > 0) {
     // 🆕 Mi proceso es el actual PERO está en 'esperando' (acaba de avanzar del anterior)
     // El operador decide cuándo iniciarlo en su máquina
@@ -12652,47 +12655,52 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
             `;
           })()}
           
-          <!-- Datos del turno -->
-          <div style="padding:10px;background:#f0fdf4;border:1.5px solid #16a34a;border-radius:10px;margin-bottom:12px;">
-            <div style="font-size:11px;font-weight:800;color:#15803d;margin-bottom:6px;">📅 DATOS DEL TURNO</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-              <div class="field" style="margin:0;">
-                <label class="field-label" style="font-size:10.5px;">Fecha</label>
-                <input class="input" type="date" id="ext-fecha" value="${f.fecha}" onchange="window.modalFormSet('fecha', this.value)" />
-              </div>
-              <div class="field" style="margin:0;">
-                <label class="field-label" style="font-size:10.5px;">Turno</label>
-                <div style="display:flex;gap:6px;">
-                  <button onclick="window.modalFormSet('turno','dia')" style="flex:1;padding:6px;border:2px solid ${f.turno==='dia'?'#f59e0b':'#cbd5e1'};background:${f.turno==='dia'?'#f59e0b':'#fff'};color:${f.turno==='dia'?'#fff':'#475569'};border-radius:6px;font-weight:800;font-size:11px;cursor:pointer;">☀️ Día</button>
-                  <button onclick="window.modalFormSet('turno','noche')" style="flex:1;padding:6px;border:2px solid ${f.turno==='noche'?'#1e3a8a':'#cbd5e1'};background:${f.turno==='noche'?'#1e3a8a':'#fff'};color:${f.turno==='noche'?'#fff':'#475569'};border-radius:6px;font-weight:800;font-size:11px;cursor:pointer;">🌙 Noche</button>
+          <!-- 🆕 DATOS DEL TURNO — AUTOMÁTICOS (el sistema ya sabe el grupo y el equipo) -->
+          ${(() => {
+            const u = state.user || {};
+            // Turno por hora
+            const hAhora = new Date().getHours();
+            const turnoAuto = (hAhora >= 7 && hAhora < 19) ? 'dia' : 'noche';
+            if (f.turno !== turnoAuto && !f._turnoManual) f.turno = turnoAuto;
+            // Grupo del supervisor logueado
+            const grupoAuto = u.grupo_turno || f.grupo || '';
+            if (grupoAuto && f.grupo !== grupoAuto) f.grupo = grupoAuto;
+            // Equipo del grupo: TODOS los operadores activos de ese grupo para este proceso
+            const equipoGrupo = (state.operadores || []).filter(o => {
+              if (o.activo === false) return false;
+              if (grupoAuto && o.grupo !== grupoAuto) return false;
+              const procs = Array.isArray(o.procesos_asignados) ? o.procesos_asignados : [];
+              if (procs.length > 0 && !procs.includes(procCodigo)) return false;
+              return true;
+            });
+            // Guardar el equipo en el form (todos responsables)
+            f.equipo_grupo_ids = equipoGrupo.map(o => o.id);
+            f.equipo_grupo_nombres = equipoGrupo.map(o => o.nombre);
+            // Supervisor = el logueado
+            if (!f.supervisor_nombre_auto) f.supervisor_nombre_auto = u.nombre || u.email || '';
+            
+            const turnoTxt = turnoAuto === 'dia' ? '☀️ Día (7am-7pm)' : '🌙 Noche (7pm-7am)';
+            return `
+              <div style="padding:12px;background:#f0fdf4;border:1.5px solid #16a34a;border-radius:10px;margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                  <div>
+                    <div style="font-size:10px;font-weight:800;color:#15803d;letter-spacing:0.05em;">TURNO ACTUAL (automático)</div>
+                    <div style="font-size:15px;font-weight:900;color:#0f172a;">${turnoTxt} · ${grupoAuto ? 'Grupo ' + grupoAuto : '⚠ sin grupo'}</div>
+                  </div>
+                  <div style="text-align:right;">
+                    <div style="font-size:10px;font-weight:800;color:#15803d;">SUPERVISOR</div>
+                    <div style="font-size:13px;font-weight:700;color:#0f172a;">👔 ${f.supervisor_nombre_auto || '—'}</div>
+                  </div>
+                </div>
+                <div style="margin-top:8px;padding-top:8px;border-top:1px solid #bbf7d0;">
+                  <div style="font-size:10px;font-weight:800;color:#15803d;margin-bottom:4px;">👥 EQUIPO RESPONSABLE (todo el grupo)</div>
+                  ${equipoGrupo.length > 0 
+                    ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">${equipoGrupo.map(o => `<span style="background:#fff;border:1px solid #86efac;border-radius:99px;padding:3px 10px;font-size:12px;font-weight:700;color:#166534;">👷 ${o.nombre}</span>`).join('')}</div>`
+                    : `<div style="font-size:11px;color:#92400e;background:#fef3c7;border-radius:6px;padding:6px 10px;">⚠ No hay operadores en el grupo ${grupoAuto || '—'} para ${getProc(procCodigo)?.nombre || procCodigo}. ${(!grupoAuto) ? 'Tu usuario no tiene grupo asignado.' : 'Da de alta operadores en Personal con este grupo.'}</div>`}
                 </div>
               </div>
-            </div>
-            <div style="margin-top:8px;">
-              <label class="field-label" style="font-size:10.5px;">Grupo *</label>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                ${TURNOS.map(t => `
-                  <button onclick="window.modalFormSetGrupo('${t.codigo}')" style="flex:1;min-width:50px;padding:10px;border:2px solid ${f.grupo === t.codigo ? t.color : '#cbd5e1'};background:${f.grupo === t.codigo ? t.color : '#fff'};color:${f.grupo === t.codigo ? '#fff' : t.color};border-radius:6px;font-weight:800;font-size:15px;cursor:pointer;">${t.codigo}</button>
-                `).join('')}
-              </div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
-              <div class="field" style="margin:0;">
-                <label class="field-label" style="font-size:10.5px;">Operador del turno *</label>
-                <select class="input" id="ext-operador" onchange="window.modalFormSet('operador_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
-                  <option value="">${f.grupo ? '— Selecciona —' : 'Elige grupo'}</option>
-                  ${operadoresFiltrados.map(o => `<option value="${o.id}" ${f.operador_id === o.id ? 'selected' : ''}>${o.nombre}</option>`).join('')}
-                </select>
-              </div>
-              <div class="field" style="margin:0;">
-                <label class="field-label" style="font-size:10.5px;">Supervisor *</label>
-                <select class="input" id="ext-supervisor" onchange="window.modalFormSet('supervisor_id', this.value)" ${!f.grupo ? 'disabled' : ''}>
-                  <option value="">${f.grupo ? '— Selecciona —' : 'Elige grupo'}</option>
-                  ${supervisoresFiltrados.map(s => `<option value="${s.id}" ${f.supervisor_id === s.id ? 'selected' : ''}>${s.nombre}</option>`).join('')}
-                </select>
-              </div>
-            </div>
-          </div>
+            `;
+          })()}
           
           <!-- Resumen del turno actual -->
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;">
@@ -12733,11 +12741,11 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
               </div>
               <button onclick="window.agregarRolloExtrusion('${odp.id}')" 
                 style="background:#dc2626;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:900;font-size:13px;cursor:pointer;height:38px;white-space:nowrap;" 
-                ${!f.grupo || !f.operador_id ? 'disabled title="Captura grupo y operador primero"' : ''}>
+                ${!f.grupo ? 'disabled title="Tu usuario no tiene grupo asignado"' : ''}>
                 ➕ AGREGAR
               </button>
             </div>
-            ${!f.grupo || !f.operador_id ? `<div style="font-size:10.5px;color:#dc2626;margin-top:6px;font-weight:700;">⚠ Primero elige grupo y operador del turno</div>` : ''}
+            ${!f.grupo ? `<div style="font-size:10.5px;color:#dc2626;margin-top:6px;font-weight:700;">⚠ Tu usuario no tiene grupo de turno asignado. Pídele al admin que lo configure.</div>` : ''}
           </div>
           
           <!-- LISTA DE ROLLOS DEL TURNO -->
@@ -12753,7 +12761,7 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
                     <th style="padding:6px;text-align:center;font-size:10px;color:#475569;">HORA</th>
                     <th style="padding:6px;text-align:right;font-size:10px;color:#475569;">PESO (kg)</th>
                     <th style="padding:6px;text-align:right;font-size:10px;color:#475569;">MERMA (kg)</th>
-                    <th style="padding:6px;text-align:left;font-size:10px;color:#475569;">OPERADOR</th>
+                    <th style="padding:6px;text-align:left;font-size:10px;color:#475569;">EQUIPO</th>
                     <th style="padding:6px;text-align:center;font-size:10px;color:#475569;">✕</th>
                   </tr>
                 </thead>
@@ -12764,7 +12772,7 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
                       <td style="padding:6px;text-align:center;font-family:monospace;">${r.hora_captura || '—'}</td>
                       <td style="padding:6px;text-align:right;font-weight:800;color:#15803d;">${fmtNum(r.peso_kg || 0)}</td>
                       <td style="padding:6px;text-align:right;font-weight:700;color:${r.mermas_kg ? '#dc2626' : '#94a3b8'};">${r.mermas_kg ? fmtNum(r.mermas_kg) : '—'}</td>
-                      <td style="padding:6px;font-size:11px;color:#475569;">${r.operador_nombre || '—'}</td>
+                      <td style="padding:6px;font-size:11px;color:#475569;">${(r.equipo_nombres && r.equipo_nombres.length) ? r.equipo_nombres.join(', ') : (r.operador_nombre || '—')}</td>
                       <td style="padding:6px;text-align:center;">
                         <button onclick="window.anularRolloExtrusion('${r.id}')" style="background:transparent;border:none;color:#dc2626;cursor:pointer;font-size:14px;font-weight:800;" title="Anular rollo">✕</button>
                       </td>
@@ -13087,8 +13095,9 @@ window.agregarRolloExtrusion = async (odpId) => {
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   const f = state.modalForm || {};
   
-  if (!f.grupo) { toast('Selecciona el grupo del turno', 'error'); return; }
-  if (!f.operador_id) { toast('Selecciona el operador del turno', 'error'); return; }
+  // 🆕 CAPTURA POR EQUIPO: el sistema ya sabe el grupo (del supervisor logueado).
+  //    No se exige elegir un operador — todo el equipo del grupo es responsable.
+  if (!f.grupo) { toast('Tu usuario no tiene grupo de turno asignado. Pídele al admin que lo configure.', 'error'); return; }
   
   // Leer del DOM si no está en state
   const pesoDom = ($('#rollo-peso')?.value || '').trim();
@@ -13117,9 +13126,10 @@ window.agregarRolloExtrusion = async (odpId) => {
   );
   const proxNum = todosRollosODP.length + 1;
   
-  // Operador y supervisor (denormalizar nombres)
-  const operador = (state.operadores || []).find(o => o.id === f.operador_id);
-  const supervisor = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+  // 🆕 Equipo del grupo (todos responsables) + supervisor logueado
+  const u = state.user || {};
+  const equipoIds = Array.isArray(f.equipo_grupo_ids) ? f.equipo_grupo_ids : [];
+  const equipoNombres = Array.isArray(f.equipo_grupo_nombres) ? f.equipo_grupo_nombres : [];
   
   // El guardado es instantáneo (Firestore offline-first), no necesitamos overlay
   // de "Procesando" — ese overlay bloqueaba la pantalla si quedaba activo.
@@ -13135,12 +13145,14 @@ window.agregarRolloExtrusion = async (odpId) => {
       mermas_kg: Number(mermas) || 0,
       hora_captura: hora || '',
       fecha: f.fecha || new Date().toISOString().split('T')[0],
-      turno: f.turno || '',
-      grupo: f.grupo || '',
-      operador_id: f.operador_id || '',
-      operador_nombre: operador?.nombre || '',
-      supervisor_id: f.supervisor_id || '',
-      supervisor_nombre: supervisor?.nombre || '',
+      turno: f.turno || ((new Date().getHours() >= 7 && new Date().getHours() < 19) ? 'dia' : 'noche'),
+      grupo: f.grupo || (state.user?.grupo_turno || ''),
+      // 🆕 Equipo responsable (todo el grupo) en vez de un solo operador
+      equipo_ids: equipoIds,
+      equipo_nombres: equipoNombres,
+      operador_nombre: equipoNombres.join(', ') || '',  // compat: nombres del equipo
+      supervisor_id: u.id || '',
+      supervisor_nombre: u.nombre || u.email || '',
       anulado: false,
       consolidado_en_turno: false,  // se marca true cuando se cierra el turno
       captura_id_consolidado: '',
@@ -13259,8 +13271,10 @@ window.cerrarTurnoExtrusion = async (odpId) => {
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   const f = state.modalForm || {};
   
-  if (!f.grupo || !f.operador_id || !f.supervisor_id) {
-    toast('Completa grupo, operador y supervisor antes de cerrar', 'error'); return;
+  // 🆕 Captura por EQUIPO: solo se requiere el grupo (el supervisor logueado y su equipo
+  //    ya quedan registrados en cada rollo). No se exige operador/supervisor individual.
+  if (!f.grupo) {
+    toast('Tu usuario no tiene grupo de turno asignado. Pídele al admin que lo configure.', 'error'); return;
   }
   
   // Notas del turno (leer del DOM)
@@ -13293,9 +13307,10 @@ window.cerrarTurnoExtrusion = async (odpId) => {
   
   state.loadingAccion = true; render();
   try {
-    // Operador y supervisor nombres
-    const operador = (state.operadores || []).find(o => o.id === f.operador_id);
-    const supervisor = (state.supervisores || []).find(s => s.id === f.supervisor_id);
+    // 🆕 Equipo del grupo + supervisor logueado (captura por equipo)
+    const u = state.user || {};
+    const equipoNombres = Array.isArray(f.equipo_grupo_nombres) ? f.equipo_grupo_nombres : [];
+    const equipoIds = Array.isArray(f.equipo_grupo_ids) ? f.equipo_grupo_ids : [];
     const maquina = odp.maquinas_asignadas?.[procCodigo] || odp.maquina_codigo || '';
     
     // 1. Crear captura consolidada
@@ -13308,10 +13323,11 @@ window.cerrarTurnoExtrusion = async (odpId) => {
       fecha: f.fecha,
       turno: f.turno,
       grupo: f.grupo,
-      operador_id: f.operador_id,
-      operador: operador?.nombre || '',
-      supervisor_id: f.supervisor_id,
-      supervisor: supervisor?.nombre || '',
+      equipo_ids: equipoIds,
+      equipo_nombres: equipoNombres,
+      operador: equipoNombres.join(', ') || '',
+      supervisor_id: u.id || '',
+      supervisor: u.nombre || u.email || '',
       producido_kg: Number(totalKg) || 0,
       mermas_kg: Number(totalMermas) || 0,
       notas: f.notas || '',
@@ -33737,22 +33753,36 @@ function modalDetallePedido() {
           ${odps.length > 0 ? `
             <h3 style="font-size:13px;font-weight:700;margin:14px 0 8px;color:#475569;text-transform:uppercase;">🏭 Producción (${odps.length} ODP)</h3>
             ${odps.map(o => {
-              // Usar cantidad final del último proceso (no sumar todas las capturas)
-              let prod = 0;
-              if (o.cantidad_producida_final !== undefined && o.cantidad_producida_final !== null) {
-                prod = Number(o.cantidad_producida_final) || 0;
-              } else if (o.procesos_completados && o.procesos_completados.length > 0) {
-                const ultimo = o.procesos_completados[o.procesos_completados.length - 1];
-                prod = Number(ultimo.cantidad_producida) || 0;
+              // 🆕 Avance REAL del último proceso (lo que de verdad salió terminado).
+              //    Usamos el helper central que cuenta capturas + rollos en vivo, SIN duplicar.
+              const av = window.avanceProcesosODP(o);
+              const ruta = o.ruta_procesos || [];
+              const idxUltimo = ruta.length - 1;
+              // kg producidos del ÚLTIMO proceso de la ruta (el que entrega el PT final)
+              const prodKgUltimo = av?.procesos?.[idxUltimo]?.producido_kg || av?.procesos?.[0]?.producido_kg || 0;
+              const metaKgODP = av?.meta_kg || Number(o.cantidad_kg_produccion) || 0;
+              
+              // Convertir kg → UM del pedido (pza/millar) para mostrar correctamente
+              const umODP = (o.um || 'kg').toLowerCase();
+              const prodPT = window.getProductoPT ? window.getProductoPT(o.producto_codigo) : null;
+              let prodEnUM = prodKgUltimo; // por defecto kg
+              if (umODP === 'pza' && prodPT) {
+                const pp = window.calcularPesoPieza(prodPT) || 0;
+                prodEnUM = pp > 0 ? prodKgUltimo / pp : prodKgUltimo;
+              } else if (umODP === 'millar' && prodPT) {
+                const pm = window.calcularPesoMillar(prodPT) || 0;
+                prodEnUM = pm > 0 ? prodKgUltimo / pm : prodKgUltimo;
               }
-              const pct = o.cantidad > 0 ? Math.min(100, Math.round((prod / o.cantidad) * 100)) : 0;
+              const metaUM = Number(o.cantidad) || 0;
+              const pct = metaUM > 0 ? Math.min(100, Math.round((prodEnUM / metaUM) * 100)) : 0;
               return `
                 <div style="padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:6px;">
                   <div style="display:flex;justify-content:space-between;font-size:12px;">
                     <span><span class="text-mono" style="font-weight:700;">${o.folio}</span> · ${o.estatus}</span>
-                    <span>${fmtCantidadUM(prod, o.um)} / ${fmtCantidadUM(o.cantidad, o.um)} (${pct}%)</span>
+                    <span>${fmtCantidadUM(Math.round(prodEnUM), o.um)} / ${fmtCantidadUM(metaUM, o.um)} (${pct}%)</span>
                   </div>
-                  ${o.maquina_asignada ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${o.maquina_asignada} · ${o.turno_asignado || ''} · ${o.fecha_inicio_programada || ''}</div>` : ''}
+                  <div style="font-size:10.5px;color:#64748b;margin-top:2px;">${fmtNum(Math.round(prodKgUltimo))} / ${fmtNum(Math.round(metaKgODP))} kg reales</div>
+                  ${o.maquina_asignada ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${o.maquina_asignada}</div>` : ''}
                 </div>
               `;
             }).join('')}
@@ -38642,11 +38672,8 @@ window.enviarParcial = async (odpId, modo = 'seguir') => {
   const proc = getProc(ruta[idx]);
   const esUltimo = idx === ruta.length - 1;
   
-  // Producido acumulado del proceso actual
-  const capturasProc = capturasValidas(state.capturas_produccion).filter(c => 
-    c.odp_id === odp.id && c.proceso === ruta[idx]
-  );
-  const prodKg = capturasProc.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  // Producido acumulado del proceso actual (capturas + rollos en vivo, vía helper único)
+  const prodKg = window.kgProducidoProceso(odp, ruta[idx]);
   
   if (prodKg <= 0) { toast('No hay producción capturada para enviar', 'error'); return; }
   
