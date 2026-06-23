@@ -11323,9 +11323,22 @@ function renderSeguimiento() {
   const filtro = (state.filtros.seguimiento || '').toLowerCase();
   const filtroCli = state.filtros.seguimiento_cliente || '';
   const tabActivo = state.filtros.seguimiento_tab || 'activos'; // activos | completados | cancelados | urgentes
+  // 🆕 Filtro "míos": solo los pedidos que yo creé. Por defecto, comercial ve los suyos.
+  const u = state.user || {};
+  const esComercial = ['CS', 'KAM'].includes(u.depto);
+  // Inicializar: comercial arranca viendo SOLO los suyos; otros ven todos
+  if (state.filtros.seguimiento_solo_mios === undefined) {
+    state.filtros.seguimiento_solo_mios = esComercial;
+  }
+  const soloMios = state.filtros.seguimiento_solo_mios;
   
   // Pre-calcular fase para todos los pedidos UNA SOLA VEZ (caché en memoria)
-  const todosPedidos = state.pedidos.map(p => ({
+  let basePedidos = state.pedidos;
+  // 🆕 Si "solo míos" está activo, filtrar por creado_por = mi id
+  if (soloMios) {
+    basePedidos = basePedidos.filter(p => p.creado_por === u.id);
+  }
+  const todosPedidos = basePedidos.map(p => ({
     p,
     fase: calcularFasePI(p)
   }));
@@ -11383,11 +11396,20 @@ function renderSeguimiento() {
         ${(filtro || filtroCli) ? `<button onclick="limpiarFiltroSeguimiento()" style="padding:10px 14px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:700;">✗ Limpiar</button>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <select class="input" id="filtro-seguimiento-cliente" style="max-width:320px;font-size:13px;">
+        <!-- 🆕 Toggle Míos / Todos -->
+        <div style="display:flex;gap:0;border:2px solid #3b82f6;border-radius:10px;overflow:hidden;">
+          <button onclick="window.setSeguimientoMios(true)" style="padding:9px 16px;background:${soloMios ? '#3b82f6' : '#fff'};color:${soloMios ? '#fff' : '#3b82f6'};border:none;cursor:pointer;font-weight:800;font-size:13px;">
+            👤 Mis pedidos
+          </button>
+          <button onclick="window.setSeguimientoMios(false)" style="padding:9px 16px;background:${!soloMios ? '#3b82f6' : '#fff'};color:${!soloMios ? '#fff' : '#3b82f6'};border:none;cursor:pointer;font-weight:800;font-size:13px;">
+            🌐 Todos
+          </button>
+        </div>
+        <select class="input" id="filtro-seguimiento-cliente" style="max-width:280px;font-size:13px;">
           <option value="">📋 Todos los clientes (${clientesConPedidos.length})</option>
           ${clientesConPedidos.map(c => `<option value="${c.codigo}" ${filtroCli === c.codigo ? 'selected' : ''}>${c.codigo} - ${c.nombre}</option>`).join('')}
         </select>
-        <span style="font-size:12px;color:#64748b;font-weight:600;margin-left:auto;">📊 Mostrando ${arrConFase.length} de ${todosPedidos.length}</span>
+        <span style="font-size:12px;color:#64748b;font-weight:600;margin-left:auto;">📊 Mostrando ${arrConFase.length} ${soloMios ? 'pedido(s) míos' : 'de ' + todosPedidos.length}</span>
       </div>
     </div>
     
@@ -11440,6 +11462,12 @@ window.limpiarFiltroSeguimiento = () => {
 
 window.setTabSeguimiento = (tab) => {
   state.filtros.seguimiento_tab = tab;
+  render();
+};
+
+// 🆕 Alternar entre "mis pedidos" y "todos"
+window.setSeguimientoMios = (mios) => {
+  state.filtros.seguimiento_solo_mios = mios;
   render();
 };
 
@@ -12538,9 +12566,9 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
   const mm = String(ahora.getMinutes()).padStart(2, '0');
   const horaAhora = `${hh}:${mm}`;
   
-  // Pre-llenar próximo rollo
+  // Pre-llenar próximo rollo (mermas vacío para que no se pegue el "0" al escribir)
   if (!f.proxRollo) {
-    f.proxRollo = { peso_kg: '', hora: horaAhora, mermas_kg: '0' };
+    f.proxRollo = { peso_kg: '', hora: horaAhora, mermas_kg: '' };
   }
   
   const procEst = odp.proceso_estatus_actual || 'esperando';
@@ -12699,7 +12727,7 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
               </div>
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:10.5px;">Merma rollo (kg)</label>
-                <input class="input" id="rollo-mermas" type="number" min="0" step="0.1" value="${f.proxRollo.mermas_kg || '0'}" 
+                <input class="input" id="rollo-mermas" type="number" min="0" step="0.1" value="${f.proxRollo.mermas_kg || ''}" 
                   oninput="state.modalForm.proxRollo.mermas_kg=this.value" 
                   placeholder="0" style="font-size:15px;font-weight:700;text-align:center;color:#dc2626;" />
               </div>
@@ -12811,6 +12839,15 @@ window.modalFormSet = (key, val) => {
   state._forzarRender = true;
   render();
 };
+
+// 🆕 Guardar un campo SIN re-renderizar (para inputs de texto mientras se escribe).
+//    Evita que el modal se reconstruya y borre lo que el usuario va llenando.
+window.modalFormSetSilent = (key, val) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm[key] = val;
+  // NO render: el valor queda guardado y persiste si algo más re-renderiza después.
+};
+window.mfs = window.modalFormSetSilent; // alias corto
 
 window.modalFormSetGrupo = (g) => {
   if (!state.modalForm) state.modalForm = {};
@@ -17973,11 +18010,11 @@ function modalUsuario(esEdicion) {
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field">
               <label class="field-label">Nombre completo *</label>
-              <input class="input" id="usr-nombre" value="${f.nombre || ''}" placeholder="Juan Pérez García" />
+              <input class="input" id="usr-nombre" value="${f.nombre || ''}" placeholder="Juan Pérez García" oninput="window.mfs('nombre', this.value)" />
             </div>
             <div class="field">
               <label class="field-label">Teléfono</label>
-              <input class="input" id="usr-tel" value="${f.telefono || ''}" placeholder="+52 81 1234 5678" />
+              <input class="input" id="usr-tel" value="${f.telefono || ''}" placeholder="+52 81 1234 5678" oninput="window.mfs('telefono', this.value)" />
             </div>
           </div>
           
@@ -18010,7 +18047,7 @@ function modalUsuario(esEdicion) {
           ${!f.sinCorreo ? `
             <div class="field">
               <label class="field-label">Correo electrónico * <span style="font-weight:400;color:#94a3b8;">(será su usuario para iniciar sesión)</span></label>
-              <input class="input" id="usr-email" type="email" value="${f.email || ''}" placeholder="usuario@newpackempaques.com" ${esEdicion ? 'disabled style="background:#f1f5f9;cursor:not-allowed;"' : ''} />
+              <input class="input" id="usr-email" type="email" value="${f.email || ''}" placeholder="usuario@newpackempaques.com" ${esEdicion ? 'disabled style="background:#f1f5f9;cursor:not-allowed;"' : 'oninput="window.mfs(\'email\', this.value)"'} />
               ${esEdicion ? '<div style="font-size:10px;color:#94a3b8;margin-top:4px;">El correo no se puede modificar (es la identidad del usuario)</div>' : ''}
             </div>
           ` : !esEdicion ? `
@@ -21982,7 +22019,7 @@ function modalProductoMTTO(esEdicion) {
               <input class="input text-mono" id="mtto-subtipo" list="mtto-subtipos-list" value="${f.subtipo || ''}"
                 ${soloLectura || esEdicion ? 'readonly' : ''}
                 placeholder="${famSel ? (famSel.subtipos[0] || 'EJ. HEX') : 'Selecciona familia'}"
-                oninput="window.modalFormSet('subtipo', this.value.toUpperCase())" />
+                oninput="window.modalFormSetSilent('subtipo', this.value.toUpperCase())" />
               <datalist id="mtto-subtipos-list">
                 ${famSel ? famSel.subtipos.map(s => {
                   const lbl = (famSel.subtipos_label || {})[s];
@@ -21995,7 +22032,7 @@ function modalProductoMTTO(esEdicion) {
               <input class="input text-mono" id="mtto-especif" value="${f.especificacion || ''}"
                 ${soloLectura || esEdicion ? 'readonly' : ''}
                 placeholder="Ej. 6205-2RS, M8X25, 5HP-440"
-                oninput="window.modalFormSet('especificacion', this.value.toUpperCase())" />
+                oninput="window.modalFormSetSilent('especificacion', this.value.toUpperCase())" />
             </div>
           </div>
 
@@ -22302,7 +22339,7 @@ function modalSalidaMTTO() {
             <div class="field">
               <label class="field-label">Cantidad a consumir *</label>
               <input class="input" id="sal-cant" type="number" min="0.01" step="0.01" value="${f.cantidad || ''}"
-                oninput="window.modalFormSet('cantidad', this.value)" />
+                oninput="window.modalFormSetSilent('cantidad', this.value)" />
               ${cant > 0 && stockResultante < 0 ? `
                 <div style="margin-top:4px;font-size:11px;color:#dc2626;font-weight:700;">⚠ Stock insuficiente (faltan ${fmtNum(Math.abs(stockResultante))} ${prodSel?.um || ''})</div>
               ` : cant > 0 && stockResultante <= minimo && minimo > 0 ? `
@@ -22537,7 +22574,7 @@ function modalAjusteMTTO() {
               <div class="field">
                 <label class="field-label">Nuevo stock *</label>
                 <input class="input" id="adj-stock" type="number" min="0" step="0.01" value="${f.nuevo_stock || ''}"
-                  oninput="window.modalFormSet('nuevo_stock', this.value)" />
+                  oninput="window.modalFormSetSilent('nuevo_stock', this.value)" />
                 ${delta !== null && delta !== 0 ? `
                   <div style="margin-top:4px;font-size:11px;font-weight:700;color:${delta > 0 ? '#16a34a' : '#dc2626'};">
                     ${delta > 0 ? '+' : ''}${fmtNum(delta)} ${prodSel.um || ''}
