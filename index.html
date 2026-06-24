@@ -3698,7 +3698,7 @@ function tituloVista() {
 
 function renderVista() {
   const v = state.vista;
-  if (v === 'dashboard') return renderDashboard();
+  if (v === 'dashboard') return renderDashboardPorRol();
   if (v === 'centro_control') return renderCentroControl();
   if (v === 'clientes') return renderClientes();
   if (v === 'pedidos') return renderPedidos();
@@ -3745,6 +3745,183 @@ function renderVista() {
   if (v === 'inventario_com') return renderInventarioCOM();
   if (v === 'usuarios') return renderUsuariosSistema();
   return '';
+}
+
+// ============================================================
+// 🆕 DASHBOARDS POR DEPARTAMENTO + DIRECCIÓN
+//    - Cada JEFE de departamento ve el dashboard completo de su área.
+//    - Dirección (CEO/Admin) ve el dashboard global y puede elegir cualquier área.
+// ============================================================
+
+// ¿El usuario actual es jefe de departamento o dirección?
+window.esJefeODireccion = () => {
+  const u = state.user || {};
+  return u.es_jefe === true || u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+};
+window.esDireccion = () => {
+  const u = state.user || {};
+  return u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+};
+
+// KPIs de PRODUCCIÓN (depto PRO)
+function _kpisProduccion(dias = 7) {
+  const ahora = Date.now();
+  const desde = ahora - dias * 86400000;
+  const capturas = capturasValidas(state.capturas_produccion).filter(c => {
+    const t = c.created_at?.seconds ? c.created_at.seconds * 1000 : (c.fecha ? new Date(c.fecha).getTime() : 0);
+    return t >= desde;
+  });
+  const kgProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const kgMerma = capturas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  const pctMerma = kgProd > 0 ? ((kgMerma / (kgProd + kgMerma)) * 100).toFixed(1) : '0';
+  const odpsEnProd = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion').length;
+  const odpsCola = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'programada').length;
+  const odpsPendCal = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'pendiente_calidad').length;
+  // Máquinas corriendo
+  const maqsCorriendo = new Set();
+  (state.ordenes_produccion || []).forEach(o => {
+    if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso') {
+      const m = o.maquinas_asignadas?.[o.proceso_actual];
+      if (m) maqsCorriendo.add(m);
+    }
+  });
+  const totalMaqs = (state.maquinas || []).filter(m => m.activa !== false).length;
+  return { kgProd, kgMerma, pctMerma, odpsEnProd, odpsCola, odpsPendCal, maqsCorriendo: maqsCorriendo.size, totalMaqs, capturas: capturas.length };
+}
+
+function renderDashboardProduccion() {
+  const k = _kpisProduccion(7);
+  const cards = [
+    _kpiCard('Kg producidos', fmtNum(Math.round(k.kgProd)), 'últimos 7 días', '#1e40af'),
+    _kpiCard('Merma', `${k.pctMerma}%`, `${fmtNum(Math.round(k.kgMerma))} kg`, Number(k.pctMerma) > 5 ? '#dc2626' : '#16a34a'),
+    _kpiCard('Máquinas activas', `${k.maqsCorriendo}/${k.totalMaqs}`, 'corriendo ahora', '#0e7490'),
+    _kpiCard('En producción', k.odpsEnProd, 'órdenes corriendo', '#8b5cf6'),
+    _kpiCard('En cola', k.odpsCola, 'programadas', '#f59e0b'),
+    _kpiCard('Por liberar', k.odpsPendCal, 'esperan calidad', k.odpsPendCal > 0 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('Turnos capturados', k.capturas, 'últimos 7 días', '#64748b'),
+  ].join('');
+  return _kpiSeccion('🏭', 'Producción · KPIs (últimos 7 días)', '#1e40af', cards,
+    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="state.vista='kanban_maquinas';render();" style="padding:8px 14px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📋 Ver Kanban</button>
+      <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#1e40af;border:1.5px solid #1e40af;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🖨️ Imprimir para Dirección</button>
+    </div>`);
+}
+
+// KPIs de COMERCIAL (depto CS/KAM)
+function _kpisComercial() {
+  const pedidos = state.pedidos || [];
+  const pedidosMes = pedidos.filter(p => {
+    const t = p.created_at?.seconds ? p.created_at.seconds * 1000 : 0;
+    return t >= Date.now() - 30 * 86400000;
+  });
+  const ovs = state.ordenes_venta || [];
+  const ovsActivas = ovs.filter(o => !['entregada','cancelada'].includes(o.estatus)).length;
+  const ovsEntregadas = ovs.filter(o => o.estatus === 'entregada').length;
+  const pedidosPend = pedidos.filter(p => p.estatus === 'pendiente_aprobacion' || p.estatus === 'pendiente_planeacion').length;
+  const clientesActivos = (state.clientes || []).filter(c => c.activo !== false).length;
+  return { pedidosMes: pedidosMes.length, ovsActivas, ovsEntregadas, pedidosPend, clientesActivos };
+}
+
+function renderDashboardComercial() {
+  const k = _kpisComercial();
+  const cards = [
+    _kpiCard('Pedidos del mes', k.pedidosMes, 'últimos 30 días', '#1e40af'),
+    _kpiCard('OV activas', k.ovsActivas, 'en proceso', '#8b5cf6'),
+    _kpiCard('OV entregadas', k.ovsEntregadas, 'históricas', '#16a34a'),
+    _kpiCard('Por aprobar', k.pedidosPend, 'pendientes', k.pedidosPend > 0 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('Clientes activos', k.clientesActivos, '', '#0e7490'),
+  ].join('');
+  return _kpiSeccion('💼', 'Comercial · KPIs', '#8b5cf6', cards,
+    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="state.vista='pedidos';render();" style="padding:8px 14px;background:#8b5cf6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📋 Ver Pedidos</button>
+      <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#8b5cf6;border:1.5px solid #8b5cf6;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🖨️ Imprimir para Dirección</button>
+    </div>`);
+}
+
+// KPIs de PLANEACIÓN (depto PLN)
+function _kpisPlaneacion() {
+  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  const porProgramar = odps.filter(o => o.estatus === 'pendiente_planeacion').length;
+  const programadas = odps.filter(o => o.estatus === 'programada').length;
+  const enProd = odps.filter(o => o.estatus === 'en_produccion').length;
+  const completadas = odps.filter(o => ['completada','liberada_empaque','entregada'].includes(o.estatus)).length;
+  const enEspera = odps.filter(o => o.estatus === 'en_espera_saldo').length;
+  // Órdenes vencidas (fecha de entrega pasada y no entregadas)
+  const hoy = new Date().toISOString().split('T')[0];
+  const vencidas = odps.filter(o => 
+    o.fecha_entrega_solicitada && o.fecha_entrega_solicitada < hoy && 
+    !['entregada','completada','liberada_empaque'].includes(o.estatus)
+  ).length;
+  return { porProgramar, programadas, enProd, completadas, enEspera, vencidas };
+}
+
+function renderDashboardPlaneacion() {
+  const k = _kpisPlaneacion();
+  const cards = [
+    _kpiCard('Por programar', k.porProgramar, 'pendientes', k.porProgramar > 0 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('Programadas', k.programadas, 'en cola', '#3b82f6'),
+    _kpiCard('En producción', k.enProd, 'corriendo', '#8b5cf6'),
+    _kpiCard('Completadas', k.completadas, 'históricas', '#16a34a'),
+    _kpiCard('Saldos en espera', k.enEspera, 'parcialidades', k.enEspera > 0 ? '#a16207' : '#16a34a'),
+    _kpiCard('Vencidas', k.vencidas, 'fuera de fecha', k.vencidas > 0 ? '#dc2626' : '#16a34a'),
+  ].join('');
+  return _kpiSeccion('📅', 'Planeación · KPIs', '#3b82f6', cards,
+    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="state.vista='programacion';render();" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📋 Ver Programación</button>
+      <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1.5px solid #3b82f6;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🖨️ Imprimir para Dirección</button>
+    </div>`);
+}
+
+// Dashboard de DIRECCIÓN: panorama global de todas las áreas
+function renderDashboardDireccion() {
+  const prod = _kpisProduccion(7);
+  const com = _kpisComercial();
+  const pln = _kpisPlaneacion();
+  return `
+    <div style="margin-bottom:8px;"><strong style="font-size:15px;color:#0f172a;">📊 Panorama general · Dirección</strong></div>
+    ${renderDashboardComercial()}
+    ${renderDashboardPlaneacion()}
+    ${renderDashboardProduccion()}
+  `;
+}
+
+// Router: decide qué dashboard mostrar según el usuario
+function renderDashboardPorRol() {
+  const u = state.user || {};
+  // Dirección elige qué ver (por defecto el global)
+  if (window.esDireccion()) {
+    const sel = state.dashboardDeptoSel || 'general';
+    const opciones = [
+      ['general', '📊 General (Dirección)'],
+      ['PRO', '🏭 Producción'],
+      ['CS', '💼 Comercial'],
+      ['PLN', '📅 Planeación'],
+    ];
+    const selector = `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
+        ${opciones.map(([cod, lbl]) => `
+          <button onclick="state.dashboardDeptoSel='${cod}';render();" style="padding:8px 14px;border-radius:99px;border:2px solid ${sel===cod?'#1e40af':'#cbd5e1'};background:${sel===cod?'#1e40af':'#fff'};color:${sel===cod?'#fff':'#475569'};cursor:pointer;font-weight:800;font-size:12px;">${lbl}</button>
+        `).join('')}
+      </div>`;
+    let contenido;
+    if (sel === 'PRO') contenido = renderDashboardProduccion();
+    else if (sel === 'CS') contenido = renderDashboardComercial();
+    else if (sel === 'PLN') contenido = renderDashboardPlaneacion();
+    else contenido = renderDashboardDireccion();
+    return selector + contenido;
+  }
+  
+  // Jefe de departamento: ve SOLO el dashboard de su área
+  if (u.es_jefe === true) {
+    if (u.depto === 'PRO') return renderDashboardProduccion();
+    if (u.depto === 'CS' || u.depto === 'KAM') return renderDashboardComercial();
+    if (u.depto === 'PLN') return renderDashboardPlaneacion();
+    // Otros departamentos aún no tienen dashboard dedicado → dashboard básico
+    return renderDashboard();
+  }
+  
+  // Usuario normal (no jefe): dashboard básico
+  return renderDashboard();
 }
 
 function renderDashboard() {
@@ -9336,6 +9513,10 @@ window.eliminarODPPermanente = async (odpId) => {
 
 // 2️⃣ Cancelar ODP individual
 window.cancelarODPConDevolucion = async (odpId) => {
+  const u = state.user || {};
+  if (!(['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Planeación, Producción, CEO o Admin pueden cancelar órdenes. Tu depto: ${u.depto || '?'}`, 'error'); return;
+  }
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   if (odp.estatus === 'cancelada') { toast('Esta ODP ya está cancelada', 'info'); return; }
@@ -13331,11 +13512,6 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
 }
 
 // Silenciosa: para inputs (no provoca render, no pierde cursor)
-window.modalFormSetSilent = (key, val) => {
-  if (!state.modalForm) state.modalForm = {};
-  state.modalForm[key] = val;
-};
-
 // Helper global para cambiar tab en cualquier vista (state.tabs[key] = valor)
 window.setTab = (tabKey, valor) => {
   if (!state.tabs) state.tabs = {};
