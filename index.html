@@ -4355,6 +4355,25 @@ function renderDashboard() {
         </div>
       </div>
       
+      <!-- 🔄 RECONCILIAR PARCIALIDADES VIEJAS al modelo nuevo -->
+      <div class="panel" style="margin-bottom:18px;border:2px solid #3b82f6;background:#eff6ff;">
+        <div style="padding:14px 18px;border-bottom:1px solid #93c5fd;">
+          <strong style="color:#1e40af;font-size:14px;">🔄 Reconciliar parcialidades al modelo nuevo</strong>
+        </div>
+        <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div style="flex:1;min-width:220px;">
+            <div style="font-size:12.5px;color:#1e3a8a;line-height:1.5;">
+              Las órdenes que se <strong>partieron en varias ODPs</strong> (modelo viejo) se reúnen en <strong>una sola ODP origen</strong>.
+              <br>Las continuaciones se convierten en <strong>salidas parciales</strong> y se archivan (no se borran).
+              <br><strong>La ODP origen recupera su meta total y queda viva.</strong>
+            </div>
+          </div>
+          <button onclick="window.reconciliarParcialidadesViejas()" style="background:#3b82f6;color:#fff;border:none;padding:12px 20px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;white-space:nowrap;">
+            🔄 RECONCILIAR AHORA
+          </button>
+        </div>
+      </div>
+      
       <!-- 🆕 ZONA PELIGROSA: RESET DEL SISTEMA -->
       <div class="panel" style="margin-bottom:18px;border:2px solid #dc2626;background:#fef2f2;">
         <div style="padding:14px 18px;border-bottom:1px solid #fca5a5;">
@@ -40487,6 +40506,206 @@ window.enviarParcial = async (odpId, modo = 'seguir') => {
   } catch (e) {
     console.error('Error en salida parcial:', e);
     toast('Error al registrar salida parcial: ' + e.message, 'error');
+    state.loadingAccion = false; render();
+  }
+};
+
+// 🔄 RECONCILIAR PARCIALIDADES VIEJAS al modelo nuevo (una sola ODP + salidas parciales).
+//    Reúne las cadenas de ODPs partidas: la ODP ORIGEN queda como única y recupera su
+//    meta total. Cada continuación que produjo algo se vuelve una salida_parcial.
+//    Las continuaciones se ARCHIVAN (no se borran, para trazabilidad).
+window.reconciliarParcialidadesViejas = async () => {
+  const u = state.user || {};
+  if (!(['CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast('🔒 Solo Dirección/Admin puede reconciliar', 'error'); return;
+  }
+
+  const todas = (state.ordenes_produccion || []).filter(o => !o.archivada);
+
+  // 1) Detectar las ODPs ORIGEN de cadenas partidas (modelo viejo).
+  //    Una origen es la que tiene continuaciones apuntándole, o que ella misma cerró parcial.
+  const esParteDeModeloViejo = (o) =>
+    o.es_continuacion_parcial || o.es_cierre_parcial ||
+    o.odp_continuacion_id || o.odp_origen_id ||
+    (Number(o.num_parcialidad) || 0) > 1;
+
+  // Mapa origenId -> lista de ODPs de esa cadena
+  const cadenas = {};
+  todas.forEach(o => {
+    if (!esParteDeModeloViejo(o)) return;
+    const origenId = o.odp_origen_id || o.id;
+    if (!cadenas[origenId]) cadenas[origenId] = [];
+    cadenas[origenId].push(o);
+  });
+
+  // Filtrar: solo cadenas con 2+ ODPs (las de 1 sola no necesitan reconciliación)
+  const cadenasReales = Object.entries(cadenas).filter(([origenId, lista]) => {
+    // Asegurar que la origen esté en la lista (puede que solo estén las continuaciones)
+    const tieneOrigen = lista.some(o => o.id === origenId);
+    if (!tieneOrigen) {
+      const origen = todas.find(o => o.id === origenId);
+      if (origen) lista.push(origen);
+    }
+    return lista.length >= 2;
+  });
+
+  if (cadenasReales.length === 0) {
+    toast('✅ No hay parcialidades viejas que reconciliar. Todo está en el modelo nuevo.', 'success');
+    return;
+  }
+
+  const totalCadenas = cadenasReales.length;
+  const totalODPs = cadenasReales.reduce((s, [, lista]) => s + lista.length, 0);
+  const ok = confirm(
+    `🔄 RECONCILIAR PARCIALIDADES VIEJAS\n\n` +
+    `Se encontraron ${totalCadenas} cadena(s) partida(s) (${totalODPs} ODPs en total).\n\n` +
+    `Cada cadena se reunirá en su ODP ORIGEN (folio original).\n` +
+    `Las continuaciones que produjeron material se vuelven salidas parciales y se archivan.\n\n` +
+    `Las ODPs archivadas NO se borran (quedan para trazabilidad).\n\n` +
+    `¿Reconciliar las ${totalCadenas} cadena(s) ahora?`
+  );
+  if (!ok) return;
+
+  state.loadingAccion = true; render();
+
+  let cadenasReconciliadas = 0;
+  let salidasCreadas = 0;
+  let errores = 0;
+
+  try {
+    for (const [origenId, lista] of cadenasReales) {
+      try {
+        // Ordenar por num_parcialidad (la origen = 1, continuaciones 2,3...)
+        const ordenadas = [...lista].sort((a, b) => (a.num_parcialidad || 1) - (b.num_parcialidad || 1));
+        const origen = ordenadas.find(o => o.id === origenId) || ordenadas[0];
+        const continuaciones = ordenadas.filter(o => o.id !== origen.id);
+
+        // Calcular lo producido por cada ODP de la cadena (en su proceso final)
+        const rutaOrigen = origen.ruta_procesos || [];
+        const procFinal = rutaOrigen.length > 0 ? rutaOrigen[rutaOrigen.length - 1] : 'P1-EXT';
+        const kgDeODP = (o) => {
+          // Preferir lo final consolidado; si no, lo producido en vivo
+          const final = Number(o.cantidad_producida_final_kg) || 0;
+          if (final > 0) return final;
+          return window.kgProducidoProceso(o, procFinal) || Number(o.cantidad_kg_produccion) || 0;
+        };
+
+        // Meta total original = suma de las metas de todas las ODPs de la cadena
+        //    (cada parte llevaba una porción de la meta original)
+        const metaTotal = ordenadas.reduce((s, o) => s + (Number(o.cantidad_kg_produccion) || 0), 0);
+
+        // Lo ya producido/liberado en las CONTINUACIONES (las partes que se enviaron)
+        // La origen ya cerró su parte → esa es la primera salida parcial.
+        const batch = writeBatch(db);
+        let numSalida = 0;
+        let liberadoAcum = 0;
+
+        // La parte de la ODP origen (lo que produjo antes de partirse) = salida parcial #1
+        const kgOrigen = kgDeODP(origen);
+        if (kgOrigen > 0) {
+          numSalida++;
+          liberadoAcum += kgOrigen;
+          const refSal = doc(collection(db, 'salidas_parciales'));
+          batch.set(refSal, {
+            odp_id: origen.id,
+            odp_folio: origen.folio,
+            pedido_id: origen.pedido_id || '',
+            ov_id: origen.ov_id || '',
+            cliente_codigo: origen.cliente_codigo || '',
+            cliente_nombre: origen.cliente_nombre || '',
+            producto_codigo: origen.producto_codigo || '',
+            proceso: procFinal,
+            num_salida: numSalida,
+            kg: Math.round(kgOrigen),
+            cantidad_um: window.kgAUM(kgOrigen, origen.um, window.getProductoPT?.(origen.producto_codigo)),
+            um: (origen.um || 'kg').toLowerCase(),
+            meta_total_kg: metaTotal,
+            creado_por: u.id || '',
+            creado_por_nombre: 'Reconciliación automática',
+            reconciliado: true,
+            created_at: serverTimestamp(),
+          });
+        }
+
+        // Cada continuación que produjo algo = salida parcial siguiente
+        for (const cont of continuaciones) {
+          const kgCont = kgDeODP(cont);
+          if (kgCont > 0) {
+            numSalida++;
+            liberadoAcum += kgCont;
+            const refSal = doc(collection(db, 'salidas_parciales'));
+            batch.set(refSal, {
+              odp_id: origen.id,             // 🔑 apunta a la ORIGEN (no a la continuación)
+              odp_folio: origen.folio,
+              pedido_id: origen.pedido_id || '',
+              ov_id: origen.ov_id || '',
+              cliente_codigo: origen.cliente_codigo || '',
+              cliente_nombre: origen.cliente_nombre || '',
+              producto_codigo: origen.producto_codigo || '',
+              proceso: procFinal,
+              num_salida: numSalida,
+              kg: Math.round(kgCont),
+              cantidad_um: window.kgAUM(kgCont, cont.um, window.getProductoPT?.(cont.producto_codigo)),
+              um: (cont.um || 'kg').toLowerCase(),
+              meta_total_kg: metaTotal,
+              origen_continuacion_folio: cont.folio,  // de qué continuación vieja vino
+              creado_por: u.id || '',
+              creado_por_nombre: 'Reconciliación automática',
+              reconciliado: true,
+              created_at: serverTimestamp(),
+            });
+          }
+          // Archivar la continuación (no borrar)
+          batch.update(doc(db, 'ordenes_produccion', cont.id), {
+            archivada: true,
+            archivada_motivo: `Reconciliada al modelo nuevo · ahora es salida parcial de ${origen.folio}`,
+            archivada_at: serverTimestamp(),
+            updated_at: serverTimestamp(),
+          });
+        }
+
+        // ¿La cadena ya estaba completa? (todo lo producido alcanza la meta)
+        const completa = liberadoAcum >= metaTotal * 0.999;
+
+        // Restaurar la ODP origen: recupera meta total, queda viva con sus salidas parciales
+        batch.update(doc(db, 'ordenes_produccion', origen.id), {
+          cantidad_kg_produccion: metaTotal,             // 🔑 meta total recuperada
+          kg_liberado_parcial: Math.round(liberadoAcum), // lo ya liberado en las partes
+          num_salidas_parciales: numSalida,
+          tiene_salidas_parciales: numSalida > 0,
+          ultima_salida_parcial_at: serverTimestamp(),
+          // Limpiar campos del modelo viejo
+          es_cierre_parcial: false,
+          es_continuacion_parcial: false,
+          odp_continuacion_id: null,
+          odp_continuacion_folio: null,
+          saldo_enviado_a_continuacion_kg: 0,
+          saldo_en_espera: false,
+          // Si ya estaba completa, dejarla como estaba; si no, sigue en producción
+          estatus: completa ? (origen.estatus) : 'en_produccion',
+          reconciliada_modelo_nuevo: true,
+          updated_at: serverTimestamp(),
+        });
+
+        await batch.commit();
+        cadenasReconciliadas++;
+        salidasCreadas += numSalida;
+      } catch (eCadena) {
+        console.error(`Error reconciliando cadena ${origenId}:`, eCadena);
+        errores++;
+      }
+    }
+
+    state.loadingAccion = false;
+    toast(
+      `✅ Reconciliación lista: ${cadenasReconciliadas} cadena(s) reunidas, ${salidasCreadas} salida(s) parcial(es) creada(s).` +
+      (errores > 0 ? ` ⚠ ${errores} con error (revisa consola).` : ''),
+      errores > 0 ? 'warning' : 'success'
+    );
+    render();
+  } catch (e) {
+    console.error('Error general en reconciliación:', e);
+    toast('Error en reconciliación: ' + e.message, 'error');
     state.loadingAccion = false; render();
   }
 };
