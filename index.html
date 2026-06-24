@@ -3808,7 +3808,7 @@ function _kpisProduccion(dias = 7) {
   });
   
   // Estado de órdenes
-  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus !== 'cancelada');
   const odpsEnProd = odps.filter(o => o.estatus === 'en_produccion').length;
   const odpsCola = odps.filter(o => o.estatus === 'programada').length;
   const odpsPendCal = odps.filter(o => o.estatus === 'pendiente_calidad').length;
@@ -3919,16 +3919,21 @@ function renderDashboardProduccion() {
 function _kpisComercial() {
   const pedidos = state.pedidos || [];
   const tPed = (p) => p.created_at?.seconds ? p.created_at.seconds * 1000 : 0;
-  const pedidosMes = pedidos.filter(p => tPed(p) >= Date.now() - 30 * 86400000);
-  const pedidosMesAnt = pedidos.filter(p => { const t = tPed(p); return t >= Date.now() - 60 * 86400000 && t < Date.now() - 30 * 86400000; });
+  // 🔧 Solo pedidos VÁLIDOS: excluir cancelados, rechazados y archivados (no inflan el conteo)
+  const esValido = (p) => !p.archivada && !['cancelado','cancelada','rechazado','rechazada','eliminado'].includes(p.estatus);
+  const pedidosValidos = pedidos.filter(esValido);
+  const pedidosMes = pedidosValidos.filter(p => tPed(p) >= Date.now() - 30 * 86400000);
+  const pedidosMesAnt = pedidosValidos.filter(p => { const t = tPed(p); return t >= Date.now() - 60 * 86400000 && t < Date.now() - 30 * 86400000; });
   const tendencia = pedidosMesAnt.length > 0 ? ((pedidosMes.length - pedidosMesAnt.length) / pedidosMesAnt.length * 100) : 0;
   
   const ovs = state.ordenes_venta || [];
-  const ovsActivas = ovs.filter(o => !['entregada','cancelada'].includes(o.estatus)).length;
-  const ovsEntregadas = ovs.filter(o => o.estatus === 'entregada').length;
+  const ovsValidas = ovs.filter(o => !o.archivada && o.estatus !== 'cancelada'); // 🔧 sin canceladas/archivadas
+  const ovsActivas = ovsValidas.filter(o => o.estatus !== 'entregada').length;
+  const ovsEntregadas = ovsValidas.filter(o => o.estatus === 'entregada').length;
   const ovsCanceladas = ovs.filter(o => o.estatus === 'cancelada').length;
-  const pctCancelacion = ovs.length > 0 ? (ovsCanceladas / ovs.length * 100) : 0;
-  const pedidosPend = pedidos.filter(p => ['pendiente_aprobacion','pendiente_planeacion'].includes(p.estatus)).length;
+  // % cancelación = canceladas sobre el total que alguna vez existió (válidas + canceladas)
+  const pctCancelacion = (ovsValidas.length + ovsCanceladas) > 0 ? (ovsCanceladas / (ovsValidas.length + ovsCanceladas) * 100) : 0;
+  const pedidosPend = pedidosValidos.filter(p => ['pendiente_aprobacion','pendiente_planeacion'].includes(p.estatus)).length;
   
   // Top clientes por número de pedidos (detectar concentración / dependencia)
   const porCliente = {};
@@ -3942,11 +3947,11 @@ function _kpisComercial() {
   // Clientes que pidieron este mes vs total (actividad)
   const clientesConPedido = Object.keys(porCliente).length;
   
-  // Pedidos por estatus (embudo)
+  // Pedidos por estatus (embudo) — todo sobre pedidos/OV VÁLIDOS (sin cancelados)
   const embudo = {
     captados: pedidosMes.length,
-    aprobados: pedidos.filter(p => p.estatus === 'aprobado' && tPed(p) >= Date.now() - 30*86400000).length,
-    enProd: ovs.filter(o => ['esperando_produccion','pendiente_asignar'].includes(o.estatus)).length,
+    aprobados: pedidosMes.filter(p => ['aprobado','en_produccion','completado'].includes(p.estatus)).length,
+    enProd: ovsValidas.filter(o => ['esperando_produccion','pendiente_asignar','en_produccion'].includes(o.estatus)).length,
     entregados: ovsEntregadas,
   };
   
@@ -4001,7 +4006,7 @@ function renderDashboardComercial() {
 
 // KPIs de PLANEACIÓN (depto PLN) — análisis profundo
 function _kpisPlaneacion() {
-  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus !== 'cancelada');
   const porProgramar = odps.filter(o => o.estatus === 'pendiente_planeacion').length;
   const programadas = odps.filter(o => o.estatus === 'programada').length;
   const enProd = odps.filter(o => o.estatus === 'en_produccion').length;
@@ -4139,9 +4144,9 @@ function renderDashboardPorRol() {
 }
 
 function renderDashboard() {
-  const pedidosPend = state.pedidos.filter(p => p.estatus === 'pendiente_aprobacion').length;
-  const pedidosAprob = state.pedidos.filter(p => p.estatus === 'aprobado').length;
-  const ovsPend = state.ordenes_venta.filter(o => o.estatus === 'pendiente').length;
+  const pedidosPend = state.pedidos.filter(p => !p.archivada && p.estatus === 'pendiente_aprobacion').length;
+  const pedidosAprob = state.pedidos.filter(p => !p.archivada && p.estatus === 'aprobado').length;
+  const ovsPend = state.ordenes_venta.filter(o => !o.archivada && o.estatus === 'pendiente').length;
   const odpsPend = state.ordenes_produccion.filter(o => !o.archivada && o.estatus === 'pendiente_planeacion').length;
   
   // Tarimas viejas sin pedido_folio (para migración) — visible para CEO/admin/ALP
