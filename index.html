@@ -4236,14 +4236,20 @@ function renderDashboardPorRol() {
         <div style="font-size:16px;font-weight:900;margin-bottom:4px;">🔄 Hay ${odpsViejas.length} orden(es) partida(s) con el modelo viejo</div>
         <div style="font-size:12.5px;opacity:0.92;line-height:1.5;">Se dividieron en varias ODPs. Reúnelas en una sola ODP (con su meta total y salidas parciales). Las continuaciones se archivan, no se borran.</div>
       </div>
-      <button onclick="window.reconciliarParcialidadesViejas()" style="background:#fff;color:#1e40af;border:none;padding:14px 24px;border-radius:10px;cursor:pointer;font-weight:900;font-size:15px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.15);">
-        🔄 RECONCILIAR AHORA
-      </button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="window.diagnosticarParcialidades()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:14px 18px;border-radius:10px;cursor:pointer;font-weight:800;font-size:13px;white-space:nowrap;">🔍 Diagnosticar</button>
+        <button onclick="window.reconciliarParcialidadesViejas()" style="background:#fff;color:#1e40af;border:none;padding:14px 24px;border-radius:10px;cursor:pointer;font-weight:900;font-size:15px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.15);">
+          🔄 RECONCILIAR AHORA
+        </button>
+      </div>
     </div>
   ` : (esCEOrec ? `
     <div style="background:#f0fdf4;border:1.5px solid #16a34a;color:#166534;border-radius:10px;padding:12px 18px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-      <div style="font-size:12.5px;font-weight:700;">✅ No hay parcialidades viejas pendientes de reconciliar — todo está en el modelo nuevo.</div>
-      <button onclick="window.reconciliarParcialidadesViejas()" style="background:#fff;color:#166534;border:1.5px solid #16a34a;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🔄 Revisar de nuevo</button>
+      <div style="font-size:12.5px;font-weight:700;">✅ El sistema no detectó parcialidades viejas con los campos esperados. Usa "Diagnosticar" para ver las ODPs que comparten PI + producto.</div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="window.diagnosticarParcialidades()" style="background:#1e40af;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🔍 Diagnosticar</button>
+        <button onclick="window.reconciliarParcialidadesViejas()" style="background:#fff;color:#166534;border:1.5px solid #16a34a;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🔄 Reconciliar</button>
+      </div>
     </div>
   ` : '');
   
@@ -13220,6 +13226,7 @@ function renderModal() {
   if (m === 'crear-personal') return modalPersonal(false);
   if (m === 'editar-personal') return modalPersonal(true);
   if (m === 'capturar-turno') return modalCapturarTurno();
+  if (m === 'diagnostico-parcial') return modalDiagnosticoParcial();
   if (m === 'pausar-odp') return modalPausarODP();
   if (m === 'crear-usuario') return modalUsuario(false);
   if (m === 'editar-usuario') return modalUsuario(true);
@@ -40556,6 +40563,96 @@ window.enviarParcial = async (odpId, modo = 'seguir') => {
     state.loadingAccion = false; render();
   }
 };
+
+// 🔍 DIAGNÓSTICO: muestra qué ODPs hay agrupadas por PI y sus campos de parcialidad.
+//    Sirve para entender cómo quedaron las órdenes partidas antes de reconciliar.
+window.diagnosticarParcialidades = () => {
+  const u = state.user || {};
+  if (!(['CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast('🔒 Solo Dirección/Admin', 'error'); return;
+  }
+  const todas = (state.ordenes_produccion || []).filter(o => !o.archivada);
+
+  // Agrupar por pedido (PI)
+  const porPI = {};
+  todas.forEach(o => {
+    const k = o.pedido_id || o.pedido_folio || '(sin PI)';
+    if (!porPI[k]) porPI[k] = [];
+    porPI[k].push(o);
+  });
+
+  // PIs con 2+ ODPs del mismo producto (posibles cadenas partidas)
+  const sospechosas = [];
+  Object.entries(porPI).forEach(([pi, odps]) => {
+    // Agrupar por producto dentro de la PI
+    const porProd = {};
+    odps.forEach(o => {
+      const p = o.producto_codigo || '?';
+      if (!porProd[p]) porProd[p] = [];
+      porProd[p].push(o);
+    });
+    Object.entries(porProd).forEach(([prod, lista]) => {
+      if (lista.length >= 2) {
+        sospechosas.push({ pi, prod, odps: lista });
+      }
+    });
+  });
+
+  // Construir el reporte visual
+  let html = `<div style="max-height:60vh;overflow-y:auto;">`;
+  if (sospechosas.length === 0) {
+    html += `<div style="padding:16px;background:#f0fdf4;border-radius:8px;color:#166534;font-weight:700;">
+      No se encontraron PIs con varias ODPs del mismo producto. No parece haber cadenas partidas activas.</div>`;
+  } else {
+    html += `<div style="font-size:13px;color:#475569;margin-bottom:12px;">Se encontraron <strong>${sospechosas.length}</strong> grupo(s) de ODPs que comparten PI + producto (posibles parcialidades):</div>`;
+    sospechosas.forEach(({ pi, prod, odps }) => {
+      const piFolio = odps[0]?.pedido_folio || pi;
+      const metaTotal = odps.reduce((s, o) => s + (Number(o.cantidad_kg_produccion) || 0), 0);
+      html += `<div style="border:1.5px solid #3b82f6;border-radius:10px;padding:12px;margin-bottom:10px;background:#eff6ff;">
+        <div style="font-weight:800;color:#1e40af;font-size:13px;margin-bottom:6px;">PI ${piFolio} · ${prod} · suma metas: ${fmtNum(metaTotal)} kg</div>`;
+      odps.forEach(o => {
+        const prodKg = window.kgProducidoProceso(o, (o.ruta_procesos||[]).slice(-1)[0] || 'P1-EXT') || Number(o.cantidad_producida_final_kg) || 0;
+        const campos = [];
+        if (o.es_continuacion_parcial) campos.push('es_continuacion_parcial');
+        if (o.es_cierre_parcial) campos.push('es_cierre_parcial');
+        if (o.odp_origen_id) campos.push('origen=' + (o.odp_origen_folio || o.odp_origen_id.slice(0,6)));
+        if (o.odp_continuacion_id) campos.push('tiene_continuacion');
+        if ((Number(o.num_parcialidad)||0) > 1) campos.push('parcial#' + o.num_parcialidad);
+        html += `<div style="background:#fff;border-radius:6px;padding:8px 10px;margin-bottom:5px;font-size:11.5px;">
+          <strong style="font-family:monospace;">${o.folio}</strong> · meta ${fmtNum(o.cantidad_kg_produccion||0)} kg · producido ${fmtNum(Math.round(prodKg))} kg · estatus: <strong>${o.estatus}</strong>
+          <div style="color:#64748b;margin-top:3px;">${campos.length > 0 ? '🔄 ' + campos.join(' · ') : '⚠ SIN campos de parcialidad vieja'}</div>
+        </div>`;
+      });
+      html += `</div>`;
+    });
+  }
+  html += `</div>`;
+
+  state.modalDiagnostico = html;
+  state.modal = 'diagnostico-parcial';
+  render();
+};
+
+// Modal que muestra el reporte de diagnóstico de parcialidades
+function modalDiagnosticoParcial() {
+  return `
+    <div class="modal-overlay" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:760px;width:94%;">
+        <div style="padding:16px 22px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+          <strong style="font-size:16px;color:#1e40af;">🔍 Diagnóstico de parcialidades</strong>
+          <button onclick="cerrarModal()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#64748b;">✕</button>
+        </div>
+        <div style="padding:18px 22px;">
+          ${state.modalDiagnostico || 'Sin datos'}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button onclick="cerrarModal()" style="background:#fff;color:#475569;border:1.5px solid #cbd5e1;padding:9px 16px;border-radius:8px;cursor:pointer;font-weight:700;">Cerrar</button>
+          <button onclick="cerrarModal();window.reconciliarParcialidadesViejas()" style="background:#3b82f6;color:#fff;border:none;padding:9px 18px;border-radius:8px;cursor:pointer;font-weight:800;">🔄 Reconciliar ahora</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
 
 // 🔄 RECONCILIAR PARCIALIDADES VIEJAS al modelo nuevo (una sola ODP + salidas parciales).
 //    Reúne las cadenas de ODPs partidas: la ODP ORIGEN queda como única y recupera su
