@@ -7303,8 +7303,8 @@ function _renderTarjetaKanban(odp, columna, opts) {
   const estatus = odp.estatus || '';
   const um = (odp.um || 'kg').toLowerCase();
   
-  const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === (odp.ruta_procesos || [])[procIdx]);
-  const totalProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  // 🔧 Helper único: capturas + rollos en vivo (avance en tiempo real)
+  const totalProd = window.kgProducidoProceso(odp, (odp.ruta_procesos || [])[procIdx]);
   const cantTotal = Number(odp.cantidad_kg || odp.cantidad) || 0;
   const pct = cantTotal > 0 ? Math.min(100, (totalProd / cantTotal) * 100) : 0;
   
@@ -10364,12 +10364,12 @@ function _renderTimelineODP(odp) {
             stats = `${fmtNum(kgProducido)} ${pc.mermas_kg ? `kg · ⚠ ${fmtNum(pc.mermas_kg)} kg merma` : (um === 'kg' ? 'kg' : um)}`;
             if (maq) stats = `${maq} · ${stats}`;
           } else if (esActual && procEst === 'en_proceso') {
-            const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id && c.proceso === procCod);
-            const prod = capturas.reduce((s,c) => s + (Number(c.producido_kg)||0), 0);
+            // 🔧 Helper único: capturas + rollos en vivo (sin esperar cierre de turno)
+            const prod = window.kgProducidoProceso(odp, procCod);
             const kgMeta = Number(odp.cantidad_kg_produccion) || cantTotal;
             const pct = kgMeta > 0 ? Math.round((prod/kgMeta)*100) : 0;
             const maq = odp.maquinas_asignadas?.[procCod] || '';
-            stats = `${maq ? '🛠️ ' + maq + ' · ' : ''}${fmtNum(prod)} kg (${pct}%)`;
+            stats = `${maq ? '🛠️ ' + maq + ' · ' : ''}${fmtNum(Math.round(prod))} kg (${pct}%)`;
           } else if (esActual && (procEst === 'esperando' || procEst === 'pausado')) {
             const maq = odp.maquinas_asignadas?.[procCod] || '';
             if (maq) stats = `🛠️ ${maq}`;
