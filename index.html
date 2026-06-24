@@ -3763,82 +3763,243 @@ window.esDireccion = () => {
   return u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
 };
 
-// KPIs de PRODUCCIÓN (depto PRO)
+// KPIs de PRODUCCIÓN (depto PRO) — análisis profundo
 function _kpisProduccion(dias = 7) {
   const ahora = Date.now();
   const desde = ahora - dias * 86400000;
-  const capturas = capturasValidas(state.capturas_produccion).filter(c => {
-    const t = c.created_at?.seconds ? c.created_at.seconds * 1000 : (c.fecha ? new Date(c.fecha).getTime() : 0);
-    return t >= desde;
-  });
+  const desdeAnterior = ahora - dias * 2 * 86400000; // periodo anterior para comparar
+  
+  const tCaptura = (c) => c.created_at?.seconds ? c.created_at.seconds * 1000 : (c.fecha ? new Date(c.fecha).getTime() : 0);
+  const todas = capturasValidas(state.capturas_produccion);
+  const capturas = todas.filter(c => tCaptura(c) >= desde);
+  const capturasAnt = todas.filter(c => { const t = tCaptura(c); return t >= desdeAnterior && t < desde; });
+  
   const kgProd = capturas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
   const kgMerma = capturas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
-  const pctMerma = kgProd > 0 ? ((kgMerma / (kgProd + kgMerma)) * 100).toFixed(1) : '0';
-  const odpsEnProd = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion').length;
-  const odpsCola = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'programada').length;
-  const odpsPendCal = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'pendiente_calidad').length;
-  // Máquinas corriendo
+  const pctMerma = (kgProd + kgMerma) > 0 ? ((kgMerma / (kgProd + kgMerma)) * 100) : 0;
+  const kgProdAnt = capturasAnt.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const tendenciaKg = kgProdAnt > 0 ? ((kgProd - kgProdAnt) / kgProdAnt * 100) : 0;
+  
+  // Desglose por MÁQUINA (detectar cuál produce más/menos y cuál tiene más merma)
+  const porMaquina = {};
+  capturas.forEach(c => {
+    const m = c.maquina_codigo || '—';
+    if (!porMaquina[m]) porMaquina[m] = { kg: 0, merma: 0, turnos: 0 };
+    porMaquina[m].kg += Number(c.producido_kg) || 0;
+    porMaquina[m].merma += Number(c.mermas_kg) || 0;
+    porMaquina[m].turnos++;
+  });
+  
+  // Desglose por TURNO (día vs noche)
+  const porTurno = { dia: { kg: 0, merma: 0 }, noche: { kg: 0, merma: 0 } };
+  capturas.forEach(c => {
+    const t = (c.turno || 'dia').toLowerCase().includes('noche') ? 'noche' : 'dia';
+    porTurno[t].kg += Number(c.producido_kg) || 0;
+    porTurno[t].merma += Number(c.mermas_kg) || 0;
+  });
+  
+  // Desglose por GRUPO (A/B/C/D) — qué equipo rinde mejor
+  const porGrupo = {};
+  capturas.forEach(c => {
+    const g = c.grupo || '—';
+    if (!porGrupo[g]) porGrupo[g] = { kg: 0, merma: 0 };
+    porGrupo[g].kg += Number(c.producido_kg) || 0;
+    porGrupo[g].merma += Number(c.mermas_kg) || 0;
+  });
+  
+  // Estado de órdenes
+  const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+  const odpsEnProd = odps.filter(o => o.estatus === 'en_produccion').length;
+  const odpsCola = odps.filter(o => o.estatus === 'programada').length;
+  const odpsPendCal = odps.filter(o => o.estatus === 'pendiente_calidad').length;
+  const odpsPausadas = odps.filter(o => o.proceso_estatus_actual === 'pausado').length;
+  
+  // Máquinas: cuántas corriendo vs activas, y carga pendiente
   const maqsCorriendo = new Set();
-  (state.ordenes_produccion || []).forEach(o => {
+  odps.forEach(o => {
     if (o.estatus === 'en_produccion' && o.proceso_estatus_actual === 'en_proceso') {
       const m = o.maquinas_asignadas?.[o.proceso_actual];
       if (m) maqsCorriendo.add(m);
     }
   });
   const totalMaqs = (state.maquinas || []).filter(m => m.activa !== false).length;
-  return { kgProd, kgMerma, pctMerma, odpsEnProd, odpsCola, odpsPendCal, maqsCorriendo: maqsCorriendo.size, totalMaqs, capturas: capturas.length };
+  const pctOcupacion = totalMaqs > 0 ? (maqsCorriendo.size / totalMaqs * 100) : 0;
+  
+  // Carga pendiente total (kg por producir en cola + en proceso)
+  let kgPendientes = 0;
+  odps.forEach(o => {
+    if (['programada','en_produccion'].includes(o.estatus)) {
+      const meta = Number(o.cantidad_kg_produccion) || 0;
+      const finalUM = window.cantidadProducidaFinalUM(o);
+      kgPendientes += Math.max(0, meta - (finalUM.kg || 0));
+    }
+  });
+  
+  return { kgProd, kgMerma, pctMerma, tendenciaKg, porMaquina, porTurno, porGrupo, 
+    odpsEnProd, odpsCola, odpsPendCal, odpsPausadas, maqsCorriendo: maqsCorriendo.size, 
+    totalMaqs, pctOcupacion, kgPendientes, capturas: capturas.length };
 }
 
 function renderDashboardProduccion() {
   const k = _kpisProduccion(7);
+  
+  // Tarjetas principales con semáforo
+  const flecha = k.tendenciaKg > 2 ? `▲ +${k.tendenciaKg.toFixed(0)}%` : k.tendenciaKg < -2 ? `▼ ${k.tendenciaKg.toFixed(0)}%` : '→ estable';
+  const colorTend = k.tendenciaKg > 2 ? '#16a34a' : k.tendenciaKg < -2 ? '#dc2626' : '#64748b';
   const cards = [
-    _kpiCard('Kg producidos', fmtNum(Math.round(k.kgProd)), 'últimos 7 días', '#1e40af'),
-    _kpiCard('Merma', `${k.pctMerma}%`, `${fmtNum(Math.round(k.kgMerma))} kg`, Number(k.pctMerma) > 5 ? '#dc2626' : '#16a34a'),
-    _kpiCard('Máquinas activas', `${k.maqsCorriendo}/${k.totalMaqs}`, 'corriendo ahora', '#0e7490'),
-    _kpiCard('En producción', k.odpsEnProd, 'órdenes corriendo', '#8b5cf6'),
-    _kpiCard('En cola', k.odpsCola, 'programadas', '#f59e0b'),
+    _kpiCard('Kg producidos', fmtNum(Math.round(k.kgProd)), `<span style="color:${colorTend};font-weight:700;">${flecha}</span> vs semana previa`, '#1e40af'),
+    _kpiCard('Merma', `${k.pctMerma.toFixed(1)}%`, `${fmtNum(Math.round(k.kgMerma))} kg · meta <5%`, k.pctMerma > 5 ? '#dc2626' : k.pctMerma > 3 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('Ocupación máquinas', `${k.pctOcupacion.toFixed(0)}%`, `${k.maqsCorriendo}/${k.totalMaqs} corriendo`, k.pctOcupacion < 50 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('Carga pendiente', fmtNum(Math.round(k.kgPendientes)) + ' kg', 'por producir en cola', '#8b5cf6'),
+    _kpiCard('Órdenes activas', k.odpsEnProd, `${k.odpsPausadas > 0 ? `⚠ ${k.odpsPausadas} pausadas` : 'ninguna pausada'}`, k.odpsPausadas > 0 ? '#f59e0b' : '#16a34a'),
     _kpiCard('Por liberar', k.odpsPendCal, 'esperan calidad', k.odpsPendCal > 0 ? '#f59e0b' : '#16a34a'),
-    _kpiCard('Turnos capturados', k.capturas, 'últimos 7 días', '#64748b'),
   ].join('');
-  return _kpiSeccion('🏭', 'Producción · KPIs (últimos 7 días)', '#1e40af', cards,
-    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+  
+  // Tabla de desglose por máquina (para detectar la máquina problema)
+  const maqsOrdenadas = Object.entries(k.porMaquina).sort((a, b) => b[1].kg - a[1].kg);
+  const tablaMaquinas = maqsOrdenadas.length > 0 ? `
+    <div style="margin-top:14px;">
+      <div style="font-size:12px;font-weight:800;color:#475569;margin-bottom:8px;">🏭 Producción por máquina (detecta cuál rinde más y cuál tiene más merma)</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#f1f5f9;">
+          <th style="padding:6px 8px;text-align:left;font-size:10px;color:#475569;">MÁQUINA</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:#475569;">KG</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:#475569;">MERMA</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:#475569;">% MERMA</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:#475569;">TURNOS</th>
+        </tr></thead>
+        <tbody>
+          ${maqsOrdenadas.map(([m, d]) => {
+            const pctM = (d.kg + d.merma) > 0 ? (d.merma / (d.kg + d.merma) * 100) : 0;
+            return `<tr style="border-top:1px solid #f1f5f9;">
+              <td style="padding:6px 8px;font-weight:700;">${m}</td>
+              <td style="padding:6px 8px;text-align:right;font-weight:700;color:#1e40af;">${fmtNum(Math.round(d.kg))}</td>
+              <td style="padding:6px 8px;text-align:right;color:#dc2626;">${fmtNum(Math.round(d.merma))}</td>
+              <td style="padding:6px 8px;text-align:right;font-weight:700;color:${pctM > 5 ? '#dc2626' : pctM > 3 ? '#f59e0b' : '#16a34a'};">${pctM.toFixed(1)}%</td>
+              <td style="padding:6px 8px;text-align:right;color:#64748b;">${d.turnos}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>` : '';
+  
+  // Comparativa turno día vs noche y grupos
+  const totalDiaNoche = k.porTurno.dia.kg + k.porTurno.noche.kg;
+  const comparativas = `
+    <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">
+      <div style="background:#f8fafc;border-radius:10px;padding:12px;">
+        <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">☀️🌙 Turno día vs noche</div>
+        ${['dia','noche'].map(t => {
+          const d = k.porTurno[t];
+          const pct = totalDiaNoche > 0 ? (d.kg / totalDiaNoche * 100) : 0;
+          return `<div style="margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;font-size:11px;"><span>${t === 'dia' ? '☀️ Día' : '🌙 Noche'}</span><span style="font-weight:700;">${fmtNum(Math.round(d.kg))} kg (${pct.toFixed(0)}%)</span></div>
+            <div style="background:#e2e8f0;border-radius:99px;height:6px;margin-top:2px;"><div style="background:${t==='dia'?'#f59e0b':'#7c3aed'};height:100%;border-radius:99px;width:${pct}%;"></div></div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px;">
+        <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">👥 Rendimiento por grupo</div>
+        ${Object.entries(k.porGrupo).sort((a,b) => b[1].kg - a[1].kg).map(([g, d]) => {
+          const pctM = (d.kg + d.merma) > 0 ? (d.merma / (d.kg + d.merma) * 100) : 0;
+          return `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;"><span>Grupo ${g}</span><span style="font-weight:700;">${fmtNum(Math.round(d.kg))} kg · <span style="color:${pctM > 5 ? '#dc2626' : '#16a34a'};">${pctM.toFixed(1)}% merma</span></span></div>`;
+        }).join('') || '<div style="font-size:11px;color:#94a3b8;">Sin datos aún</div>'}
+      </div>
+    </div>`;
+  
+  return _kpiSeccion('🏭', 'Producción · Análisis (últimos 7 días)', '#1e40af', cards,
+    tablaMaquinas + comparativas +
+    `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button onclick="state.vista='kanban_maquinas';render();" style="padding:8px 14px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📋 Ver Kanban</button>
       <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#1e40af;border:1.5px solid #1e40af;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🖨️ Imprimir para Dirección</button>
     </div>`);
 }
 
-// KPIs de COMERCIAL (depto CS/KAM)
+// KPIs de COMERCIAL (depto CS/KAM) — análisis profundo
 function _kpisComercial() {
   const pedidos = state.pedidos || [];
-  const pedidosMes = pedidos.filter(p => {
-    const t = p.created_at?.seconds ? p.created_at.seconds * 1000 : 0;
-    return t >= Date.now() - 30 * 86400000;
-  });
+  const tPed = (p) => p.created_at?.seconds ? p.created_at.seconds * 1000 : 0;
+  const pedidosMes = pedidos.filter(p => tPed(p) >= Date.now() - 30 * 86400000);
+  const pedidosMesAnt = pedidos.filter(p => { const t = tPed(p); return t >= Date.now() - 60 * 86400000 && t < Date.now() - 30 * 86400000; });
+  const tendencia = pedidosMesAnt.length > 0 ? ((pedidosMes.length - pedidosMesAnt.length) / pedidosMesAnt.length * 100) : 0;
+  
   const ovs = state.ordenes_venta || [];
   const ovsActivas = ovs.filter(o => !['entregada','cancelada'].includes(o.estatus)).length;
   const ovsEntregadas = ovs.filter(o => o.estatus === 'entregada').length;
-  const pedidosPend = pedidos.filter(p => p.estatus === 'pendiente_aprobacion' || p.estatus === 'pendiente_planeacion').length;
+  const ovsCanceladas = ovs.filter(o => o.estatus === 'cancelada').length;
+  const pctCancelacion = ovs.length > 0 ? (ovsCanceladas / ovs.length * 100) : 0;
+  const pedidosPend = pedidos.filter(p => ['pendiente_aprobacion','pendiente_planeacion'].includes(p.estatus)).length;
+  
+  // Top clientes por número de pedidos (detectar concentración / dependencia)
+  const porCliente = {};
+  pedidosMes.forEach(p => {
+    const c = p.cliente_nombre || p.cliente_codigo || '—';
+    porCliente[c] = (porCliente[c] || 0) + 1;
+  });
+  const topClientes = Object.entries(porCliente).sort((a,b) => b[1] - a[1]).slice(0, 5);
+  
   const clientesActivos = (state.clientes || []).filter(c => c.activo !== false).length;
-  return { pedidosMes: pedidosMes.length, ovsActivas, ovsEntregadas, pedidosPend, clientesActivos };
+  // Clientes que pidieron este mes vs total (actividad)
+  const clientesConPedido = Object.keys(porCliente).length;
+  
+  // Pedidos por estatus (embudo)
+  const embudo = {
+    captados: pedidosMes.length,
+    aprobados: pedidos.filter(p => p.estatus === 'aprobado' && tPed(p) >= Date.now() - 30*86400000).length,
+    enProd: ovs.filter(o => ['esperando_produccion','pendiente_asignar'].includes(o.estatus)).length,
+    entregados: ovsEntregadas,
+  };
+  
+  return { pedidosMes: pedidosMes.length, tendencia, ovsActivas, ovsEntregadas, ovsCanceladas, 
+    pctCancelacion, pedidosPend, topClientes, clientesActivos, clientesConPedido, embudo };
 }
 
 function renderDashboardComercial() {
   const k = _kpisComercial();
+  const flecha = k.tendencia > 2 ? `▲ +${k.tendencia.toFixed(0)}%` : k.tendencia < -2 ? `▼ ${k.tendencia.toFixed(0)}%` : '→ estable';
+  const colorTend = k.tendencia > 2 ? '#16a34a' : k.tendencia < -2 ? '#dc2626' : '#64748b';
   const cards = [
-    _kpiCard('Pedidos del mes', k.pedidosMes, 'últimos 30 días', '#1e40af'),
-    _kpiCard('OV activas', k.ovsActivas, 'en proceso', '#8b5cf6'),
+    _kpiCard('Pedidos del mes', k.pedidosMes, `<span style="color:${colorTend};font-weight:700;">${flecha}</span> vs mes previo`, '#8b5cf6'),
+    _kpiCard('OV activas', k.ovsActivas, 'en proceso', '#3b82f6'),
     _kpiCard('OV entregadas', k.ovsEntregadas, 'históricas', '#16a34a'),
+    _kpiCard('% cancelación', `${k.pctCancelacion.toFixed(1)}%`, `${k.ovsCanceladas} canceladas`, k.pctCancelacion > 10 ? '#dc2626' : k.pctCancelacion > 5 ? '#f59e0b' : '#16a34a'),
     _kpiCard('Por aprobar', k.pedidosPend, 'pendientes', k.pedidosPend > 0 ? '#f59e0b' : '#16a34a'),
-    _kpiCard('Clientes activos', k.clientesActivos, '', '#0e7490'),
+    _kpiCard('Clientes activos', `${k.clientesConPedido}/${k.clientesActivos}`, 'con pedido este mes', '#0e7490'),
   ].join('');
-  return _kpiSeccion('💼', 'Comercial · KPIs', '#8b5cf6', cards,
-    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+  
+  // Embudo comercial
+  const embudo = `
+    <div style="margin-top:14px;background:#f8fafc;border-radius:10px;padding:12px;">
+      <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">📊 Embudo del mes (dónde se atoran los pedidos)</div>
+      ${[['Captados', k.embudo.captados, '#8b5cf6'],['Aprobados', k.embudo.aprobados, '#3b82f6'],['En producción', k.embudo.enProd, '#f59e0b'],['Entregados', k.embudo.entregados, '#16a34a']].map(([lbl, val, col]) => {
+        const max = Math.max(k.embudo.captados, 1);
+        const pct = (val / max * 100);
+        return `<div style="margin-bottom:6px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;"><span>${lbl}</span><span style="font-weight:700;">${val}</span></div>
+          <div style="background:#e2e8f0;border-radius:99px;height:8px;margin-top:2px;"><div style="background:${col};height:100%;border-radius:99px;width:${pct}%;"></div></div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  
+  // Top clientes
+  const tabla = k.topClientes.length > 0 ? `
+    <div style="margin-top:14px;">
+      <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">🏆 Top 5 clientes del mes (detecta concentración de ventas)</div>
+      ${k.topClientes.map(([c, n], i) => `
+        <div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid #f1f5f9;">
+          <span>${i+1}. ${c}</span><span style="font-weight:700;color:#8b5cf6;">${n} pedido(s)</span>
+        </div>`).join('')}
+    </div>` : '';
+  
+  return _kpiSeccion('💼', 'Comercial · Análisis', '#8b5cf6', cards,
+    embudo + tabla +
+    `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button onclick="state.vista='pedidos';render();" style="padding:8px 14px;background:#8b5cf6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📋 Ver Pedidos</button>
       <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#8b5cf6;border:1.5px solid #8b5cf6;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🖨️ Imprimir para Dirección</button>
     </div>`);
 }
 
-// KPIs de PLANEACIÓN (depto PLN)
+// KPIs de PLANEACIÓN (depto PLN) — análisis profundo
 function _kpisPlaneacion() {
   const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
   const porProgramar = odps.filter(o => o.estatus === 'pendiente_planeacion').length;
@@ -3846,27 +4007,80 @@ function _kpisPlaneacion() {
   const enProd = odps.filter(o => o.estatus === 'en_produccion').length;
   const completadas = odps.filter(o => ['completada','liberada_empaque','entregada'].includes(o.estatus)).length;
   const enEspera = odps.filter(o => o.estatus === 'en_espera_saldo').length;
-  // Órdenes vencidas (fecha de entrega pasada y no entregadas)
+  
   const hoy = new Date().toISOString().split('T')[0];
-  const vencidas = odps.filter(o => 
-    o.fecha_entrega_solicitada && o.fecha_entrega_solicitada < hoy && 
-    !['entregada','completada','liberada_empaque'].includes(o.estatus)
-  ).length;
-  return { porProgramar, programadas, enProd, completadas, enEspera, vencidas };
+  const activas = odps.filter(o => !['entregada','completada','liberada_empaque','cancelada'].includes(o.estatus));
+  // Vencidas (fecha pasada) y por vencer (próximos 3 días)
+  const en3dias = new Date(Date.now() + 3*86400000).toISOString().split('T')[0];
+  const vencidas = activas.filter(o => o.fecha_entrega_solicitada && o.fecha_entrega_solicitada < hoy);
+  const porVencer = activas.filter(o => o.fecha_entrega_solicitada && o.fecha_entrega_solicitada >= hoy && o.fecha_entrega_solicitada <= en3dias);
+  
+  // Cumplimiento de entregas (OTIF): entregadas a tiempo vs total entregadas
+  const entregadas = odps.filter(o => o.estatus === 'entregada' && o.fecha_entrega_solicitada);
+  const aTiempo = entregadas.filter(o => {
+    const real = o.entregada_at?.seconds ? new Date(o.entregada_at.seconds*1000).toISOString().split('T')[0] : null;
+    return real && real <= o.fecha_entrega_solicitada;
+  }).length;
+  const otif = entregadas.length > 0 ? (aTiempo / entregadas.length * 100) : null;
+  
+  // Carga por máquina (kg pendientes por cada máquina) — detectar cuellos de botella
+  const cargaMaq = {};
+  activas.forEach(o => {
+    const proc = o.proceso_actual || (o.ruta_procesos || [])[0];
+    const m = o.maquinas_asignadas?.[proc] || '—';
+    const meta = Number(o.cantidad_kg_produccion) || 0;
+    const finalUM = window.cantidadProducidaFinalUM(o);
+    const pend = Math.max(0, meta - (finalUM.kg || 0));
+    cargaMaq[m] = (cargaMaq[m] || 0) + pend;
+  });
+  const cargaOrdenada = Object.entries(cargaMaq).filter(([m]) => m !== '—').sort((a,b) => b[1] - a[1]).slice(0, 8);
+  
+  return { porProgramar, programadas, enProd, completadas, enEspera, 
+    vencidas: vencidas.length, porVencer: porVencer.length, vencidasList: vencidas.slice(0,5),
+    otif, cargaOrdenada };
 }
 
 function renderDashboardPlaneacion() {
   const k = _kpisPlaneacion();
   const cards = [
     _kpiCard('Por programar', k.porProgramar, 'pendientes', k.porProgramar > 0 ? '#f59e0b' : '#16a34a'),
-    _kpiCard('Programadas', k.programadas, 'en cola', '#3b82f6'),
+    _kpiCard('En cola', k.programadas, 'programadas', '#3b82f6'),
     _kpiCard('En producción', k.enProd, 'corriendo', '#8b5cf6'),
-    _kpiCard('Completadas', k.completadas, 'históricas', '#16a34a'),
-    _kpiCard('Saldos en espera', k.enEspera, 'parcialidades', k.enEspera > 0 ? '#a16207' : '#16a34a'),
     _kpiCard('Vencidas', k.vencidas, 'fuera de fecha', k.vencidas > 0 ? '#dc2626' : '#16a34a'),
+    _kpiCard('Por vencer', k.porVencer, 'próximos 3 días', k.porVencer > 0 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('OTIF', k.otif === null ? '—' : `${k.otif.toFixed(0)}%`, 'entregas a tiempo', k.otif === null ? '#64748b' : k.otif < 85 ? '#dc2626' : k.otif < 95 ? '#f59e0b' : '#16a34a'),
+    _kpiCard('Saldos en espera', k.enEspera, 'parcialidades', k.enEspera > 0 ? '#a16207' : '#16a34a'),
+    _kpiCard('Completadas', k.completadas, 'históricas', '#16a34a'),
   ].join('');
-  return _kpiSeccion('📅', 'Planeación · KPIs', '#3b82f6', cards,
-    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+  
+  // Alerta de vencidas (lo que hay que atacar YA)
+  const alertaVencidas = k.vencidasList.length > 0 ? `
+    <div style="margin-top:14px;background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;padding:12px;">
+      <div style="font-size:11px;font-weight:800;color:#991b1b;margin-bottom:8px;">🔴 Órdenes vencidas (atender de inmediato)</div>
+      ${k.vencidasList.map(o => `
+        <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #fecaca;">
+          <span><strong>${o.folio}</strong> · ${(o.cliente_nombre || '').slice(0,20)}</span>
+          <span style="color:#dc2626;font-weight:700;">venció ${o.fecha_entrega_solicitada}</span>
+        </div>`).join('')}
+    </div>` : '';
+  
+  // Carga por máquina (cuello de botella)
+  const cargaMaq = k.cargaOrdenada.length > 0 ? `
+    <div style="margin-top:14px;">
+      <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">⚖️ Carga pendiente por máquina (detecta el cuello de botella)</div>
+      ${k.cargaOrdenada.map(([m, kg]) => {
+        const max = k.cargaOrdenada[0][1] || 1;
+        const pct = (kg / max * 100);
+        return `<div style="margin-bottom:6px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;"><span>${m}</span><span style="font-weight:700;">${fmtNum(Math.round(kg))} kg</span></div>
+          <div style="background:#e2e8f0;border-radius:99px;height:7px;margin-top:2px;"><div style="background:${pct>80?'#dc2626':pct>50?'#f59e0b':'#3b82f6'};height:100%;border-radius:99px;width:${pct}%;"></div></div>
+        </div>`;
+      }).join('')}
+    </div>` : '';
+  
+  return _kpiSeccion('📅', 'Planeación · Análisis', '#3b82f6', cards,
+    alertaVencidas + cargaMaq +
+    `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button onclick="state.vista='programacion';render();" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📋 Ver Programación</button>
       <button onclick="window.print()" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1.5px solid #3b82f6;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🖨️ Imprimir para Dirección</button>
     </div>`);
