@@ -8326,8 +8326,19 @@ function modalVerCapturas() {
   
   const validas = todasCapturas.filter(c => !c.anulada);
   const anuladas = todasCapturas.filter(c => c.anulada);
-  const totalValidoKg = validas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
-  const totalMermaKg = validas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  const totalCapturasKg = validas.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  const totalCapturasMermaKg = validas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0);
+  
+  // 🆕 Rollos EN VIVO (capturados pero aún sin consolidar en turno) — también cuentan
+  const rollosVivo = (state.rollos_extrusion || []).filter(r => 
+    r.odp_id === odpId && !r.anulado && !r.consolidado_en_turno
+  );
+  const totalRollosVivoKg = rollosVivo.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+  const totalRollosVivoMermaKg = rollosVivo.reduce((s, r) => s + (Number(r.mermas_kg) || 0), 0);
+  
+  // Totales = capturas consolidadas + rollos en vivo
+  const totalValidoKg = totalCapturasKg + totalRollosVivoKg;
+  const totalMermaKg = totalCapturasMermaKg + totalRollosVivoMermaKg;
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
@@ -8349,12 +8360,21 @@ function modalVerCapturas() {
               </div>
               <div>
                 <div style="font-size:11px;color:#15803d;font-weight:700;">Capturas</div>
-                <div style="font-size:14px;color:#15803d;"><strong>${validas.length}</strong> válidas · ${anuladas.length > 0 ? `<span style="color:#dc2626;font-weight:700;">${anuladas.length} anuladas</span>` : '0 anuladas'}</div>
+                <div style="font-size:14px;color:#15803d;"><strong>${validas.length}</strong> válidas · ${anuladas.length > 0 ? `<span style="color:#dc2626;font-weight:700;">${anuladas.length} anuladas</span>` : '0 anuladas'}${rollosVivo.length > 0 ? ` · <span style="color:#1e40af;font-weight:700;">${rollosVivo.length} rollo${rollosVivo.length>1?'s':''} en vivo</span>` : ''}</div>
               </div>
             </div>
           </div>
           
-          ${validas.length === 0 ? `<div style="text-align:center;padding:30px;color:#64748b;font-size:13px;">No hay capturas registradas en esta ODP</div>` : `
+          ${rollosVivo.length > 0 ? `
+            <div style="background:#eff6ff;border:1.5px solid #3b82f6;border-radius:8px;padding:12px;margin-bottom:14px;">
+              <div style="font-size:12px;font-weight:800;color:#1e40af;margin-bottom:8px;">🧵 ${rollosVivo.length} rollo(s) en vivo · ${fmtNum(Math.round(totalRollosVivoKg))} kg (aún sin cerrar turno, ya cuentan en el avance)</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${rollosVivo.map((r, i) => `<span style="background:#fff;border:1px solid #93c5fd;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:700;">#${i+1}: ${fmtNum(Number(r.peso_kg)||0)} kg${r.hora_captura ? ` · ${r.hora_captura}` : ''}</span>`).join('')}
+              </div>
+            </div>
+          ` : ''}
+          
+          ${validas.length === 0 && rollosVivo.length === 0 ? `<div style="text-align:center;padding:30px;color:#64748b;font-size:13px;">No hay capturas registradas en esta ODP</div>` : validas.length === 0 ? '' : `
             <table style="width:100%;border-collapse:collapse;font-size:12px;">
               <thead style="background:#f1f5f9;">
                 <tr>
@@ -10878,6 +10898,9 @@ function renderPanelOperador() {
   if (state.panelOpVista === undefined) {
     state.panelOpVista = localStorage.getItem('newpack_panel_op_vista') || 'tablero';
   }
+  // 🆕 Por defecto NO filtrar a una máquina: el supervisor ve TODAS sus máquinas de un vistazo.
+  //    (Solo si él elige una específica en el selector se filtra.)
+  if (state.panelOpMaq === null) state.panelOpMaq = '';
   const procSel = state.panelOpProc;
   const maqSel = state.panelOpMaq;
   
@@ -13255,7 +13278,12 @@ function modalCapturarTurno() {
   // 🆕 MENOS CLICS: pre-llenar con los datos del supervisor que inició sesión.
   //    Su grupo fijo (grupo_turno del perfil) y él mismo como supervisor.
   const usrLogin = state.user || {};
-  const grupoDelSupervisor = usrLogin.grupo_turno || '';
+  // 🔧 Leer el grupo de la versión MÁS RECIENTE del usuario (puede haberse asignado
+  //    después de iniciar sesión; state.user a veces tiene datos viejos).
+  const usrActualizado = (state.usuarios_sistema || []).find(u => u.id === usrLogin.id) || usrLogin;
+  const grupoDelSupervisor = usrActualizado.grupo_turno || usrLogin.grupo_turno || '';
+  // Sincronizar también en state.user para que el resto del sistema lo vea
+  if (grupoDelSupervisor && !usrLogin.grupo_turno) state.user.grupo_turno = grupoDelSupervisor;
   // Buscar el registro de supervisor que corresponde al usuario logueado (por nombre/grupo)
   const supervisorAuto = (state.supervisores || []).find(s => 
     s.activo !== false &&
@@ -13673,12 +13701,14 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
           <!-- 🆕 DATOS DEL TURNO — AUTOMÁTICOS (el sistema ya sabe el grupo y el equipo) -->
           ${(() => {
             const u = state.user || {};
+            // 🔧 Grupo desde la versión más reciente del usuario (por si se asignó después)
+            const uAct = (state.usuarios_sistema || []).find(x => x.id === u.id) || u;
             // Turno por hora
             const hAhora = new Date().getHours();
             const turnoAuto = (hAhora >= 7 && hAhora < 19) ? 'dia' : 'noche';
             if (f.turno !== turnoAuto && !f._turnoManual) f.turno = turnoAuto;
             // Grupo del supervisor logueado
-            const grupoAuto = u.grupo_turno || f.grupo || '';
+            const grupoAuto = uAct.grupo_turno || u.grupo_turno || f.grupo || '';
             if (grupoAuto && f.grupo !== grupoAuto) f.grupo = grupoAuto;
             // Equipo del grupo: TODOS los operadores activos de ese grupo para este proceso
             const equipoGrupo = (state.operadores || []).filter(o => {
@@ -13822,17 +13852,13 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
           
         </div>
         <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;background:#f8fafc;">
-          <div style="font-size:11px;color:#16a34a;font-weight:700;">
-            ✅ Puedes capturar rollos e irte — la ODP sigue produciendo. Solo cierra el turno al terminar tu jornada o cambio de grupo.
+          <div style="font-size:12px;color:#16a34a;font-weight:700;">
+            ✅ Cada rollo que agregaste ya quedó guardado. Pica LISTO cuando termines de capturar.
           </div>
-          <div style="display:flex;gap:8px;">
-            <button class="btn-secondary" onclick="cerrarModal()" style="background:#16a34a;color:#fff;border:none;">✓ Listo (sigue produciendo)</button>
-            <button onclick="window.cerrarTurnoExtrusion('${odp.id}')" 
-              style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:9px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;${rollosDelTurno.length === 0 ? 'opacity:0.4;cursor:not-allowed;' : ''}" 
-              ${rollosDelTurno.length === 0 ? 'disabled' : ''}>
-              🔒 Cerrar turno (${numRollos} rollos · ${fmtNum(totalKgTurno)} kg)
-            </button>
-          </div>
+          <button onclick="window.terminarCapturaExtrusion('${odp.id}')" 
+            style="background:#16a34a;color:#fff;border:none;padding:14px 28px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;box-shadow:0 3px 8px rgba(22,163,74,0.3);">
+            ✓ LISTO ${numRollos > 0 ? `(${numRollos} rollo${numRollos>1?'s':''} · ${fmtNum(totalKgTurno)} kg)` : ''}
+          </button>
         </div>
       </div>
     </div>
@@ -14107,6 +14133,11 @@ window.agregarRolloExtrusion = async (odpId) => {
   
   // 🆕 CAPTURA POR EQUIPO: el sistema ya sabe el grupo (del supervisor logueado).
   //    No se exige elegir un operador — todo el equipo del grupo es responsable.
+  // 🔧 Fallback robusto: si f.grupo está vacío, tomarlo del usuario (versión más reciente)
+  if (!f.grupo) {
+    const uAct = (state.usuarios_sistema || []).find(x => x.id === state.user?.id) || state.user || {};
+    f.grupo = uAct.grupo_turno || state.user?.grupo_turno || '';
+  }
   if (!f.grupo) { toast('Tu usuario no tiene grupo de turno asignado. Pídele al admin que lo configure.', 'error'); return; }
   
   // Leer del DOM si no está en state
@@ -14276,13 +14307,38 @@ window.anularRolloExtrusion = async (rolloId) => {
 };
 
 // Cerrar el turno: consolidar todos los rollos en una captura_produccion
-window.cerrarTurnoExtrusion = async (odpId) => {
+// 🆕 UN SOLO BOTÓN: terminar la captura. Si hay rollos sin consolidar, los consolida
+//    automáticamente (sin pedir confirmación extra) y cierra. El supervisor solo pica LISTO.
+window.terminarCapturaExtrusion = async (odpId) => {
+  const odp = state.ordenes_produccion.find(o => o.id === odpId);
+  if (!odp) { cerrarModal(); return; }
+  // ¿Hay rollos en vivo sin consolidar de este proceso?
+  const ruta = odp.ruta_procesos || [];
+  const idx = odp.proceso_actual_idx ?? 0;
+  const procCod = state.panelOpProc && ruta.includes(state.panelOpProc) ? state.panelOpProc : (ruta[idx] || 'P1-EXT');
+  const rollosVivo = (state.rollos_extrusion || []).filter(r => 
+    r.odp_id === odpId && r.proceso === procCod && !r.anulado && !r.consolidado_en_turno
+  );
+  if (rollosVivo.length > 0) {
+    // Consolidar automáticamente (sin el confirm que confundía)
+    await window.cerrarTurnoExtrusion(odpId, true);
+  } else {
+    // No hay nada nuevo que consolidar, solo cerrar
+    cerrarModal();
+  }
+};
+
+window.cerrarTurnoExtrusion = async (odpId, silencioso = false) => {
   const odp = state.ordenes_produccion.find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   const f = state.modalForm || {};
   
   // 🆕 Captura por EQUIPO: solo se requiere el grupo (el supervisor logueado y su equipo
   //    ya quedan registrados en cada rollo). No se exige operador/supervisor individual.
+  if (!f.grupo) {
+    const uAct = (state.usuarios_sistema || []).find(x => x.id === state.user?.id) || state.user || {};
+    f.grupo = uAct.grupo_turno || state.user?.grupo_turno || '';
+  }
   if (!f.grupo) {
     toast('Tu usuario no tiene grupo de turno asignado. Pídele al admin que lo configure.', 'error'); return;
   }
@@ -14313,7 +14369,7 @@ window.cerrarTurnoExtrusion = async (odpId) => {
   const totalKg = rollosPendientes.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
   const totalMermas = rollosPendientes.reduce((s, r) => s + (Number(r.mermas_kg) || 0), 0);
   
-  if (!confirm(`Cerrar turno con ${rollosPendientes.length} rollos?\n\nTotal: ${fmtNum(totalKg)} kg producidos · ${fmtNum(totalMermas)} kg mermas\n\nSe sumarán a la producción total de ${odp.folio}.`)) return;
+  if (!silencioso && !confirm(`Cerrar turno con ${rollosPendientes.length} rollos?\n\nTotal: ${fmtNum(totalKg)} kg producidos · ${fmtNum(totalMermas)} kg mermas\n\nSe sumarán a la producción total de ${odp.folio}.`)) return;
   
   state.loadingAccion = true; render();
   try {
