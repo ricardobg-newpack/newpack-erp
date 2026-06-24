@@ -4221,6 +4221,32 @@ function renderDashboardDireccion() {
 // Router: decide qué dashboard mostrar según el usuario
 function renderDashboardPorRol() {
   const u = state.user || {};
+  
+  // 🔄 Aviso de reconciliación de parcialidades viejas (visible para Dirección/Admin)
+  const esCEOrec = u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+  const odpsViejas = esCEOrec ? (state.ordenes_produccion || []).filter(o => 
+    !o.archivada && !o.reconciliada_modelo_nuevo && (
+      o.es_continuacion_parcial || o.es_cierre_parcial ||
+      o.odp_continuacion_id || (Number(o.num_parcialidad) || 0) > 1
+    )
+  ) : [];
+  const avisoReconciliar = odpsViejas.length > 0 ? `
+    <div style="background:#1e40af;color:#fff;border-radius:12px;padding:18px 22px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;box-shadow:0 4px 12px rgba(30,64,175,0.25);">
+      <div style="flex:1;min-width:240px;">
+        <div style="font-size:16px;font-weight:900;margin-bottom:4px;">🔄 Hay ${odpsViejas.length} orden(es) partida(s) con el modelo viejo</div>
+        <div style="font-size:12.5px;opacity:0.92;line-height:1.5;">Se dividieron en varias ODPs. Reúnelas en una sola ODP (con su meta total y salidas parciales). Las continuaciones se archivan, no se borran.</div>
+      </div>
+      <button onclick="window.reconciliarParcialidadesViejas()" style="background:#fff;color:#1e40af;border:none;padding:14px 24px;border-radius:10px;cursor:pointer;font-weight:900;font-size:15px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.15);">
+        🔄 RECONCILIAR AHORA
+      </button>
+    </div>
+  ` : (esCEOrec ? `
+    <div style="background:#f0fdf4;border:1.5px solid #16a34a;color:#166534;border-radius:10px;padding:12px 18px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+      <div style="font-size:12.5px;font-weight:700;">✅ No hay parcialidades viejas pendientes de reconciliar — todo está en el modelo nuevo.</div>
+      <button onclick="window.reconciliarParcialidadesViejas()" style="background:#fff;color:#166534;border:1.5px solid #16a34a;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">🔄 Revisar de nuevo</button>
+    </div>
+  ` : '');
+  
   // Dirección elige qué ver (por defecto el global)
   if (window.esDireccion()) {
     const sel = state.dashboardDeptoSel || 'general';
@@ -4241,7 +4267,7 @@ function renderDashboardPorRol() {
     else if (sel === 'CS') contenido = renderDashboardComercial();
     else if (sel === 'PLN') contenido = renderDashboardPlaneacion();
     else contenido = renderDashboardDireccion();
-    return selector + contenido;
+    return avisoReconciliar + selector + contenido;
   }
   
   // Jefe de departamento: ve SOLO el dashboard de su área
