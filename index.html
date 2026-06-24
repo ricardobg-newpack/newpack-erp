@@ -397,13 +397,30 @@ function calcularWaterfallLinea(linea) {
   const odpsP2plus = odps.filter(o => o.proceso_codigo && o.proceso_codigo !== 'P-1');
   const kgAsignadosODPs = odpsP1.reduce((s, o) => s + (Number(o.cantidad_kg_produccion) || 0), 0);
   
-  // 🔧 FIX: kg producidos = cantidad_producida_final_kg (si cerró) o suma de rollos (si activa)
+  // 🔧 kg producidos vía helper único (capturas + rollos en vivo, sin doble conteo).
+  //    Toma el ÚLTIMO proceso de la ruta (lo que de verdad va saliendo terminado).
   const kgProducidoODP = (o) => {
-    if (Number(o.cantidad_producida_final_kg) > 0) return Number(o.cantidad_producida_final_kg);
-    // ODP activa: sumar rollos no anulados
-    return (state.rollos_extrusion || [])
-      .filter(r => r.odp_id === o.id && !r.anulado)
-      .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+    // Si ya cerró del todo, usar el final guardado
+    if (Number(o.cantidad_producida_final_kg) > 0 && ['pendiente_calidad','completada','liberada','liberada_empaque','entregada'].includes(o.estatus)) {
+      return Number(o.cantidad_producida_final_kg);
+    }
+    // ODP activa: sumar todos los rollos no anulados de TODOS sus procesos en vivo
+    const ruta = o.ruta_procesos || [];
+    let kg = 0;
+    if (ruta.length > 0) {
+      // Tomar el proceso más avanzado que tenga producción (evita doble conteo)
+      for (let i = ruta.length - 1; i >= 0; i--) {
+        const kgP = window.kgProducidoProceso(o, ruta[i]);
+        if (kgP > 0) { kg = kgP; break; }
+      }
+    }
+    // Respaldo: si no hay por proceso, sumar rollos directos
+    if (kg <= 0) {
+      kg = (state.rollos_extrusion || [])
+        .filter(r => r.odp_id === o.id && !r.anulado)
+        .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+    }
+    return kg;
   };
   
   // kg ya convertidos en tarima (cualquier estatus)
@@ -11459,6 +11476,10 @@ function _tableroTarjetaActiva(o, procSel, proc) {
             ? `<button onclick="event.stopPropagation();window.cerrarDesdeTablero('${o.id}','${procSel}')" style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✓ Terminar</button>`
             : `<button disabled title="Captura producción antes de terminar" style="background:#f1f5f9;color:#cbd5e1;border:1.5px solid #e2e8f0;padding:9px;border-radius:7px;cursor:not-allowed;font-weight:800;font-size:11px;">✓ Terminar</button>`}
         </div>
+        ${prod > 0 ? `
+          <!-- 🆕 Salida parcial urgente: enviar lo producido AHORA y SEGUIR produciendo -->
+          <button onclick="event.stopPropagation();window.enviarParcial('${o.id}','seguir')" style="background:#eff6ff;color:#1e40af;border:1.5px solid #3b82f6;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">📦 Dar salida parcial y seguir produciendo</button>
+        ` : ''}
       </div>
     </div>
   `;
