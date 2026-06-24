@@ -9079,6 +9079,27 @@ window.reiniciarCapturasProduccion = async () => {
     toast(`🔒 Solo Admin, CEO o Planeación pueden reiniciar. Tu depto: ${u.depto || '?'}`, 'error'); return;
   }
   
+  const todasODP = state.ordenes_produccion || [];
+  
+  // Clasificar las ODP:
+  //  - PRINCIPALES de programación: se conservan, se resetean a extrusión desde cero
+  //  - HIJAS / continuaciones / stock / sobrante: se BORRAN (no son programación real)
+  const esPrincipal = (o) => 
+    !o.odp_padre_id &&                    // no es hija (proceso secundario)
+    !o.es_continuacion_parcial &&         // no es continuación de un parcial
+    !o.es_sobrante_automatico &&          // no es sobrante
+    o.tipo !== 'stock_interno';           // no es stock interno
+  
+  const odpsPrincipales = todasODP.filter(esPrincipal);
+  const odpsABorrar = todasODP.filter(o => !esPrincipal(o)); // hijas, continuaciones, stock, sobrante
+  
+  // Órdenes de venta: borrar las que YA avanzaron (tienen tarimas asignadas o embarque);
+  //   dejar las que están esperando producción.
+  const ovAvanzadas = (state.ordenes_venta || []).filter(o => 
+    !['esperando_produccion','esperando produccion','pendiente_planeacion','pendiente'].includes(o.estatus) &&
+    !o.archivada
+  );
+  
   // Conteo de lo que se va a borrar
   const nRollos = (state.rollos_extrusion || []).length;
   const nCapturas = (state.capturas_produccion || []).length;
@@ -9086,27 +9107,26 @@ window.reiniciarCapturasProduccion = async () => {
   const nLotes = (state.lotes || []).length;
   const nPKL = (state.packing_lists || []).length;
   const nMerma = (state.movimientos_merma || []).length;
-  const nOdpStock = (state.ordenes_produccion || []).filter(o => o.es_sobrante_automatico || o.tipo === 'stock_interno').length;
+  const nOti = (state.oti || []).length;
+  const nRemis = (state.remisiones || []).length;
   
   if (!confirm(
-    `🔄 REINICIAR CAPTURAS DE PRODUCCIÓN\n\n` +
-    `Esto BORRA todo lo capturado/producido y deja la programación como recién creada:\n\n` +
+    `🔄 REINICIAR — Empezar todo desde extrusión\n\n` +
+    `Borra TODO lo que avanzó de extrusión en adelante. Solo queda la programación en extrusión, como si nada hubiera empezado.\n\n` +
     `Se ELIMINARÁ:\n` +
     `• ${nRollos} rollo(s) de extrusión\n` +
-    `• ${nCapturas} captura(s) de turno\n` +
-    `• ${nTarimas} tarima(s) (stock/almacén/embarque)\n` +
-    `• ${nLotes} lote(s)\n` +
-    `• ${nPKL} packing list(s)\n` +
-    `• ${nMerma} movimiento(s) de merma\n` +
-    `• ${nOdpStock} ODP de stock/sobrante (generadas en pruebas)\n\n` +
+    `• ${nCapturas} captura(s) de turno (todos los procesos)\n` +
+    `• ${nTarimas} tarima(s) · ${nLotes} lote(s) · ${nPKL} packing list(s)\n` +
+    `• ${nMerma} merma(s) · ${nOti} OTI(s) · ${nRemis} remisión(es)\n` +
+    `• ${odpsABorrar.length} orden(es) hijas/continuación/stock (de bolseo en adelante)\n` +
+    `• ${ovAvanzadas.length} orden(es) de venta que ya habían avanzado\n\n` +
     `Se CONSERVA:\n` +
-    `• Las órdenes de producción y su posición en la cola\n` +
-    `• Producto, máquina asignada, cantidades\n\n` +
-    `Cada ODP volverá a "programada" sin avance.\n\n` +
+    `• ${odpsPrincipales.length} orden(es) principales en extrusión (su producto, máquina y posición)\n` +
+    `• Las OV que están esperando producción\n\n` +
     `¿Continuar?`
   )) return;
   
-  // Segunda confirmación: escribir REINICIAR
+  // Segunda confirmación
   const conf = prompt(`Para confirmar, escribe: REINICIAR`);
   if (conf === null) return;
   if (conf.trim().toUpperCase() !== 'REINICIAR') {
@@ -9116,7 +9136,7 @@ window.reiniciarCapturasProduccion = async () => {
   try {
     state.loadingAccion = true; render();
     
-    // Helper para borrar una colección completa en lotes de 400 (límite de writeBatch es 500)
+    // Helper para borrar en lotes de 400 (límite writeBatch = 500)
     const borrarDocs = async (docs, nombreColeccion) => {
       for (let i = 0; i < docs.length; i += 400) {
         const lote = docs.slice(i, i + 400);
@@ -9126,27 +9146,25 @@ window.reiniciarCapturasProduccion = async () => {
       }
     };
     
-    // 1) Borrar todas las colecciones de producción/embarque
+    // 1) Borrar TODAS las colecciones de avance/producción/embarque
     await borrarDocs(state.rollos_extrusion || [], 'rollos_extrusion');
     await borrarDocs(state.capturas_produccion || [], 'capturas_produccion');
     await borrarDocs(state.tarimas || [], 'tarimas');
     await borrarDocs(state.lotes || [], 'lotes');
     await borrarDocs(state.packing_lists || [], 'packing_lists');
     await borrarDocs(state.movimientos_merma || [], 'movimientos_merma');
-    // OTIs y remisiones de embarque (pruebas)
     await borrarDocs(state.oti || [], 'oti');
     await borrarDocs(state.remisiones || [], 'remisiones');
     
-    // 2) Borrar las ODP de stock/sobrante (no son programación real, son resultado de pruebas)
-    const odpsStock = (state.ordenes_produccion || []).filter(o => o.es_sobrante_automatico || o.tipo === 'stock_interno');
-    await borrarDocs(odpsStock, 'ordenes_produccion');
+    // 2) Borrar las ODP hijas / continuaciones / stock / sobrante (de bolseo en adelante)
+    await borrarDocs(odpsABorrar, 'ordenes_produccion');
     
-    // 3) Resetear cada ODP de programación a "programada sin avance"
-    const odpsProgramacion = (state.ordenes_produccion || []).filter(o => 
-      !o.es_sobrante_automatico && o.tipo !== 'stock_interno' && !o.es_continuacion_parcial
-    );
-    for (let i = 0; i < odpsProgramacion.length; i += 400) {
-      const lote = odpsProgramacion.slice(i, i + 400);
+    // 3) Borrar las OV que ya habían avanzado (dejar las que esperan producción)
+    await borrarDocs(ovAvanzadas, 'ordenes_venta');
+    
+    // 4) Resetear cada ODP PRINCIPAL al inicio de extrusión, sin avance, conservando programación
+    for (let i = 0; i < odpsPrincipales.length; i += 400) {
+      const lote = odpsPrincipales.slice(i, i + 400);
       const batch = writeBatch(db);
       lote.forEach(o => {
         batch.update(doc(db, 'ordenes_produccion', o.id), {
@@ -9161,7 +9179,7 @@ window.reiniciarCapturasProduccion = async () => {
           cantidad_producida_kg_total: 0,
           mermas_finales: 0,
           mermas_finales_kg: 0,
-          // Limpiar marcas de cierre/parcial/saldo
+          // Limpiar marcas de cierre/parcial/saldo/continuación
           cerrado_con_saldo: false,
           saldo_no_producido_kg: 0,
           es_cierre_parcial: false,
@@ -9169,6 +9187,7 @@ window.reiniciarCapturasProduccion = async () => {
           odp_continuacion_folio: null,
           saldo_enviado_a_continuacion_kg: 0,
           inicio_real_at: null,
+          inicio_real_por: null,
           produccion_terminada_at: null,
           liberacion_calidad: null,
           packing_list: null,
@@ -9181,7 +9200,16 @@ window.reiniciarCapturasProduccion = async () => {
       await batch.commit();
     }
     
-    toast(`✅ Reinicio completo. Programación conservada (${odpsProgramacion.length} ODP en cola), todo lo capturado eliminado.`, 'success');
+    // Optimistic local: quitar lo borrado del state para reflejo inmediato
+    const idsBorradas = new Set(odpsABorrar.map(o => o.id));
+    state.ordenes_produccion = (state.ordenes_produccion || []).filter(o => !idsBorradas.has(o.id));
+    const ovBorradas = new Set(ovAvanzadas.map(o => o.id));
+    state.ordenes_venta = (state.ordenes_venta || []).filter(o => !ovBorradas.has(o.id));
+    state.rollos_extrusion = []; state.capturas_produccion = []; state.tarimas = [];
+    state.lotes = []; state.packing_lists = []; state.movimientos_merma = [];
+    state.oti = []; state.remisiones = [];
+    
+    toast(`✅ Reinicio completo. ${odpsPrincipales.length} órdenes en extrusión desde cero. Todo lo posterior eliminado.`, 'success');
     cerrarModal();
   } catch (e) {
     console.error('Error en reinicio:', e);
