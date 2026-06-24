@@ -10994,6 +10994,10 @@ function renderPanelOperador() {
   if (state.panelOpVista === undefined) {
     state.panelOpVista = localStorage.getItem('newpack_panel_op_vista') || 'tablero';
   }
+  // 🆕 SIMPLIFICADO PARA EL OPERADOR: siempre vista tablero por máquina, sin filtros.
+  //    El operador entra y ve todas sus máquinas con su orden actual de un vistazo.
+  state.panelOpVista = 'tablero';
+  state.panelOpMaq = '';  // nunca filtrar a una sola máquina por defecto
   // 🆕 Por defecto NO filtrar a una máquina: el supervisor ve TODAS sus máquinas de un vistazo.
   //    (Solo si él elige una específica en el selector se filtra.)
   if (state.panelOpMaq === null) state.panelOpMaq = '';
@@ -11187,16 +11191,6 @@ function renderPanelOperador() {
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
           <button onclick="window.mostrarAyudaPanelExtrusion()" style="background:#fff;color:${proc.color || '#1e40af'};border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.15);">❓ ¿Cómo funciona?</button>
           ${!procAsignado ? `<button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>` : `<div style="background:rgba(255,255,255,0.15);color:#fff;padding:8px 14px;border-radius:8px;font-size:11px;font-weight:700;">🔒 Tu área asignada</div>`}
-          ${maquinasProc.length > 1 ? `
-            <div style="display:flex;gap:6px;align-items:center;">
-              <button onclick="window.vistaPanelOp('tablero')" style="background:${state.panelOpVista === 'tablero' ? '#fff' : 'rgba(255,255,255,0.2)'};color:${state.panelOpVista === 'tablero' ? proc.color : '#fff'};border:1.5px solid #fff;padding:7px 12px;border-radius:6px;cursor:pointer;font-weight:800;font-size:12px;" title="Una columna por máquina">▦ Tablero</button>
-              <button onclick="window.vistaPanelOp('lista')" style="background:${state.panelOpVista !== 'tablero' ? '#fff' : 'rgba(255,255,255,0.2)'};color:${state.panelOpVista !== 'tablero' ? proc.color : '#fff'};border:1.5px solid #fff;padding:7px 12px;border-radius:6px;cursor:pointer;font-weight:800;font-size:12px;" title="Lista vertical">☰ Lista</button>
-            </div>
-            <select onchange="window.cambiarMaquinaOperador(this.value)" style="background:rgba(255,255,255,0.95);color:#0f172a;border:none;padding:7px 12px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer;min-width:220px;">
-              <option value="">— Todas las máquinas (${maquinasProc.length}) —</option>
-              ${maquinasProc.map(m => `<option value="${m.codigo}" ${m.codigo === maqSel ? 'selected' : ''}>${m.codigo} ${m.nombre ? '· ' + m.nombre : ''}</option>`).join('')}
-            </select>
-          ` : ''}
         </div>
       </div>
       
@@ -11237,8 +11231,8 @@ function renderPanelOperador() {
         ` : ''}
       </div>
       
-      ${(state.panelOpVista === 'tablero' && !maqSel && maquinasProc.length > 1 && !busq) ? `
-        <!-- ════════ VISTA TABLERO: UNA COLUMNA POR MÁQUINA ════════ -->
+      ${(maquinasProc.length >= 1 && !busq) ? `
+        <!-- ════════ VISTA TABLERO: UNA COLUMNA POR MÁQUINA (siempre) ════════ -->
         ${_tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, procSel, proc)}
         ${sinProgramar.length > 0 ? `
           <div style="background:#fee2e2;border:2px solid #dc2626;border-radius:12px;padding:14px;margin-top:14px;">
@@ -11477,6 +11471,7 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
                 ${esPausadaSig 
                   ? `<button onclick="event.stopPropagation();window.reanudarODP('${siguiente.id}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ REANUDAR</button>`
                   : `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${siguiente.id}','${procSel}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ INICIAR ESTA</button>`}
+                <button onclick="event.stopPropagation();window.mostrarComoProducir('${siguiente.id}')" style="width:100%;margin-top:6px;background:#fff7ed;color:#c2410c;border:1.5px solid #ea580c;padding:9px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔥 ¿Cómo producir esto?</button>
               ` : `
                 <!-- SIN TRABAJO -->
                 <div style="text-align:center;padding:28px 10px;color:#cbd5e1;">
@@ -11571,6 +11566,9 @@ function _tableroTarjetaActiva(o, procSel, proc) {
         <div style="font-size:12px;font-weight:700;color:#475569;line-height:1.25;margin-top:2px;">${(o.descripcion || o.producto_codigo || '').slice(0, 60)}</div>
         <div style="font-size:10.5px;color:#94a3b8;margin-top:2px;">${o.cliente_codigo || 'STOCK'} · meta ${fmtNum(meta)} kg</div>
       </div>
+      
+      <!-- 🔥 Botón Cómo producir (siempre visible) -->
+      <button onclick="event.stopPropagation();window.mostrarComoProducir('${o.id}')" style="background:#fff7ed;color:#c2410c;border:1.5px solid #ea580c;padding:8px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔥 ¿Cómo producir esto?</button>
       
       <!-- Barra de avance -->
       <div>
@@ -14001,6 +13999,11 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
                     <div style="font-size:11.5px;line-height:1.4;">${prod.obs_extrusion}</div>
                   </div>
                 ` : ''}
+                ${(() => {
+                  const gramaje = window.calcularGramaje ? window.calcularGramaje(prod) : 0;
+                  return gramaje > 0 ? `<div style="margin-top:8px;padding:8px 10px;background:rgba(167,139,250,0.2);border:1px solid #a78bfa;border-radius:6px;font-size:11px;"><strong style="color:#c4b5fd;">⚖️ GRAMAJE DE CONTROL:</strong> <span style="color:#fff;font-weight:800;">${gramaje.toFixed(5)}</span> <span style="opacity:0.7;">(muestra de 1 metro)</span></div>` : '';
+                })()}
+                <button onclick="event.stopPropagation();window.mostrarComoProducir('${odp.id}')" style="margin-top:8px;width:100%;background:#ea580c;color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;">🔥 Ver ficha completa: cómo producir + receta</button>
               </div>
             `;
           })()}
