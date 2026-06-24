@@ -2182,13 +2182,27 @@ const ESTRUCTURAS_ROLLO = {
     { codigo: 'lay_flat', nombre: '🟦 Película plana — burbuja abierta por AMBOS lados = 2 telas sencillas' }
   ],
   // 🆕 ROLLO DIRECTO — producto final es un rollo (no se convierte en bolsa)
+  //    Cubre las estructuras reales que se producen, con multi-salida configurable por producto.
   ROLLO_DIRECTO: [
-    { codigo: 'rd_tubular',  nombre: '🟢 Rollo directo tubular — burbuja cerrada (tubo)' },
-    { codigo: 'rd_fuellado', nombre: '🟡 Rollo directo fuellado — tubo con fuelle' },
-    { codigo: 'rd_lamina',   nombre: '🟦 Rollo directo lámina — abierto por un lado (AX1L)' }
+    { codigo: 'rd_tubular',       nombre: '🟢 Tubular cerrado — tubo sin aberturas',           limpio: 'Tubular cerrado (tubo sin aberturas)' },
+    { codigo: 'rd_fuellado',      nombre: '🟡 Tubular con fuelle — tubo con fuelle a los lados', limpio: 'Tubular con fuelle' },
+    { codigo: 'rd_ax1l',          nombre: '🔵 AX1L sin fuelle — abierto por UN lado',           limpio: 'AX1L sin fuelle (abierto por un lado)' },
+    { codigo: 'rd_ax1l_fuelle',   nombre: '🟦 AX1L con fuelle — abierto por un lado, con fuelle', limpio: 'AX1L con fuelle (abierto por un lado)' },
+    { codigo: 'rd_lamina_doble',  nombre: '⬜ Lámina abierta por AMBOS lados — 2 telas',         limpio: 'Lamina abierta por ambos lados (2 telas)' },
+    { codigo: 'rd_ax1c',          nombre: '🟣 AX1C — extruye al doble, corta al centro = 2 AX1L', limpio: 'AX1C (extruye al doble, corta al centro = 2 AX1L)' }
   ]
 };
 window.ESTRUCTURAS_ROLLO = ESTRUCTURAS_ROLLO;
+
+// Nombre limpio (sin emojis) para usar en PDFs — Helvetica no soporta emojis
+function getEstructuraNombreLimpio(tipoSelladoCodigo, estructuraCodigo) {
+  const lista = ESTRUCTURAS_ROLLO[tipoSelladoCodigo] || [];
+  const e = lista.find(x => x.codigo === estructuraCodigo);
+  if (!e) return '—';
+  // Si tiene campo "limpio" úsalo; si no, quita emojis del nombre
+  return e.limpio || e.nombre.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}]/gu, '').replace(/—/g, '-').trim();
+}
+window.getEstructuraNombreLimpio = getEstructuraNombreLimpio;
 
 function getTipoSellado(codigo) {
   return TIPOS_SELLADO.find(t => t.codigo === codigo);
@@ -2258,36 +2272,54 @@ function calcularMedidasRolloExt(producto) {
   }
   // 🆕 ROLLO DIRECTO → el producto final ES un rollo (no se convierte en bolsa)
   else if (tipo === 'ROLLO_DIRECTO') {
+    const sufijoSalidas = salidas > 1 ? ` (= ${ancho} x ${salidas})` : '';
+    const refilado = salidas > 1 ? `\n3) REFILADO/CORTE: separar en ${salidas} rollos de ${ancho} cm cada uno.` : '';
+    
     if (estructura === 'rd_fuellado') {
+      // Tubular con fuelle
       ancho_rollo = ancho * salidas;
       fuelle_rollo = fuelle;
-      if (salidas > 1) {
-        descripcion = `Rollo directo fuellado ${ancho_rollo} cm (= ${ancho}×${salidas}) c/fuelle ${fuelle} cm`;
-        observacion = `EXTRUIR rollo tubular fuellado de ${ancho_rollo} cm (= ${ancho} × ${salidas}) con fuelle ${fuelle} cm. REFILADO/CORTE: separar en ${salidas} rollos de ${ancho} cm c/u. Producto final = rollo.`;
-      } else {
-        descripcion = `Rollo directo fuellado ${ancho} cm · fuelle ${fuelle} cm`;
-        observacion = `EXTRUIR rollo tubular fuellado de ${ancho} cm con fuelle ${fuelle} cm. Producto final = rollo (no pasa a bolseo).`;
-      }
-    } else if (estructura === 'rd_lamina') {
+      descripcion = salidas > 1
+        ? `Tubular con fuelle ${ancho_rollo} cm${sufijoSalidas}, fuelle ${fuelle} cm`
+        : `Tubular con fuelle ${ancho} cm, fuelle ${fuelle} cm`;
+      observacion = `TUBULAR CON FUELLE:\n1) Extruir tubo cerrado de ${ancho_rollo} cm de ancho.\n2) Meter el fuelle de ${fuelle} cm a los lados.${refilado}\n-> Producto final = rollo (no pasa a bolseo).`;
+    } else if (estructura === 'rd_ax1l') {
+      // AX1L sin fuelle (abierto por un lado)
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
-      if (salidas > 1) {
-        descripcion = `Rollo directo lámina ${ancho_rollo} cm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUIR película plana (lámina abierta) de ${ancho_rollo} cm. REFILADO: separar en ${salidas} rollos de ${ancho} cm c/u. Producto final = rollo de lámina.`;
-      } else {
-        descripcion = `Rollo directo lámina ${ancho} cm`;
-        observacion = `EXTRUIR película plana (lámina abierta) de ${ancho} cm. Producto final = rollo de lámina (no pasa a bolseo).`;
-      }
-    } else { // rd_tubular
+      descripcion = salidas > 1
+        ? `AX1L sin fuelle ${ancho_rollo} cm${sufijoSalidas}, abierto por un lado`
+        : `AX1L sin fuelle ${ancho} cm, abierto por un lado`;
+      observacion = `AX1L SIN FUELLE (abierto por un lado):\n1) Extruir burbuja tubular de ${ancho_rollo} cm.\n2) ANTES de embobinar, cortar la burbuja por UN solo lado (queda abierto por un lado).${refilado}\n-> Producto final = rollo abierto por un lado.`;
+    } else if (estructura === 'rd_ax1l_fuelle') {
+      // AX1L con fuelle (abierto por un lado, con fuelle)
+      ancho_rollo = ancho * salidas;
+      fuelle_rollo = fuelle;
+      descripcion = salidas > 1
+        ? `AX1L con fuelle ${ancho_rollo} cm${sufijoSalidas}, fuelle ${fuelle} cm`
+        : `AX1L con fuelle ${ancho} cm, fuelle ${fuelle} cm`;
+      observacion = `AX1L CON FUELLE (abierto por un lado, con fuelle):\n1) Extruir burbuja tubular de ${ancho_rollo} cm con fuelle ${fuelle} cm.\n2) ANTES de embobinar, cortar la burbuja por UN solo lado.${refilado}\n-> Producto final = rollo abierto por un lado con fuelle.`;
+    } else if (estructura === 'rd_lamina_doble') {
+      // Lámina abierta por AMBOS lados = 2 telas
       ancho_rollo = ancho * salidas;
       fuelle_rollo = 0;
-      if (salidas > 1) {
-        descripcion = `Rollo directo tubular ${ancho_rollo} cm (= ${ancho}×${salidas})`;
-        observacion = `EXTRUIR rollo tubular de ${ancho_rollo} cm (= ${ancho} × ${salidas}). REFILADO/CORTE: separar en ${salidas} rollos de ${ancho} cm c/u. Producto final = rollo.`;
-      } else {
-        descripcion = `Rollo directo tubular ${ancho} cm`;
-        observacion = `EXTRUIR rollo tubular de ${ancho} cm. Producto final = rollo tubular (no pasa a bolseo).`;
-      }
+      descripcion = salidas > 1
+        ? `Lamina abierta ambos lados ${ancho_rollo} cm${sufijoSalidas}`
+        : `Lamina abierta por ambos lados ${ancho} cm`;
+      observacion = `LAMINA ABIERTA POR AMBOS LADOS (2 telas):\n1) Extruir burbuja de ${ancho_rollo} cm.\n2) Abrir la burbuja por AMBOS lados -> quedan 2 telas planas sencillas.${refilado}\n-> Producto final = rollo de lamina.`;
+    } else if (estructura === 'rd_ax1c') {
+      // AX1C: extruye al doble, corta al centro = 2 AX1L
+      ancho_rollo = ancho * 2 * salidas;
+      fuelle_rollo = 0;
+      descripcion = `AX1C - extruir ${ancho * 2} cm (= ${ancho} x 2), cortar al centro = 2 rollos AX1L de ${ancho} cm`;
+      observacion = `AX1C (abierto por el centro) - produce 2 AX1L de un jalon:\n1) Extruir burbuja tubular al DOBLE: ${ancho * 2} cm de ancho (= ${ancho} x 2).\n2) Cortar la burbuja por el CENTRO.\n3) Embobinar por separado -> 2 rollos AX1L de ${ancho} cm cada uno, abiertos por un lado.\n-> Cada rollo es producto final.`;
+    } else { // rd_tubular (cerrado)
+      ancho_rollo = ancho * salidas;
+      fuelle_rollo = 0;
+      descripcion = salidas > 1
+        ? `Tubular cerrado ${ancho_rollo} cm${sufijoSalidas}`
+        : `Tubular cerrado ${ancho} cm`;
+      observacion = `TUBULAR CERRADO (tubo sin aberturas):\n1) Extruir tubo cerrado de ${ancho_rollo} cm de ancho.${refilado}\n-> Producto final = rollo tubular.`;
     }
   }
   // BOLSA EN ROLLO → extrusión al ANCHO × salidas (multi-salida soportada)
@@ -2357,6 +2389,10 @@ function calcularMedidasRolloExt(producto) {
       salidasEfectivas = 1;
       anchoSalida = largo;
     }
+  } else if (tipo === 'ROLLO_DIRECTO' && estructura === 'rd_ax1c') {
+    // AX1C en rollo directo: extruye al doble, corta al centro = 2 rollos del ancho del producto
+    salidasEfectivas = 2 * salidas;
+    anchoSalida = ancho;
   }
   
   return {
@@ -2368,7 +2404,8 @@ function calcularMedidasRolloExt(producto) {
     descripcion,
     observacion,
     tipo_sellado_nombre: getTipoSellado(tipo)?.nombre || '—',
-    estructura_nombre: getEstructuraRollo(tipo, estructura)?.nombre || '—'
+    estructura_nombre: getEstructuraRollo(tipo, estructura)?.nombre || '—',
+    estructura_nombre_limpio: getEstructuraNombreLimpio(tipo, estructura)
   };
 }
 window.calcularMedidasRolloExt = calcularMedidasRolloExt;
@@ -28418,9 +28455,17 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   docPDF.setTextColor(0, 0, 0);
   y += 8;
   
-  // ============ 🔥 CÓMO PRODUCIR (lo más importante para extrusión) ============
+  // ============ CÓMO PRODUCIR (lo más importante para extrusión) ============
   const medRollo = (typeof window.calcularMedidasRolloExt === 'function') ? window.calcularMedidasRolloExt(producto) : null;
   if (medRollo) {
+    // Helper: limpiar emojis y caracteres que Helvetica no soporta (rompen el PDF)
+    const limpiar = (txt) => String(txt || '')
+      .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, '') // emojis y flechas
+      .replace(/→/g, '->').replace(/➜/g, '->').replace(/»/g, '>>').replace(/«/g, '<<')
+      .replace(/·/g, '-')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    
     // Recuadro destacado naranja para que NO se pase por alto
     docPDF.setFillColor(234, 88, 12); // naranja fuerte
     docPDF.rect(margen, y, W - margen*2, 6, 'F');
@@ -28431,37 +28476,58 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
     docPDF.setTextColor(0, 0, 0);
     y += 8;
     
-    // Tipo y estructura (qué es)
+    // Preparar las instrucciones (cada paso en su línea), limpias de emojis
+    const pasosLimpios = limpiar(medRollo.observacion || medRollo.descripcion || '')
+      .split('\n').map(l => limpiar(l)).filter(Boolean);
+    // Re-dividir cada paso al ancho de la caja
+    const obsLines = [];
+    pasosLimpios.forEach(p => {
+      docPDF.splitTextToSize(p, W - margen*2 - 8).forEach(l => obsLines.push(l));
+    });
+    
+    // Cabecera de tipo/estructura (línea fija)
+    const nombreEstructura = medRollo.estructura_nombre_limpio || medRollo.estructura_nombre;
+    const tipoTxt = limpiar(`${medRollo.tipo_sellado_nombre} - ${nombreEstructura}`);
+    const extruirTxt = limpiar(`EXTRUIR: ${medRollo.descripcion}`);
+    const tipoLines = docPDF.splitTextToSize(tipoTxt, W - margen*2 - 8);
+    const extruirLines = docPDF.splitTextToSize(extruirTxt, W - margen*2 - 8);
+    
+    // Altura total del recuadro: cabecera + salidas + instrucciones
+    const hCabecera = tipoLines.length * 4.2 + extruirLines.length * 4.2 + 2;
+    const hSalidas = medRollo.salidas > 1 ? 6 : 0;
+    const hInstr = obsLines.length * 4.2;
+    const cajaH = Math.max(20, hCabecera + hSalidas + hInstr + 6);
+    
     docPDF.setFillColor(255, 247, 237);
     docPDF.setDrawColor(234, 88, 12);
-    const obsLines = docPDF.splitTextToSize((medRollo.observacion || medRollo.descripcion || '').replace(/\n/g, ' \n'), W - margen*2 - 6);
-    // Calcular altura del recuadro según líneas reales (cada \n cuenta)
-    const totalLineas = obsLines.length;
-    const cajaH = Math.max(20, 14 + totalLineas * 4.5);
     docPDF.rect(margen, y, W - margen*2, cajaH, 'FD');
     docPDF.setDrawColor(0, 0, 0);
     
-    // Línea 1: tipo de sellado + estructura
+    let yc = y + 5;
+    // TIPO (negrita, color naranja oscuro)
     docPDF.setFont('helvetica', 'bold');
-    docPDF.setFontSize(9);
+    docPDF.setFontSize(9.5);
     docPDF.setTextColor(154, 60, 29);
-    docPDF.text(`TIPO: ${medRollo.tipo_sellado_nombre} · ${medRollo.estructura_nombre}`, margen + 3, y + 5);
-    // Línea 2: medida del rollo a extruir + salidas
+    docPDF.text(tipoLines, margen + 3, yc);
+    yc += tipoLines.length * 4.2;
+    // EXTRUIR (negrita negro)
     docPDF.setFontSize(9);
-    let lineaMedida = `EXTRUIR: ${medRollo.descripcion}`;
-    docPDF.text(docPDF.splitTextToSize(lineaMedida, W - margen*2 - 6), margen + 3, y + 10);
-    // Salidas (cuántos rollos resultan)
+    docPDF.setTextColor(15, 23, 42);
+    docPDF.text(extruirLines, margen + 3, yc);
+    yc += extruirLines.length * 4.2 + 1;
+    // Salidas (cuántos rollos resultan) — muy destacado
     if (medRollo.salidas > 1) {
+      docPDF.setFontSize(9.5);
       docPDF.setTextColor(180, 30, 30);
-      docPDF.text(`>> RESULTAN ${medRollo.salidas} ROLLOS de ${medRollo.ancho_salida} cm c/u <<`, margen + 3, y + 14.5);
-      docPDF.setTextColor(0,0,0);
+      docPDF.text(`>> RESULTAN ${medRollo.salidas} ROLLOS DE ${medRollo.ancho_salida} cm CADA UNO <<`, margen + 3, yc);
+      yc += 5.5;
+      docPDF.setTextColor(0, 0, 0);
     }
-    // Instrucciones paso a paso (observación)
+    // Instrucciones paso a paso
     docPDF.setFont('helvetica', 'normal');
     docPDF.setFontSize(8.5);
     docPDF.setTextColor(40, 40, 40);
-    const yInstr = medRollo.salidas > 1 ? y + 19 : y + 15;
-    docPDF.text(obsLines, margen + 3, yInstr);
+    docPDF.text(obsLines, margen + 3, yc);
     docPDF.setTextColor(0, 0, 0);
     y += cajaH + 4;
     
@@ -28470,17 +28536,17 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
     if (gramaje > 0) {
       docPDF.setFillColor(237, 233, 254);
       docPDF.setDrawColor(124, 58, 237);
-      docPDF.rect(margen, y, W - margen*2, 8, 'FD');
+      docPDF.rect(margen, y, W - margen*2, 10, 'FD');
       docPDF.setDrawColor(0, 0, 0);
       docPDF.setFont('helvetica', 'bold');
-      docPDF.setFontSize(8.5);
+      docPDF.setFontSize(9);
       docPDF.setTextColor(91, 33, 182);
-      docPDF.text(`GRAMAJE DE CONTROL (muestra de 1 metro): ${gramaje.toFixed(5)}`, margen + 3, y + 5);
+      docPDF.text(`GRAMAJE DE CONTROL: ${gramaje.toFixed(5)}`, margen + 3, y + 4.5);
       docPDF.setFontSize(7);
-      docPDF.setFont('helvetica', 'italic');
-      docPDF.text('Saca una muestra de 1 m y pésala para verificar que el calibre sea correcto.', W - margen - 3, y + 5, { align: 'right' });
+      docPDF.setFont('helvetica', 'normal');
+      docPDF.text('Saca una muestra de 1 metro y pesala para verificar que el calibre sea correcto.', margen + 3, y + 8);
       docPDF.setTextColor(0, 0, 0);
-      y += 11;
+      y += 13;
     }
   }
   
@@ -28495,9 +28561,12 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   
   // Impresión / Sellado
   const wTer = (W - margen*2 - 5*2)/3;
+  const nombreSellado = (typeof window.getTipoSellado === 'function' && producto?.tipo_sellado)
+    ? (window.getTipoSellado(producto.tipo_sellado)?.nombre || producto.tipo_sellado).replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]/gu,'').trim()
+    : (producto?.tipo_sellado || '');
   _campo(colA, y, 'Impresión', producto?.impresion || '', wTer);
   _campo(colA + wTer + 5, y, 'Núm. tintas', producto?.num_tintas || '', wTer);
-  _campo(colA + (wTer + 5)*2, y, 'Tipo de sellado', producto?.tipo_sellado || '', wTer);
+  _campo(colA + (wTer + 5)*2, y, 'Tipo de sellado', nombreSellado, wTer);
   y += 12;
   
   // ============ MEZCLA / FÓRMULA POR CAPAS (CON DATOS REALES) ============
@@ -28670,7 +28739,7 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(120, 120, 120);
   const ahora = new Date().toLocaleString('es-MX');
-  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 2/3`, W/2, H - 5, { align: 'center' });
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 3/3`, W/2, H - 5, { align: 'center' });
   docPDF.setTextColor(0, 0, 0);
 }
 
@@ -28937,7 +29006,7 @@ function _renderHojaRegistroDetallado(docPDF, odp, producto, pedido) {
   docPDF.setFont('helvetica', 'normal');
   docPDF.setTextColor(120, 120, 120);
   const ahora = new Date().toLocaleString('es-MX');
-  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 3/3`, W/2, H - 5, { align: 'center' });
+  docPDF.text(`Generado: ${ahora} · ERP NewPack · ${odp.folio || ''} · Página 2/3`, W/2, H - 5, { align: 'center' });
   docPDF.setTextColor(0, 0, 0);
 }
 
