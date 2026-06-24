@@ -156,6 +156,8 @@ const state = {
   ordenes_venta: [],
   // 🆕 Solicitudes de salida urgente: comercial las crea cuando el cliente urge una parcialidad
   solicitudes_urgentes: [],
+  // 🆕 Salidas parciales: registro de cada liberación parcial (la ODP no se parte)
+  salidas_parciales: [],
   ordenes_produccion: [],
   capturas_produccion: [],
   // 🆕 EXTRUSIÓN: registro rollo por rollo durante el turno (sustituye hoja física)
@@ -2999,6 +3001,10 @@ async function cargarTodo() {
       }),
       onSnapshot(query(collection(db, 'solicitudes_urgentes'), orderBy('created_at', 'desc'), limit(100)), (snap) => {
         state.solicitudes_urgentes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
+      onSnapshot(query(collection(db, 'salidas_parciales'), orderBy('created_at', 'desc'), limit(200)), (snap) => {
+        state.salidas_parciales = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
       onSnapshot(query(collection(db, 'ordenes_produccion'), orderBy('created_at', 'desc'), limit(200)), (snap) => {
@@ -10417,7 +10423,37 @@ function _renderTimelineODP(odp) {
         </div>
       </div>
       
-      <!-- Timeline horizontal de procesos -->
+      ${(() => {
+        // 🆕 SALIDAS PARCIALES: la ODP no se parte, se muestran las entregas parciales
+        const liberadoParcial = Number(odp.kg_liberado_parcial) || 0;
+        if (liberadoParcial <= 0) return '';
+        const meta = Number(odp.cantidad_kg_produccion) || cantTotal || 0;
+        const pendiente = Math.max(0, meta - liberadoParcial);
+        const salidas = (state.salidas_parciales || [])
+          .filter(s => s.odp_id === odp.id)
+          .sort((a, b) => (a.num_salida || 0) - (b.num_salida || 0));
+        return `
+          <div style="background:#eff6ff;border:1.5px solid #3b82f6;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+            <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:6px;">📦 SALIDAS PARCIALES (la orden sigue siendo la misma)</div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;">
+              <div><span style="font-size:10px;color:#64748b;">YA LIBERADO</span><br><strong style="font-size:15px;color:#16a34a;">${fmtNum(Math.round(liberadoParcial))} kg</strong></div>
+              <div><span style="font-size:10px;color:#64748b;">PENDIENTE POR PRODUCIR</span><br><strong style="font-size:15px;color:#a16207;">${fmtNum(Math.round(pendiente))} kg</strong></div>
+              <div><span style="font-size:10px;color:#64748b;">META TOTAL</span><br><strong style="font-size:15px;color:#0f172a;">${fmtNum(Math.round(meta))} kg</strong></div>
+            </div>
+            ${salidas.length > 0 ? `
+              <div style="display:flex;flex-direction:column;gap:4px;">
+                ${salidas.map(s => {
+                  const fecha = s.created_at?.toDate ? s.created_at.toDate().toLocaleDateString('es-MX') : '';
+                  return `<div style="font-size:11px;color:#475569;display:flex;justify-content:space-between;background:#fff;border-radius:5px;padding:4px 8px;">
+                    <span>Salida #${s.num_salida} · ${fecha}</span>
+                    <strong style="color:#16a34a;">${fmtNum(Math.round(s.kg))} kg</strong>
+                  </div>`;
+                }).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      })()}
       <div style="display:flex;align-items:center;gap:0;margin-top:8px;padding:4px;background:#fff;border-radius:6px;border:1px solid #e2e8f0;overflow-x:auto;">
         ${ruta.map((procCod, i) => {
           const proc = getProc(procCod);
@@ -11603,11 +11639,9 @@ function _tableroTarjetaActiva(o, procSel, proc) {
 //    para que la captura sepa exactamente a qué proceso pertenece (extrusión o bolseo).
 window.capturarDesdeTablero = (odpId, procCod, tipo) => {
   state.panelOpProc = procCod; // fijar proceso del tablero
-  if (tipo === 'rollo') {
-    window.agregarRolloExtrusion(odpId);
-  } else {
-    abrirModal('capturar-turno', odpId);
-  }
+  // Tanto rollo (extrusión) como turno (2dos procesos) abren el MISMO modal de captura,
+  // donde el operador escribe el peso y luego pica AGREGAR. No guardamos directo.
+  abrirModal('capturar-turno', odpId);
 };
 window.cerrarDesdeTablero = (odpId, procCod) => {
   state.panelOpProc = procCod;
@@ -40180,12 +40214,16 @@ window.kgDisponibleParaJalar = (odp) => {
   const procFinal = ruta.length > 0 ? ruta[ruta.length - 1] : 'P1-EXT';
   // Lo registrado en el proceso final (capturas + rollos consolidados/vivos vía helper)
   const registradoKg = window.kgProducidoProceso(odp, procFinal);
-  // Lo que ya salió: tarimas embarcadas/entregadas o parciales ya enviados de esta ODP
-  const yaSalioKg = (state.tarimas || [])
+  // 🆕 Lo que ya salió en salidas parciales (modelo nuevo: la ODP no se parte)
+  const liberadoParcial = Number(odp.kg_liberado_parcial) || 0;
+  // Tarimas embarcadas/entregadas (por si ya hubo embarque directo)
+  const yaEmbarcado = (state.tarimas || [])
     .filter(t => t.odp_folio === odp.folio && ['embarcada','entregada','en_transito_cedis'].includes(t.estatus))
     .reduce((s, t) => s + (Number(t.peso_neto_kg) || 0), 0);
+  // Lo que ya salió = lo mayor entre liberado parcial y embarcado (no doble contar)
+  const yaSalioKg = Math.max(liberadoParcial, yaEmbarcado);
   const disponibleKg = Math.max(0, registradoKg - yaSalioKg);
-  return { registradoKg, yaSalioKg, disponibleKg, proceso: procFinal };
+  return { registradoKg, yaSalioKg, disponibleKg, proceso: procFinal, liberadoParcial };
 };
 
 // Calidad jala material disponible de una ODP (con o sin solicitud urgente).
@@ -40199,20 +40237,10 @@ window.jalarMaterialCalidad = async (odpId) => {
   const disp = window.kgDisponibleParaJalar(odp);
   if (disp.disponibleKg <= 0) { toast('No hay material registrado disponible para jalar', 'error'); return; }
   
-  // ¿Hay solicitud urgente? marcarla como atendida
+  // ¿Hay solicitud urgente? la marcamos atendida después
   const solUrg = (state.solicitudes_urgentes || []).find(s => s.odp_id === odpId && s.estatus === 'pendiente');
   
-  const um = (odp.um || 'kg').toLowerCase();
-  const ok = confirm(
-    `📦 JALAR Y LIBERAR\n\n` +
-    `ODP: ${odp.folio}\n` +
-    `Cliente: ${odp.cliente_nombre || '—'}\n\n` +
-    `Disponible registrado: ${fmtNum(Math.round(disp.disponibleKg))} kg\n` +
-    `${solUrg ? `Urgente solicitado: ${fmtNum(solUrg.kg_solicitados)} kg\n` : ''}` +
-    `\nSe enviará lo producido a Calidad para su liberación. ¿Continuar?`
-  );
-  if (!ok) return;
-  
+  // enviarParcial hace su propio confirm y registra la salida parcial (sin partir la ODP)
   state.panelOpProc = disp.proceso;
   await window.enviarParcial(odpId, 'seguir');
   
@@ -40326,233 +40354,139 @@ window.liberarParaUrgente = async (solId) => {
     return;
   }
   
-  // Guardar referencia para que el flujo de liberación sepa que viene de una urgencia
-  state.solicitudUrgenteActiva = solId;
-  // Si la ODP aún no está en pendiente_calidad, la movemos para poder liberar la parcialidad
-  if (odp.estatus !== 'pendiente_calidad') {
-    // Marca para que el flujo de salida parcial la atienda
-    state.panelOpProc = disp.proceso;
-    toast(`Jalando ${fmtNum(sol.kg_solicitados)} kg de ${odp.folio} para salida urgente...`, 'info');
-    // Usar el flujo de salida parcial ya existente (manda a calidad lo producido)
-    await window.enviarParcial(sol.odp_id, 'seguir');
-    // Marcar la solicitud como atendida
-    try {
-      await updateDoc(doc(db, 'solicitudes_urgentes', solId), {
-        estatus: 'atendida',
-        kg_jalados: sol.kg_solicitados,
-        atendida_at: serverTimestamp(),
-        atendida_por: (state.user?.nombre || state.user?.email || ''),
-      });
-    } catch (e) { console.error(e); }
-  } else {
-    // Ya está en calidad: abrir el modal de liberación normal
-    state.modalCapturasODPId = null;
-    abrirModal('liberar-calidad', sol.odp_id);
-    try {
-      await updateDoc(doc(db, 'solicitudes_urgentes', solId), {
-        estatus: 'atendida',
-        kg_jalados: sol.kg_solicitados,
-        atendida_at: serverTimestamp(),
-        atendida_por: (state.user?.nombre || state.user?.email || ''),
-      });
-    } catch (e) { console.error(e); }
-  }
+  // Registrar la salida parcial (la ODP no se parte, sigue corriendo)
+  state.panelOpProc = disp.proceso;
+  await window.enviarParcial(sol.odp_id, 'seguir');
+  
+  // Marcar la solicitud urgente como atendida
+  try {
+    await updateDoc(doc(db, 'solicitudes_urgentes', solId), {
+      estatus: 'atendida',
+      kg_jalados: sol.kg_solicitados,
+      atendida_at: serverTimestamp(),
+      atendida_por: (state.user?.nombre || state.user?.email || ''),
+    });
+  } catch (e) { console.error(e); }
 };
 
 window.enviarParcial = async (odpId, modo = 'seguir') => {
   const u = state.user || {};
-  // 🔒 La salida/jalado lo dispara Calidad (ALP/CAL), o Planeación/Dirección. Producción ya NO.
+  // 🔒 La salida/jalado lo dispara Calidad (ALP/CAL), o Planeación/Dirección.
   if (!(['ALP','CAL','PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
     toast(`🔒 Solo Calidad puede dar salida a un parcial. Tu depto: ${u.depto || '?'}`, 'error'); return;
   }
   const odp = state.ordenes_produccion.find(o => o.id === odpId);
   if (!odp) return;
-  
+
   const ruta = odp.ruta_procesos || [];
   const idx = odp.proceso_actual_idx ?? 0;
-  const proc = getProc(ruta[idx]);
-  const esUltimo = idx === ruta.length - 1;
-  
-  // Producido acumulado del proceso actual (capturas + rollos en vivo, vía helper único)
-  const prodKg = window.kgProducidoProceso(odp, ruta[idx]);
-  
-  if (prodKg <= 0) { toast('No hay producción capturada para enviar', 'error'); return; }
-  
-  const metaProceso = Number(odp.cantidad_kg_produccion) || 0;
-  const saldoKg = Math.round(metaProceso - prodKg);
-  
-  if (saldoKg <= 0) { 
-    toast('Ya alcanzaste la meta — usa "Cerrar definitivo"', 'info'); 
-    return; 
-  }
-  
-  // 🔧 Calcular el saldo en la UM ORIGINAL (no en kg) para no corromper millar/pza
+  const procFinal = ruta.length > 0 ? ruta[ruta.length - 1] : (ruta[idx] || 'P1-EXT');
+
+  // 🆕 MODELO NUEVO: la ODP NO se parte. Solo se registra una SALIDA PARCIAL de
+  //    lo disponible. La orden sigue viva con su meta original y sigue corriendo.
+
+  // Disponible para jalar = registrado en el proceso final − lo que ya salió antes
+  const disp = window.kgDisponibleParaJalar(odp);
+  const dispKg = Math.round(disp.disponibleKg);
+  if (dispKg <= 0) { toast('No hay material registrado disponible para liberar', 'error'); return; }
+
+  const meta = Number(odp.cantidad_kg_produccion) || 0;
+  const yaLiberado = Number(odp.kg_liberado_parcial) || 0;
+
+  // Convertir a UM original para el registro
   const um = (odp.um || 'kg').toLowerCase();
   const producto = window.getProductoPT?.(odp.producto_codigo);
-  let saldoEnUM = saldoKg; // por defecto kg
+  let dispUM = dispKg;
   if (um === 'millar' && producto) {
     const pm = window.calcularPesoMillar(producto);
-    if (pm > 0) saldoEnUM = Math.round((saldoKg / pm) * 1000) / 1000;
+    if (pm > 0) dispUM = Math.round((dispKg / pm) * 1000) / 1000;
   } else if ((um === 'pza' || um === 'pz' || um === 'pieza') && producto) {
     const pp = window.calcularPesoPieza(producto);
-    if (pp > 0) saldoEnUM = Math.round(saldoKg / pp);
+    if (pp > 0) dispUM = Math.round(dispKg / pp);
   }
-  
-  const enEspera = modo === 'espera';
-  
+
+  const pendienteKg = Math.max(0, meta - (yaLiberado + dispKg));
+
   const confirmar = confirm(
-    `📦 ENVIAR PARCIAL — ${enEspera ? 'DEJAR PENDIENTE' : 'SEGUIR PRODUCIENDO'}\n\n` +
-    `${odp.folio} · ${odp.producto_codigo}\n\n` +
-    `Se cierran AHORA: ${fmtNum(prodKg)} kg ${esUltimo ? '→ van a Calidad' : '→ pasan al siguiente proceso'}\n` +
-    `Saldo pendiente: ${fmtNum(saldoKg)} kg\n\n` +
-    (enEspera
-      ? `El saldo queda EN ESPERA (no estorba la cola). Lo reanudas cuando vuelva a entrar — desde el Kanban o el panel.`
-      : `El saldo queda LISTO en la cola de la misma máquina para seguir produciendo ahora.`) +
-    `\n\n¿Continuar?`
+    `📦 SALIDA PARCIAL — la orden NO se parte, sigue corriendo\n\n` +
+    `${odp.folio} · ${odp.producto_codigo}\n` +
+    `Meta total: ${fmtNum(meta)} kg\n\n` +
+    `Se liberan AHORA: ${fmtNum(dispKg)} kg → van a Calidad/embarque\n` +
+    (yaLiberado > 0 ? `Ya se habían liberado antes: ${fmtNum(yaLiberado)} kg\n` : '') +
+    `Quedan pendientes por producir: ${fmtNum(pendienteKg)} kg\n\n` +
+    `La ODP ${odp.folio} sigue activa con su meta de ${fmtNum(meta)} kg.\n\n¿Continuar?`
   );
   if (!confirmar) return;
-  
+
   state.loadingAccion = true; render();
-  
+
   try {
-    // 1) Crear la ODP de CONTINUACIÓN con el saldo (antes de cerrar, para tener el folio)
-    const numFolioCont = await siguienteFolio('odp');
-    const folioCont = 'ODP-' + String(numFolioCont).padStart(5, '0');
-    
-    // Número de parcialidad: cuántas continuaciones lleva esta cadena
-    const numParcial = (odp.num_parcialidad || 1) + 1;
-    
-    const odpContinuacion = {
-      ...odp,
-      folio: folioCont,
-      // 🔧 Saldo en UM original Y en kg (coherentes)
-      cantidad: saldoEnUM,
-      cantidad_kg_produccion: saldoKg,
-      cantidad_producida_final: 0,
-      cantidad_producida_final_kg: 0,
-      mermas_finales_kg: 0,
-      // 🔧 Estatus según el modo:
-      //   'seguir' → programada (lista en la cola para producir ya)
-      //   'espera' → en_espera_saldo (guardada, NO estorba la cola activa)
-      estatus: enEspera ? 'en_espera_saldo' : 'programada',
-      proceso_estatus_actual: 'esperando',
-      saldo_en_espera: enEspera,
-      proceso_actual_idx: idx, // arranca en el MISMO proceso donde se quedó
-      proceso_actual: ruta[idx],
-      procesos_completados: [], // reinicia, es saldo nuevo de este proceso en adelante
-      // Trazabilidad de parcialidad
-      es_continuacion_parcial: true,
-      odp_origen_id: odp.odp_origen_id || odpId,
-      odp_origen_folio: odp.odp_origen_folio || odp.folio,
-      num_parcialidad: numParcial,
-      parcialidad_creada_at: serverTimestamp(),
-      // Resetear campos de control que NO deben heredarse
-      historial_pausas: [],
-      pausa_motivo: null, pausa_iniciada_at: null, pausa_por: null,
-      desbloqueada_por_rollo: false,
-      es_cierre_parcial: false,
-      odp_continuacion_id: null,
-      odp_continuacion_folio: null,
-      saldo_enviado_a_continuacion_kg: 0,
+    // 1) Registrar la salida parcial (historial visible para comercial)
+    const numSalida = (Number(odp.num_salidas_parciales) || 0) + 1;
+    await addDoc(collection(db, 'salidas_parciales'), {
+      odp_id: odpId,
+      odp_folio: odp.folio,
+      pedido_id: odp.pedido_id || '',
+      ov_id: odp.ov_id || '',
+      cliente_codigo: odp.cliente_codigo || '',
+      cliente_nombre: odp.cliente_nombre || '',
+      producto_codigo: odp.producto_codigo || '',
+      proceso: procFinal,
+      num_salida: numSalida,
+      kg: dispKg,
+      cantidad_um: dispUM,
+      um: um,
+      meta_total_kg: meta,
+      creado_por: u.id || '',
+      creado_por_nombre: u.nombre || u.email || '',
       created_at: serverTimestamp(),
-      updated_at: serverTimestamp()
-    };
-    // Limpiar campos que no deben heredarse
-    delete odpContinuacion.id;
-    delete odpContinuacion.iniciado_at;
-    delete odpContinuacion.inicio_real_at;
-    delete odpContinuacion.produccion_terminada_at;
-    delete odpContinuacion.liberacion_calidad;
-    delete odpContinuacion.packing_list;
-    
-    const refCont = await addDoc(collection(db, 'ordenes_produccion'), odpContinuacion);
-    
-    // 2) Marcar la ODP actual como parcialidad N y ajustar su meta a lo producido
-    //    (para que el cierre normal cuadre: meta = producido)
-    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-      cantidad_kg_produccion: Math.round(prodKg),
-      es_cierre_parcial: true,
-      num_parcialidad: odp.num_parcialidad || 1,
-      odp_origen_id: odp.odp_origen_id || odpId,
-      odp_origen_folio: odp.odp_origen_folio || odp.folio,
-      odp_continuacion_id: refCont.id,
-      odp_continuacion_folio: folioCont,
-      saldo_enviado_a_continuacion_kg: saldoKg,
-      updated_at: serverTimestamp()
     });
-    
-    // Refrescar el state local para que confirmarCompletarProceso lea la meta ajustada
+
+    // 2) Actualizar la ODP: acumular lo liberado, PERO mantener meta y estatus.
+    //    La orden sigue en_produccion y corriendo. No se crea ODP nueva.
+    const nuevoLiberado = yaLiberado + dispKg;
+    const completa = nuevoLiberado >= meta * 0.999; // tolerancia
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      kg_liberado_parcial: nuevoLiberado,
+      num_salidas_parciales: numSalida,
+      ultima_salida_parcial_at: serverTimestamp(),
+      tiene_salidas_parciales: true,
+      updated_at: serverTimestamp(),
+    });
+
+    // Refrescar el state local
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
     if (odpLocal) {
-      odpLocal.cantidad_kg_produccion = Math.round(prodKg);
-      odpLocal.es_cierre_parcial = true;
+      odpLocal.kg_liberado_parcial = nuevoLiberado;
+      odpLocal.num_salidas_parciales = numSalida;
+      odpLocal.tiene_salidas_parciales = true;
     }
-    
-    // 🆕 2b) Si es un PROCESO SECUNDARIO (consume rollos del Intermedio):
-    //    los rollos que esta ODP tenía asignados pero NO alcanzó a procesar
-    //    se REASIGNAN a la continuación (para que tenga material disponible).
-    if (odp.odp_padre_id && idx > 0) {
-      try {
-        // Rollos que tomó esta hija (consumido_en_odp_id === odpId)
-        const rollosAsignados = (state.rollos_extrusion || []).filter(r => 
-          !r.anulado && r.consumido_en_odp_id === odpId
-        );
-        const kgAsignados = rollosAsignados.reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-        // Lo que físicamente procesó (prodKg). El sobrante en kg:
-        const sobranteKg = kgAsignados - prodKg;
-        
-        if (sobranteKg > 1 && rollosAsignados.length > 0) {
-          // Reasignar los rollos "más nuevos" hasta cubrir el sobrante a la continuación
-          const ordenados = [...rollosAsignados].sort((a, b) => (b.numero_rollo || 0) - (a.numero_rollo || 0));
-          let porReasignar = sobranteKg;
-          const batchRollos = writeBatch(db);
-          let reasignados = 0;
-          for (const r of ordenados) {
-            if (porReasignar <= 0.5) break;
-            batchRollos.update(doc(db, 'rollos_extrusion', r.id), {
-              consumido_en_odp_id: refCont.id,
-              consumido_en_odp_folio: folioCont,
-              reasignado_de_parcial: odp.folio,
-              updated_at: serverTimestamp()
-            });
-            porReasignar -= (Number(r.peso_kg) || 0);
-            reasignados++;
-          }
-          if (reasignados > 0) {
-            await batchRollos.commit();
-            console.log(`♻️ ${reasignados} rollo(s) (${fmtNum(sobranteKg)} kg) reasignados de ${odp.folio} a ${folioCont}`);
-          }
-        }
-      } catch (eRollos) {
-        console.warn('No se pudieron reasignar rollos sobrantes:', eRollos);
-      }
-    }
-    
+
     state.loadingAccion = false;
-    
-    // 3) Notificar la creación de la continuación
+
+    // 3) Notificar
     await window.notificarEvento({
-      evento: 'odp_p2_lista_iniciar',
-      folio: folioCont,
-      extra: { 
-        cliente: odp.cliente_nombre, 
-        detalle: enEspera
-          ? `Saldo EN ESPERA (parcialidad #${numParcial}) de ${odp.odp_origen_folio || odp.folio} · ${fmtNum(saldoKg)} kg pendientes de reanudar`
-          : `Continuación (parcialidad #${numParcial}) de ${odp.odp_origen_folio || odp.folio} · saldo ${fmtNum(saldoKg)} kg listo para producir`
+      evento: 'salida_parcial_liberada',
+      folio: odp.folio,
+      extra: {
+        cliente: odp.cliente_nombre,
+        detalle: `Salida parcial #${numSalida}: ${fmtNum(dispKg)} kg liberados de ${odp.folio}. ` +
+                 (completa ? 'Orden COMPLETA.' : `Faltan ${fmtNum(pendienteKg)} kg por producir.`)
       }
     });
-    
-    toast(enEspera
-      ? `📦 Parcial de ${fmtNum(prodKg)} kg enviado · ⏸ ${folioCont} guardada EN ESPERA con ${fmtNum(saldoKg)} kg (reanúdala cuando vuelva a entrar)`
-      : `📦 Parcial de ${fmtNum(prodKg)} kg enviado · 🔄 ${folioCont} lista en la cola con ${fmtNum(saldoKg)} kg`, 'success');
-    
-    // 4) Ejecutar el cierre normal de ESTA ODP (ya con meta = producido → cuadra)
-    //    Esto dispara todo el flujo probado: MP, merma, → Calidad o → siguiente proceso
-    await window.confirmarCompletarProceso(odpId);
-    
+
+    toast(
+      completa
+        ? `📦 Salida parcial de ${fmtNum(dispKg)} kg liberada. ✅ La orden ${odp.folio} ya alcanzó su meta — puedes cerrarla definitivamente cuando quieras.`
+        : `📦 Salida parcial de ${fmtNum(dispKg)} kg liberada. La orden ${odp.folio} SIGUE CORRIENDO · faltan ${fmtNum(pendienteKg)} kg.`,
+      'success'
+    );
+
+    render();
+
   } catch (e) {
-    console.error('Error en envío parcial:', e);
-    toast('Error al enviar parcial: ' + e.message, 'error');
+    console.error('Error en salida parcial:', e);
+    toast('Error al registrar salida parcial: ' + e.message, 'error');
     state.loadingAccion = false; render();
   }
 };
