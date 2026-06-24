@@ -13886,6 +13886,71 @@ function modalCapturarTurno() {
               const stepCapt = umCapt === 'kg' ? '0.1' : umCapt === 'millar' ? '0.001' : '1';
               const conversionPosible = (umCapt === 'kg') || pesoUnidad > 0;
               
+              // 🆕 MODO BULTOS: para bolseo (no extrusión) se captura por bultos/rollos.
+              //    Respeta la UM de la ODP: kg/bulto, piezas/bulto o millares/bulto.
+              const esBolseo = !esExtruP;
+              // Tipo de empaque (bulto/rollo) según el proceso
+              const empaqueTxt = procCodigo === 'P4-BR' ? 'rollo' : 'bulto';
+              
+              if (esBolseo) {
+                // Etiqueta de la UM por bulto según la unidad de la ODP
+                const umUnidadLbl = umCapt === 'kg' ? 'kg' :
+                                    umCapt === 'pza' ? 'piezas' :
+                                    umCapt === 'millar' ? 'millares' : umCapt;
+                const umUnidadIcon = umCapt === 'kg' ? '⚖️' : '📦';
+                const placeholderUM = umCapt === 'kg' ? '25' : umCapt === 'millar' ? '0.5' : '500';
+                const stepUM = umCapt === 'kg' ? '0.1' : umCapt === 'millar' ? '0.001' : '1';
+                
+                const umPorBulto = Number(f.um_por_bulto) || 0;
+                const numBultos = Number(f.num_bultos) || 0;
+                const totalBultosUM = umPorBulto * numBultos;
+                const totalBultosKg = totalBultosUM * (umCapt === 'kg' ? 1 : pesoUnidad);
+                const mostrarKg = umCapt !== 'kg' && pesoUnidad > 0;
+                
+                return `
+                  ${!conversionPosible ? `
+                    <div style="margin-bottom:10px;padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:11px;color:#991b1b;">
+                      ⚠ Este producto no tiene dimensiones/calibre cargados, no se puede convertir ${umUnidadLbl} → kg. <a href="javascript:void(0)" onclick="cerrarModal();state.vista='productos_pt';state.busquedaProd='${odp.producto_codigo}';render();" style="color:#1d4ed8;font-weight:700;">Editar producto →</a>
+                    </div>
+                  ` : ''}
+                  <div style="padding:10px 12px;background:#eff6ff;border:1.5px solid #3b82f6;border-radius:8px;margin-bottom:10px;">
+                    <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:8px;">📦 Captura por ${empaqueTxt}s (esta orden va en <strong>${umUnidadLbl}</strong>) — un registro por cada ${empaqueTxt}</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:11px;">${umUnidadIcon} ${umUnidadLbl} por ${empaqueTxt} *</label>
+                        <input class="input" id="ct-um-bulto" type="number" min="0" step="${stepUM}" value="${f.um_por_bulto || ''}"
+                          oninput="window.modalFormSetSilent('um_por_bulto', this.value); window._recalcBultos();"
+                          placeholder="${placeholderUM}" style="font-size:18px;font-weight:800;text-align:center;" />
+                      </div>
+                      <div class="field" style="margin:0;">
+                        <label class="field-label" style="font-size:11px;">🔢 Número de ${empaqueTxt}s *</label>
+                        <input class="input" id="ct-num-bultos" type="number" min="0" step="1" value="${f.num_bultos || ''}"
+                          oninput="window.modalFormSetSilent('num_bultos', this.value); window._recalcBultos();"
+                          placeholder="20" style="font-size:18px;font-weight:800;text-align:center;" />
+                      </div>
+                    </div>
+                    <div style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;text-align:center;">
+                      <div style="font-size:11px;color:#64748b;">TOTAL DE ESTE TURNO</div>
+                      <div style="font-size:22px;font-weight:900;color:#16a34a;" id="ct-total-bultos">
+                        ${numBultos > 0 ? `${numBultos} ${empaqueTxt}s × ${fmtNum(umPorBulto)} ${umUnidadLbl} = ${fmtNum(totalBultosUM)} ${umUnidadLbl}` : '— escribe los datos —'}
+                      </div>
+                      ${mostrarKg ? `<div style="font-size:11px;color:#64748b;margin-top:3px;" id="ct-total-bultos-kg">${numBultos > 0 ? `≈ ${fmtNum(totalBultosKg)} kg` : ''}</div>` : ''}
+                      <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;">Se crearán <strong id="ct-num-registros">${numBultos}</strong> registro(s) de ${fmtNum(umPorBulto)} ${umUnidadLbl} c/u</div>
+                    </div>
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label">⚠ Desperdicio del turno (kg) <span style="font-weight:400;color:#94a3b8;font-size:10px;">(siempre en kg, un registro único)</span></label>
+                    <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;color:#dc2626;" />
+                  </div>
+                  <input type="hidden" id="ct-um-captura" value="${umCapt}" />
+                  <input type="hidden" id="ct-peso-unidad" value="${pesoUnidad}" />
+                  <input type="hidden" id="ct-modo-bultos" value="1" />
+                  <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;font-style:italic;">
+                    💡 Ejemplo: 20 ${empaqueTxt}s de ${placeholderUM} ${umUnidadLbl} → 20 registros de ${placeholderUM} ${umUnidadLbl} + el desperdicio aparte
+                  </div>
+                `;
+              }
+              
               return `
                 ${!conversionPosible ? `
                   <div style="margin-bottom:10px;padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:11px;color:#991b1b;">
@@ -14310,6 +14375,29 @@ window.modalFormSetSilent = (key, val) => {
 };
 window.mfs = window.modalFormSetSilent; // alias corto
 
+// 🆕 Recalcular el total de bultos en vivo (sin re-render, para no perder el foco)
+window._recalcBultos = () => {
+  const umVal = Number(document.getElementById('ct-um-bulto')?.value) || 0;
+  const n = Math.floor(Number(document.getElementById('ct-num-bultos')?.value) || 0);
+  const umCapt = (document.getElementById('ct-um-captura')?.value || 'kg').toLowerCase();
+  const pesoUnidad = Number(document.getElementById('ct-peso-unidad')?.value) || 0;
+  const empq = (state.panelOpProc === 'P4-BR') ? 'rollo' : 'bulto';
+  const umLbl = umCapt === 'kg' ? 'kg' : umCapt === 'pza' ? 'piezas' : umCapt === 'millar' ? 'millares' : umCapt;
+  const totalEl = document.getElementById('ct-total-bultos');
+  const totalKgEl = document.getElementById('ct-total-bultos-kg');
+  const numRegEl = document.getElementById('ct-num-registros');
+  const totalUM = umVal * n;
+  if (totalEl) {
+    totalEl.textContent = n > 0
+      ? `${n} ${empq}s × ${window.fmtNum(umVal)} ${umLbl} = ${window.fmtNum(totalUM)} ${umLbl}`
+      : '— escribe los datos —';
+  }
+  if (totalKgEl && umCapt !== 'kg' && pesoUnidad > 0) {
+    totalKgEl.textContent = n > 0 ? `≈ ${window.fmtNum(totalUM * pesoUnidad)} kg` : '';
+  }
+  if (numRegEl) numRegEl.textContent = n;
+};
+
 window.modalFormSetGrupo = (g) => {
   if (!state.modalForm) state.modalForm = {};
   state.modalForm.grupo = g;
@@ -14322,6 +14410,11 @@ window.modalFormSetGrupo = (g) => {
 
 window.guardarCapturaTurno = async (odpId) => {
   const f = state.modalForm || {};
+  
+  // 🆕 MODO BULTOS (bolseo): UM por bulto × número de bultos
+  const modoBultos = ($('#ct-modo-bultos')?.value || '') === '1';
+  const umPorBultoDom = ($('#ct-um-bulto')?.value || '').trim();
+  const numBultosDom = ($('#ct-num-bultos')?.value || '').trim();
   
   // Leer también del DOM por si los inputs silenciosos no actualizaron state
   const prodDom = ($('#ct-prod')?.value || '').trim();
@@ -14381,13 +14474,33 @@ window.guardarCapturaTurno = async (odpId) => {
   //    No se exige operador/supervisor individual — basta el grupo (todo el equipo es responsable).
   
   // 🆕 Convertir captura a kg según UM
-  const prodUM = Number(f.producido_um) || 0;
+  // En modo bultos: total = (UM por bulto) × (número de bultos), en la UM de la ODP
+  let prodUM, prodKg, umPorBulto = 0, numBultos = 0, kgPorBulto = 0;
+  if (modoBultos) {
+    umPorBulto = Number(umPorBultoDom || f.um_por_bulto) || 0;
+    numBultos = Math.floor(Number(numBultosDom || f.num_bultos) || 0);
+    const umLbl = umCaptura === 'kg' ? 'kg' : umCaptura === 'pza' ? 'piezas' : umCaptura === 'millar' ? 'millares' : umCaptura;
+    if (umPorBulto <= 0) { toast(`Captura ${umLbl} por bulto/rollo (mayor a 0)`, 'error'); return; }
+    if (numBultos <= 0) { toast('Captura el número de bultos/rollos (mayor a 0)', 'error'); return; }
+    if (numBultos > 500) { toast('Número de bultos muy alto (>500). Verifica.', 'error'); return; }
+    // Validar conversión a kg si la UM no es kg
+    if (umCaptura !== 'kg' && pesoUnidad <= 0) {
+      toast(`⚠ El producto no tiene peso por ${umLbl} calculable. Edita el producto (ancho/fuelle/largo/calibre).`, 'error');
+      return;
+    }
+    // kg por bulto (para los registros individuales) y total
+    kgPorBulto = (umCaptura === 'kg') ? umPorBulto : umPorBulto * pesoUnidad;
+    prodKg = kgPorBulto * numBultos;
+    prodUM = umPorBulto * numBultos;  // total en la UM de la ODP
+    f.producido_kg = prodKg;
+  } else {
+  // 🆕 Convertir captura a kg según UM (modo normal)
+  prodUM = Number(f.producido_um) || 0;
   if (prodUM <= 0) {
     const lbl = umCaptura === 'kg' ? 'kg' : umCaptura === 'pza' ? 'piezas' : umCaptura === 'millar' ? 'millares' : umCaptura;
     toast(`Captura ${lbl} producidos (debe ser mayor a 0)`, 'error'); return;
   }
   
-  let prodKg;
   if (umCaptura === 'kg') {
     prodKg = prodUM;
   } else if (umCaptura === 'pza') {
@@ -14407,6 +14520,7 @@ window.guardarCapturaTurno = async (odpId) => {
   }
   // Guardar valor convertido también en f.producido_kg para compatibilidad
   f.producido_kg = prodKg;
+  }
   
   // 🆕 PUNTO 7 — "EXTRUSIÓN MANDA": si es un proceso posterior (bolseo), no puede
   //    capturar más de lo que extrusión ya produjo (el colchón disponible).
@@ -14447,8 +14561,8 @@ window.guardarCapturaTurno = async (odpId) => {
   try {
     const maquinaAsignada = (odp.maquinas_asignadas && odp.maquinas_asignadas[procActual]) || odp.maquina_codigo || '';
     
-    // 1. Crear captura (ya con todas las validaciones pasadas)
-    await addDoc(collection(db, 'capturas_produccion'), {
+    // Base común para todas las capturas
+    const baseCaptura = {
       odp_id: odpId,
       odp_folio: odp.folio,
       proceso: procActual,
@@ -14465,18 +14579,61 @@ window.guardarCapturaTurno = async (odpId) => {
       supervisor: supNombre,
       capturado_por: capturadoPor,
       capturado_por_id: state.user?.id || '',
-      tipo_captura: 'turno_manual',
-      producido_kg: prodKg,
-      // 🆕 Captura original en UM del proceso (para auditoría)
-      producido_um: prodUM,
       um_captura: umCaptura,
       peso_unidad_usado: pesoUnidad,
-      mermas_kg: Number(f.mermas_kg) || 0,
       notas: f.notas || '',
-      capturado_por: state.user.id,
       capturado_por_nombre: state.user.nombre || state.user.email,
-      created_at: serverTimestamp()
-    });
+    };
+    
+    if (modoBultos) {
+      // 🆕 MODO BULTOS: un registro por cada bulto + el desperdicio como registro único.
+      //    Cada registro lleva la UM de la ODP (kg/pza/millar) y su equivalente en kg.
+      const loteBultos = `${f.fecha}-${f.turno}-${f.grupo}-${Date.now()}`; // agrupa los registros del mismo turno
+      // Firestore writeBatch (máx 500) — bultos suelen ser < 500
+      const batchBultos = writeBatch(db);
+      for (let i = 1; i <= numBultos; i++) {
+        const ref = doc(collection(db, 'capturas_produccion'));
+        batchBultos.set(ref, {
+          ...baseCaptura,
+          tipo_captura: 'bulto_individual',
+          producido_kg: kgPorBulto,       // equivalente en kg de este bulto
+          producido_um: umPorBulto,        // cantidad en la UM de la ODP (kg/pza/millar)
+          mermas_kg: 0,                    // la merma va en un registro aparte
+          bulto_numero: i,
+          total_bultos_turno: numBultos,
+          um_por_bulto: umPorBulto,
+          kg_por_bulto: kgPorBulto,
+          lote_bultos: loteBultos,
+          created_at: serverTimestamp(),
+        });
+      }
+      // Registro único de desperdicio (si hay)
+      const mermaTurno = Number(f.mermas_kg) || 0;
+      if (mermaTurno > 0) {
+        const refMerma = doc(collection(db, 'capturas_produccion'));
+        batchBultos.set(refMerma, {
+          ...baseCaptura,
+          tipo_captura: 'desperdicio_bultos',
+          producido_kg: 0,               // no es producción, es solo merma
+          producido_um: 0,
+          mermas_kg: mermaTurno,
+          es_solo_merma: true,
+          lote_bultos: loteBultos,
+          created_at: serverTimestamp(),
+        });
+      }
+      await batchBultos.commit();
+    } else {
+      // Modo normal: una sola captura
+      await addDoc(collection(db, 'capturas_produccion'), {
+        ...baseCaptura,
+        tipo_captura: 'turno_manual',
+        producido_kg: prodKg,
+        producido_um: prodUM,
+        mermas_kg: Number(f.mermas_kg) || 0,
+        created_at: serverTimestamp()
+      });
+    }
     
     // 2. Marcar proceso como en_proceso si era el primer turno
     const yaTeniaCapturas = capturasValidas(state.capturas_produccion).some(c => c.odp_id === odpId && c.proceso === procActual);
@@ -14521,13 +14678,21 @@ window.guardarCapturaTurno = async (odpId) => {
     
     cerrarModal();
     // 🆕 Toast con la UM de captura
-    const lblToast = umCaptura === 'kg' 
-      ? `${fmtNum(prodKg)} kg` 
-      : umCaptura === 'pza' 
-        ? `${fmtNum(prodUM)} pza (${fmtNum(prodKg)} kg)` 
-        : `${fmtNum(prodUM)} millares (${fmtNum(prodKg)} kg)`;
     const msgRollos = kgConsumidosRollos > 0 ? ` · 🧵 ${fmtNum(kgConsumidosRollos)} kg de rollos consumidos (FIFO)` : '';
-    toast(`✅ Turno guardado: ${lblToast} · ${opNombre} · Grupo ${f.grupo}${msgRollos}`);
+    if (modoBultos) {
+      const empq = procActual === 'P4-BR' ? 'rollo' : 'bulto';
+      const umLbl = umCaptura === 'kg' ? 'kg' : umCaptura === 'pza' ? 'pza' : umCaptura === 'millar' ? 'millares' : umCaptura;
+      const mermaTxt = (Number(f.mermas_kg) || 0) > 0 ? ` · ⚠ ${fmtNum(f.mermas_kg)} kg desperdicio` : '';
+      const kgTxt = umCaptura !== 'kg' ? ` (${fmtNum(prodKg)} kg)` : '';
+      toast(`✅ ${numBultos} ${empq}s de ${fmtNum(umPorBulto)} ${umLbl} registrados${kgTxt}${mermaTxt} · Grupo ${f.grupo}${msgRollos}`);
+    } else {
+      const lblToast = umCaptura === 'kg' 
+        ? `${fmtNum(prodKg)} kg` 
+        : umCaptura === 'pza' 
+          ? `${fmtNum(prodUM)} pza (${fmtNum(prodKg)} kg)` 
+          : `${fmtNum(prodUM)} millares (${fmtNum(prodKg)} kg)`;
+      toast(`✅ Turno guardado: ${lblToast} · ${opNombre} · Grupo ${f.grupo}${msgRollos}`);
+    }
   } catch (e) {
     console.error('Error guardar turno:', e);
     let mensaje = e.message || String(e);
