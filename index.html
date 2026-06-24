@@ -620,11 +620,21 @@ window.estadoODPenProceso = (odp, procCodigo = null) => {
   const producido = pAv.producido_kg || 0;
   const meta = av?.meta_kg || 0;
   const completado = pAv.completado === true;
+  const disponible = pAv.disponible_para_trabajar || 0;
   
   // ¿Este proceso es el "actual" (el que tiene el puntero global)?
   const esActual = idxProc === idxActual;
   // Estado granular: si es el actual, usa proceso_estatus_actual; si no, usa el del avance
   const procEst = esActual ? procEstGlobal : (odp.avance_procesos?.[proc]?.estatus || '');
+  
+  // 🆕 REGLA: un proceso POSTERIOR a extrusión (idxProc > 0) solo aparece en su Kanban
+  //    cuando YA tiene material disponible para trabajar (aunque sea 1 rollo), o si ya
+  //    empezó/produjo algo. Si todavía no hay material de extrusión, NO se muestra.
+  if (idxProc > 0 && !completado && producido <= 0 && procEst !== 'en_proceso' && procEst !== 'pausado') {
+    if (disponible <= 0) {
+      return { columna: 'fuera', maquina, proceso: proc, idxProceso: idxProc, producido: 0, meta, completado: false, disponible_para_trabajar: 0 };
+    }
+  }
   
   // DECIDIR COLUMNA (orden de prioridad claro):
   let columna;
@@ -635,7 +645,7 @@ window.estadoODPenProceso = (odp, procCodigo = null) => {
   } else if (procEst === 'en_proceso') {
     columna = 'proceso';               // corriendo
   } else {
-    columna = 'cola';                  // esperando / programada / en cola
+    columna = 'cola';                  // esperando / programada / en cola (ya hay material)
   }
   
   function pausado(s) { return s === 'pausado'; }
@@ -645,7 +655,7 @@ window.estadoODPenProceso = (odp, procCodigo = null) => {
     producido, meta, completado,
     corriendo: columna === 'proceso',
     pausado: pausado(procEst),
-    disponible_para_trabajar: pAv.disponible_para_trabajar || 0
+    disponible_para_trabajar: disponible
   };
 };
 
@@ -9073,6 +9083,66 @@ window.desarchivarODP = async (odpId) => {
 // 🆕 REINICIAR CAPTURAS DE PRODUCCIÓN — borra TODO lo capturado/producido pero
 //    CONSERVA la programación (las ODP siguen, con su producto, máquina y posición).
 //    Resetea cada ODP a "programada sin avance". Solo Admin, CEO, Planeación.
+// 🆕 REINICIAR PELETIZADO — borra el conteo acumulado de merma peletizada
+//    (lotes_peletizado y corridas_peletizado). Deja todo en cero. Solo Admin/CEO/PLN.
+window.reiniciarPeletizado = async () => {
+  const u = state.user || {};
+  if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Admin, CEO o Planeación pueden reiniciar. Tu depto: ${u.depto || '?'}`, 'error'); return;
+  }
+  
+  const nLotes = (state.lotes_peletizado || []).length;
+  const nCorridas = (state.corridas_peletizado || []).length;
+  
+  if (nLotes === 0 && nCorridas === 0) {
+    toast('El peletizado ya está en cero, no hay nada que reiniciar', 'info'); return;
+  }
+  
+  if (!confirm(
+    `⚙️ REINICIAR CONTEO DE PELETIZADO\n\n` +
+    `Esto pone en CERO el acumulado de merma peletizada (datos de prueba):\n\n` +
+    `Se ELIMINARÁ:\n` +
+    `• ${nLotes} lote(s) de peletizado (acumulado por material×color)\n` +
+    `• ${nCorridas} corrida(s) de peletizado\n\n` +
+    `El módulo sigue funcionando, solo se reinicia el conteo.\n\n` +
+    `¿Continuar?`
+  )) return;
+  
+  const conf = prompt(`Para confirmar, escribe: REINICIAR`);
+  if (conf === null) return;
+  if (conf.trim().toUpperCase() !== 'REINICIAR') {
+    toast('Texto incorrecto. Reinicio cancelado.', 'info'); return;
+  }
+  
+  try {
+    state.loadingAccion = true; render();
+    
+    const borrarDocs = async (docs, nombreColeccion) => {
+      for (let i = 0; i < docs.length; i += 400) {
+        const lote = docs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        lote.forEach(d => batch.delete(doc(db, nombreColeccion, d.id)));
+        await batch.commit();
+      }
+    };
+    
+    await borrarDocs(state.lotes_peletizado || [], 'lotes_peletizado');
+    await borrarDocs(state.corridas_peletizado || [], 'corridas_peletizado');
+    
+    // Optimistic local
+    state.lotes_peletizado = [];
+    state.corridas_peletizado = [];
+    
+    toast(`✅ Peletizado reiniciado. Conteo en cero (${nLotes} lote(s) y ${nCorridas} corrida(s) eliminados).`, 'success');
+    cerrarModal();
+  } catch (e) {
+    console.error('Error al reiniciar peletizado:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
 window.reiniciarCapturasProduccion = async () => {
   const u = state.user || {};
   if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
@@ -17417,6 +17487,9 @@ function renderPeletizado() {
           <button onclick="window.capturarMermaManual()" style="background:#0e7490;color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
             ♻️ Capturar merma manual
           </button>
+        ` : ''}
+        ${(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin') ? `
+          <button onclick="window.reiniciarPeletizado()" style="background:#fff;color:#7c2d12;border:1.5px solid #7c2d12;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;" title="Pone el conteo acumulado en cero">🔄 Reiniciar conteo</button>
         ` : ''}
       </div>
       
