@@ -607,6 +607,35 @@ window.avanceProcesosODP = (odp) => {
 };
 
 // ============================================================
+// 🆕 HELPER UNIFICADO DE ESTADO POR PROCESO
+//    Devuelve el estatus REAL de un proceso específico (corriendo/pausado/etc.),
+//    leyendo SIEMPRE de avance_procesos[proc].estatus, con respaldo al global
+//    solo cuando ese proceso es el "actual". Esto resuelve el modelo dual:
+//    extrusión y bolseo pueden estar en estados distintos a la vez.
+//    Retorna: 'en_proceso' | 'pausado' | 'completado' | 'esperando' | 'sin_iniciar'
+// ============================================================
+window.estadoProceso = (odp, procCod) => {
+  if (!odp || !procCod) return 'sin_iniciar';
+  const ruta = odp.ruta_procesos || [];
+  const idxProc = ruta.indexOf(procCod);
+  if (idxProc < 0) return 'sin_iniciar';
+  const av = odp.avance_procesos?.[procCod];
+  // Si ya está marcado completado, manda
+  if (av?.completado === true) return 'completado';
+  // El estatus por proceso es la verdad
+  if (av?.estatus) return av.estatus;
+  // Respaldo: si este proceso es el "actual", usar el estado global
+  const esActual = idxProc === (odp.proceso_actual_idx ?? 0);
+  if (esActual && odp.proceso_estatus_actual) return odp.proceso_estatus_actual;
+  return 'sin_iniciar';
+};
+// ¿Este proceso está corriendo ahora? (true/false)
+window.procesoCorriendo = (odp, procCod) => window.estadoProceso(odp, procCod) === 'en_proceso';
+// ¿Este proceso está pausado? (true/false)
+window.procesoPausado = (odp, procCod) => window.estadoProceso(odp, procCod) === 'pausado';
+
+
+// ============================================================
 // 🆕 FUNCIÓN CENTRAL DE ESTADO — única fuente de verdad para el Kanban/tableros.
 //    Dada una ODP y (opcionalmente) un proceso específico, devuelve:
 //    { columna, maquina, proceso, producido, meta, completado, corriendo, pausado }
@@ -9451,17 +9480,22 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
 };
 
 // ⏸ PAUSAR producción con motivo — 🔧 FIX: modal con botones (el prompt confundía: pedía número y escribían texto)
-window.pausarODP = async (odpId) => {
+window.pausarODP = async (odpId, procEspecifico = null) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
-  if (odp.estatus !== 'en_produccion' || odp.proceso_estatus_actual !== 'en_proceso') {
-    toast('Solo se pueden pausar ODPs en proceso', 'error');
+  // 🆕 MODELO PARALELO: el proceso a pausar es el del panel/botón, no el global.
+  const ruta = odp.ruta_procesos || [];
+  const procPausar = procEspecifico || state.panelOpProc || odp.proceso_actual || ruta[odp.proceso_actual_idx || 0] || '';
+  // Validar usando el estado REAL del proceso (no el global)
+  const estProc = window.estadoProceso(odp, procPausar);
+  if (odp.estatus !== 'en_produccion' || estProc !== 'en_proceso') {
+    toast('Solo se pueden pausar procesos que estén corriendo', 'error');
     return;
   }
   // Abrir modal de selección de motivo (botones grandes, sin prompt)
   state.modal = 'pausar-odp';
   state.modalData = odpId;
-  state.modalForm = { motivo_otro: '' };
+  state.modalForm = { motivo_otro: '', proceso_pausar: procPausar };
   render();
 };
 
@@ -9529,24 +9563,40 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
+  // 🆕 Proceso a pausar (del modalForm, fijado al abrir el modal)
+  const ruta = odp.ruta_procesos || [];
+  const procPausar = state.modalForm?.proceso_pausar || odp.proceso_actual || ruta[odp.proceso_actual_idx || 0] || '';
+  const esActual = ruta.indexOf(procPausar) === (odp.proceso_actual_idx ?? 0);
+  
   try {
     state.loadingAccion = true; render();
-    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-      proceso_estatus_actual: 'pausado',
-      pausa_iniciada_at: serverTimestamp(),
-      pausa_motivo: motivoTxt,
-      pausa_por: state.user?.nombre || state.user?.email || 'sistema',
+    // Marcar el proceso específico como pausado en avance_procesos
+    const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
+    if (!avanceProc[procPausar]) avanceProc[procPausar] = {};
+    avanceProc[procPausar].estatus = 'pausado';
+    avanceProc[procPausar].pausa_motivo = motivoTxt;
+    avanceProc[procPausar].pausa_iniciada_at_ms = Date.now();
+    
+    const updates = {
+      avance_procesos: avanceProc,
       updated_at: serverTimestamp()
-    });
+    };
+    // Si es el proceso actual, también reflejarlo en el estado global (compatibilidad)
+    if (esActual) {
+      updates.proceso_estatus_actual = 'pausado';
+      updates.pausa_iniciada_at = serverTimestamp();
+      updates.pausa_motivo = motivoTxt;
+      updates.pausa_por = state.user?.nombre || state.user?.email || 'sistema';
+    }
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
     state.modal = null; state.modalData = null; state.modalForm = null;
     // Optimistic local
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
-    if (odpLocal) odpLocal.proceso_estatus_actual = 'pausado';
-    toast(`⏸ ${odp.folio} pausada · ${motivoTxt}. La máquina queda libre — inicia la siguiente cuando arranques.`, 'info');
-    
-    // 🆕 NO se inicia ninguna orden automáticamente. El operador inicia la siguiente
-    //    MANUALMENTE cuando la máquina realmente arranca (pudo pararse 1 hora para
-    //    resolver un tema). Así el tiempo de inicio queda correcto.
+    if (odpLocal) {
+      odpLocal.avance_procesos = avanceProc;
+      if (esActual) odpLocal.proceso_estatus_actual = 'pausado';
+    }
+    toast(`⏸ ${getProc(procPausar)?.nombre || procPausar} pausado en ${odp.folio} · ${motivoTxt}`, 'info');
   } catch (e) {
     console.error('Error pausar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
@@ -9565,25 +9615,31 @@ window.confirmarPausaODPOtro = async (odpId) => {
   await window.confirmarPausaODP(odpId, `Otro: ${det.substring(0, 100)}`);
 };
 
-// ▶️ REANUDAR producción (guarda histórico de pausa)
-window.reanudarODP = async (odpId) => {
+// ▶️ REANUDAR producción (guarda histórico de pausa) — por proceso
+window.reanudarODP = async (odpId, procEspecifico = null) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
-  if (odp.proceso_estatus_actual !== 'pausado') {
-    toast('Esta ODP no está pausada', 'error');
+  // 🆕 Proceso a reanudar (del panel/botón)
+  const ruta = odp.ruta_procesos || [];
+  const procReanudar = procEspecifico || state.panelOpProc || odp.proceso_actual || ruta[odp.proceso_actual_idx || 0] || '';
+  const esActual = ruta.indexOf(procReanudar) === (odp.proceso_actual_idx ?? 0);
+  // Validar usando el estado REAL del proceso
+  if (window.estadoProceso(odp, procReanudar) !== 'pausado') {
+    toast('Este proceso no está pausado', 'error');
     return;
   }
   
-  // Calcular duración de la pausa
+  // Calcular duración de la pausa (del proceso o global)
+  const avProc = odp.avance_procesos?.[procReanudar] || {};
   let duracionMin = 0;
-  if (odp.pausa_iniciada_at) {
-    const inicio = odp.pausa_iniciada_at.seconds ? odp.pausa_iniciada_at.seconds * 1000 : Number(odp.pausa_iniciada_at);
-    duracionMin = Math.round((Date.now() - inicio) / 60_000);
-  }
+  const inicioMs = avProc.pausa_iniciada_at_ms || 
+    (odp.pausa_iniciada_at?.seconds ? odp.pausa_iniciada_at.seconds * 1000 : Number(odp.pausa_iniciada_at));
+  if (inicioMs) duracionMin = Math.round((Date.now() - inicioMs) / 60_000);
+  const motivoPausa = avProc.pausa_motivo || odp.pausa_motivo || '—';
   
   const ok = confirm(
-    `▶️ REANUDAR ${odp.folio}\n\n` +
-    `Motivo del paro: ${odp.pausa_motivo || '—'}\n` +
+    `▶️ REANUDAR ${getProc(procReanudar)?.nombre || procReanudar} — ${odp.folio}\n\n` +
+    `Motivo del paro: ${motivoPausa}\n` +
     `Duración del paro: ${duracionMin} minutos\n\n` +
     `¿Reanudar producción?`
   );
@@ -9592,25 +9648,40 @@ window.reanudarODP = async (odpId) => {
   // Guardar histórico
   const historial = Array.isArray(odp.historial_pausas) ? [...odp.historial_pausas] : [];
   historial.push({
-    motivo: odp.pausa_motivo || '',
-    iniciada_at: odp.pausa_iniciada_at || null,
+    proceso: procReanudar,
+    motivo: motivoPausa,
     duracion_minutos: duracionMin,
-    pausa_por: odp.pausa_por || '',
     reanudada_por: state.user?.nombre || state.user?.email || 'sistema',
     reanudada_at_ms: Date.now()
   });
   
   try {
     state.loadingAccion = true; render();
-    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
-      proceso_estatus_actual: 'en_proceso',
-      pausa_iniciada_at: null,
-      pausa_motivo: null,
-      pausa_por: null,
+    // Reanudar el proceso específico en avance_procesos
+    const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
+    if (!avanceProc[procReanudar]) avanceProc[procReanudar] = {};
+    avanceProc[procReanudar].estatus = 'en_proceso';
+    delete avanceProc[procReanudar].pausa_motivo;
+    delete avanceProc[procReanudar].pausa_iniciada_at_ms;
+    
+    const updates = {
+      avance_procesos: avanceProc,
       historial_pausas: historial,
       updated_at: serverTimestamp()
-    });
-    toast(`▶️ ${odp.folio} reanudada (paro de ${duracionMin} min)`, 'success');
+    };
+    if (esActual) {
+      updates.proceso_estatus_actual = 'en_proceso';
+      updates.pausa_iniciada_at = null;
+      updates.pausa_motivo = null;
+      updates.pausa_por = null;
+    }
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) {
+      odpLocal.avance_procesos = avanceProc;
+      if (esActual) odpLocal.proceso_estatus_actual = 'en_proceso';
+    }
+    toast(`▶️ ${getProc(procReanudar)?.nombre || procReanudar} reanudado (paro de ${duracionMin} min)`, 'success');
   } catch (e) {
     console.error('Error reanudar ODP:', e);
     toast('Error: ' + e.message, 'error');
@@ -11217,12 +11288,8 @@ function renderPanelOperador() {
       //    para que bolseo VEA la orden que le viene y se coordine con extrusión.
       // 🔧 FIX BUG: una ODP cuenta como "corriendo" en bolseo si su avance_procesos
       //    marca este proceso en_proceso, SIN importar el puntero global proceso_actual.
-      //    (Antes usaba proceso_actual === procSel, que nunca se cumplía para procesos
-      //     paralelos, por eso la orden iniciada seguía apareciendo como "lista".)
-      const estadoEsteProc = o.avance_procesos?.[procSel]?.estatus || '';
-      const trabajandoEsteProc =
-        estadoEsteProc === 'en_proceso' ||
-        (o.proceso_estatus_actual === 'en_proceso' && o.proceso_actual === procSel);
+      //    Usa el helper unificado estadoProceso (lee por proceso, no el global).
+      const trabajandoEsteProc = window.procesoCorriendo(o, procSel);
       if (trabajandoEsteProc) enProduccion.push(o);
       else enCola.push(o);
     }
@@ -11552,7 +11619,7 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
         const activa = trabajando[0]; // la que está corriendo ahora
         const hayActividad = trabajando.length > 0;
         const siguiente = cola[0]; // la próxima en cola
-        const esPausadaSig = siguiente?.proceso_estatus_actual === 'pausado';
+        const esPausadaSig = siguiente ? window.procesoPausado(siguiente, procSel) : false;
         
         // Estado de la máquina para el operador: CORRIENDO / LISTA PARA INICIAR / LIBRE
         let estadoMaq, colorMaq, lblEstado;
@@ -11584,7 +11651,7 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
                   <div style="font-size:12px;color:#64748b;">Meta: <strong>${fmtNum(siguiente.cantidad_kg_produccion || siguiente.cantidad)} kg</strong></div>
                 </div>
                 ${esPausadaSig 
-                  ? `<button onclick="event.stopPropagation();window.reanudarODP('${siguiente.id}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ REANUDAR</button>`
+                  ? `<button onclick="event.stopPropagation();window.reanudarODP('${siguiente.id}','${procSel}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ REANUDAR</button>`
                   : `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${siguiente.id}','${procSel}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ INICIAR ESTA</button>`}
                 <button onclick="event.stopPropagation();window.mostrarComoProducir('${siguiente.id}')" style="width:100%;margin-top:6px;background:#fff7ed;color:#c2410c;border:1.5px solid #ea580c;padding:9px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔥 ¿Cómo producir esto?</button>
               ` : `
@@ -11704,7 +11771,7 @@ function _tableroTarjetaActiva(o, procSel, proc) {
           <button onclick="event.stopPropagation();window.capturarDesdeTablero('${o.id}','${procSel}','turno')" style="background:${proc.color};color:#fff;border:none;padding:15px;border-radius:10px;cursor:pointer;font-weight:900;font-size:15px;">➕ CAPTURAR TURNO</button>
         `}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-          <button onclick="event.stopPropagation();window.pausarODP('${o.id}')" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">⏸ Pausar</button>
+          <button onclick="event.stopPropagation();window.pausarODP('${o.id}','${procSel}')" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">⏸ Pausar</button>
           ${prod > 0 
             ? `<button onclick="event.stopPropagation();window.cerrarDesdeTablero('${o.id}','${procSel}')" style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✓ Terminar</button>`
             : `<button disabled title="Captura producción antes de terminar" style="background:#f1f5f9;color:#cbd5e1;border:1.5px solid #e2e8f0;padding:9px;border-radius:7px;cursor:not-allowed;font-weight:800;font-size:11px;">✓ Terminar</button>`}
@@ -14063,8 +14130,9 @@ function modalCapturarTurno() {
           <!-- HISTORIAL / PAQUETES CAPTURADOS -->
           ${capturasProceso.length > 0 ? (() => {
             // ¿Es bolseo con registros por paquete? Mostrar lista de paquetes con borrar + etiquetas
+            const esExtruProc = ruta[idx] === 'P1-EXT';
             const paquetes = capturasProceso.filter(c => c.tipo_captura === 'paquete_individual' || c.tipo_captura === 'paquete_incompleto');
-            const esBolseoConPaquetes = !esExtruP && paquetes.length > 0;
+            const esBolseoConPaquetes = !esExtruProc && paquetes.length > 0;
             
             if (esBolseoConPaquetes) {
               const ordenados = paquetes.slice().sort((a,b) => (b.created_at?.seconds||0) - (a.created_at?.seconds||0));
@@ -14591,8 +14659,8 @@ window.guardarCapturaTurno = async (odpId) => {
     toast('⚠ La ODP debe iniciarse primero con el botón "▶️ INICIAR producción"', 'error');
     return;
   }
-  if (odp.proceso_estatus_actual === 'pausado') {
-    toast('⚠ La ODP está pausada. Reanúdala antes de capturar turnos.', 'error');
+  if (window.procesoPausado(odp, procActual)) {
+    toast(`⚠ ${getProc(procActual)?.nombre || 'Este proceso'} está pausado. Reanúdalo antes de capturar.`, 'error');
     return;
   }
   if (['completada','cancelada','liberada_empaque','rechazada'].includes(odp.estatus)) {
