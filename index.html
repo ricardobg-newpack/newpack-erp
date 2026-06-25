@@ -13893,44 +13893,44 @@ function modalCapturarTurno() {
               const stepCapt = umCapt === 'kg' ? '0.1' : umCapt === 'millar' ? '0.001' : '1';
               const conversionPosible = (umCapt === 'kg') || pesoUnidad > 0;
               
-              // 🆕 MODO PAQUETES: para bolseo, el producto trae predefinido su empaque.
-              //    El operador solo confirma cuántos PAQUETES hizo. Un registro por paquete.
+              // 🆕 MODO EMPAQUE: el producto trae predefinido su empaque (rollo/bulto/paquete).
+              //    El operador confirma cuántas unidades de empaque hizo. Un registro por unidad.
               const esBolseo = !esExtruP;
-              const empaqueTxt = procCodigo === 'P4-BR' ? 'rollo' : 'bulto';
               
               if (esBolseo) {
-                const umUnidadLbl = umCapt === 'kg' ? 'kg' :
-                                    umCapt === 'pza' ? 'piezas' :
-                                    umCapt === 'millar' ? 'millares' : umCapt;
+                // Datos de empaque del producto
+                const tipoEmp = (producto?.tipo_empaque || '').toUpperCase();   // ROLLO / BULTO / PAQUETE
+                const cantPorContenedor = Number(producto?.cant_empaque) || 0;  // ej: 500 (pz por rollo)
+                const contenedoresPorPaq = Math.max(1, Number(producto?.contenedores_por_paquete) || 1);
+                const nombreContenedor = producto?.nombre_contenedor || 'bulto'; // rollo/bulto
+                const umEmpaque = (producto?.um_empaque || 'pza').toLowerCase(); // UM del CONTENIDO del empaque
                 
-                // Empaque predefinido del producto
-                const cantPorContenedor = Number(producto?.cant_empaque) || 0;     // ej: 500 pz por rollo
-                const contenedoresPorPaq = Math.max(1, Number(producto?.contenedores_por_paquete) || 1); // ej: 5 rollos
-                const nombreContenedor = producto?.nombre_contenedor || empaqueTxt;
-                const umEmpaque = (producto?.um_empaque || umCapt || 'pz').toLowerCase();
+                const empaqueConfigurado = cantPorContenedor > 0 && tipoEmp;
                 
-                // ¿El producto tiene su empaque bien configurado?
-                const empaqueConfigurado = cantPorContenedor > 0;
+                // Etiqueta legible de la UM de empaque (NO la de venta — son distintas)
+                const umEmpLbl = umEmpaque === 'kg' ? 'kg' : umEmpaque === 'pza' || umEmpaque === 'pz' ? 'piezas' : umEmpaque === 'millar' ? 'millares' : umEmpaque === 'm' ? 'metros' : umEmpaque;
                 
-                // Cantidad por PAQUETE en la UM de empaque (ej: 5 rollos × 500 pz = 2,500 pz)
-                const cantPorPaquete = cantPorContenedor * contenedoresPorPaq;
-                // Convertir a kg: depende de la UM de empaque
-                let kgPorPaquete = 0;
-                if (umEmpaque === 'kg') kgPorPaquete = cantPorPaquete;
-                else if ((umEmpaque === 'pza' || umEmpaque === 'pz') && pesoUnidad > 0) kgPorPaquete = cantPorPaquete * (umCapt === 'pza' ? pesoUnidad : window.calcularPesoPieza(producto) || 0);
-                else if (umEmpaque === 'millar' && producto) kgPorPaquete = cantPorPaquete * (window.calcularPesoMillar(producto) || 0) / 1000;
-                else if (pesoUnidad > 0) kgPorPaquete = cantPorPaquete * pesoUnidad;
+                // Cuántas unidades de empaque (la cosa que el operador cuenta) y qué contiene cada una
+                const esPaquete = tipoEmp === 'PAQUETE';
+                const nombreUnidad = esPaquete ? 'paquete' : tipoEmp.toLowerCase(); // "paquete" / "rollo" / "bulto"
+                const cantPorUnidad = esPaquete ? cantPorContenedor * contenedoresPorPaq : cantPorContenedor;
                 
-                const numPaquetes = Number(f.num_paquetes) || 0;
-                const totalKg = kgPorPaquete * numPaquetes;
-                const totalCant = cantPorPaquete * numPaquetes;
+                // Peso por pieza/unidad para convertir a kg
+                let pesoPorUnidadEmp = 0;
+                if (umEmpaque === 'kg') pesoPorUnidadEmp = 1;
+                else if (umEmpaque === 'pza' || umEmpaque === 'pz') pesoPorUnidadEmp = window.calcularPesoPieza(producto) || 0;
+                else if (umEmpaque === 'millar') pesoPorUnidadEmp = (window.calcularPesoMillar(producto) || 0) / 1000;
+                const kgPorUnidad = cantPorUnidad * pesoPorUnidadEmp;
+                
+                const numUnidades = Number(f.num_paquetes) || 0;
+                const totalCant = cantPorUnidad * numUnidades;
+                const totalKg = kgPorUnidad * numUnidades;
                 
                 if (!empaqueConfigurado) {
-                  // El producto no tiene empaque definido → avisar y mandar a configurarlo
                   return `
                     <div style="padding:14px;background:#fef2f2;border:1.5px solid #dc2626;border-radius:8px;text-align:center;">
                       <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:6px;">⚠ Este producto no tiene su empaque configurado</div>
-                      <div style="font-size:11.5px;color:#7f1d1d;margin-bottom:10px;">Para capturar por paquetes, primero define cuántos ${umUnidadLbl} lleva cada ${nombreContenedor} y cuántos ${nombreContenedor}s van por paquete.</div>
+                      <div style="font-size:11.5px;color:#7f1d1d;margin-bottom:10px;">Ve a Productos PT y define cómo se empaca (rollo, bulto o paquete) y qué contiene.</div>
                       <button onclick="cerrarModal();state.vista='productos_pt';state.busquedaProd='${odp.producto_codigo}';render();" style="background:#dc2626;color:#fff;border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Configurar empaque del producto →</button>
                     </div>
                     <input type="hidden" id="ct-um-captura" value="${umCapt}" />
@@ -13939,30 +13939,32 @@ function modalCapturarTurno() {
                   `;
                 }
                 
-                // Descripción del paquete según sea jerárquico o simple
-                const descPaquete = contenedoresPorPaq > 1
-                  ? `1 paquete = ${contenedoresPorPaq} ${nombreContenedor}s × ${fmtNum(cantPorContenedor)} ${umUnidadLbl} = ${fmtNum(cantPorPaquete)} ${umUnidadLbl}`
-                  : `1 paquete = 1 ${nombreContenedor} de ${fmtNum(cantPorContenedor)} ${umUnidadLbl}`;
+                // Descripción de qué contiene cada unidad de empaque
+                const descUnidad = esPaquete
+                  ? `1 paquete = ${contenedoresPorPaq} ${nombreContenedor}s × ${fmtNum(cantPorContenedor)} ${umEmpLbl} = ${fmtNum(cantPorUnidad)} ${umEmpLbl}`
+                  : `1 ${nombreUnidad} = ${fmtNum(cantPorContenedor)} ${umEmpLbl}`;
+                
+                const iconUnidad = nombreUnidad === 'rollo' ? '🌀' : '📦';
                 
                 return `
                   <div style="padding:10px 12px;background:#eff6ff;border:1.5px solid #3b82f6;border-radius:8px;margin-bottom:10px;">
-                    <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:6px;">📦 Captura por paquetes — un registro por cada paquete</div>
-                    <div style="font-size:11px;color:#1e3a8a;background:#dbeafe;border-radius:6px;padding:7px 10px;margin-bottom:10px;">
-                      ${descPaquete}
+                    <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:6px;">${iconUnidad} Captura por ${nombreUnidad}s — un registro por cada ${nombreUnidad}</div>
+                    <div style="font-size:11.5px;color:#1e3a8a;background:#dbeafe;border-radius:6px;padding:8px 10px;margin-bottom:10px;font-weight:700;">
+                      ${descUnidad}
                     </div>
                     <div class="field" style="margin:0;">
-                      <label class="field-label" style="font-size:12px;">🔢 ¿Cuántos paquetes hiciste este turno? *</label>
+                      <label class="field-label" style="font-size:12px;">🔢 ¿Cuántos ${nombreUnidad}s hiciste este turno? *</label>
                       <input class="input" id="ct-num-paquetes" type="number" min="0" step="1" value="${f.num_paquetes || ''}"
                         oninput="window.modalFormSetSilent('num_paquetes', this.value); window._recalcPaquetes();"
-                        placeholder="4" style="font-size:24px;font-weight:900;text-align:center;" />
+                        placeholder="10" style="font-size:24px;font-weight:900;text-align:center;" />
                     </div>
                     <div style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;text-align:center;">
                       <div style="font-size:11px;color:#64748b;">TOTAL DE ESTE TURNO</div>
                       <div style="font-size:20px;font-weight:900;color:#16a34a;" id="ct-total-paquetes">
-                        ${numPaquetes > 0 ? `${numPaquetes} paquetes = ${fmtNum(totalCant)} ${umUnidadLbl}` : '— escribe cuántos paquetes —'}
+                        ${numUnidades > 0 ? `${numUnidades} ${nombreUnidad}s = ${fmtNum(totalCant)} ${umEmpLbl}` : '— escribe cuántos ' + nombreUnidad + 's —'}
                       </div>
-                      <div style="font-size:11px;color:#64748b;margin-top:3px;" id="ct-total-paquetes-kg">${numPaquetes > 0 ? `≈ ${fmtNum(totalKg)} kg` : ''}</div>
-                      <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;">Se crearán <strong id="ct-num-registros">${numPaquetes}</strong> registro(s), uno por paquete</div>
+                      <div style="font-size:11px;color:#64748b;margin-top:3px;" id="ct-total-paquetes-kg">${numUnidades > 0 ? `≈ ${fmtNum(totalKg)} kg` : ''}</div>
+                      <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;">Se crearán <strong id="ct-num-registros">${numUnidades}</strong> registro(s), uno por ${nombreUnidad}</div>
                     </div>
                   </div>
                   <div class="field" style="margin:0;">
@@ -13972,13 +13974,15 @@ function modalCapturarTurno() {
                   <input type="hidden" id="ct-um-captura" value="${umCapt}" />
                   <input type="hidden" id="ct-peso-unidad" value="${pesoUnidad}" />
                   <input type="hidden" id="ct-modo-bultos" value="1" />
-                  <input type="hidden" id="ct-cant-por-paquete" value="${cantPorPaquete}" />
-                  <input type="hidden" id="ct-kg-por-paquete" value="${kgPorPaquete}" />
+                  <input type="hidden" id="ct-cant-por-paquete" value="${cantPorUnidad}" />
+                  <input type="hidden" id="ct-kg-por-paquete" value="${kgPorUnidad}" />
+                  <input type="hidden" id="ct-um-empaque" value="${umEmpaque}" />
                   <input type="hidden" id="ct-contenedores-paq" value="${contenedoresPorPaq}" />
                   <input type="hidden" id="ct-cant-contenedor" value="${cantPorContenedor}" />
+                  <input type="hidden" id="ct-nombre-unidad" value="${nombreUnidad}" />
                   <input type="hidden" id="ct-nombre-contenedor" value="${nombreContenedor}" />
                   <div style="font-size:11px;color:#475569;margin-top:8px;text-align:center;font-style:italic;">
-                    💡 ${descPaquete}. Captura cuántos paquetes y el sistema crea un registro por cada uno.
+                    💡 ${descUnidad}
                   </div>
                 `;
               }
@@ -14407,20 +14411,21 @@ window.modalFormSetSilent = (key, val) => {
 };
 window.mfs = window.modalFormSetSilent; // alias corto
 
-// 🆕 Recalcular el total de paquetes en vivo (sin re-render, para no perder el foco)
+// 🆕 Recalcular el total de unidades de empaque en vivo (sin re-render)
 window._recalcPaquetes = () => {
   const n = Math.floor(Number(document.getElementById('ct-num-paquetes')?.value) || 0);
   const cantPorPaq = Number(document.getElementById('ct-cant-por-paquete')?.value) || 0;
   const kgPorPaq = Number(document.getElementById('ct-kg-por-paquete')?.value) || 0;
-  const umCapt = (document.getElementById('ct-um-captura')?.value || 'kg').toLowerCase();
-  const umLbl = umCapt === 'kg' ? 'kg' : umCapt === 'pza' ? 'piezas' : umCapt === 'millar' ? 'millares' : umCapt;
+  const umEmp = (document.getElementById('ct-um-empaque')?.value || 'pza').toLowerCase();
+  const nombreUnidad = document.getElementById('ct-nombre-unidad')?.value || 'paquete';
+  const umLbl = umEmp === 'kg' ? 'kg' : (umEmp === 'pza' || umEmp === 'pz') ? 'piezas' : umEmp === 'millar' ? 'millares' : umEmp === 'm' ? 'metros' : umEmp;
   const totalEl = document.getElementById('ct-total-paquetes');
   const totalKgEl = document.getElementById('ct-total-paquetes-kg');
   const numRegEl = document.getElementById('ct-num-registros');
   if (totalEl) {
     totalEl.textContent = n > 0
-      ? `${n} paquetes = ${window.fmtNum(cantPorPaq * n)} ${umLbl}`
-      : '— escribe cuántos paquetes —';
+      ? `${n} ${nombreUnidad}s = ${window.fmtNum(cantPorPaq * n)} ${umLbl}`
+      : `— escribe cuántos ${nombreUnidad}s —`;
   }
   if (totalKgEl) totalKgEl.textContent = n > 0 ? `≈ ${window.fmtNum(kgPorPaq * n)} kg` : '';
   if (numRegEl) numRegEl.textContent = n;
@@ -14439,13 +14444,15 @@ window.modalFormSetGrupo = (g) => {
 window.guardarCapturaTurno = async (odpId) => {
   const f = state.modalForm || {};
   
-  // 🆕 MODO PAQUETES (bolseo): el producto trae el empaque, el operador dice cuántos paquetes
+  // 🆕 MODO EMPAQUE (bolseo): el producto trae el empaque, el operador da cuántas unidades
   const modoBultos = ($('#ct-modo-bultos')?.value || '') === '1';
   const numPaquetesDom = ($('#ct-num-paquetes')?.value || '').trim();
   const cantPorPaqueteDom = Number($('#ct-cant-por-paquete')?.value) || 0;
   const kgPorPaqueteDom = Number($('#ct-kg-por-paquete')?.value) || 0;
+  const umEmpaqueDom = ($('#ct-um-empaque')?.value || 'pza').toLowerCase();
   const contenedoresPaqDom = Number($('#ct-contenedores-paq')?.value) || 1;
   const cantContenedorDom = Number($('#ct-cant-contenedor')?.value) || 0;
+  const nombreUnidadDom = $('#ct-nombre-unidad')?.value || 'paquete';
   const nombreContenedorDom = $('#ct-nombre-contenedor')?.value || 'bulto';
   
   // Leer también del DOM por si los inputs silenciosos no actualizaron state
@@ -14611,9 +14618,9 @@ window.guardarCapturaTurno = async (odpId) => {
     };
     
     if (modoBultos) {
-      // 🆕 MODO PAQUETES: un registro por cada paquete + el desperdicio como registro único.
-      //    Ej: 4 paquetes de 5 rollos de 500 pz → 4 registros de 2,500 pz c/u.
-      const umPorPaquete = cantPorPaquete; // cantidad en la UM de la ODP por paquete
+      // 🆕 MODO EMPAQUE: un registro por cada unidad de empaque (rollo/bulto/paquete)
+      //    + el desperdicio como registro único.
+      const umPorPaquete = cantPorPaquete; // cantidad en la UM de EMPAQUE por unidad
       const loteBultos = `${f.fecha}-${f.turno}-${f.grupo}-${Date.now()}`;
       const batchBultos = writeBatch(db);
       for (let i = 1; i <= numPaquetes; i++) {
@@ -14621,21 +14628,22 @@ window.guardarCapturaTurno = async (odpId) => {
         batchBultos.set(ref, {
           ...baseCaptura,
           tipo_captura: 'paquete_individual',
-          producido_kg: kgPorPaquete,        // equivalente en kg de este paquete
-          producido_um: umPorPaquete,         // cantidad en la UM de la ODP
-          mermas_kg: 0,                       // la merma va en un registro aparte
+          producido_kg: kgPorPaquete,         // equivalente en kg de esta unidad de empaque
+          producido_um: umPorPaquete,          // cantidad en la UM de EMPAQUE
+          mermas_kg: 0,
           paquete_numero: i,
           total_paquetes_turno: numPaquetes,
+          nombre_unidad_empaque: nombreUnidadDom,      // rollo / bulto / paquete
+          um_empaque: umEmpaqueDom,                    // pza / kg / millar (lo que contiene)
           contenedores_por_paquete: contenedoresPaqDom,
           cant_por_contenedor: cantContenedorDom,
           nombre_contenedor: nombreContenedorDom,
-          um_por_paquete: umPorPaquete,
+          cant_por_paquete: umPorPaquete,
           kg_por_paquete: kgPorPaquete,
           lote_bultos: loteBultos,
           created_at: serverTimestamp(),
         });
       }
-      // Registro único de desperdicio (si hay)
       const mermaTurno = Number(f.mermas_kg) || 0;
       if (mermaTurno > 0) {
         const refMerma = doc(collection(db, 'capturas_produccion'));
@@ -14708,9 +14716,9 @@ window.guardarCapturaTurno = async (odpId) => {
     // 🆕 Toast con la UM de captura
     const msgRollos = kgConsumidosRollos > 0 ? ` · 🧵 ${fmtNum(kgConsumidosRollos)} kg de rollos consumidos (FIFO)` : '';
     if (modoBultos) {
-      const umLbl = umCaptura === 'kg' ? 'kg' : umCaptura === 'pza' ? 'pza' : umCaptura === 'millar' ? 'millares' : umCaptura;
+      const umLbl = umEmpaqueDom === 'kg' ? 'kg' : (umEmpaqueDom === 'pza' || umEmpaqueDom === 'pz') ? 'pz' : umEmpaqueDom === 'millar' ? 'millares' : umEmpaqueDom;
       const mermaTxt = (Number(f.mermas_kg) || 0) > 0 ? ` · ⚠ ${fmtNum(f.mermas_kg)} kg desperdicio` : '';
-      toast(`✅ ${numPaquetes} paquetes registrados (${fmtNum(prodUM)} ${umLbl} = ${fmtNum(prodKg)} kg)${mermaTxt} · Grupo ${f.grupo}${msgRollos}`);
+      toast(`✅ ${numPaquetes} ${nombreUnidadDom}s registrados (${fmtNum(prodUM)} ${umLbl} = ${fmtNum(prodKg)} kg)${mermaTxt} · Grupo ${f.grupo}${msgRollos}`);
     } else {
       const lblToast = umCaptura === 'kg' 
         ? `${fmtNum(prodKg)} kg` 
@@ -35835,48 +35843,90 @@ function modalEditarProductoPT() {
             <input class="input form-pt-edit" data-field="descripcion" value="${f.descripcion}" />
           </div>
           
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
-            <div class="field">
-              <label class="field-label">UM venta</label>
+          <div style="display:grid;grid-template-columns:1fr;gap:8px;">
+            <div class="field" style="margin:0;">
+              <label class="field-label">Unidad de venta <span style="font-weight:400;color:#94a3b8;font-size:10px;">(cómo se cobra al cliente)</span></label>
               <select class="input form-pt-edit" data-field="um">
                 ${UM_OPCIONES.map(u => `<option value="${u}" ${f.um === u ? 'selected' : ''}>${UM_LABELS[u]}</option>`).join('')}
               </select>
             </div>
-            <div class="field"><label class="field-label">Empaque</label>
-              <select class="input form-pt-edit" data-field="tipo_empaque">
-                <option value="">— Selecciona —</option>
-                ${TIPOS_EMPAQUE.map(t => `<option value="${t.codigo}" ${f.tipo_empaque === t.codigo ? 'selected' : ''}>${t.label}</option>`).join('')}
-              </select>
-            </div>
-            <div class="field"><label class="field-label">Cant. por empaque</label><input class="input form-pt-edit" data-field="cant_empaque" type="number" step="any" placeholder="100" value="${f.cant_empaque}" /></div>
-            <div class="field"><label class="field-label">UM contenido</label>
-              <select class="input form-pt-edit" data-field="um_empaque">
-                <option value="">—</option>
-                ${UM_EMPAQUE_OPCIONES.map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
-              </select>
-            </div>
           </div>
           
-          <!-- 📦 Empaque jerárquico: cuántos rollos/bultos van dentro de un paquete -->
-          <div style="margin-top:10px;padding:12px;background:#eff6ff;border-radius:10px;border:1px solid #3b82f6;">
-            <div style="font-size:12px;font-weight:800;color:#1e40af;margin-bottom:8px;">📦 Empaque por paquete (opcional — para bolseo)</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-              <div class="field" style="margin:0;">
-                <label class="field-label" style="font-size:11px;">Contenedores por paquete</label>
-                <input class="input form-pt-edit" data-field="contenedores_por_paquete" type="number" step="1" min="1" placeholder="5" value="${f.contenedores_por_paquete || ''}" />
-                <div style="font-size:10px;color:#64748b;margin-top:3px;">Ej: 5 rollos en 1 paquete. Deja vacío o 1 si cada bulto/rollo ya es el paquete.</div>
-              </div>
-              <div class="field" style="margin:0;">
-                <label class="field-label" style="font-size:11px;">Nombre del contenedor</label>
-                <select class="input form-pt-edit" data-field="nombre_contenedor">
-                  <option value="rollo" ${f.nombre_contenedor === 'rollo' ? 'selected' : ''}>Rollo</option>
-                  <option value="bulto" ${(f.nombre_contenedor === 'bulto' || !f.nombre_contenedor) ? 'selected' : ''}>Bulto</option>
-                  <option value="caja" ${f.nombre_contenedor === 'caja' ? 'selected' : ''}>Caja</option>
-                  <option value="bobina" ${f.nombre_contenedor === 'bobina' ? 'selected' : ''}>Bobina</option>
-                </select>
-                <div style="font-size:10px;color:#64748b;margin-top:3px;">Cada paquete = ${f.contenedores_por_paquete && Number(f.contenedores_por_paquete) > 1 ? `${f.contenedores_por_paquete} ${f.nombre_contenedor || 'bulto'}s × ${f.cant_empaque || '?'} ${f.um_empaque || 'pz'}` : `1 ${f.nombre_contenedor || 'bulto'}`}</div>
-              </div>
+          <!-- 📦 EMPAQUE — cómo se entrega físicamente (independiente de la unidad de venta) -->
+          <div style="margin-top:12px;padding:14px;background:#eff6ff;border-radius:10px;border:1.5px solid #3b82f6;">
+            <div style="font-size:13px;font-weight:800;color:#1e40af;margin-bottom:4px;">📦 ¿Cómo se empaca este producto?</div>
+            <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">La unidad de empaque es independiente de la unidad de venta. Ej: se vende en kg pero se entrega en piezas.</div>
+            
+            <!-- Tipo de empaque: rollo / bulto / paquete -->
+            <div style="display:flex;gap:8px;margin-bottom:12px;">
+              ${[['ROLLO','🌀 Rollo','contiene piezas/kg'],['BULTO','📦 Bulto','contiene piezas/kg'],['PAQUETE','📦 Paquete','contiene varios rollos o bultos']].map(([cod,lbl,desc]) => `
+                <button type="button" onclick="window.setTipoEmpaquePT('${cod}')" style="flex:1;padding:11px 8px;border:2px solid ${f.tipo_empaque===cod?'#2563eb':'#cbd5e1'};background:${f.tipo_empaque===cod?'#dbeafe':'#fff'};border-radius:10px;cursor:pointer;text-align:center;">
+                  <div style="font-weight:800;font-size:13px;color:#0f172a;">${lbl}</div>
+                  <div style="font-size:9.5px;color:#64748b;margin-top:2px;">${desc}</div>
+                </button>
+              `).join('')}
             </div>
+            
+            ${f.tipo_empaque === 'PAQUETE' ? `
+              <!-- PAQUETE: contiene varios rollos o bultos -->
+              <div style="background:#fff;border-radius:8px;padding:12px;">
+                <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">Un paquete contiene:</div>
+                <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:8px;align-items:end;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">¿Cuántos?</label>
+                    <input class="input form-pt-edit" data-field="contenedores_por_paquete" type="number" step="1" min="1" placeholder="5" value="${f.contenedores_por_paquete || ''}" style="text-align:center;font-weight:800;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">de tipo</label>
+                    <select class="input form-pt-edit" data-field="nombre_contenedor">
+                      <option value="rollo" ${f.nombre_contenedor === 'rollo' ? 'selected' : ''}>Rollos</option>
+                      <option value="bulto" ${(f.nombre_contenedor === 'bulto' || !f.nombre_contenedor) ? 'selected' : ''}>Bultos</option>
+                    </select>
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">c/u con</label>
+                    <input class="input form-pt-edit" data-field="cant_empaque" type="number" step="any" placeholder="500" value="${f.cant_empaque}" style="text-align:center;font-weight:800;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">de</label>
+                    <select class="input form-pt-edit" data-field="um_empaque">
+                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar','m'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+                ${f.contenedores_por_paquete && f.cant_empaque ? `
+                  <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
+                    1 paquete = ${f.contenedores_por_paquete} ${f.nombre_contenedor || 'bulto'}s × ${f.cant_empaque} ${f.um_empaque || 'pz'} = ${fmtNum(Number(f.contenedores_por_paquete) * Number(f.cant_empaque))} ${f.um_empaque || 'pz'}
+                  </div>
+                ` : ''}
+              </div>
+            ` : f.tipo_empaque ? `
+              <!-- ROLLO o BULTO: contiene piezas/kg directamente -->
+              <div style="background:#fff;border-radius:8px;padding:12px;">
+                <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">Cada ${(f.tipo_empaque||'').toLowerCase()} contiene:</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Cantidad</label>
+                    <input class="input form-pt-edit" data-field="cant_empaque" type="number" step="any" placeholder="500" value="${f.cant_empaque}" style="text-align:center;font-weight:800;font-size:16px;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Unidad</label>
+                    <select class="input form-pt-edit" data-field="um_empaque">
+                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar','m'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+                ${f.cant_empaque ? `
+                  <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
+                    1 ${(f.tipo_empaque||'').toLowerCase()} = ${f.cant_empaque} ${f.um_empaque || 'pz'}
+                  </div>
+                ` : ''}
+                <!-- contenedores_por_paquete = 1 cuando no es paquete -->
+                <input type="hidden" class="form-pt-edit" data-field="contenedores_por_paquete" value="1" />
+              </div>
+            ` : `
+              <div style="font-size:11px;color:#94a3b8;font-style:italic;text-align:center;padding:8px;">⬆ Selecciona cómo se empaca</div>
+            `}
           </div>
           
           <!-- 🏷️ Tipo de etiqueta -->
@@ -36196,6 +36246,16 @@ function _capturarFormPT() {
   const obsEl = document.querySelector('[data-field="obs_extrusion"]');
   if (obsEl && state.modalForm) state.modalForm.obs_extrusion = obsEl.value;
 }
+
+// 🆕 Elegir tipo de empaque (rollo/bulto/paquete) y re-renderizar para mostrar los campos correctos
+window.setTipoEmpaquePT = (tipo) => {
+  _capturarFormPT();
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.tipo_empaque = tipo;
+  // Si pasa a paquete y no tiene contenedor definido, sugerir rollo
+  if (tipo === 'PAQUETE' && !state.modalForm.nombre_contenedor) state.modalForm.nombre_contenedor = 'rollo';
+  render();
+};
 
 function renderBloqueFormulacion(f) {
   const mps = (state.materias_primas || []).filter(mp => mp.activo !== false && ['resina', 'aditivo', 'pigmento', 'reciclado'].includes(mp.tipo));
@@ -38802,8 +38862,9 @@ window.guardarProductoPT = async (codigo) => {
       tipo_empaque: tipoEmpEdit,
       cant_empaque: cantEmpEdit,
       um_empaque: umEmpEdit,
-      contenedores_por_paquete: Math.max(1, Number(f.contenedores_por_paquete) || 1),
-      nombre_contenedor: f.nombre_contenedor || 'bulto',
+      // Empaque jerárquico: solo PAQUETE tiene varios contenedores; rollo/bulto = 1
+      contenedores_por_paquete: tipoEmpEdit === 'PAQUETE' ? Math.max(1, Number(f.contenedores_por_paquete) || 1) : 1,
+      nombre_contenedor: tipoEmpEdit === 'PAQUETE' ? (f.nombre_contenedor || 'rollo') : (tipoEmpEdit || 'bulto').toLowerCase(),
       presentacion: presentacionEdit,
       tipo_etiqueta: f.tipo_etiqueta || '',
       impresion: f.impresion || '',
