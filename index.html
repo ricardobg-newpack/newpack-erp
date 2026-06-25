@@ -13972,9 +13972,33 @@ function modalCapturarTurno() {
                         ${numUnidades > 0 ? `${numUnidades} ${nombreUnidad}s = ${fmtNum(totalCant)} ${umEmpLbl}` : '— escribe cuántos ' + nombreUnidad + 's —'}
                       </div>
                       <div style="font-size:11px;color:#64748b;margin-top:3px;" id="ct-total-paquetes-kg">${numUnidades > 0 ? `≈ ${fmtNum(totalKg)} kg` : ''}</div>
-                      <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;">Se imprimirán <strong id="ct-num-registros">${numUnidades}</strong> etiqueta(s), una por ${nombreUnidad}</div>
+                      <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;">Se imprimirán <strong id="ct-num-registros">${numUnidades}</strong> etiqueta(s) de ${fmtNum(cantPorUnidad)} ${umEmpLbl}</div>
                     </div>
                   </div>
+                  
+                  <!-- 🆕 UNIDADES INCOMPLETAS: las que salieron con menos cantidad -->
+                  <div style="padding:10px 12px;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:10px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                      <div style="font-size:11.5px;font-weight:800;color:#92400e;">⚠ ${nombreUnidad.charAt(0).toUpperCase()+nombreUnidad.slice(1)}s incompletos (salieron con menos)</div>
+                      <button type="button" onclick="window._agregarIncompleto()" style="background:#f59e0b;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">+ Agregar</button>
+                    </div>
+                    <div id="ct-incompletos-lista">
+                      ${(f.incompletos || []).length === 0 
+                        ? `<div style="font-size:10.5px;color:#a16207;font-style:italic;">Si todos salieron completos, deja esto vacío. Si uno salió con menos (ej: ${fmtNum(cantPorUnidad)} ${umEmpLbl} esperado pero salió menos), agrégalo aquí con su cantidad real.</div>`
+                        : (f.incompletos || []).map((inc, i) => `
+                          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+                            <span style="font-size:11px;color:#92400e;font-weight:700;white-space:nowrap;">${nombreUnidad} extra #${i+1}:</span>
+                            <input class="input" type="number" min="0" step="any" value="${inc.cantidad || ''}"
+                              oninput="window._setIncompleto(${i}, this.value)"
+                              placeholder="${fmtNum(cantPorUnidad)}" style="font-size:14px;font-weight:800;text-align:center;flex:1;" />
+                            <span style="font-size:11px;color:#92400e;white-space:nowrap;">${umEmpLbl}</span>
+                            <button type="button" onclick="window._quitarIncompleto(${i})" style="background:#fee2e2;color:#dc2626;border:none;width:26px;height:26px;border-radius:6px;cursor:pointer;font-weight:800;">×</button>
+                          </div>
+                        `).join('')
+                      }
+                    </div>
+                  </div>
+                  
                   <div class="field" style="margin:0;">
                     <label class="field-label">⚠ Desperdicio del turno (kg) <span style="font-weight:400;color:#94a3b8;font-size:10px;">(siempre en kg, un registro único)</span></label>
                     <input class="input" id="ct-merm" type="number" min="0" step="0.1" value="${f.mermas_kg || ''}" oninput="window.modalFormSetSilent('mermas_kg', this.value)" placeholder="0" style="font-size:18px;font-weight:800;color:#dc2626;" />
@@ -14439,6 +14463,26 @@ window._recalcPaquetes = () => {
   if (numRegEl) numRegEl.textContent = n;
 };
 
+// 🆕 Manejo de unidades incompletas (las que salieron con menos cantidad)
+window._agregarIncompleto = () => {
+  if (!state.modalForm) state.modalForm = {};
+  if (!Array.isArray(state.modalForm.incompletos)) state.modalForm.incompletos = [];
+  state.modalForm.incompletos.push({ cantidad: '' });
+  state._forzarRender = true;
+  render();
+};
+window._setIncompleto = (i, val) => {
+  if (!state.modalForm?.incompletos?.[i]) return;
+  state.modalForm.incompletos[i].cantidad = val;
+  // sin render: mantener foco
+};
+window._quitarIncompleto = (i) => {
+  if (!state.modalForm?.incompletos) return;
+  state.modalForm.incompletos.splice(i, 1);
+  state._forzarRender = true;
+  render();
+};
+
 window.modalFormSetGrupo = (g) => {
   if (!state.modalForm) state.modalForm = {};
   state.modalForm.grupo = g;
@@ -14521,17 +14565,25 @@ window.guardarCapturaTurno = async (odpId) => {
   //    No se exige operador/supervisor individual — basta el grupo (todo el equipo es responsable).
   
   // 🆕 Convertir captura a kg según UM
-  // En modo paquetes: el producto define el empaque, el operador da cuántos paquetes
+  // En modo paquetes: el producto define el empaque, el operador da cuántos paquetes (+ incompletos)
   let prodUM, prodKg, numPaquetes = 0, cantPorPaquete = 0, kgPorPaquete = 0;
   if (modoBultos) {
     numPaquetes = Math.floor(Number(numPaquetesDom || f.num_paquetes) || 0);
     cantPorPaquete = cantPorPaqueteDom;
     kgPorPaquete = kgPorPaqueteDom;
-    if (numPaquetes <= 0) { toast('Captura cuántos paquetes hiciste (mayor a 0)', 'error'); return; }
-    if (numPaquetes > 1000) { toast('Número de paquetes muy alto (>1000). Verifica.', 'error'); return; }
+    // Unidades incompletas (cada una con su cantidad real)
+    const incompletosList = (f.incompletos || []).map(inc => Number(inc.cantidad) || 0).filter(c => c > 0);
+    const numIncompletos = incompletosList.length;
+    if (numPaquetes <= 0 && numIncompletos === 0) { toast('Captura cuántas unidades hiciste (mayor a 0)', 'error'); return; }
+    if (numPaquetes > 1000) { toast('Número de unidades muy alto (>1000). Verifica.', 'error'); return; }
     if (cantPorPaquete <= 0) { toast('El producto no tiene empaque configurado. Configúralo primero.', 'error'); return; }
-    prodKg = kgPorPaquete * numPaquetes;
-    prodUM = cantPorPaquete * numPaquetes;  // total en la UM de la ODP
+    // Total = completos + incompletos
+    const umCompletos = cantPorPaquete * numPaquetes;
+    const kgCompletos = kgPorPaquete * numPaquetes;
+    const umIncompletos = incompletosList.reduce((s, c) => s + c, 0);
+    const kgIncomp = cantPorPaquete > 0 ? incompletosList.reduce((s, c) => s + (c / cantPorPaquete) * kgPorPaquete, 0) : 0;
+    prodKg = kgCompletos + kgIncomp;
+    prodUM = umCompletos + umIncompletos;
     f.producido_kg = prodKg;
   } else {
   // 🆕 Convertir captura a kg según UM (modo normal)
@@ -14652,6 +14704,39 @@ window.guardarCapturaTurno = async (odpId) => {
           created_at: serverTimestamp(),
         });
       }
+      
+      // 🆕 UNIDADES INCOMPLETAS: una etiqueta/registro por cada una, con su cantidad real
+      const incompletos = (f.incompletos || [])
+        .map(inc => Number(inc.cantidad) || 0)
+        .filter(c => c > 0);
+      let kgIncompletos = 0;
+      incompletos.forEach((cantReal, j) => {
+        // kg real de esta unidad incompleta (regla de 3 sobre la unidad completa)
+        const kgReal = umPorPaquete > 0 ? (cantReal / umPorPaquete) * kgPorPaquete : 0;
+        kgIncompletos += kgReal;
+        const refInc = doc(collection(db, 'capturas_produccion'));
+        batchBultos.set(refInc, {
+          ...baseCaptura,
+          tipo_captura: 'paquete_incompleto',
+          producido_kg: kgReal,
+          producido_um: cantReal,            // cantidad REAL (ej: 18 en vez de 25)
+          mermas_kg: 0,
+          paquete_numero: numPaquetes + j + 1,
+          total_paquetes_turno: numPaquetes + incompletos.length,
+          nombre_unidad_empaque: nombreUnidadDom,
+          um_empaque: umEmpaqueDom,
+          contenedores_por_paquete: contenedoresPaqDom,
+          cant_por_contenedor: cantContenedorDom,
+          nombre_contenedor: nombreContenedorDom,
+          cant_por_paquete: cantReal,         // su contenido real
+          kg_por_paquete: kgReal,
+          es_incompleto: true,                // marca para la etiqueta
+          cant_completa_esperada: umPorPaquete, // cuánto debía llevar (referencia)
+          lote_bultos: loteBultos,
+          created_at: serverTimestamp(),
+        });
+      });
+      
       const mermaTurno = Number(f.mermas_kg) || 0;
       if (mermaTurno > 0) {
         const refMerma = doc(collection(db, 'capturas_produccion'));
@@ -14726,7 +14811,9 @@ window.guardarCapturaTurno = async (odpId) => {
     if (modoBultos) {
       const umLbl = umEmpaqueDom === 'kg' ? 'kg' : (umEmpaqueDom === 'pza' || umEmpaqueDom === 'pz') ? 'pz' : umEmpaqueDom === 'millar' ? 'millares' : umEmpaqueDom;
       const mermaTxt = (Number(f.mermas_kg) || 0) > 0 ? ` · ⚠ ${fmtNum(f.mermas_kg)} kg desperdicio` : '';
-      toast(`✅ ${numPaquetes} ${nombreUnidadDom}s registrados (${fmtNum(prodUM)} ${umLbl} = ${fmtNum(prodKg)} kg)${mermaTxt} · Grupo ${f.grupo}${msgRollos}`);
+      const numIncomp = (f.incompletos || []).filter(inc => Number(inc.cantidad) > 0).length;
+      const incompTxt = numIncomp > 0 ? ` + ${numIncomp} incompleto(s)` : '';
+      toast(`✅ ${numPaquetes} ${nombreUnidadDom}s${incompTxt} registrados (${fmtNum(prodUM)} ${umLbl} = ${fmtNum(prodKg)} kg)${mermaTxt} · Grupo ${f.grupo}${msgRollos}`);
     } else {
       const lblToast = umCaptura === 'kg' 
         ? `${fmtNum(prodKg)} kg` 
@@ -29446,6 +29533,34 @@ window.imprimirEtiquetasPDF = (odpId) => {
       : null;
     
     // Datos comunes a todas las etiquetas
+    // 🆕 Si hay capturas reales por paquete (completas/incompletas), usar esas cantidades.
+    //    Cada captura de tipo paquete = una etiqueta con su cantidad real.
+    const capsPaquete = (window.capturasValidas ? window.capturasValidas(state.capturas_produccion) : (state.capturas_produccion || []))
+      .filter(c => c.odp_id === odpId && (c.tipo_captura === 'paquete_individual' || c.tipo_captura === 'paquete_incompleto'))
+      .sort((a, b) => (a.paquete_numero || 0) - (b.paquete_numero || 0));
+    
+    // Lista de etiquetas a imprimir: [{ cantTxt, esIncompleto }]
+    let listaEtiquetas = [];
+    const umLblEtq = umEmpaque === 'pza' ? 'pz' : umEmpaque;
+    if (capsPaquete.length > 0) {
+      // Desde capturas reales — refleja completas e incompletas con su cantidad
+      listaEtiquetas = capsPaquete.map(c => {
+        const cant = Number(c.cant_por_paquete ?? c.producido_um) || 0;
+        const inc = c.es_incompleto === true;
+        const cont = Number(c.contenedores_por_paquete) || 1;
+        const nomCont = c.nombre_contenedor || 'rollo';
+        const txt = (esPaqueteJerarquico && !inc)
+          ? `${fmtNum(cant)} ${umLblEtq} (${cont} ${nomCont}s)`
+          : `${fmtNum(cant)} ${umLblEtq}`;
+        return { cantTxt: txt, esIncompleto: inc };
+      });
+      numEtiquetas = listaEtiquetas.length;
+    } else {
+      // Sin capturas aún: usar el cálculo teórico (uniforme) — todas completas
+      for (let i = 0; i < numEtiquetas; i++) listaEtiquetas.push({ cantTxt: cantEtiquetaTxt, esIncompleto: false });
+    }
+    if (numEtiquetas <= 0) { numEtiquetas = 1; listaEtiquetas = [{ cantTxt: cantEtiquetaTxt, esIncompleto: false }]; }
+    
     const datos = {
       tipo_etiqueta: producto?.tipo_etiqueta || 'SIN_LOGO',
       codigo_cliente: pedido?.cliente_codigo || odp.cliente_codigo || '',  // 🆕 código directo del cliente (A002, etc.)
@@ -29476,7 +29591,10 @@ window.imprimirEtiquetasPDF = (odpId) => {
       const x = MARG_LEFT + col * (ETIQ_W + GAP_X);
       const y = MARG_TOP + fila * ETIQ_H;
       
-      _renderEtiqueta(docPDF, x, y, ETIQ_W, ETIQ_H, datos, i + 1, numEtiquetas);
+      // 🆕 Cada etiqueta usa su cantidad real (completa o incompleta)
+      const etq = listaEtiquetas[i] || { cantTxt: cantEtiquetaTxt, esIncompleto: false };
+      const datosEtq = { ...datos, cant_empaque: etq.cantTxt, es_incompleto: etq.esIncompleto };
+      _renderEtiqueta(docPDF, x, y, ETIQ_W, ETIQ_H, datosEtq, i + 1, numEtiquetas);
     }
     
     // Preview en modal
@@ -29644,11 +29762,19 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
-  if (d.um_empaque === 'kg') {
-    // Línea para llenar peso a mano
+  if (d.um_empaque === 'kg' && !d.es_incompleto) {
+    // Línea para llenar peso a mano (solo si es completo por kg)
     doc.text('________ kg', xVal, yt);
   } else {
     doc.text(d.cant_empaque || '—', xVal, yt);
+  }
+  // 🆕 Marca de INCOMPLETO al lado de la presentación
+  if (d.es_incompleto) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(220, 38, 38);
+    doc.text('INCOMPLETO', xVal + 32, yt);
+    doc.setTextColor(0, 0, 0);
   }
   yt += lineH;
   
