@@ -14245,17 +14245,23 @@ function modalCapturarTurno() {
 function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada, metaKg, totalProducidoKg, totalMermasKg, faltaKg, pctAvance, operadoresFiltrados, supervisoresFiltrados, f) {
   const procCodigo = ruta[idx];
   
-  // 🆕 GUÍA DE PESO DEL ROLLO — leer del producto: ¿de cuántos kg debe ser cada rollo?
-  //    y ¿es rollo directo a cliente o para 2º proceso?
+  // 🆕 GUÍA DE PESO DEL ROLLO — usar la configuración de EMPAQUE del producto
+  //    ("¿Cómo se empaca?": Rollo → cada rollo contiene X kg/pza). Y el destino se
+  //    determina por la ruta: si extrusión es el ÚLTIMO proceso → rollo directo a cliente;
+  //    si hay un proceso después → rollo para 2º proceso.
   const productoRollo = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
-  const pesoObjetivoRollo = Number(productoRollo?.peso_objetivo_rollo) || 0;
-  const tipoSelladoRollo = productoRollo?.tipo_sellado || '';
-  const esRolloDirecto = tipoSelladoRollo === 'ROLLO_DIRECTO';
+  const empaqueEsRollo = (productoRollo?.tipo_empaque || '').toUpperCase() === 'ROLLO';
+  const umEmpaqueRollo = (productoRollo?.um_empaque || 'kg').toLowerCase();
+  // Peso objetivo del rollo: si el empaque es rollo y se mide en kg, usar cant_empaque
+  let pesoObjetivoRollo = 0;
+  if (empaqueEsRollo && umEmpaqueRollo === 'kg') {
+    pesoObjetivoRollo = Number(productoRollo?.cant_empaque) || 0;
+  }
+  const cantEmpaqueRollo = Number(productoRollo?.cant_empaque) || 0;
   // ¿Hay un 2º proceso después de extrusión en la ruta?
   const hay2doProceso = (ruta.length > 1) && (idx < ruta.length - 1);
-  const destinoRollo = esRolloDirecto
-    ? 'ROLLO DIRECTO A CLIENTE'
-    : (hay2doProceso ? 'ROLLO PARA 2º PROCESO' : 'ROLLO (producto final)');
+  const esRolloDirecto = !hay2doProceso; // extrusión es el último proceso → directo a cliente
+  const destinoRollo = esRolloDirecto ? 'ROLLO DIRECTO A CLIENTE' : 'ROLLO PARA 2º PROCESO';
   
   // Rollos del turno actual (mismo odp + mismo proceso + mismo turno + grupo + fecha + no anulado)
   const rollosDelTurno = (state.rollos_extrusion || []).filter(r => 
@@ -14451,9 +14457,13 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
               <div style="font-size:13px;font-weight:700;margin-top:6px;">Cada rollo debe ser de aproximadamente</div>
               <div style="font-size:38px;font-weight:900;line-height:1.1;">${fmtNum(pesoObjetivoRollo)} kg</div>
               <div style="font-size:11px;opacity:0.9;margin-top:2px;">${esRolloDirecto ? 'El cliente recibe el rollo tal cual' : 'El rollo pasa al siguiente proceso (bolseo/refilado)'}</div>
+            ` : (empaqueEsRollo && cantEmpaqueRollo > 0) ? `
+              <div style="font-size:13px;font-weight:700;margin-top:6px;">Cada rollo debe contener</div>
+              <div style="font-size:38px;font-weight:900;line-height:1.1;">${fmtNum(cantEmpaqueRollo)} ${umEmpaqueRollo}</div>
+              <div style="font-size:11px;opacity:0.9;margin-top:2px;">${esRolloDirecto ? 'El cliente recibe el rollo tal cual' : 'El rollo pasa al siguiente proceso (bolseo/refilado)'}</div>
             ` : `
               <div style="font-size:13px;font-weight:700;margin-top:6px;">Captura el peso de cada rollo conforme lo produces</div>
-              <div style="font-size:11px;opacity:0.85;margin-top:4px;">💡 Tip: define el peso objetivo del rollo en el producto para que aparezca aquí como guía</div>
+              <div style="font-size:11px;opacity:0.85;margin-top:4px;">💡 Tip: en el producto, configura "¿Cómo se empaca?" → Rollo de X kg para que aparezca aquí como guía</div>
             `}
           </div>
           
@@ -36141,7 +36151,6 @@ function modalEditarProductoPT() {
       tipo_sellado: p.tipo_sellado || '',
       estructura_rollo_ext: p.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(p.salidas_extrusion) || 1),
-      peso_objetivo_rollo: Number(p.peso_objetivo_rollo) || 0,
       corte_salidas: p.corte_salidas || 'bolseo',
       refilacion_modo: p.refilacion_modo || 'independiente',
       obs_extrusion: p.obs_extrusion || '',
@@ -36486,30 +36495,6 @@ function renderBloqueConfigExtrusion(f, p) {
           ` : ''}
         </div>
       ` : ''}
-      
-      <!-- 🆕 PESO OBJETIVO DEL ROLLO — lo que el operador debe producir por rollo -->
-      ${(tipoSel === 'BOLSA_ROLLO' || tipoSel === 'PELICULA' || tipoSel === 'ROLLO_DIRECTO') ? (() => {
-        const esDirecto = tipoSel === 'ROLLO_DIRECTO';
-        const destino = esDirecto ? 'ROLLO DIRECTO A CLIENTE' : 'ROLLO PARA 2º PROCESO';
-        const colorD = esDirecto ? '#16a34a' : '#3b82f6';
-        const colorBgD = esDirecto ? '#f0fdf4' : '#eff6ff';
-        return `
-        <div class="field" style="margin-top:12px;padding:12px;background:${colorBgD};border:2px solid ${colorD};border-radius:8px;">
-          <label class="field-label" style="color:${colorD};font-weight:800;font-size:13px;">
-            ⚖️ ¿De cuántos kg debe ser cada rollo?
-          </label>
-          <div style="font-size:10.5px;color:#475569;margin:4px 0 8px 0;">
-            Destino de este rollo: <strong style="color:${colorD};">${destino}</strong>.
-            ${esDirecto ? 'El cliente recibe el rollo tal cual — usa el peso que pide el cliente.' : 'El rollo pasa a bolseo/refilado — usa el peso que mejor convenga a producción.'}
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="input form-pt-edit" data-field="peso_objetivo_rollo" type="number" min="0" step="0.1" value="${f.peso_objetivo_rollo || ''}" placeholder="Ej: ${esDirecto ? '25' : '250'}" style="width:140px;font-size:20px;font-weight:800;text-align:center;" />
-            <span style="font-size:15px;font-weight:800;color:#475569;">kg por rollo</span>
-          </div>
-          <div style="font-size:10px;color:#64748b;margin-top:6px;">💡 Esto se le muestra al operador de extrusión como guía al capturar cada rollo. Si lo dejas vacío, el operador captura libre.</div>
-        </div>
-        `;
-      })() : ''}
       
       ${medidas && medidas.descripcion ? `
         <div style="margin-top:12px;padding:12px;background:#0f172a;color:#fff;border-radius:8px;">
@@ -39205,7 +39190,6 @@ window.crearProductoPT = async () => {
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
-      peso_objetivo_rollo: Number(f.peso_objetivo_rollo) || 0,
       corte_salidas: f.corte_salidas || 'bolseo',
       refilacion_modo: f.refilacion_modo || 'independiente',
       obs_extrusion: f.obs_extrusion || '',
@@ -39339,7 +39323,6 @@ window.guardarProductoPT = async (codigo) => {
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
-      peso_objetivo_rollo: Number(f.peso_objetivo_rollo) || 0,
       corte_salidas: f.corte_salidas || 'bolseo',
       refilacion_modo: f.refilacion_modo || 'independiente',
       obs_extrusion: f.obs_extrusion || '',
