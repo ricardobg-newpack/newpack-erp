@@ -20724,6 +20724,36 @@ const TIPOS_MP = [
 ];
 window.TIPOS_MP = TIPOS_MP;
 
+// 🆕 CATEGORÍAS DE RESINA — para agrupar la MP en la selección de mezclas.
+//    Cada una con palabras clave para adivinar la categoría desde el código/descripción.
+const CATEGORIAS_RESINA = [
+  { codigo: 'BD',         nombre: 'Baja densidad',            color: '#16a34a', claves: ['baja densidad','baja dens','low density','ldpe','pebd'] },
+  { codigo: 'FRAC',       nombre: 'Fraccional',               color: '#0891b2', claves: ['fraccional','fraccionario','fract'] },
+  { codigo: 'AD',         nombre: 'Alta densidad',            color: '#2563eb', claves: ['alta densidad','alta dens','high density','hdpe','pead'] },
+  { codigo: 'LINEAL',     nombre: 'Lineales',                 color: '#7c3aed', claves: ['lineal','linear','lldpe','pelbd'] },
+  { codigo: 'META',       nombre: 'Metalocenos',              color: '#c026d3', claves: ['metaloceno','metalloceno','metalocen','mlldpe','metalocén'] },
+  { codigo: 'EVA',        nombre: 'EVA / Elastómeros / Plastómeros', color: '#ea580c', claves: ['eva','elastomero','elastómero','plastomero','plastómero','copolimero','copolímero'] },
+  { codigo: 'OTRA',       nombre: 'Otras resinas',            color: '#64748b', claves: [] }
+];
+window.CATEGORIAS_RESINA = CATEGORIAS_RESINA;
+
+// Adivina la categoría de una resina por su código + descripción.
+//   Devuelve el código de categoría (BD, AD, LINEAL, etc.).
+//   IMPORTANTE: evalúa primero lo MÁS específico (metaloceno, lineal) antes que
+//   lo genérico (baja densidad), porque "lineal baja densidad" contiene ambas.
+window.adivinarCategoriaResina = (mp) => {
+  if (mp.categoria_resina) return mp.categoria_resina; // ya asignada a mano
+  const txt = `${mp.codigo || ''} ${mp.descripcion || ''}`.toLowerCase();
+  // Orden de prioridad: específico → genérico
+  const ordenPrioridad = ['META', 'LINEAL', 'FRAC', 'EVA', 'AD', 'BD'];
+  for (const codCat of ordenPrioridad) {
+    const cat = CATEGORIAS_RESINA.find(c => c.codigo === codCat);
+    if (cat && cat.claves.some(k => txt.includes(k))) return cat.codigo;
+  }
+  return 'OTRA';
+};
+
+
 // Mapeo tipo_mp → categoria_compra (unifica el sistema)
 // Una MP de tipo 'resina' equivale a categoría 'RESINA' para efectos de RC/proveedores
 const TIPO_MP_A_CATEGORIA = {
@@ -20905,11 +20935,11 @@ function modalMateriaPrima(esEdicion) {
           <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
             <div class="field">
               <label class="field-label">Código *</label>
-              <input class="input" id="mp-codigo" value="${f.codigo || ''}" placeholder="LDPE-2-CON" ${esEdicion ? 'disabled style="background:#f1f5f9;"' : ''} />
+              <input class="input" id="mp-codigo" value="${f.codigo || ''}" oninput="window.modalFormSetSilent('codigo', this.value)" placeholder="LDPE-2-CON" ${esEdicion ? 'disabled style="background:#f1f5f9;"' : ''} />
             </div>
             <div class="field">
               <label class="field-label">Descripción *</label>
-              <input class="input" id="mp-desc" value="${f.descripcion || ''}" placeholder="Baja densidad 2 CON ADITIVOS" />
+              <input class="input" id="mp-desc" value="${f.descripcion || ''}" oninput="window.modalFormSetSilent('descripcion', this.value)" placeholder="Baja densidad 2 CON ADITIVOS" />
             </div>
           </div>
           
@@ -20923,6 +20953,27 @@ function modalMateriaPrima(esEdicion) {
               `).join('')}
             </div>
           </div>
+          
+          ${(f.tipo === 'resina' || f.tipo === 'reciclado') ? (() => {
+            // Categoría adivinada (o la asignada a mano)
+            const catActual = f.categoria_resina || window.adivinarCategoriaResina(f);
+            const fueAdivinada = !f.categoria_resina;
+            return `
+            <div class="field" style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;">
+              <label class="field-label" style="color:#166534;">🧱 Categoría de resina
+                ${fueAdivinada ? `<span style="font-weight:400;color:#16a34a;font-size:10px;">(el sistema la detectó — puedes corregirla)</span>` : `<span style="font-weight:400;color:#64748b;font-size:10px;">(asignada a mano)</span>`}
+              </label>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${CATEGORIAS_RESINA.map(c => `
+                  <button onclick="window.modalFormSet('categoria_resina','${c.codigo}')" type="button" style="padding:8px 12px;border:2px solid ${catActual === c.codigo ? c.color : '#cbd5e1'};background:${catActual === c.codigo ? c.color : '#fff'};color:${catActual === c.codigo ? '#fff' : c.color};border-radius:8px;font-weight:700;font-size:11px;cursor:pointer;">
+                    ${c.nombre}
+                  </button>
+                `).join('')}
+              </div>
+              <div style="font-size:10px;color:#16a34a;margin-top:6px;">💡 Esto agrupa la resina en la selección de mezclas para encontrarla más rápido.</div>
+            </div>
+            `;
+          })() : ''}
           
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field">
@@ -20983,6 +21034,12 @@ window.confirmarMP = async (id) => {
   state.loadingAccion = true; render();
   try {
     const data = { codigo, descripcion, tipo, um, proveedor, stock_minimo, observaciones, updated_at: serverTimestamp() };
+    // 🆕 Categoría de resina (solo aplica a resina/reciclado). Si no se asignó a mano, adivinarla.
+    if (tipo === 'resina' || tipo === 'reciclado') {
+      data.categoria_resina = state.modalForm?.categoria_resina || window.adivinarCategoriaResina({ codigo, descripcion });
+    } else {
+      data.categoria_resina = null;
+    }
     if (id) {
       await updateDoc(doc(db, 'materias_primas', id), data);
       toast(`${codigo} actualizado`);
@@ -36651,31 +36708,63 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
               </div>
             `;
           }
-          // Chips de materiales agrupados por tipo
-          const chipsGrupo = (lista, ramp, icono, titulo) => {
+          // Render de un chip individual (botón con código)
+          const chip = (mp, ramp) => `
+            <button type="button" onclick="window.seleccionarMP(${capaIdx}, '${mp.codigo}')"
+              title="${(mp.descripcion||'').replace(/"/g,'')}"
+              style="padding:7px 12px;background:#fff;border:1.5px solid ${ramp};color:${ramp};border-radius:99px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;"
+              onmouseover="this.style.background='${ramp}';this.style.color='#fff';"
+              onmouseout="this.style.background='#fff';this.style.color='${ramp}';">
+              ${mp.codigo}
+            </button>`;
+          
+          // 🆕 RESINAS agrupadas por CATEGORÍA (baja densidad, alta densidad, etc.)
+          const renderResinasPorCategoria = () => {
+            if (grupoMP.length === 0) return '';
+            // Agrupar las resinas disponibles por su categoría (adivinada o asignada)
+            const porCat = {};
+            grupoMP.forEach(mp => {
+              const cat = window.adivinarCategoriaResina(mp);
+              (porCat[cat] = porCat[cat] || []).push(mp);
+            });
+            // Renderizar en el orden de CATEGORIAS_RESINA, solo las que tienen materiales
+            const secciones = window.CATEGORIAS_RESINA.filter(c => (porCat[c.codigo] || []).length > 0).map(c => `
+              <div style="margin-bottom:7px;">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c.color};"></span>
+                  <span style="font-size:11px;font-weight:800;color:${c.color};">${c.nombre}</span>
+                  <span style="font-size:9.5px;color:#94a3b8;">(${porCat[c.codigo].length})</span>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:5px;padding-left:16px;">
+                  ${porCat[c.codigo].sort((a,b)=>a.codigo.localeCompare(b.codigo)).map(mp => chip(mp, c.color)).join('')}
+                </div>
+              </div>
+            `).join('');
+            return `
+              <div style="margin-bottom:10px;">
+                <div style="font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:6px;border-bottom:1px solid #e2e8f0;padding-bottom:3px;">🧱 Resinas / Materia prima</div>
+                ${secciones}
+              </div>
+            `;
+          };
+          
+          // Aditivos y pigmentos: chips sueltos (no se agrupan por categoría)
+          const chipsSimple = (lista, ramp, icono, titulo) => {
             if (lista.length === 0) return '';
             return `
-              <div style="margin-bottom:8px;">
-                <div style="font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px;">${icono} ${titulo} (${lista.length})</div>
+              <div style="margin-bottom:10px;">
+                <div style="font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:6px;border-bottom:1px solid #e2e8f0;padding-bottom:3px;">${icono} ${titulo} (${lista.length})</div>
                 <div style="display:flex;flex-wrap:wrap;gap:5px;">
-                  ${lista.sort((a,b)=>a.codigo.localeCompare(b.codigo)).map(mp => `
-                    <button type="button" onclick="window.seleccionarMP(${capaIdx}, '${mp.codigo}')"
-                      title="${(mp.descripcion||'').replace(/"/g,'')}"
-                      style="padding:7px 12px;background:#fff;border:1.5px solid ${ramp};color:${ramp};border-radius:99px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;"
-                      onmouseover="this.style.background='${ramp}';this.style.color='#fff';"
-                      onmouseout="this.style.background='#fff';this.style.color='${ramp}';">
-                      ${mp.codigo}
-                    </button>
-                  `).join('')}
+                  ${lista.sort((a,b)=>a.codigo.localeCompare(b.codigo)).map(mp => chip(mp, ramp)).join('')}
                 </div>
               </div>
             `;
           };
           return `
             <div style="font-size:10px;font-weight:800;color:#64748b;margin-bottom:8px;">👇 Pica un material para agregarlo a la capa ${letra}:</div>
-            ${chipsGrupo(grupoMP, '#16a34a', '🧱', 'Resinas / Materia prima')}
-            ${chipsGrupo(grupoAditivo, '#8b5cf6', '⚗️', 'Aditivos')}
-            ${chipsGrupo(grupoPigmento, '#ec4899', '🎨', 'Pigmentos')}
+            ${renderResinasPorCategoria()}
+            ${chipsSimple(grupoAditivo, '#8b5cf6', '⚗️', 'Aditivos')}
+            ${chipsSimple(grupoPigmento, '#ec4899', '🎨', 'Pigmentos')}
             ${disponibles.length === 0 ? `<div style="font-size:11px;color:#94a3b8;font-style:italic;">Ya agregaste todos los materiales disponibles a esta capa.</div>` : ''}
           `;
         })()}
