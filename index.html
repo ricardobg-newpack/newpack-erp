@@ -18006,7 +18006,7 @@ window.generarReporteEjecutivoPDF = () => {
   } else {
     seccion('PUNTOS DE ATENCIÓN', VERDE);
     docPDF.setFontSize(10); docPDF.setTextColor(...VERDE);
-    docPDF.text('✓ Sin problemas detectados — el flujo está en orden', M, y + 4);
+    docPDF.text('OK: Sin problemas detectados — el flujo está en orden', M, y + 4);
     y += 12;
   }
   
@@ -26074,14 +26074,16 @@ window.imprimirRemisionPDF = (ovId) => {
   docPDF.setTextColor(0, 0, 0);
   docPDF.setFontSize(10);
   docPDF.setFont('helvetica', 'bold');
-  // 🆕 Wrap del nombre del cliente (max 86mm, 2 líneas)
-  const lCliRem = docPDF.splitTextToSize(ov.cliente_nombre || '—', 86);
-  lCliRem.slice(0, 2).forEach((line, i) => docPDF.text(line, 17, y + 11 + (i * 4)));
   docPDF.setFontSize(8);
+  // 🆕 Wrap del nombre del cliente (max 86mm, 2 líneas) — los campos de abajo
+  //    se recorren según cuántas líneas ocupó el nombre, para no empalmarse.
+  const lCliRem = docPDF.splitTextToSize(ov.cliente_nombre || '—', 86);
+  const nLineasCli = Math.min(lCliRem.length, 2);
+  lCliRem.slice(0, 2).forEach((line, i) => docPDF.text(line, 17, y + 11 + (i * 3.8)));
+  let yCli = y + 11 + (nLineasCli * 3.8) + 1.5; // debajo del nombre
+  docPDF.setFontSize(7.5);
   docPDF.setFont('helvetica', 'normal');
-  docPDF.text(`Código: ${ov.cliente_codigo || '—'}`, 17, y + 16);
-  docPDF.text(`PI origen: ${ov.pedido_folio || '—'}`, 17, y + 21);
-  docPDF.text(`OV: ${ov.folio || '—'}`, 17, y + 26);
+  docPDF.text(`Código: ${ov.cliente_codigo || '—'}  ·  PI: ${ov.pedido_folio || '—'}  ·  OV: ${ov.folio || '—'}`, 17, yCli);
   
   // Referencias
   docPDF.setFontSize(8);
@@ -27245,7 +27247,7 @@ window.imprimirOCPDF = (ocId) => {
     docPDF.text('Moneda:', 110, dy);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(oc.moneda === 'USD' ? 22 : 124, oc.moneda === 'USD' ? 163 : 58, oc.moneda === 'USD' ? 74 : 237);
-    docPDF.text(oc.moneda === 'USD' ? '🇺🇸 USD (Dólares)' : '🇲🇽 MXN (Pesos)', 135, dy);
+    docPDF.text(oc.moneda === 'USD' ? 'USD (Dolares)' : 'MXN (Pesos)', 135, dy);
     docPDF.setTextColor(71, 85, 105);
     dy += 5;
     
@@ -27772,12 +27774,12 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
     docPDF.setTextColor(255, 255, 255);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(10);
-    docPDF.text(`✓ ${procCerrado.nombre.toUpperCase()} COMPLETADO`, margen + 4, y + 6);
+    docPDF.text(`${procCerrado.nombre.toUpperCase()} COMPLETADO`, margen + 4, y + 6);
     docPDF.setFontSize(11);
     if (siguienteProc) {
-      docPDF.text(`→ PASA A: ${siguienteProc.nombre.toUpperCase()}`, margen + 4, y + 11);
+      docPDF.text(`PASA A: ${siguienteProc.nombre.toUpperCase()}`, margen + 4, y + 11);
     } else {
-      docPDF.text(`→ ÚLTIMO PROCESO: PASA A CALIDAD / EMPAQUE`, margen + 4, y + 11);
+      docPDF.text(`ULTIMO PROCESO: PASA A CALIDAD / EMPAQUE`, margen + 4, y + 11);
     }
     docPDF.setTextColor(0, 0, 0);
     y += 18;
@@ -28116,7 +28118,7 @@ window.imprimirPaseSiguienteProceso = (odpId, procesoCerradoCodigo) => {
     docPDF.setFontSize(6);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(120, 120, 120);
-    docPDF.text(`Generado: ${new Date().toLocaleString('es-MX')} · NewPack ERP · ${odp.folio} · Pase de ${procCerrado.nombre} → ${siguienteProc?.nombre || 'Calidad'}`, W/2, 273, { align: 'center' });
+    docPDF.text(`Generado: ${new Date().toLocaleString('es-MX')} · NewPack ERP · ${odp.folio} · Pase de ${procCerrado.nombre} a ${siguienteProc?.nombre || 'Calidad'}`, W/2, 273, { align: 'center' });
     
     const filename = `Pase_${odp.folio}_${procCerrado.codigo.replace('-','')}.pdf`;
     
@@ -29099,17 +29101,20 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   
   y += 4;
   
-  // 🆕 Línea informativa sobre tolerancias
-  docPDF.setFillColor(255, 248, 220);
-  docPDF.setDrawColor(255, 200, 100);
-  docPDF.rect(margen, y, W - margen*2, 6, 'FD');
-  docPDF.setDrawColor(0, 0, 0);
+  // 🆕 Línea informativa sobre tolerancias (con wrap para que no se desborde)
   docPDF.setFont('helvetica', 'italic');
   docPDF.setFontSize(7.5);
+  const _txtImp = 'IMPORTANTE: El operador DEBE verificar que cada bulto/rollo cumpla con las medidas dentro del rango Minimo-Maximo. Si sale fuera de rango, detener produccion y avisar a calidad.';
+  const _lineasImp = docPDF.splitTextToSize(_txtImp, W - margen*2 - 4);
+  const _hImp = _lineasImp.length * 3.4 + 3;
+  docPDF.setFillColor(255, 248, 220);
+  docPDF.setDrawColor(255, 200, 100);
+  docPDF.rect(margen, y, W - margen*2, _hImp, 'FD');
+  docPDF.setDrawColor(0, 0, 0);
   docPDF.setTextColor(120, 80, 0);
-  docPDF.text('IMPORTANTE: El operador DEBE verificar que cada bulto/rollo cumpla con las medidas dentro del rango Minimo-Maximo. Si sale fuera de rango, detener produccion y avisar a calidad.', margen + 2, y + 4);
+  docPDF.text(_lineasImp, margen + 2, y + 3.5);
   docPDF.setTextColor(0, 0, 0);
-  y += 8;
+  y += _hImp + 2;
   
   // ============ CÓMO PRODUCIR (lo más importante para extrusión) ============
   const medRollo = (typeof window.calcularMedidasRolloExt === 'function') ? window.calcularMedidasRolloExt(producto) : null;
@@ -29141,10 +29146,13 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
       docPDF.splitTextToSize(p, W - margen*2 - 8).forEach(l => obsLines.push(l));
     });
     
-    // Cabecera de tipo/estructura (línea fija)
-    const nombreEstructura = medRollo.estructura_nombre_limpio || medRollo.estructura_nombre;
-    const tipoTxt = limpiar(`${medRollo.tipo_sellado_nombre} - ${nombreEstructura}`);
-    const extruirTxt = limpiar(`EXTRUIR: ${medRollo.descripcion}`);
+    // Cabecera de tipo/estructura (línea fija) — con respaldo si falta el dato
+    const nombreEstructura = medRollo.estructura_nombre_limpio || medRollo.estructura_nombre || '';
+    const tipoSelNom = medRollo.tipo_sellado_nombre || '';
+    const tipoTxtRaw = [tipoSelNom, nombreEstructura].filter(Boolean).join(' - ') || 'Rollo de extrusión';
+    const tipoTxt = limpiar(tipoTxtRaw);
+    const descRollo = medRollo.descripcion || _medidaProductoTxt(producto) || 'Ver medidas arriba';
+    const extruirTxt = limpiar(`EXTRUIR: ${descRollo}`);
     const tipoLines = docPDF.splitTextToSize(tipoTxt, W - margen*2 - 8);
     const extruirLines = docPDF.splitTextToSize(extruirTxt, W - margen*2 - 8);
     
@@ -29258,7 +29266,7 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
     docPDF.text('PRODUCTO SIN FORMULACION CAPTURADA', margen + 3, y + 5);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setFontSize(7.5);
-    docPDF.text('Edita el producto en el catálogo Productos PT → Capas/Formulación y captura los materiales por cada capa.', margen + 3, y + 10);
+    docPDF.text('Edita el producto en el catalogo Productos PT - Capas/Formulacion y captura los materiales por cada capa.', margen + 3, y + 10);
     docPDF.setTextColor(0, 0, 0);
     y += 16;
   } else {
@@ -30769,7 +30777,9 @@ window.imprimirFichaTecnicaPDF = (productoCodigo, clienteCodigo) => {
     y = docPDF.lastAutoTable.finalY + 8;
 
     // ====== FIRMA ======
-    if (y > 270) { docPDF.addPage(); y = 30; }
+    // La firma necesita ~10mm (línea + texto). El footer está en ~283.
+    // Si el contenido pasa de 273, no caben los 10mm sin empalmar → nueva página.
+    if (y > 273) { docPDF.addPage(); y = 40; }
     docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.line(75, y, 135, y);
     docPDF.setFontSize(8);
@@ -30975,7 +30985,7 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
       const ok = dentroTol(med.ancho, tols.ancho_min, tols.ancho_max);
       filasCar.push([
         'Ancho (cm)',
-        `${producto.ancho} cm (+/-) ${tols.tol_ancho * 10} mm`,
+        `${producto.ancho} cm (+/-) ${(Number(tols.tol_ancho) || 1) * 10} mm`,
         { content: `${med.ancho} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
       ]);
     }
@@ -30986,7 +30996,7 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
       const okI = dentroTol(med.fuelle_izquierdo, tols.fuelle_min/2, tols.fuelle_max/2);
       filasCar.push([
         'Fuelle (cm)',
-        `${producto.fuelle} cm ( ${(producto.fuelle/2).toFixed(0)} + ${(producto.fuelle/2).toFixed(0)} ) (+/-) ${tols.tol_fuelle * 10} mm`,
+        `${producto.fuelle} cm ( ${(producto.fuelle/2).toFixed(0)} + ${(producto.fuelle/2).toFixed(0)} ) (+/-) ${(Number(tols.tol_fuelle) || 1) * 10} mm`,
         { content: med.fuelle_derecho + ' cm', styles: { halign: 'center', textColor: okD === false ? [220,38,38] : [0,0,0], fontStyle: okD === false ? 'bold' : 'normal' } },
         { content: med.fuelle_centro || 'N/A', styles: { halign: 'center' } },
         { content: med.fuelle_izquierdo + ' cm', styles: { halign: 'center', textColor: okI === false ? [220,38,38] : [0,0,0], fontStyle: okI === false ? 'bold' : 'normal' } },
@@ -30998,7 +31008,7 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
       const ok = dentroTol(med.largo, tols.largo_min, tols.largo_max);
       filasCar.push([
         'Largo (cm)',
-        `${producto.largo} (+/-) ${tols.tol_largo * 10} mm`,
+        `${producto.largo} (+/-) ${(Number(tols.tol_largo) || 1) * 10} mm`,
         { content: `${med.largo} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
       ]);
     }
@@ -31020,9 +31030,9 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
       filasCar.push([
         'Calibre (in")',
         String(producto.calibre),
-        { content: String(med.calibre_max), styles: { halign: 'center', textColor: okMax === false ? [220,38,38] : [0,0,0], fontStyle: okMax === false ? 'bold' : 'normal' } },
-        { content: String(med.calibre_moda), styles: { halign: 'center', textColor: okModa === false ? [220,38,38] : [0,0,0], fontStyle: okModa === false ? 'bold' : 'normal' } },
-        { content: String(med.calibre_min), styles: { halign: 'center', textColor: okMin === false ? [220,38,38] : [0,0,0], fontStyle: okMin === false ? 'bold' : 'normal' } },
+        { content: med.calibre_max != null ? String(med.calibre_max) : '—', styles: { halign: 'center', textColor: okMax === false ? [220,38,38] : [0,0,0], fontStyle: okMax === false ? 'bold' : 'normal' } },
+        { content: med.calibre_moda != null ? String(med.calibre_moda) : '—', styles: { halign: 'center', textColor: okModa === false ? [220,38,38] : [0,0,0], fontStyle: okModa === false ? 'bold' : 'normal' } },
+        { content: med.calibre_min != null ? String(med.calibre_min) : '—', styles: { halign: 'center', textColor: okMin === false ? [220,38,38] : [0,0,0], fontStyle: okMin === false ? 'bold' : 'normal' } },
       ]);
     }
 
@@ -44287,7 +44297,7 @@ function _renderOTIPDF(oti, esPreview) {
     docPDF.setTextColor(255, 255, 255);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(10);
-    docPDF.text(`EMBARQUE INTERNO · ${oti.origen || 'PLANTA-MTY'} → ${oti.destino || 'CEDIS-MTY'}`, W/2, y + 5.5, { align: 'center' });
+    docPDF.text(`EMBARQUE INTERNO · ${oti.origen || 'PLANTA-MTY'} a ${oti.destino || 'CEDIS-MTY'}`, W/2, y + 5.5, { align: 'center' });
     docPDF.setTextColor(0, 0, 0);
     y += 11;
   }
