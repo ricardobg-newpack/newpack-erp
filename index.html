@@ -2598,44 +2598,55 @@ window.deduceRequiereProcesoSecundario = (producto) => {
   }
   
   // 2) Deducir del tipo de producto
+  //    🆕 ROBUSTEZ: combinar tipo + descripción + código, porque a veces el campo
+  //    `tipo` viene vacío o mal puesto. El código (ej. HDBR=Bolsa Rollo, LDBS=Bolsa Suelta)
+  //    y la descripción son respaldo para no mandar por error a Calidad sin 2º proceso.
   const tipo = (producto.tipo || '').toUpperCase().trim();
+  const desc = (producto.descripcion || '').toUpperCase();
+  const cod = (producto.codigo || '').toUpperCase();
   const forma = tipoFormaProducto(producto);
+  // Texto combinado para búsqueda de palabras clave (tipo manda, luego descripción)
+  const txt = `${tipo} ${desc}`;
+  // Pistas por código: los 4 primeros chars suelen codificar densidad+forma
+  //   LDBS/HDBS = Bolsa Suelta · LDBR/HDBR = Bolsa en Rollo · TEPR = Termoencogible Película
+  const cod4 = cod.slice(0, 4);
+  const codEsBolsaRollo = /^(LD|HD|AD|MD|LL)BR/.test(cod) || cod4.endsWith('BR');
+  const codEsBolsaSuelta = /^(LD|HD|AD|MD|LL)BS/.test(cod) || cod4.endsWith('BS');
+  const codEsPelicula = cod4.startsWith('TE') || cod4.endsWith('PR') || cod4.endsWith('PE');
   
   // ───── PELÍCULA PLANA con acabado especial → sí lleva 2º proceso ─────
-  // Película plana REFILADA:
-  //   - refilacion_modo='extrusion' → se refila EN la misma corrida → flujo directo
-  //   - refilacion_modo='independiente' (o sin definir) → pasa a Refilación/Embobinado (P6-REF)
-  if (tipo.includes('PELICULA') && (tipo.includes('REFILAD') || tipo.includes('REFILE'))) {
+  if (txt.includes('PELICULA') && (txt.includes('REFILAD') || txt.includes('REFILE'))) {
     if (producto.refilacion_modo === 'extrusion') {
       return { requiere: false, proceso: '', origen: 'auto-tipo' }; // refila en extrusión, sale terminada
     }
     return { requiere: true, proceso: 'P6-REF', origen: 'auto-tipo' }; // refila aparte
   }
   // Película plana PUNTEADA / PERFORADA → Bolsa en Rollo (P4-BR), ahí se puntea
-  if (tipo.includes('PELICULA') && (tipo.includes('PUNTEAD') || tipo.includes('PERFORAD'))) {
+  if (txt.includes('PELICULA') && (txt.includes('PUNTEAD') || txt.includes('PERFORAD'))) {
     return { requiere: true, proceso: 'P4-BR', origen: 'auto-tipo' };
-  }
-  // Película plana lisa / film simple → flujo directo (sale terminada de extrusión)
-  if (tipo.includes('PELICULA') || tipo.includes('FILM')) {
-    return { requiere: false, proceso: '', origen: 'auto-tipo' };
-  }
-  
-  // ───── ROLLO DIRECTO → flujo directo ─────
-  if (tipo.includes('ROLLO DIRECTO') || tipo.includes('ROLLO MANUAL') || tipo.includes('ROLLO AUTOMATICO')) {
-    return { requiere: false, proceso: '', origen: 'auto-tipo' };
   }
   
   // ───── BOLSA EN ROLLO → Bolsa en Rollo (P4-BR) ─────
-  if ((tipo.includes('BOLSA') && (tipo.includes('ROLLO') || tipo.includes('BR'))) || forma === 'bolsa_rollo') {
-    return { requiere: true, proceso: 'P4-BR', origen: 'auto-tipo' };
+  //    (Se evalúa ANTES que película lisa y que bolsa suelta, por especificidad.)
+  if ((txt.includes('BOLSA') && (txt.includes('ROLLO') || txt.includes(' BR') || txt.includes('EN ROLLO'))) ||
+      forma === 'bolsa_rollo' || codEsBolsaRollo) {
+    return { requiere: true, proceso: 'P4-BR', origen: codEsBolsaRollo && !tipo ? 'auto-codigo' : 'auto-tipo' };
   }
   
   // ───── BOLSA SUELTA / FUELLE / MANGA → Bolsa Suelta (P3-BS) ─────
-  if (tipo.includes('BOLSA') || tipo.includes('MANGA') || 
-      forma === 'bolsa_suelta' || forma === 'bolsa_fuelle' || forma === 'manga') {
-    return { requiere: true, proceso: 'P3-BS', origen: 'auto-tipo' };
+  if (txt.includes('BOLSA') || txt.includes('MANGA') ||
+      forma === 'bolsa_suelta' || forma === 'bolsa_fuelle' || forma === 'manga' || codEsBolsaSuelta) {
+    return { requiere: true, proceso: 'P3-BS', origen: codEsBolsaSuelta && !tipo ? 'auto-codigo' : 'auto-tipo' };
   }
   
+  // ───── ROLLO DIRECTO → flujo directo (sale terminado de extrusión) ─────
+  if (txt.includes('ROLLO DIRECTO') || txt.includes('ROLLO MANUAL') || txt.includes('ROLLO AUTOMATICO')) {
+    return { requiere: false, proceso: '', origen: 'auto-tipo' };
+  }
+  // Película plana lisa / film simple → flujo directo
+  if (txt.includes('PELICULA') || txt.includes('FILM') || codEsPelicula) {
+    return { requiere: false, proceso: '', origen: 'auto-tipo' };
+  }
   // ───── ROLLO genérico / HOJA → flujo directo ─────
   if (forma === 'rollo' || forma === 'hoja') {
     return { requiere: false, proceso: '', origen: 'auto-tipo' };
@@ -12687,9 +12698,35 @@ function renderTarjetaCalidad(o, contexto) {
       ` : ''}
       
       <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
-        ${o.estatus === 'pendiente_calidad' ? `
-          <button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>
-        ` : ''}
+        ${o.estatus === 'pendiente_calidad' ? (() => {
+          // 🆕 DETECCIÓN DE ERROR DE FLUJO: ¿esta ODP llegó a Calidad sin hacer un 2º proceso?
+          //    Señales: (a) el producto requiere un proceso que NO está en la ruta, o
+          //             (b) hay rollos de extrusión en intermedio sin consumir (no bolseados).
+          const prodCal = window.getProductoPT ? window.getProductoPT(o.producto_codigo) : (state.productos_pt||[]).find(p=>p.codigo===o.producto_codigo);
+          const flujoReq = window.deduceRequiereProcesoSecundario ? window.deduceRequiereProcesoSecundario(prodCal) : { requiere:false };
+          const rutaO = o.ruta_procesos || [];
+          const faltaEnRuta = flujoReq.requiere && flujoReq.proceso && !rutaO.includes(flujoReq.proceso);
+          // Rollos de extrusión de esta ODP que NO fueron consumidos por un 2º proceso
+          const rollosSinProcesar = (state.rollos_extrusion || [])
+            .filter(r => r.odp_id === o.id && !r.anulado && !r.consumido_en_odp_id && !r.consolidado_en_turno)
+            .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
+          const hayMaterialSinProcesar = flujoReq.requiere && rollosSinProcesar > 0;
+          
+          if (faltaEnRuta || hayMaterialSinProcesar) {
+            const nomProc = getProc(flujoReq.proceso)?.nombre || flujoReq.proceso;
+            return `
+              <div style="width:100%;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;padding:12px;margin-bottom:8px;">
+                <div style="font-weight:800;color:#991b1b;font-size:13px;margin-bottom:4px;">⚠ Esta orden llegó a Calidad sin pasar por ${nomProc}</div>
+                <div style="font-size:11px;color:#7f1d1d;margin-bottom:8px;">
+                  El producto requiere <strong>${nomProc}</strong> antes de liberarse${rollosSinProcesar > 0 ? `, y hay <strong>${fmtNum(rollosSinProcesar)} kg</strong> de rollos en almacén intermedio sin procesar` : ''}. No debe liberarse así.
+                </div>
+                <button onclick="window.regresarAProduccionParaProceso('${o.id}')" style="padding:9px 16px;background:#dc2626;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;">↩ Regresar a producción (falta ${nomProc})</button>
+              </div>
+              <button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad de todos modos</button>
+            `;
+          }
+          return `<button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>`;
+        })() : ''}
         ${o.estatus === 'liberada_empaque' || o.packing_list ? `
           <button onclick="imprimirPackingListPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📦 Packing List PDF</button>
           <button onclick="imprimirEtiquetasTarimasPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🏷️ Etiquetas tarimas</button>
@@ -41064,8 +41101,105 @@ window.confirmarCompletarProceso = async (odpId) => {
 };
 
 // ============================================================
-// 🆕 ENVIAR PARCIAL Y CONTINUAR — cierra lo producido y deja saldo abierto
+// 🆕 REGRESAR A PRODUCCIÓN — repara una ODP que llegó a Calidad sin hacer un 2º proceso
+//    Recalcula la ruta correcta del producto, regresa la ODP a 'en_produccion' y deja
+//    el proceso faltante (bolseo/refilación) PENDIENTE para que se trabaje.
 // ============================================================
+window.regresarAProduccionParaProceso = async (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  
+  const producto = window.getProductoPT ? window.getProductoPT(odp.producto_codigo) : (state.productos_pt||[]).find(p=>p.codigo===odp.producto_codigo);
+  const flujoReq = window.deduceRequiereProcesoSecundario(producto);
+  if (!flujoReq.requiere || !flujoReq.proceso) {
+    toast('Este producto no requiere un 2º proceso según su configuración', 'error');
+    return;
+  }
+  const procFaltante = flujoReq.proceso;
+  const nomProc = getProc(procFaltante)?.nombre || procFaltante;
+  
+  // Reconstruir la ruta correcta: extrusión + el proceso faltante
+  let rutaNueva = Array.isArray(odp.ruta_procesos) && odp.ruta_procesos.length > 0
+    ? [...odp.ruta_procesos]
+    : ['P1-EXT'];
+  if (!rutaNueva.includes('P1-EXT')) rutaNueva.unshift('P1-EXT');
+  if (!rutaNueva.includes(procFaltante)) rutaNueva.push(procFaltante);
+  
+  const ok = confirm(
+    `↩ REGRESAR ${odp.folio} A PRODUCCIÓN\n\n` +
+    `Esta orden llegó a Calidad sin pasar por ${nomProc}.\n\n` +
+    `Se va a:\n` +
+    `• Quitar de liberación de Calidad\n` +
+    `• Regresar a producción\n` +
+    `• Dejar ${nomProc} PENDIENTE (los rollos en intermedio se podrán bolsear)\n\n` +
+    `La extrusión ya hecha se conserva. ¿Continuar?`
+  );
+  if (!ok) return;
+  
+  try {
+    state.loadingAccion = true; render();
+    // Reconstruir avance_procesos respetando lo ya hecho en extrusión
+    const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
+    // Extrusión: conservar lo producido, marcarla completada
+    const kgExt = window.kgProducidoProceso ? window.kgProducidoProceso(odp, 'P1-EXT') : (Number(odp.cantidad_producida_final_kg) || 0);
+    avanceProc['P1-EXT'] = {
+      ...(avanceProc['P1-EXT'] || {}),
+      producido_kg: Math.round(kgExt),
+      estatus: 'completado',
+      completado: true
+    };
+    // Proceso faltante: dejarlo pendiente/esperando
+    avanceProc[procFaltante] = {
+      producido_kg: 0,
+      liberado_kg: 0,
+      estatus: 'esperando',
+      completado: false
+    };
+    
+    const idxFaltante = rutaNueva.indexOf(procFaltante);
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      ruta_procesos: rutaNueva,
+      avance_procesos: avanceProc,
+      estatus: 'en_produccion',
+      proceso_actual_idx: idxFaltante,
+      proceso_actual: procFaltante,
+      proceso_estatus_actual: 'esperando',
+      // Limpiar marcas de "terminada" que la habían mandado a Calidad
+      cantidad_producida_final: null,
+      cantidad_producida_final_kg: null,
+      produccion_terminada_at: null,
+      reparada_flujo_at: serverTimestamp(),
+      reparada_flujo_por: state.user?.nombre || state.user?.email || 'sistema',
+      updated_at: serverTimestamp()
+    });
+    // Optimistic local
+    const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
+    if (odpLocal) {
+      odpLocal.ruta_procesos = rutaNueva;
+      odpLocal.avance_procesos = avanceProc;
+      odpLocal.estatus = 'en_produccion';
+      odpLocal.proceso_actual_idx = idxFaltante;
+      odpLocal.proceso_actual = procFaltante;
+      odpLocal.proceso_estatus_actual = 'esperando';
+      odpLocal.cantidad_producida_final_kg = null;
+    }
+    
+    await addDoc(collection(db, 'notificaciones'), {
+      titulo: `↩ ${odp.folio} regresada a producción`,
+      mensaje: `Faltaba ${nomProc}. Ahora está pendiente para procesarse. Extrusión: ${fmtNum(kgExt)} kg conservados.`,
+      depto_destino: 'PRO', tipo: 'alerta', folio_ref: odp.folio,
+      vista_destino: 'captura_produccion', leida: false, created_at: serverTimestamp()
+    });
+    
+    toast(`↩ ${odp.folio} regresada a producción · ${nomProc} pendiente · ${fmtNum(kgExt)} kg de extrusión conservados`, 'success');
+  } catch (e) {
+    console.error('Error regresar a producción:', e);
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 // Flujo: el proceso produjo menos que su meta. Se cierra lo producido (sigue
 // el flujo normal: → siguiente proceso o → Calidad), y se crea una ODP de
 // CONTINUACIÓN con el saldo, ligada al mismo pedido, para producir el resto.
