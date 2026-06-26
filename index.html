@@ -29847,9 +29847,13 @@ window.imprimirEtiquetasPDF = (odpId) => {
 function _medidaProductoTxt(p) {
   if (!p) return '';
   const anc = p.ancho || '';
-  const fue = p.fuelle || 0;
-  const lar = p.largo || '';
+  const fue = Number(p.fuelle) || 0;
+  const lar = Number(p.largo) || 0;
   // ⚠ Calibre NO se incluye en la etiqueta (Ricardo: solo medida + color)
+  // 🆕 Si el largo es 0 (rollo/película plana, sin largo de bolsa), mostrar solo ancho (+fuelle)
+  if (lar <= 0) {
+    return fue > 0 ? `${anc}+${fue} cm` : `${anc} cm`;
+  }
   return fue > 0 ? `${anc}+${fue}×${lar}` : `${anc}×${lar}`;
 }
 
@@ -30155,7 +30159,7 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.setFontSize(8);
   doc.setTextColor(91, 33, 182);
   const destinoTxt = `PASA A: ${(d.destino_proceso || 'PROCESO SIGUIENTE').toUpperCase()}`;
-  doc.text(`➡ ${destinoTxt}`, x + 4, y + 14.6);
+  doc.text(destinoTxt, x + 4, y + 14.6);
   doc.setTextColor(0, 0, 0);
   
   // ===== IDENTIFICADOR DEL ROLLO + PESO (en líneas separadas para que no se empalmen) =====
@@ -30186,8 +30190,8 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.setTextColor(0, 0, 0);
   
   // ===== DATOS TÉCNICOS (2 columnas, sin empalme) =====
-  yt = y + 27;
-  const lineH = 4.2;
+  yt = y + 26;
+  const lineH = 4.0;
   const midX = x + w / 2;
   // Columna izquierda: etiqueta + valor (valor no pasa de la mitad)
   const xLabL = x + 3, xValL = x + 17;
@@ -30224,10 +30228,29 @@ function _renderEtiquetaWIP(doc, x, y, w, h, d, rollo, totalRollos) {
     yt += lineH;
   }
   
-  par('Producto:', d.producto_codigo, 'Calibre:', d.calibre);
-  par('Medida:', d.medida, 'Densidad:', d.densidad);
-  par('Color:', d.color, 'Material:', d.material);
-  par('Cliente:', d.cliente, 'Fecha:', rollo.fecha || '');
+  // 🆕 Fila de ancho COMPLETO (para el código de producto largo): ajusta la fuente
+  //    hacia abajo hasta que el código quepa entero, sin recortarlo.
+  function filaCompleta(label, valor) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(110, 110, 110);
+    const wLabel = doc.getTextWidth(label) + 2;
+    doc.text(label, xLabL, yt);
+    const xv = xLabL + wLabel;
+    const anchoVal = (x + w - 3) - xv;
+    let fs = 7.3;
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    const txt = String(valor || '—');
+    while (fs > 5 && (doc.setFontSize(fs), doc.getTextWidth(txt)) > anchoVal) fs -= 0.3;
+    doc.setFontSize(fs);
+    doc.text(txt, xv, yt);
+    yt += lineH;
+  }
+  
+  filaCompleta('Producto:', d.producto_codigo);
+  par('Medida:', d.medida, 'Calibre:', d.calibre);
+  par('Color:', d.color, 'Densidad:', d.densidad);
+  par('Material:', d.material, 'Cliente:', d.cliente);
+  par('Fecha:', rollo.fecha || '', null, null);
   
   // ===== PIE: ODP + rollo X de N + operador =====
   yt = y + h - 4;
@@ -30347,8 +30370,8 @@ function _renderEtiquetaRolloCliente(doc, x, y, w, h, d, rollo, totalRollos) {
   doc.setTextColor(0, 0, 0);
   
   // ===== DATOS TÉCNICOS (2 columnas) =====
-  yt = y + 24;
-  const lineH = 4.5;
+  yt = y + 23;
+  const lineH = 4.2;
   const midX = x + w / 2;
   const xLabL = x + 3, xValL = x + 17;
   const anchoValL = midX - xValL - 2;
@@ -30376,11 +30399,27 @@ function _renderEtiquetaRolloCliente(doc, x, y, w, h, d, rollo, totalRollos) {
     }
     yt += lineH;
   }
+  // 🆕 Fila de ancho COMPLETO con fuente ajustable (código de producto largo)
+  function filaCompleta(label, valor) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6.3); doc.setTextColor(110, 110, 110);
+    const wLabel = doc.getTextWidth(label) + 2;
+    doc.text(label, xLabL, yt);
+    const xv = xLabL + wLabel;
+    const anchoVal = (x + w - 3) - xv;
+    let fs = 7.3;
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(0, 0, 0);
+    const txt = String(valor || '—');
+    while (fs > 5 && (doc.setFontSize(fs), doc.getTextWidth(txt)) > anchoVal) fs -= 0.3;
+    doc.setFontSize(fs);
+    doc.text(txt, xv, yt);
+    yt += lineH;
+  }
   
-  par('Producto:', d.producto_codigo, 'Calibre:', d.calibre);
-  par('Medida:', d.medida, 'Densidad:', d.densidad);
-  par('Color:', d.color, 'Material:', d.material);
-  par('Cliente:', d.cliente, 'Fecha:', rollo.fecha || '');
+  filaCompleta('Producto:', d.producto_codigo);
+  par('Medida:', d.medida, 'Calibre:', d.calibre);
+  par('Color:', d.color, 'Densidad:', d.densidad);
+  par('Material:', d.material, 'Cliente:', d.cliente);
+  par('Fecha:', rollo.fecha || '', null, null);
   
   // ===== PIE: rollo X de N + operador =====
   yt = y + h - 4;
