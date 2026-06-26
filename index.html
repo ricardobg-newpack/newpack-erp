@@ -11654,6 +11654,7 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
                   ? `<button onclick="event.stopPropagation();window.reanudarODP('${siguiente.id}','${procSel}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ REANUDAR</button>`
                   : `<button onclick="event.stopPropagation();window.iniciarProduccionODP('${siguiente.id}','${procSel}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:16px;border-radius:10px;cursor:pointer;font-weight:900;font-size:16px;">▶️ INICIAR ESTA</button>`}
                 <button onclick="event.stopPropagation();window.mostrarComoProducir('${siguiente.id}')" style="width:100%;margin-top:6px;background:#fff7ed;color:#c2410c;border:1.5px solid #ea580c;padding:9px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔥 ¿Cómo producir esto?</button>
+                <button onclick="event.stopPropagation();window.imprimirOrdenProduccionPDF('${siguiente.id}')" style="width:100%;margin-top:6px;background:#4f46e5;color:#fff;border:none;padding:10px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📄 Imprimir hoja ODP + especificaciones</button>
               ` : `
                 <!-- SIN TRABAJO -->
                 <div style="text-align:center;padding:28px 10px;color:#cbd5e1;">
@@ -11776,9 +11777,15 @@ function _tableroTarjetaActiva(o, procSel, proc) {
             ? `<button onclick="event.stopPropagation();window.cerrarDesdeTablero('${o.id}','${procSel}')" style="background:#fff;color:#15803d;border:1.5px solid #16a34a;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✓ Terminar</button>`
             : `<button disabled title="Captura producción antes de terminar" style="background:#f1f5f9;color:#cbd5e1;border:1.5px solid #e2e8f0;padding:9px;border-radius:7px;cursor:not-allowed;font-weight:800;font-size:11px;">✓ Terminar</button>`}
         </div>
-        ${!esExtrusion && prod > 0 ? `
-          <button onclick="event.stopPropagation();window.imprimirEtiquetasPDF('${o.id}')" style="background:#f59e0b;color:#fff;border:none;padding:10px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🏷️ Imprimir etiquetas</button>
-        ` : ''}
+        
+        <!-- 🆕 IMPRESIÓN A LA MANO: hoja de especificaciones + ODP y etiquetas, sin entrar al detalle -->
+        <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:8px;">
+          <div style="font-size:9.5px;font-weight:800;color:#4338ca;text-transform:uppercase;margin-bottom:6px;text-align:center;">🖨️ Imprimir a la mano</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <button onclick="event.stopPropagation();window.imprimirOrdenProduccionPDF('${o.id}')" style="background:#4f46e5;color:#fff;border:none;padding:11px 8px;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;line-height:1.2;">📄 Hoja ODP +<br>Especificaciones</button>
+            <button onclick="event.stopPropagation();window.imprimirEtiquetasPDF('${o.id}')" style="background:#f59e0b;color:#fff;border:none;padding:11px 8px;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;line-height:1.2;">🏷️ Imprimir<br>etiquetas</button>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -14238,6 +14245,18 @@ function modalCapturarTurno() {
 function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada, metaKg, totalProducidoKg, totalMermasKg, faltaKg, pctAvance, operadoresFiltrados, supervisoresFiltrados, f) {
   const procCodigo = ruta[idx];
   
+  // 🆕 GUÍA DE PESO DEL ROLLO — leer del producto: ¿de cuántos kg debe ser cada rollo?
+  //    y ¿es rollo directo a cliente o para 2º proceso?
+  const productoRollo = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
+  const pesoObjetivoRollo = Number(productoRollo?.peso_objetivo_rollo) || 0;
+  const tipoSelladoRollo = productoRollo?.tipo_sellado || '';
+  const esRolloDirecto = tipoSelladoRollo === 'ROLLO_DIRECTO';
+  // ¿Hay un 2º proceso después de extrusión en la ruta?
+  const hay2doProceso = (ruta.length > 1) && (idx < ruta.length - 1);
+  const destinoRollo = esRolloDirecto
+    ? 'ROLLO DIRECTO A CLIENTE'
+    : (hay2doProceso ? 'ROLLO PARA 2º PROCESO' : 'ROLLO (producto final)');
+  
   // Rollos del turno actual (mismo odp + mismo proceso + mismo turno + grupo + fecha + no anulado)
   const rollosDelTurno = (state.rollos_extrusion || []).filter(r => 
     r.odp_id === odp.id && 
@@ -14425,9 +14444,22 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
             </div>
           </div>
           
+          <!-- 🆕 BANNER: de cuánto debe ser cada rollo y su destino -->
+          <div style="background:${esRolloDirecto ? '#16a34a' : '#3b82f6'};color:#fff;border-radius:10px;padding:14px 16px;margin-bottom:12px;text-align:center;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;opacity:0.9;">${esRolloDirecto ? '🧻' : '🌀'} ${destinoRollo}</div>
+            ${pesoObjetivoRollo > 0 ? `
+              <div style="font-size:13px;font-weight:700;margin-top:6px;">Cada rollo debe ser de aproximadamente</div>
+              <div style="font-size:38px;font-weight:900;line-height:1.1;">${fmtNum(pesoObjetivoRollo)} kg</div>
+              <div style="font-size:11px;opacity:0.9;margin-top:2px;">${esRolloDirecto ? 'El cliente recibe el rollo tal cual' : 'El rollo pasa al siguiente proceso (bolseo/refilado)'}</div>
+            ` : `
+              <div style="font-size:13px;font-weight:700;margin-top:6px;">Captura el peso de cada rollo conforme lo produces</div>
+              <div style="font-size:11px;opacity:0.85;margin-top:4px;">💡 Tip: define el peso objetivo del rollo en el producto para que aparezca aquí como guía</div>
+            `}
+          </div>
+          
           <!-- AGREGAR ROLLO -->
           <div style="background:#fff;border:2px solid #dc2626;border-radius:10px;padding:12px;margin-bottom:12px;">
-            <div style="font-size:13px;font-weight:800;color:#dc2626;margin-bottom:8px;">➕ Capturar rollo #${proxNumRollo}</div>
+            <div style="font-size:13px;font-weight:800;color:#dc2626;margin-bottom:8px;">➕ Capturar rollo #${proxNumRollo}${pesoObjetivoRollo > 0 ? ` <span style="font-weight:600;color:#64748b;font-size:11px;">· objetivo: ~${fmtNum(pesoObjetivoRollo)} kg</span>` : ''}</div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;">
               <div class="field" style="margin:0;">
                 <label class="field-label" style="font-size:10.5px;">Peso del rollo (kg) *</label>
@@ -36109,6 +36141,7 @@ function modalEditarProductoPT() {
       tipo_sellado: p.tipo_sellado || '',
       estructura_rollo_ext: p.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(p.salidas_extrusion) || 1),
+      peso_objetivo_rollo: Number(p.peso_objetivo_rollo) || 0,
       corte_salidas: p.corte_salidas || 'bolseo',
       refilacion_modo: p.refilacion_modo || 'independiente',
       obs_extrusion: p.obs_extrusion || '',
@@ -36454,7 +36487,30 @@ function renderBloqueConfigExtrusion(f, p) {
         </div>
       ` : ''}
       
-      <!-- Medidas calculadas del rollo -->
+      <!-- 🆕 PESO OBJETIVO DEL ROLLO — lo que el operador debe producir por rollo -->
+      ${(tipoSel === 'BOLSA_ROLLO' || tipoSel === 'PELICULA' || tipoSel === 'ROLLO_DIRECTO') && estructura ? (() => {
+        const esDirecto = tipoSel === 'ROLLO_DIRECTO';
+        const destino = esDirecto ? 'ROLLO DIRECTO A CLIENTE' : 'ROLLO PARA 2º PROCESO';
+        const colorD = esDirecto ? '#16a34a' : '#3b82f6';
+        const colorBgD = esDirecto ? '#f0fdf4' : '#eff6ff';
+        return `
+        <div class="field" style="margin-top:12px;padding:12px;background:${colorBgD};border:1.5px solid ${colorD};border-radius:8px;">
+          <label class="field-label" style="color:${colorD};font-weight:800;">
+            ⚖️ ¿De cuántos kg debe ser cada rollo?
+          </label>
+          <div style="font-size:10.5px;color:#475569;margin:4px 0 8px 0;">
+            Destino de este rollo: <strong style="color:${colorD};">${destino}</strong>.
+            ${esDirecto ? 'El cliente recibe el rollo tal cual — usa el peso que pide el cliente.' : 'El rollo pasa a bolseo/refilado — usa el peso que mejor convenga a producción.'}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="input form-pt-edit" data-field="peso_objetivo_rollo" type="number" min="0" step="0.1" value="${f.peso_objetivo_rollo || ''}" placeholder="Ej: ${esDirecto ? '25' : '250'}" style="width:140px;font-size:18px;font-weight:800;text-align:center;" />
+            <span style="font-size:14px;font-weight:800;color:#475569;">kg por rollo</span>
+          </div>
+          <div style="font-size:10px;color:#64748b;margin-top:6px;">💡 Esto se le muestra al operador de extrusión como guía al capturar cada rollo. Si lo dejas vacío, el operador captura libre.</div>
+        </div>
+        `;
+      })() : ''}
+      
       ${medidas && medidas.descripcion ? `
         <div style="margin-top:12px;padding:12px;background:#0f172a;color:#fff;border-radius:8px;">
           <div style="font-size:11px;font-weight:800;letter-spacing:0.05em;opacity:0.85;margin-bottom:8px;">📐 MEDIDAS A EXTRUIR (CALCULADAS AUTOMÁTICAMENTE)</div>
@@ -39148,6 +39204,7 @@ window.crearProductoPT = async () => {
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
+      peso_objetivo_rollo: Number(f.peso_objetivo_rollo) || 0,
       corte_salidas: f.corte_salidas || 'bolseo',
       refilacion_modo: f.refilacion_modo || 'independiente',
       obs_extrusion: f.obs_extrusion || '',
@@ -39281,6 +39338,7 @@ window.guardarProductoPT = async (codigo) => {
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
+      peso_objetivo_rollo: Number(f.peso_objetivo_rollo) || 0,
       corte_salidas: f.corte_salidas || 'bolseo',
       refilacion_modo: f.refilacion_modo || 'independiente',
       obs_extrusion: f.obs_extrusion || '',
