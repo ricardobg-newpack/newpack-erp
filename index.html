@@ -36607,7 +36607,6 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
   const grupoMP = disponibles.filter(mp => ['resina','reciclado','materia_prima'].includes(mp.tipo) || (!mp.tipo && !['aditivo','pigmento'].includes(mp.tipo)));
   const grupoAditivo = disponibles.filter(mp => mp.tipo === 'aditivo');
   const grupoPigmento = disponibles.filter(mp => mp.tipo === 'pigmento');
-  const optMP = (lista) => lista.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => `<option value="${mp.codigo}">${mp.codigo} — ${(mp.descripcion||'').substring(0,40)}</option>`).join('');
   
   return `
     <div style="background:${colorBg};border:2px solid ${color};border-radius:10px;padding:12px;margin-bottom:10px;">
@@ -36626,29 +36625,60 @@ function renderCapaFormulacion(capa, capaIdx, mps) {
         </div>
       </div>
       
-      <!-- AGREGAR INGREDIENTE A ESTA CAPA — dividido por tipo para selección rápida -->
-      <div style="background:#fff;border:1px solid ${color}55;border-radius:6px;padding:8px;margin-bottom:8px;">
-        <div style="font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px;">Agregar a la capa ${letra} — elige de la lista que corresponda:</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px;">
-          <select class="input" id="capa-mp-resina-${capaIdx}" onchange="window._syncSelectorMP(${capaIdx},'resina')" style="font-size:11px;padding:6px;border-left:3px solid #16a34a;">
-            <option value="">🧱 Resina / MP (${grupoMP.length})</option>
-            ${optMP(grupoMP)}
-          </select>
-          <select class="input" id="capa-mp-aditivo-${capaIdx}" onchange="window._syncSelectorMP(${capaIdx},'aditivo')" style="font-size:11px;padding:6px;border-left:3px solid #8b5cf6;">
-            <option value="">⚗️ Aditivo (${grupoAditivo.length})</option>
-            ${optMP(grupoAditivo)}
-          </select>
-          <select class="input" id="capa-mp-pigmento-${capaIdx}" onchange="window._syncSelectorMP(${capaIdx},'pigmento')" style="font-size:11px;padding:6px;border-left:3px solid #ec4899;">
-            <option value="">🎨 Pigmento (${grupoPigmento.length})</option>
-            ${optMP(grupoPigmento)}
-          </select>
-        </div>
-        <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:6px;align-items:center;">
-          <div id="capa-mp-sel-txt-${capaIdx}" style="font-size:11px;color:#475569;padding:6px;background:#f8fafc;border-radius:5px;min-height:18px;">Selecciona un material arriba…</div>
-          <input class="input" id="capa-pct-${capaIdx}" type="number" min="0" max="100" step="0.01" placeholder="${faltaPct > 0 ? 'falta ' + faltaPct : '%'}" style="font-size:11px;padding:6px;text-align:right;font-weight:800;" />
-          <button onclick="window.agregarIngredienteCapa(${capaIdx})" style="padding:6px;background:${color};color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">➕ Agregar</button>
-        </div>
-        ${faltaPct > 0 && ingredientes.length > 0 ? `<div style="font-size:9.5px;color:#a16207;margin-top:4px;">💡 Deja el % vacío para auto-rellenar el faltante (${faltaPct}%)</div>` : ''}
+      <!-- AGREGAR INGREDIENTE — chips de materiales por tipo, picar para agregar -->
+      <div style="background:#fff;border:1px solid ${color}55;border-radius:8px;padding:10px;margin-bottom:8px;">
+        ${(() => {
+          // ¿Hay un material en proceso de captura de % para esta capa?
+          const sel = state._mpSeleccionado && state._mpSeleccionado.capaIdx === capaIdx ? state._mpSeleccionado : null;
+          if (sel) {
+            const mp = mps.find(m => m.codigo === sel.mp_codigo);
+            const tipoLbl = mp?.tipo === 'aditivo' ? '⚗️ Aditivo' : mp?.tipo === 'pigmento' ? '🎨 Pigmento' : '🧱 Resina/MP';
+            const sugerido = faltaPct > 0 ? faltaPct : '';
+            return `
+              <div style="background:${colorBg};border:2px solid ${color};border-radius:8px;padding:12px;">
+                <div style="font-size:11px;color:#64748b;margin-bottom:4px;">${tipoLbl}</div>
+                <div style="font-weight:800;color:${color};font-size:14px;margin-bottom:10px;">${mp?.codigo || sel.mp_codigo} — ${(mp?.descripcion||'').substring(0,40)}</div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <span style="font-size:12px;font-weight:700;color:#475569;white-space:nowrap;">¿Qué % usa?</span>
+                  <input class="input" id="capa-pct-inline-${capaIdx}" type="number" min="0" max="100" step="0.01" value="${sugerido}"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault();window.confirmarIngredienteCapa(${capaIdx});}"
+                    placeholder="${faltaPct > 0 ? 'falta '+faltaPct+'%' : '%'}" style="flex:1;font-size:18px;font-weight:800;text-align:center;" autofocus />
+                  <span style="font-size:14px;font-weight:800;color:#475569;">%</span>
+                  <button onclick="window.confirmarIngredienteCapa(${capaIdx})" style="padding:10px 16px;background:${color};color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;white-space:nowrap;">✓ Agregar</button>
+                  <button onclick="window.cancelarSeleccionMP()" style="padding:10px 12px;background:#f1f5f9;color:#64748b;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">✕</button>
+                </div>
+                ${faltaPct > 0 ? `<div style="font-size:10px;color:#a16207;margin-top:6px;">💡 Enter o "Agregar" para confirmar. Sugerido: ${faltaPct}% (lo que falta)</div>` : ''}
+              </div>
+            `;
+          }
+          // Chips de materiales agrupados por tipo
+          const chipsGrupo = (lista, ramp, icono, titulo) => {
+            if (lista.length === 0) return '';
+            return `
+              <div style="margin-bottom:8px;">
+                <div style="font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px;">${icono} ${titulo} (${lista.length})</div>
+                <div style="display:flex;flex-wrap:wrap;gap:5px;">
+                  ${lista.sort((a,b)=>a.codigo.localeCompare(b.codigo)).map(mp => `
+                    <button type="button" onclick="window.seleccionarMP(${capaIdx}, '${mp.codigo}')"
+                      title="${(mp.descripcion||'').replace(/"/g,'')}"
+                      style="padding:7px 12px;background:#fff;border:1.5px solid ${ramp};color:${ramp};border-radius:99px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;"
+                      onmouseover="this.style.background='${ramp}';this.style.color='#fff';"
+                      onmouseout="this.style.background='#fff';this.style.color='${ramp}';">
+                      ${mp.codigo}
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          };
+          return `
+            <div style="font-size:10px;font-weight:800;color:#64748b;margin-bottom:8px;">👇 Pica un material para agregarlo a la capa ${letra}:</div>
+            ${chipsGrupo(grupoMP, '#16a34a', '🧱', 'Resinas / Materia prima')}
+            ${chipsGrupo(grupoAditivo, '#8b5cf6', '⚗️', 'Aditivos')}
+            ${chipsGrupo(grupoPigmento, '#ec4899', '🎨', 'Pigmentos')}
+            ${disponibles.length === 0 ? `<div style="font-size:11px;color:#94a3b8;font-style:italic;">Ya agregaste todos los materiales disponibles a esta capa.</div>` : ''}
+          `;
+        })()}
       </div>
       
       ${ingredientes.length === 0 ? `
@@ -37053,6 +37083,7 @@ function modalHistorialEstandarizacion() {
 
 window.cambiarNumCapas = (n) => {
   if (!state.modalForm) return;
+  state._mpSeleccionado = null; // limpiar selección de material en curso
   if (!state.modalForm.capas) state.modalForm.capas = [];
   
   const letras = ['A','B','C'];
@@ -37146,20 +37177,30 @@ window._syncSelectorMP = (capaIdx, tipoElegido) => {
   if (pct && seleccionado) setTimeout(() => pct.focus(), 50);
 };
 
-window.agregarIngredienteCapa = (capaIdx) => {
-  // Leer el seleccionado de cualquiera de los 3 selectores
-  const tipos = ['resina', 'aditivo', 'pigmento'];
-  let mp_codigo = '';
-  for (const t of tipos) {
-    const s = $(`#capa-mp-${t}-${capaIdx}`);
-    if (s && s.value) { mp_codigo = s.value; break; }
-  }
-  const pctInp = $(`#capa-pct-${capaIdx}`);
-  if (!mp_codigo) { toast('Selecciona un material (resina, aditivo o pigmento)', 'error'); return; }
+// 🆕 Al picar un chip de material: marcarlo como seleccionado y mostrar el campo de %
+window.seleccionarMP = (capaIdx, mpCodigo) => {
+  state._mpSeleccionado = { capaIdx, mp_codigo: mpCodigo };
+  window.renderSoloModal();
+  // Enfocar el campo de % automáticamente
+  setTimeout(() => {
+    const inp = $(`#capa-pct-inline-${capaIdx}`);
+    if (inp) { inp.focus(); inp.select(); }
+  }, 60);
+};
+
+// 🆕 Cancelar la selección (volver a los chips)
+window.cancelarSeleccionMP = () => {
+  state._mpSeleccionado = null;
+  window.renderSoloModal();
+};
+
+// 🆕 Confirmar el ingrediente con el % escrito en el campo inline
+window.confirmarIngredienteCapa = (capaIdx) => {
+  const sel = state._mpSeleccionado;
+  if (!sel || sel.capaIdx !== capaIdx) { toast('Selecciona un material primero', 'error'); return; }
+  const mp_codigo = sel.mp_codigo;
   
-  if (!state.modalForm.capas[capaIdx].ingredientes) {
-    state.modalForm.capas[capaIdx].ingredientes = [];
-  }
+  if (!state.modalForm.capas[capaIdx].ingredientes) state.modalForm.capas[capaIdx].ingredientes = [];
   const ingredientes = state.modalForm.capas[capaIdx].ingredientes;
   
   if (ingredientes.find(r => r.mp_codigo === mp_codigo)) {
@@ -37168,9 +37209,9 @@ window.agregarIngredienteCapa = (capaIdx) => {
   }
   
   const totalActual = ingredientes.reduce((s, r) => s + (Number(r.porcentaje) || 0), 0);
-  
-  // 🆕 AUTOCOMPLETADO: si el campo % está vacío, rellenar con el faltante para llegar a 100
-  let porcentaje = pctInp?.value !== '' ? Number(pctInp.value) : Math.round((100 - totalActual) * 100) / 100;
+  const pctInp = $(`#capa-pct-inline-${capaIdx}`);
+  // Si está vacío, auto-rellenar el faltante
+  let porcentaje = (pctInp && pctInp.value !== '') ? Number(pctInp.value) : Math.round((100 - totalActual) * 100) / 100;
   
   if (porcentaje <= 0) { toast('El porcentaje debe ser mayor a 0', 'error'); return; }
   if (totalActual + porcentaje > 100.01) {
@@ -37179,10 +37220,16 @@ window.agregarIngredienteCapa = (capaIdx) => {
   }
   
   const mp = (state.materias_primas || []).find(m => m.codigo === mp_codigo);
-  const descripcion = mp?.descripcion || '';
-  
-  ingredientes.push({ mp_codigo, descripcion, porcentaje, tipo: mp?.tipo || '' });
+  ingredientes.push({ mp_codigo, descripcion: mp?.descripcion || '', porcentaje, tipo: mp?.tipo || '' });
+  state._mpSeleccionado = null; // limpiar selección para seguir agregando
   window.renderSoloModal();
+};
+
+// (Compatibilidad) función vieja por si algo la llama
+window.agregarIngredienteCapa = (capaIdx) => {
+  if (state._mpSeleccionado && state._mpSeleccionado.capaIdx === capaIdx) {
+    window.confirmarIngredienteCapa(capaIdx);
+  }
 };
 
 window.actualizarPorcentajeIngredienteCapa = (capaIdx, ingrIdx, valor) => {
@@ -37715,7 +37762,14 @@ function attachAppEvents() {
         const f = e.target.dataset.field;
         if (!f) return;
         state.modalForm = state.modalForm || {};
-        state.modalForm[f] = e.target.value;
+        // 🆕 Capturar TODOS los campos form-prod antes de re-renderizar,
+        //    para no perder lo que el usuario ya escribió en otros campos.
+        document.querySelectorAll('.form-prod').forEach(otro => {
+          const k = otro.dataset.field;
+          if (!k) return;
+          state.modalForm[k] = otro.type === 'checkbox' ? otro.checked : otro.value;
+        });
+        state.modalForm[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
         render();
       };
     } else {
@@ -38476,7 +38530,7 @@ window.abrirModal = (m, data) => {
   if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina','crear-com','editar-com','salida-com','ajuste-com','transfer-com','generar-remision-ov','transportista','operador-logistica','unidad-logistica'].includes(m)) state.modalForm = null;
   window.forzarRender();
 };
-window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; window.forzarRender(); };
+window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; state._mpSeleccionado = null; window.forzarRender(); };
 window.cambiarTab = (vista, tab) => { state.tabs[vista] = tab; render(); };
 
 // Helpers para gestionar la ruta de procesos en el modal de programación
