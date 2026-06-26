@@ -515,12 +515,18 @@ window.calcularWaterfallLinea = calcularWaterfallLinea;
 window.kgProducidoProceso = (odp, procCod) => {
   if (!odp || !procCod) return 0;
   // Capturas de turno de este proceso (ya guardadas)
-  const kgCapturas = capturasValidas(state.capturas_produccion)
-    .filter(c => c.odp_id === odp.id && c.proceso === procCod)
-    .reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
-  // Rollos de extrusión en vivo (no consolidados) de este proceso
+  const capsProc = capturasValidas(state.capturas_produccion)
+    .filter(c => c.odp_id === odp.id && c.proceso === procCod);
+  const kgCapturas = capsProc.reduce((s, c) => s + (Number(c.producido_kg) || 0), 0);
+  // 🆕 Set de IDs de rollos YA incluidos en alguna captura consolidada (anti doble-conteo).
+  //    Si un rollo quedó marcado a medias (consolidado en captura pero sin la bandera),
+  //    igual lo excluimos del conteo "en vivo" porque su captura ya lo sumó.
+  const rollosEnCapturas = new Set();
+  capsProc.forEach(c => (c.rollos_ids || []).forEach(id => rollosEnCapturas.add(id)));
+  // Rollos de extrusión en vivo (no consolidados Y no incluidos en ninguna captura)
   const kgRollosVivo = (state.rollos_extrusion || [])
-    .filter(r => r.odp_id === odp.id && r.proceso === procCod && !r.anulado && !r.consolidado_en_turno)
+    .filter(r => r.odp_id === odp.id && r.proceso === procCod && !r.anulado
+                 && !r.consolidado_en_turno && !rollosEnCapturas.has(r.id))
     .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
   return kgCapturas + kgRollosVivo;
 };
@@ -2046,18 +2052,29 @@ window.getProc = getProc;
 // Sugerir ruta de procesos según tipo de producto (basado en código del tipo)
 function sugerirRutaProcesos(producto) {
   if (!producto) return ['P1-EXT'];
-  const tipo = producto.tipo || '';
   // Extrusión es base de TODO producto plástico
   const ruta = ['P1-EXT'];
-  // Películas planas refiladas → P6-REF
-  if (tipo.includes('REFILADA') || tipo === 'PELICULA PLANA REFILADA') {
-    ruta.push('P6-REF');
+  // 🆕 Usar la deducción robusta (tipo + descripción + código). Devuelve el proceso
+  //    secundario sugerido, respetando refilacion_modo='extrusion' (sale terminado).
+  //    OJO: esto es solo una SUGERENCIA — el planeador puede cambiar la ruta a mano
+  //    al programar (ej. una película refilada que esta vez se refila en extrusión).
+  if (typeof window.deduceRequiereProcesoSecundario === 'function') {
+    const ded = window.deduceRequiereProcesoSecundario(producto);
+    if (ded.requiere && ded.proceso) {
+      const PROC_SEC_A_RUTA = { 'P-2': 'P3-BS', 'P-3': 'P2-IMP', 'P-4': 'P3-BS' };
+      const cod = PROC_SEC_A_RUTA[ded.proceso] || ded.proceso;
+      if (!ruta.includes(cod)) ruta.push(cod);
+    }
+    return ruta;
   }
-  // Bolsas en rollo → P4-BR
+  // Respaldo (por si la función no está cargada): lógica anterior por tipo
+  const tipo = producto.tipo || '';
+  if (tipo.includes('REFILADA') || tipo === 'PELICULA PLANA REFILADA') {
+    if (producto.refilacion_modo !== 'extrusion') ruta.push('P6-REF');
+  }
   if (tipo.includes('ROLLO') || tipo.includes('BR')) {
     ruta.push('P4-BR');
   } else if (tipo.includes('BOLSA') || tipo.includes('HOJA') || tipo.includes('CORTE') || tipo.includes('MANGA')) {
-    // Bolsas sueltas y cortes → P3-BS
     ruta.push('P3-BS');
   }
   return ruta;
@@ -14569,8 +14586,8 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
                 </thead>
                 <tbody>
                   ${rollosDelTurno.map(r => `
-                    <tr style="border-top:1px solid #f1f5f9;">
-                      <td style="padding:6px;text-align:center;font-weight:800;color:#0f172a;">#${r.numero_rollo}</td>
+                    <tr style="border-top:1px solid #f1f5f9;${r._sync_pendiente ? 'background:#fef2f2;' : ''}">
+                      <td style="padding:6px;text-align:center;font-weight:800;color:#0f172a;">#${r.numero_rollo}${r._sync_pendiente ? ` <span title="Sin sincronizar — toca para reintentar" onclick="window.reintentarSyncRollo('${r.id}')" style="cursor:pointer;color:#dc2626;font-size:11px;">⚠</span>` : ''}</td>
                       <td style="padding:6px;text-align:center;font-family:monospace;">${r.hora_captura || '—'}</td>
                       <td style="padding:6px;text-align:right;font-weight:800;color:#15803d;">${fmtNum(r.peso_kg || 0)}</td>
                       <td style="padding:6px;text-align:right;font-weight:700;color:${r.mermas_kg ? '#dc2626' : '#94a3b8'};">${r.mermas_kg ? fmtNum(r.mermas_kg) : '—'}</td>
@@ -15126,16 +15143,37 @@ window.agregarRolloExtrusion = async (odpId) => {
     // sincroniza con el servidor en segundo plano. El optimistic update de abajo
     // muestra el rollo al instante; si falla la sync, el snapshot lo corrige.
     const refRollo = doc(collection(db, 'rollos_extrusion'));
-    setDoc(refRollo, nuevoRollo).catch(err => {
-      console.error('Error sincronizando rollo:', err);
-      if (String(err.message || '').includes('PERMISSION_DENIED')) {
-        toast('🔒 Sin permisos para registrar rollos', 'error');
+    // 🆕 Función de guardado con reintento + marca de sincronización visible.
+    //    Si tras 2 intentos no sincroniza, el rollo queda marcado _sync_pendiente=true
+    //    para que el supervisor lo vea en pantalla y pueda reintentar manualmente.
+    const guardarRolloConReintento = async (intento = 1) => {
+      try {
+        await setDoc(refRollo, nuevoRollo);
+        // Sincronizó bien: quitar marca de pendiente si la tenía
+        const rl = (state.rollos_extrusion || []).find(r => r.id === refRollo.id);
+        if (rl && rl._sync_pendiente) { rl._sync_pendiente = false; window.forzarRender && window.forzarRender(); }
+      } catch (err) {
+        console.error(`Error sincronizando rollo (intento ${intento}):`, err);
+        if (String(err.message || '').includes('PERMISSION_DENIED')) {
+          toast('🔒 Sin permisos para registrar rollos', 'error');
+          return;
+        }
+        if (intento < 2) {
+          setTimeout(() => guardarRolloConReintento(intento + 1), 2500);
+        } else {
+          // Falló tras reintentos: marcar visible y avisar
+          const rl = (state.rollos_extrusion || []).find(r => r.id === refRollo.id);
+          if (rl) { rl._sync_pendiente = true; }
+          window.forzarRender && window.forzarRender();
+          toast(`⚠ Rollo #${proxNum} guardado local pero SIN sincronizar. Revísalo y reintenta.`, 'error');
+        }
       }
-    });
+    };
+    guardarRolloConReintento();
     
     // Optimistic ligero: push al final del array existente (no reemplaza el array)
     if (state.rollos_extrusion && !state.rollos_extrusion.some(r => r.id === refRollo.id)) {
-      state.rollos_extrusion.push({ id: refRollo.id, ...nuevoRollo, created_at: { seconds: Math.floor(Date.now()/1000) } });
+      state.rollos_extrusion.push({ id: refRollo.id, ...nuevoRollo, _sync_pendiente: false, created_at: { seconds: Math.floor(Date.now()/1000) } });
     }
     
     // 🆕 Auto-iniciar producción si la ODP estaba en cola/esperando (primer rollo).
@@ -15202,6 +15240,24 @@ window.agregarRolloExtrusion = async (odpId) => {
 };
 
 // Anular un rollo (en caso de error)
+// 🆕 Reintentar sincronización de un rollo que quedó marcado _sync_pendiente
+window.reintentarSyncRollo = async (rolloId) => {
+  const r = (state.rollos_extrusion || []).find(x => x.id === rolloId);
+  if (!r) return;
+  toast(`↻ Reintentando sincronizar rollo #${r.numero_rollo}...`, 'info');
+  try {
+    // Reconstruir el documento limpio (sin campos locales _sync_pendiente)
+    const { _sync_pendiente, id, ...datos } = r;
+    await setDoc(doc(db, 'rollos_extrusion', rolloId), { ...datos, updated_at: serverTimestamp() }, { merge: true });
+    r._sync_pendiente = false;
+    toast(`✅ Rollo #${r.numero_rollo} sincronizado`, 'success');
+  } catch (e) {
+    toast(`⚠ Sigue sin sincronizar: ${e.message}`, 'error');
+  } finally {
+    window.forzarRender && window.forzarRender();
+  }
+};
+
 window.anularRolloExtrusion = async (rolloId) => {
   const r = (state.rollos_extrusion || []).find(x => x.id === rolloId);
   if (!r) return;
@@ -15299,8 +15355,14 @@ window.cerrarTurnoExtrusion = async (odpId, silencioso = false) => {
     const equipoIds = Array.isArray(f.equipo_grupo_ids) ? f.equipo_grupo_ids : [];
     const maquina = odp.maquinas_asignadas?.[procCodigo] || odp.maquina_codigo || '';
     
-    // 1. Crear captura consolidada
-    const capturaRef = await addDoc(collection(db, 'capturas_produccion'), {
+    // 🆕 ATÓMICO: la captura consolidada, la marca de los rollos y la actualización
+    //    de la ODP van TODAS en el mismo writeBatch. Así no puede ocurrir que la
+    //    captura se cree pero los rollos queden "en vivo" (lo que duplicaría kg).
+    const batch = writeBatch(db);
+    
+    // 1. Crear captura consolidada (ref dentro del batch, no addDoc separado)
+    const capturaRef = doc(collection(db, 'capturas_produccion'));
+    batch.set(capturaRef, {
       odp_id: odpId,
       odp_folio: odp.folio || '',
       producto_codigo: odp.producto_codigo || '',
@@ -15328,8 +15390,7 @@ window.cerrarTurnoExtrusion = async (odpId, silencioso = false) => {
       updated_at: serverTimestamp()
     });
     
-    // 2. Marcar todos los rollos como consolidados
-    const batch = writeBatch(db);
+    // 2. Marcar todos los rollos como consolidados (mismo batch)
     rollosPendientes.forEach(r => {
       batch.update(doc(db, 'rollos_extrusion', r.id), {
         consolidado_en_turno: true,
@@ -40317,12 +40378,37 @@ window.confirmarProgramarODP = async (odpId) => {
     // 🔧 Proceso actual: las continuaciones conservan el suyo; las normales arrancan en 0
     const idxProceso = esContinuacion ? (odpActual.proceso_actual_idx ?? 0) : 0;
     
+    // 🆕 SINCRONIZAR avance_procesos CON LA RUTA QUE EL PLANEADOR ELIGIÓ.
+    //    La ruta seleccionada al programar es la VERDAD del flujo (no el tipo del
+    //    producto). Reconstruimos avance_procesos para que tenga EXACTAMENTE los
+    //    procesos de la ruta — ni más (un proceso que se quitó) ni menos (uno que
+    //    se agregó). Preservamos lo ya producido/completado de cada proceso.
+    const avancePrevio = (odpActual && odpActual.avance_procesos) ? odpActual.avance_procesos : {};
+    const avanceProcesosProg = {};
+    ruta.forEach((cod, i) => {
+      const prev = avancePrevio[cod];
+      avanceProcesosProg[cod] = prev ? {
+        producido_kg: Number(prev.producido_kg) || 0,
+        liberado_kg: Number(prev.liberado_kg) || 0,
+        estatus: prev.estatus || (i === 0 ? 'esperando' : 'esperando'),
+        completado: prev.completado === true,
+        ...(prev.sobrante_kg ? { sobrante_kg: prev.sobrante_kg } : {}),
+        ...(prev.pausa_motivo ? { pausa_motivo: prev.pausa_motivo } : {})
+      } : {
+        producido_kg: 0,
+        liberado_kg: 0,
+        estatus: 'esperando',
+        completado: false
+      };
+    });
+    
     await updateDoc(doc(db, 'ordenes_produccion', odpId), {
       estatus: 'programada',
       proceso_estatus_actual: 'esperando',
       fecha_inicio_programada: fini,
       fecha_entrega_programada: $('#podp-fent').value || null,
       ruta_procesos: ruta,
+      avance_procesos: avanceProcesosProg,
       maquinas_asignadas: maquinas,
       maquina_codigo: maquinaPrincipal,
       proceso_actual_idx: idxProceso,
@@ -40339,6 +40425,15 @@ window.confirmarProgramarODP = async (odpId) => {
     });
     
     const odp = state.ordenes_produccion.find(o => o.id === odpId);
+    // 🆕 Optimistic local: reflejar la ruta y el avance sincronizados de inmediato
+    if (odp) {
+      odp.estatus = 'programada';
+      odp.ruta_procesos = ruta;
+      odp.avance_procesos = avanceProcesosProg;
+      odp.maquinas_asignadas = maquinas;
+      odp.proceso_actual_idx = idxProceso;
+      odp.proceso_actual = ruta[idxProceso] || ruta[0];
+    }
     const proc = getProc(ruta[0]);
     const maqProc1 = maquinas[ruta[0]];
     
@@ -40639,7 +40734,27 @@ window.confirmarCompletarProceso = async (odpId) => {
   }
   
   const todosCompletos = ruta.every(cod => avanceProc[cod]?.completado === true);
-  const esUltimo = todosCompletos;
+  
+  // 🆕 BLINDAJE ANTI-SALTO-DE-PROCESO: aunque todos los procesos de la ruta estén
+  //    completos, verificar que la RUTA no esté incompleta respecto a lo que el
+  //    producto requiere. Si el producto necesita un 2º proceso (bolseo/refilación)
+  //    que NO está en la ruta, la orden NO debe irse a Calidad — se corrige la ruta
+  //    y se deja el proceso faltante pendiente. Esto evita que una orden mal
+  //    programada se "salte" el bolseo (causa del incidente ODP-00126).
+  let rutaCorregida = false;
+  if (todosCompletos) {
+    const flujoReq = window.deduceRequiereProcesoSecundario
+      ? window.deduceRequiereProcesoSecundario(producto) : { requiere: false };
+    if (flujoReq.requiere && flujoReq.proceso && !ruta.includes(flujoReq.proceso)) {
+      // Falta un proceso que el producto SÍ requiere → agregarlo y NO cerrar a calidad
+      ruta.push(flujoReq.proceso);
+      avanceProc[flujoReq.proceso] = { producido_kg: 0, liberado_kg: 0, estatus: 'esperando', completado: false };
+      rutaCorregida = true;
+      const nomFalta = getProc(flujoReq.proceso)?.nombre || flujoReq.proceso;
+      toast(`⚠ ${odp.folio}: faltaba ${nomFalta} en la ruta. Se agregó automáticamente — la orden NO va a Calidad, pasa a ${nomFalta}.`, 'error');
+    }
+  }
+  const esUltimo = todosCompletos && !rutaCorregida;
   
   // ====================================================
   // 🧪 DESCUENTO AUTOMÁTICO DE MP (solo al cerrar Extrusión)
@@ -41051,6 +41166,10 @@ window.confirmarCompletarProceso = async (odpId) => {
         procesos_completados: procesosCompletados,
         updated_at: serverTimestamp()
       };
+      // 🆕 Si se corrigió la ruta (faltaba un proceso requerido), guardarla
+      if (rutaCorregida) {
+        updates.ruta_procesos = ruta;
+      }
       // Si el proceso que cerró era el "actual", mover el puntero al siguiente no completado
       if ((odp.proceso_actual_idx ?? 0) === idx && idxSiguienteNoCompleto >= 0) {
         updates.proceso_actual_idx = idxSiguienteNoCompleto;
@@ -41199,6 +41318,51 @@ window.regresarAProduccionParaProceso = async (odpId) => {
     state.loadingAccion = false; render();
   }
 };
+
+// ============================================================
+// 🆕 DIAGNÓSTICO DE CONSISTENCIA DEL MODELO DE FLUJO
+//    Revisa que ninguna ODP mezcle el modelo viejo (padre/hija) con el nuevo
+//    (ruta única). Devuelve la lista de ODPs problemáticas para revisar/migrar.
+//    Llamar desde consola: window.diagnosticarModeloFlujo()
+// ============================================================
+window.diagnosticarModeloFlujo = () => {
+  const odps = state.ordenes_produccion || [];
+  const problemas = [];
+  odps.forEach(o => {
+    if (o.archivada) return;
+    const tieneRuta = Array.isArray(o.ruta_procesos) && o.ruta_procesos.length > 0;
+    const tienePadre = !!o.odp_padre_id;
+    const tieneHijas = odps.some(h => h.odp_padre_id === o.id);
+    // Problema A: ODP con ruta única PERO con hijas del modelo viejo (mezcla)
+    if (tieneRuta && tieneHijas) {
+      problemas.push({ folio: o.folio, tipo: 'mezcla', detalle: 'Tiene ruta_procesos Y tiene ODPs hijas (modelo viejo)' });
+    }
+    // Problema B: ODP sin ruta y sin ser hija (huérfana del modelo)
+    if (!tieneRuta && !tienePadre && !['cancelada','rechazada'].includes(o.estatus)) {
+      problemas.push({ folio: o.folio, tipo: 'sin_ruta', detalle: 'No tiene ruta_procesos ni es hija — flujo indefinido' });
+    }
+    // Problema C: ruta no coincide con avance_procesos
+    if (tieneRuta && o.avance_procesos) {
+      const clavesAvance = Object.keys(o.avance_procesos);
+      const faltaEnAvance = o.ruta_procesos.filter(c => !clavesAvance.includes(c));
+      const sobraEnAvance = clavesAvance.filter(c => !o.ruta_procesos.includes(c));
+      if (faltaEnAvance.length > 0 || sobraEnAvance.length > 0) {
+        problemas.push({ folio: o.folio, tipo: 'desync', detalle: `ruta=[${o.ruta_procesos.join(',')}] vs avance=[${clavesAvance.join(',')}]` });
+      }
+    }
+  });
+  console.log(`\n=== DIAGNÓSTICO MODELO DE FLUJO ===`);
+  console.log(`ODPs revisadas: ${odps.filter(o=>!o.archivada).length}`);
+  console.log(`Problemas encontrados: ${problemas.length}`);
+  if (problemas.length > 0) console.table(problemas);
+  else console.log('✅ Todas las ODP usan el modelo de ruta única consistentemente.');
+  toast(problemas.length === 0
+    ? '✅ Modelo de flujo consistente en todas las ODP'
+    : `⚠ ${problemas.length} ODP con inconsistencia de modelo (ver consola)`,
+    problemas.length === 0 ? 'success' : 'error');
+  return problemas;
+};
+
 
 // Flujo: el proceso produjo menos que su meta. Se cierra lo producido (sigue
 // el flujo normal: → siguiente proceso o → Calidad), y se crea una ODP de
