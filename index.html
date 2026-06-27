@@ -10238,6 +10238,116 @@ window.reiniciarParaPruebas = async () => {
   }
 };
 
+// ============================================================
+// 🗑️ RESET TOTAL — BORRA todos los datos transaccionales (irreversible)
+//    Conserva catálogos: productos, materias primas, clientes, proveedores,
+//    máquinas, usuarios, personal, almacenes, etc. Resetea folios a 0.
+//    Pensado para arrancar de cero antes de implementar en producción.
+// ============================================================
+// Colecciones TRANSACCIONALES (se borran)
+const _COLECCIONES_TRANSACCIONALES = [
+  'ordenes_produccion', 'rollos_extrusion', 'capturas_produccion',
+  'tarimas', 'lotes', 'packing_lists',
+  'pedidos', 'pedido_lineas', 'ordenes_venta', 'ordenes_compra',
+  'remisiones', 'salidas_parciales', 'solicitudes_urgentes', 'oti',
+  'movimientos_merma', 'movimientos_mp', 'movimientos_comercializados',
+  'movimientos_empaque', 'movimientos_mtto', 'movimientos_oficina',
+  'lotes_peletizado', 'corridas_peletizado', 'almacen_desecho_venta',
+  'lotes_mp', 'requisiciones_compras', 'comentarios_pedidos',
+  'estandarizacion_historial', 'notificaciones'
+];
+// Colecciones que se CONSERVAN (catálogos) — solo informativo, no se tocan:
+//   productos_pt, materias_primas, clientes, proveedores, maquinas, usuarios,
+//   operadores, supervisores, cliente_productos, productos_comercializados,
+//   productos_empaque, productos_mtto, productos_oficina, almacenes,
+//   transportistas, operadores_logistica, unidades_logistica
+
+window.resetearSistemaTotal = async () => {
+  const u = state.user || {};
+  if (u.rol !== 'admin' && u.depto !== 'CEO') {
+    toast('⛔ Solo CEO/Admin pueden resetear el sistema', 'error');
+    return;
+  }
+
+  // Primera confirmación: explicar qué se borra y qué se conserva
+  const ok1 = confirm(
+    `🗑️ RESET TOTAL DEL SISTEMA\n\n` +
+    `Esto BORRA PERMANENTEMENTE todos los datos de operación:\n` +
+    `• Órdenes de producción, rollos, capturas de turno\n` +
+    `• Tarimas, lotes, packing lists\n` +
+    `• Pedidos, órdenes de venta y de compra, remisiones\n` +
+    `• Movimientos de inventario, mermas, peletizado\n` +
+    `• Notificaciones, solicitudes, historial\n\n` +
+    `SE CONSERVA (NO se toca):\n` +
+    `• Productos, materias primas y demás catálogos\n` +
+    `• Clientes, proveedores, máquinas\n` +
+    `• Usuarios, operadores, supervisores\n\n` +
+    `⚠ ESTA ACCIÓN NO SE PUEDE DESHACER.\n\n` +
+    `¿Continuar?`
+  );
+  if (!ok1) return;
+
+  // Segunda confirmación: escribir la palabra exacta
+  const conf = prompt(
+    `Esta acción es IRREVERSIBLE y borrará todos los datos de operación.\n\n` +
+    `Para confirmar, escribe exactamente:  BORRAR TODO`
+  );
+  if (conf !== 'BORRAR TODO') {
+    toast('Cancelado: confirmación incorrecta', 'info');
+    return;
+  }
+
+  const { getDocs, writeBatch } = window.fb;
+  let totalBorrados = 0;
+  const resumen = [];
+
+  try {
+    state.loadingAccion = true; render();
+    toast('🗑️ Borrando datos... no cierres la ventana', 'info');
+
+    for (const col of _COLECCIONES_TRANSACCIONALES) {
+      try {
+        const snap = await getDocs(collection(db, col));
+        if (snap.empty) continue;
+        const docs = snap.docs;
+        // Firestore: máximo 500 operaciones por batch → paginar
+        for (let i = 0; i < docs.length; i += 450) {
+          const lote = docs.slice(i, i + 450);
+          const b = writeBatch(db);
+          lote.forEach(d => b.delete(doc(db, col, d.id)));
+          await b.commit();
+        }
+        totalBorrados += docs.length;
+        resumen.push(`${col}: ${docs.length}`);
+      } catch (eCol) {
+        console.error(`Error borrando ${col}:`, eCol);
+        resumen.push(`${col}: ERROR (${eCol.message})`);
+      }
+    }
+
+    // Resetear contadores de folios (para que ODP/lotes/etc. arranquen de 1)
+    try {
+      const snapCont = await getDocs(collection(db, 'contadores'));
+      if (!snapCont.empty) {
+        const b = writeBatch(db);
+        snapCont.docs.forEach(d => b.set(doc(db, 'contadores', d.id), { ultimo: 0 }, { merge: true }));
+        await b.commit();
+        resumen.push(`contadores reseteados: ${snapCont.docs.length}`);
+      }
+    } catch (eCont) {
+      console.error('Error reseteando contadores:', eCont);
+    }
+
+    console.log('=== RESET TOTAL ===\n' + resumen.join('\n'));
+    toast(`✅ Sistema reseteado: ${totalBorrados} registro(s) borrados. Folios reiniciados. Catálogos conservados. Recarga la página (Ctrl+Shift+R).`, 'success');
+  } catch (e) {
+    console.error('Error en reset total:', e);
+    toast('Error en el reset: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 
 // ============================================================
 // 📍 SEGUIMIENTO DE PEDIDOS — Vista en vivo para CS / Dirección
@@ -19885,6 +19995,27 @@ function renderUsuariosSistema() {
         </div>
       </div>
     ` : ''}
+    
+    <!-- 🗑️ ZONA PELIGROSA: Reset total (borra de verdad, conserva catálogos) -->
+    <div style="padding:16px;background:#1c1917;border:2px solid #991b1b;border-radius:10px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+        <div style="flex:1;min-width:260px;">
+          <div style="font-weight:900;color:#fca5a5;font-size:14px;">🗑️ Zona peligrosa — Reset total para iniciar de cero</div>
+          <div style="font-size:12px;color:#e7e5e4;margin-top:6px;line-height:1.6;">
+            <strong style="color:#fca5a5;">BORRA permanentemente</strong> todos los datos de operación:
+            órdenes de producción, rollos, capturas, tarimas, lotes, packing lists, pedidos,
+            órdenes de venta/compra, remisiones, movimientos de inventario, mermas, peletizado,
+            notificaciones e historial. Los folios vuelven a empezar en 1.<br><br>
+            <strong style="color:#86efac;">SE CONSERVA:</strong> productos, materias primas, clientes,
+            proveedores, máquinas, usuarios y demás catálogos.<br>
+            <span style="color:#fca5a5;font-weight:700;">⚠ Esta acción NO se puede deshacer. Úsala solo para arrancar de cero antes de implementar.</span>
+          </div>
+        </div>
+        <button onclick="window.resetearSistemaTotal()" style="padding:12px 18px;background:#dc2626;color:#fff;border:2px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:900;font-size:13px;white-space:nowrap;align-self:center;">
+          🗑️ BORRAR TODO e iniciar de 0
+        </button>
+      </div>
+    </div>
     
     ${usuariosCAL.length > 0 ? `
       <div style="padding:14px;background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;margin-bottom:14px;">
