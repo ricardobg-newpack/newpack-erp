@@ -9576,20 +9576,27 @@ function modalPausarODP() {
   // ───────── PASO 2: elegir a qué ODP cambiar (después de elegir motivo) ─────────
   if (paso === 2) {
     const motivo = f.motivo_elegido || '';
-    // ODPs disponibles para arrancar en ESTE proceso (la misma área), distintas a la actual,
-    // que no estén ya corriendo. En orden de programación (urgente → kanban → entrega).
     const ruta0 = procPausar;
+    // 🆕 Máquina de la orden que se está pausando: el operador trabaja EN esa máquina,
+    //    así que las candidatas deben ser de la MISMA máquina, en el orden del Kanban.
+    //    (Si el panel está filtrado a una máquina, usar esa; si no, la de la ODP.)
+    const maqOperador = state.panelOpMaq || odp.maquinas_asignadas?.[ruta0] || '';
     const candidatas = (state.ordenes_produccion || []).filter(o => {
       if (o.id === odp.id || o.archivada) return false;
       if (!['programada','en_produccion'].includes(o.estatus)) return false;
       const ruta = o.ruta_procesos || [];
       if (!ruta.includes(ruta0)) return false;
+      // 🆕 Solo de la MISMA máquina del operador (así el orden coincide con su Kanban)
+      if (maqOperador) {
+        const maqO = o.maquinas_asignadas?.[ruta0] || '';
+        if (maqO !== maqOperador) return false;
+      }
       // Que este proceso NO esté ya completado ni corriendo
       const est = window.estadoProceso ? window.estadoProceso(o, ruta0) : '';
       if (est === 'completado' || est === 'en_proceso') return false;
       return true;
     }).sort((a, b) => {
-      // Mismo orden que el Kanban: prioridad_cola, luego fecha de entrega
+      // Mismo orden que el Kanban de esa máquina: prioridad_cola, luego fecha de entrega
       const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : 1e9;
       const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : 1e9;
       if (pcA !== pcB) return pcA - pcB;
@@ -9610,7 +9617,7 @@ function modalPausarODP() {
           </div>
           <div class="modal-body" style="padding:18px 22px;">
             <div style="font-size:13px;font-weight:700;color:#475569;margin-bottom:4px;">Elige la orden para no parar la producción:</div>
-            <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">En orden de programación (urgentes y prioridad primero). Toca una para pausar la actual y arrancar esa.</div>
+            <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Órdenes de ${maqOperador || 'tu máquina'} en el mismo orden del Kanban de programación. Toca una para pausar la actual y arrancar esa.</div>
             ${candidatas.length === 0 ? `
               <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;padding:16px;text-align:center;color:#92400e;font-size:13px;font-weight:700;">
                 No hay otras órdenes listas para arrancar en ${getProc(procPausar)?.nombre || 'este proceso'}.<br>
