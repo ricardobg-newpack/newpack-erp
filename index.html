@@ -9589,8 +9589,7 @@ function modalPausarODP() {
       if (est === 'completado' || est === 'en_proceso') return false;
       return true;
     }).sort((a, b) => {
-      const urgA = a.prioridad === 'urgente' ? 0 : 1, urgB = b.prioridad === 'urgente' ? 0 : 1;
-      if (urgA !== urgB) return urgA - urgB;
+      // Mismo orden que el Kanban: prioridad_cola, luego fecha de entrega
       const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : 1e9;
       const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : 1e9;
       if (pcA !== pcB) return pcA - pcB;
@@ -11607,27 +11606,23 @@ function renderPanelOperador() {
     }
   });
   
-  // 🆕 SINCRONIZADO CON KANBAN:
-  // El orden respeta el arrastre del Kanban (prioridad_cola)
-  // 1. Urgentes arriba siempre (etiqueta cliente)
-  // 2. prioridad_cola del Kanban (10, 20, 30... lo que el supervisor arrastra)
-  // 3. Fecha entrega como desempate (si dos tienen la misma prioridad_cola)
-  const ordenarPorEntrega = (a, b) => {
-    // 1. Urgentes siempre arriba
-    const urgA = a.prioridad === 'urgente' ? 0 : 1;
-    const urgB = b.prioridad === 'urgente' ? 0 : 1;
-    if (urgA !== urgB) return urgA - urgB;
-    // 2. Orden del Kanban (lo que se arrastró)
-    const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.POSITIVE_INFINITY;
-    const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.POSITIVE_INFINITY;
+  // 🆕 SINCRONIZADO EXACTO CON EL KANBAN DE PROGRAMACIÓN:
+  //    El operador ve las órdenes en el MISMO orden que el planeador definió en el
+  //    Kanban. El Kanban ordena puramente por prioridad_cola (lo que se arrastró),
+  //    con la fecha de entrega como único desempate. NO se fuerzan los urgentes
+  //    arriba: si el planeador puso un urgente en cierta posición, ahí va. La
+  //    urgencia se sigue MARCANDO visualmente, pero no altera el orden.
+  const ordenarComoKanban = (a, b) => {
+    const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
+    const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
     if (pcA !== pcB) return pcA - pcB;
-    // 3. Fecha entrega como desempate
+    // Desempate: fecha de entrega (igual que el Kanban)
     const fA = a.fecha_entrega_solicitada || a.fecha_entrega_programada || '9999';
     const fB = b.fecha_entrega_solicitada || b.fecha_entrega_programada || '9999';
     return fA.localeCompare(fB);
   };
-  enProduccion.sort(ordenarPorEntrega);
-  enCola.sort(ordenarPorEntrega);
+  enProduccion.sort(ordenarComoKanban);
+  enCola.sort(ordenarComoKanban);
   
   // 🆕 Si NO hay máquina filtrada Y hay múltiples máquinas en el proceso,
   // agrupar las ODPs por máquina para que el flujo se vea coordinado
