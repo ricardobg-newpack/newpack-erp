@@ -9559,17 +9559,98 @@ function modalPausarODP() {
   const odp = (state.ordenes_produccion || []).find(o => o.id === state.modalData);
   if (!odp) return '';
   const f = state.modalForm || {};
+  const procPausar = f.proceso_pausar || state.panelOpProc || odp.proceso_actual || '';
   
   const MOTIVOS_PAUSA = [
-    { codigo: 'Cambio de prioridad', icono: '🔀', desc: 'Parar para adelantar otra orden' },
-    { codigo: 'Falta de materia prima', icono: '📦', desc: 'No hay MP disponible' },
-    { codigo: 'Mantenimiento / paro mecánico', icono: '🔧', desc: 'Falla o servicio de máquina' },
-    { codigo: 'Cambio de medida', icono: '📐', desc: 'Ajuste de formato/medida' },
-    { codigo: 'Fin de turno', icono: '🕐', desc: 'Se terminó el turno' },
-    { codigo: 'Falta de personal', icono: '👤', desc: 'Sin operador disponible' },
-    { codigo: 'Problema de calidad', icono: '⚠️', desc: 'Defecto detectado en línea' },
+    { codigo: 'Cambio de prioridad', icono: '🔀', desc: 'Parar para adelantar otra orden', sugiereCambio: true },
+    { codigo: 'Falta de materia prima', icono: '📦', desc: 'No hay MP disponible', sugiereCambio: true },
+    { codigo: 'Mantenimiento / paro mecánico', icono: '🔧', desc: 'Falla o servicio de máquina', sugiereCambio: true },
+    { codigo: 'Cambio de medida', icono: '📐', desc: 'Ajuste de formato/medida', sugiereCambio: false },
+    { codigo: 'Fin de turno', icono: '🕐', desc: 'Se terminó el turno', sugiereCambio: false },
+    { codigo: 'Falta de personal', icono: '👤', desc: 'Sin operador disponible', sugiereCambio: false },
+    { codigo: 'Problema de calidad', icono: '⚠️', desc: 'Defecto detectado en línea', sugiereCambio: true },
   ];
   
+  const paso = f.paso_pausa || 1;
+  
+  // ───────── PASO 2: elegir a qué ODP cambiar (después de elegir motivo) ─────────
+  if (paso === 2) {
+    const motivo = f.motivo_elegido || '';
+    // ODPs disponibles para arrancar en ESTE proceso (la misma área), distintas a la actual,
+    // que no estén ya corriendo. En orden de programación (urgente → kanban → entrega).
+    const ruta0 = procPausar;
+    const candidatas = (state.ordenes_produccion || []).filter(o => {
+      if (o.id === odp.id || o.archivada) return false;
+      if (!['programada','en_produccion'].includes(o.estatus)) return false;
+      const ruta = o.ruta_procesos || [];
+      if (!ruta.includes(ruta0)) return false;
+      // Que este proceso NO esté ya completado ni corriendo
+      const est = window.estadoProceso ? window.estadoProceso(o, ruta0) : '';
+      if (est === 'completado' || est === 'en_proceso') return false;
+      return true;
+    }).sort((a, b) => {
+      const urgA = a.prioridad === 'urgente' ? 0 : 1, urgB = b.prioridad === 'urgente' ? 0 : 1;
+      if (urgA !== urgB) return urgA - urgB;
+      const pcA = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : 1e9;
+      const pcB = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : 1e9;
+      if (pcA !== pcB) return pcA - pcB;
+      const fA = a.fecha_entrega_solicitada || a.fecha_entrega_programada || '9999';
+      const fB = b.fecha_entrega_solicitada || b.fecha_entrega_programada || '9999';
+      return fA.localeCompare(fB);
+    }).slice(0, 8);
+    
+    return `
+      <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+        <div class="modal" style="max-width:680px;">
+          <div class="modal-header">
+            <div>
+              <h2 style="font-size:18px;font-weight:800;">▶️ ¿Con qué orden arranco ahora?</h2>
+              <div style="font-size:11px;color:#64748b;margin-top:2px;">Pausaste ${odp.folio} por: <strong>${motivo}</strong></div>
+            </div>
+            <button class="icon-btn" onclick="cerrarModal()">✗</button>
+          </div>
+          <div class="modal-body" style="padding:18px 22px;">
+            <div style="font-size:13px;font-weight:700;color:#475569;margin-bottom:4px;">Elige la orden para no parar la producción:</div>
+            <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">En orden de programación (urgentes y prioridad primero). Toca una para pausar la actual y arrancar esa.</div>
+            ${candidatas.length === 0 ? `
+              <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:10px;padding:16px;text-align:center;color:#92400e;font-size:13px;font-weight:700;">
+                No hay otras órdenes listas para arrancar en ${getProc(procPausar)?.nombre || 'este proceso'}.<br>
+                <span style="font-weight:400;font-size:12px;">Puedes pausar de todos modos y arrancar otra después.</span>
+              </div>
+            ` : `
+              <div style="display:flex;flex-direction:column;gap:8px;max-height:380px;overflow-y:auto;">
+                ${candidatas.map((o, i) => {
+                  const umLow = (o.um || 'kg').toLowerCase();
+                  const cant = (window.fmtCantidadUM ? window.fmtCantidadUM(o.cantidad, umLow) : `${o.cantidad} ${umLow}`);
+                  const maqA = o.maquinas_asignadas?.[procPausar] || '—';
+                  const urgente = o.prioridad === 'urgente';
+                  const fEnt = o.fecha_entrega_solicitada || o.fecha_entrega_programada || '';
+                  return `
+                    <div style="display:flex;align-items:center;gap:10px;background:#fff;border:2px solid ${urgente?'#dc2626':'#e2e8f0'};border-radius:10px;padding:12px 14px;">
+                      <div style="background:${urgente?'#dc2626':'#64748b'};color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0;">${i+1}</div>
+                      <div style="flex:1;min-width:0;">
+                        <div style="font-weight:800;font-size:14px;color:#0f172a;">${o.folio} ${urgente?'<span style="background:#fee2e2;color:#dc2626;font-size:9px;padding:1px 6px;border-radius:4px;font-weight:800;">URGENTE</span>':''}</div>
+                        <div style="font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${o.producto_codigo} · ${o.cliente_nombre || ''}</div>
+                        <div style="font-size:10.5px;color:#94a3b8;margin-top:2px;">${cant} · 🛠️ ${maqA}${fEnt?` · 📅 ${fEnt}`:''}</div>
+                      </div>
+                      <button onclick="window.verPDFODPDesdselector('${o.id}')" title="Ver ODP y especificaciones" style="background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:7px;padding:7px 9px;cursor:pointer;font-weight:700;font-size:11px;white-space:nowrap;flex-shrink:0;">📄 ODP</button>
+                      <button onclick="window.pausarYArrancarOtra('${odp.id}','${o.id}')" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:800;font-size:12px;white-space:nowrap;flex-shrink:0;">▶️ Arrancar</button>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+          </div>
+          <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;gap:8px;">
+            <button class="btn-secondary" onclick="window.volverPasoMotivoPausa()">← Cambiar motivo</button>
+            <button onclick="window.soloPausarSinCambiar('${odp.id}')" style="background:#a16207;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⏸ Solo pausar (sin arrancar otra)</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // ───────── PASO 1: elegir el motivo del paro ─────────
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:560px;">
@@ -9581,10 +9662,11 @@ function modalPausarODP() {
           <button class="icon-btn" onclick="cerrarModal()">✗</button>
         </div>
         <div class="modal-body" style="padding:18px 22px;">
-          <div style="font-size:13px;font-weight:700;color:#475569;margin-bottom:12px;">Toca el motivo del paro:</div>
+          <div style="font-size:13px;font-weight:700;color:#475569;margin-bottom:4px;">1. Toca el motivo del paro:</div>
+          <div style="font-size:11px;color:#94a3b8;margin-bottom:12px;">Después podrás elegir con qué orden seguir para no parar la producción.</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
             ${MOTIVOS_PAUSA.map(m => `
-              <button onclick="window.confirmarPausaODP('${odp.id}', '${m.codigo.replace(/'/g, "\\'")}')" 
+              <button onclick="window.elegirMotivoPausa('${m.codigo.replace(/'/g, "\\'")}', ${m.sugiereCambio})" 
                 style="background:#fff;border:2px solid #e2e8f0;border-radius:12px;padding:14px 12px;cursor:pointer;text-align:left;transition:border-color 0.15s;"
                 onmouseover="this.style.borderColor='#a16207';this.style.background='#fffbeb'" 
                 onmouseout="this.style.borderColor='#e2e8f0';this.style.background='#fff'">
@@ -9594,13 +9676,12 @@ function modalPausarODP() {
               </button>
             `).join('')}
             
-            <!-- Otro: con campo de texto -->
             <div style="background:#fff;border:2px solid #e2e8f0;border-radius:12px;padding:14px 12px;grid-column:1 / -1;">
               <div style="font-size:22px;margin-bottom:4px;">✏️</div>
               <div style="font-weight:800;font-size:13px;color:#0f172a;margin-bottom:8px;">Otro motivo</div>
               <div style="display:flex;gap:8px;">
                 <input class="input" id="pausa-motivo-otro" placeholder="Describe el motivo..." value="${f.motivo_otro || ''}" style="flex:1;" />
-                <button onclick="window.confirmarPausaODPOtro('${odp.id}')" style="background:#a16207;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;white-space:nowrap;">⏸ Pausar</button>
+                <button onclick="window.elegirMotivoPausaOtro()" style="background:#a16207;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;white-space:nowrap;">Siguiente →</button>
               </div>
             </div>
           </div>
@@ -9668,6 +9749,72 @@ window.confirmarPausaODPOtro = async (odpId) => {
   const det = ($('#pausa-motivo-otro')?.value || '').trim();
   if (!det) { toast('Escribe el motivo', 'error'); return; }
   await window.confirmarPausaODP(odpId, `Otro: ${det.substring(0, 100)}`);
+};
+
+// 🆕 PASO 1→2: elegir motivo. Si el motivo sugiere cambiar de orden, pasa al paso 2;
+//    si no (ej. fin de turno), pausa directo.
+window.elegirMotivoPausa = (motivo, sugiereCambio) => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.motivo_elegido = motivo;
+  if (sugiereCambio) {
+    state.modalForm.paso_pausa = 2;
+    render();
+  } else {
+    // Motivos que no implican cambiar de orden (fin de turno, cambio de medida): pausa directa
+    window.confirmarPausaODP(state.modalData, motivo);
+  }
+};
+
+// 🆕 Motivo "Otro" escrito a mano → siempre va al paso 2 (por si quiere cambiar de orden)
+window.elegirMotivoPausaOtro = () => {
+  const det = ($('#pausa-motivo-otro')?.value || '').trim();
+  if (!det) { toast('Escribe el motivo', 'error'); return; }
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.motivo_elegido = `Otro: ${det.substring(0, 100)}`;
+  state.modalForm.motivo_otro = det;
+  state.modalForm.paso_pausa = 2;
+  render();
+};
+
+// 🆕 Volver del paso 2 al paso 1 (cambiar el motivo)
+window.volverPasoMotivoPausa = () => {
+  if (!state.modalForm) state.modalForm = {};
+  state.modalForm.paso_pausa = 1;
+  render();
+};
+
+// 🆕 Solo pausar la actual, sin arrancar otra orden
+window.soloPausarSinCambiar = async (odpId) => {
+  const motivo = state.modalForm?.motivo_elegido || 'Pausa';
+  await window.confirmarPausaODP(odpId, motivo);
+};
+
+// 🆕 Pausar la actual Y arrancar otra orden en el mismo proceso (flujo sin parar producción)
+window.pausarYArrancarOtra = async (odpPausarId, odpArrancarId) => {
+  const motivo = state.modalForm?.motivo_elegido || 'Cambio de orden';
+  const procProc = state.modalForm?.proceso_pausar || state.panelOpProc || '';
+  const odpArrancar = (state.ordenes_produccion || []).find(o => o.id === odpArrancarId);
+  try {
+    // 1) Pausar la orden actual con el motivo
+    await window.confirmarPausaODP(odpPausarId, motivo);
+    // 2) Arrancar la nueva orden en este proceso
+    if (typeof window.iniciarProduccionODP === 'function') {
+      await window.iniciarProduccionODP(odpArrancarId, procProc);
+    }
+    toast(`⏸ Pausada · ▶️ Arrancando ${odpArrancar?.folio || 'la orden'}`, 'success');
+  } catch (e) {
+    console.error('Error en pausar y arrancar:', e);
+    toast('Error: ' + e.message, 'error');
+  }
+};
+
+// 🆕 Ver el PDF de la ODP + especificaciones desde el selector de pausa
+window.verPDFODPDesdselector = (odpId) => {
+  if (typeof window.imprimirOrdenProduccionPDF === 'function') {
+    window.imprimirOrdenProduccionPDF(odpId);
+  } else {
+    toast('No se encontró el generador de PDF de la ODP', 'error');
+  }
 };
 
 // ▶️ REANUDAR producción (guarda histórico de pausa) — por proceso
@@ -11514,6 +11661,16 @@ function renderPanelOperador() {
   const enProduccionFiltradas = _filtraBusq(enProduccion);
   const enColaFiltradas = _filtraBusq(enCola);
   
+  // 🆕 LÍMITE DE 8 ÓRDENES: el operador ve máximo 8 órdenes en el flujo, en el orden
+  //    en que están programadas (las que corren primero + las siguientes en cola).
+  //    Así no se satura la pantalla y siempre ve lo inmediato a trabajar.
+  const MAX_ORDENES_PANEL = 8;
+  const totalCorriendo = enProduccionFiltradas.length;
+  const espaciosCola = Math.max(0, MAX_ORDENES_PANEL - totalCorriendo);
+  const enProduccionTop = enProduccionFiltradas.slice(0, MAX_ORDENES_PANEL);
+  const enColaTop = enColaFiltradas.slice(0, espaciosCola);
+  const ocultasCola = Math.max(0, enColaFiltradas.length - enColaTop.length);
+  
   return `
     <div style="padding:14px;max-width:1400px;margin:0 auto;">
       <!-- HEADER GIGANTE: proceso actual + botón cambiar -->
@@ -11645,7 +11802,7 @@ function renderPanelOperador() {
             }).join('')}
           ` : `
             <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-              ${enProduccionFiltradas.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
+              ${enProduccionTop.map(o => _tarjetaOperador(o, procSel, 'trabajando')).join('')}
             </div>
           `}
         </div>
@@ -11680,7 +11837,7 @@ function renderPanelOperador() {
                   </tr>
                 </thead>
                 <tbody>
-                  ${enColaFiltradas.map((o, idx) => {
+                  ${enColaTop.map((o, idx) => {
                     const umLow = (o.um || 'kg').toLowerCase();
                     const cant = fmtCantidadUM(o.cantidad, umLow);
                     const maqA = o.maquinas_asignadas?.[procSel] || '—';
@@ -11735,9 +11892,14 @@ function renderPanelOperador() {
             }).join('')}
           ` : `
             <div style="display:grid;grid-template-columns:1fr;gap:12px;">
-              ${enColaFiltradas.map((o, idx) => _tarjetaOperador(o, procSel, 'cola', idx + 1)).join('')}
+              ${enColaTop.map((o, idx) => _tarjetaOperador(o, procSel, 'cola', idx + 1)).join('')}
             </div>
           `)}
+          ${ocultasCola > 0 ? `
+            <div style="margin-top:12px;padding:10px;background:#fff;border:1px dashed #f59e0b;border-radius:8px;text-align:center;font-size:12px;color:#92400e;font-weight:700;">
+              + ${ocultasCola} orden${ocultasCola > 1 ? 'es' : ''} más en cola (se muestran las primeras ${MAX_ORDENES_PANEL} según la programación)${busq ? '' : '. Usa el buscador para encontrar una específica.'}
+            </div>
+          ` : ''}
         </div>
       ` : ''}
       
@@ -12126,7 +12288,10 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
           <div style="font-size:11px;color:#64748b;font-family:monospace;margin-top:2px;">${o.producto_codigo}</div>
           ${o.cliente_codigo ? `<div style="margin-top:4px;font-size:11px;color:#94a3b8;">Cliente: <strong style="color:#475569;">${o.cliente_codigo}</strong></div>` : ''}
           <div style="margin-top:5px;">${window.flujoODP(o).badge}</div>
-          <button onclick="event.stopPropagation();window.mostrarComoProducir('${o.id}')" style="margin-top:8px;background:#fff7ed;color:#c2410c;border:1.5px solid #ea580c;padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔥 ¿Cómo producir esto?</button>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+            <button onclick="event.stopPropagation();window.mostrarComoProducir('${o.id}')" style="background:#fff7ed;color:#c2410c;border:1.5px solid #ea580c;padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔥 ¿Cómo producir?</button>
+            <button onclick="event.stopPropagation();window.imprimirOrdenProduccionPDF('${o.id}')" title="Ver ODP + especificaciones en PDF" style="background:#f5f3ff;color:#6d28d9;border:1.5px solid #7c3aed;padding:7px 12px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📄 ODP + Especif.</button>
+          </div>
         </div>
         
         <!-- Columna 2: Cantidades -->
