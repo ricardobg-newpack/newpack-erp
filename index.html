@@ -2603,6 +2603,22 @@ window.tipoFormaProducto = tipoFormaProducto;
 //   - Bolsas (suelta/rollo/fuelle) → SÍ pasan a bolseo (2º proceso)
 //   - Rollo directo / película / manga → NO, salen terminadas de extrusión
 // El usuario puede sobrescribir con el campo manual si un caso es especial.
+// 🆕 ¿El producto tiene su ficha técnica completa? (fórmula + cómo se extruye)
+//    Comercial crea el producto sin esto; producción lo completa después.
+window.tieneFichaTecnicaCompleta = (producto) => {
+  if (!producto) return false;
+  // 1) Fórmula: al menos una capa con ingredientes
+  const capas = producto.capas || [];
+  const tieneFormula = capas.some(c => (c.ingredientes || []).length > 0);
+  // 2) Extrusión: hay datos de estandarización capturados
+  const est = producto.estandarizacion_extrusion || {};
+  const tieneExtrusion = Object.keys(est).some(k => {
+    const v = est[k];
+    return v !== '' && v !== null && v !== undefined && !(typeof v === 'object' && Object.keys(v).length === 0);
+  });
+  return tieneFormula && tieneExtrusion;
+};
+
 window.deduceRequiereProcesoSecundario = (producto) => {
   if (!producto) return { requiere: false, proceso: '', origen: 'default' };
   
@@ -4705,7 +4721,7 @@ function renderProductosPT() {
     })()}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:center;">📦 Empaque</th><th>👥 Clientes</th><th></th></tr></thead>
+        <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:center;">📦 Empaque</th><th style="text-align:center;">🏭 Técnica</th><th>👥 Clientes</th><th></th></tr></thead>
         <tbody>
           ${arr.length === 0 ? `<tr><td colspan="12" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
             arr.slice(0, 100).map(p => {
@@ -4720,7 +4736,11 @@ function renderProductosPT() {
               const cantEmp = Number(p.cant_empaque || p.piezas_por_paq || 0);
               const tipoEmp = p.tipo_empaque || '';
               const empOK = cantEmp > 0 && tipoEmp;
-              return `<tr ${!empOK ? 'style="background:#fffbeb;"' : ''}>
+              // 🆕 Estado técnico: ¿tiene fórmula + extrusión? (lo completa producción)
+              const tecnicaOK = window.tieneFichaTecnicaCompleta
+                ? window.tieneFichaTecnicaCompleta(p)
+                : (p.ficha_tecnica_completa === true);
+              return `<tr ${(!empOK || !tecnicaOK) ? 'style="background:#fffbeb;"' : ''}>
                 <td class="text-mono" style="font-size:11px;font-weight:700;">${p.codigo}</td>
                 <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion}</td>
                 <td style="font-size:11px;">${p.material || '—'}</td>
@@ -4745,6 +4765,13 @@ function renderProductosPT() {
                     <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#dcfce7;color:#15803d;font-weight:700;white-space:nowrap;">✓ ${tipoEmp.slice(0,4)}·${cantEmp}</span>
                   ` : `
                     <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#fee2e2;color:#dc2626;font-weight:700;">⚠ Falta</span>
+                  `}
+                </td>
+                <td style="text-align:center;font-size:10px;" title="${tecnicaOK ? 'Fórmula y extrusión completas' : 'Pendiente: falta fórmula y/o cómo se extruye (lo agrega producción)'}">
+                  ${tecnicaOK ? `
+                    <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#dcfce7;color:#15803d;font-weight:700;white-space:nowrap;">✓ Lista</span>
+                  ` : `
+                    <span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;font-weight:700;white-space:nowrap;">⏳ Téc.</span>
                   `}
                 </td>
                 <td style="text-align:left;font-size:10px;max-width:130px;" title="${clisArr.map(c => c.codigo + ' — ' + c.nombre).join('\n')}">
@@ -36432,7 +36459,10 @@ function modalEditarProductoPT() {
       aditivo: p.aditivo || 'NINGUNO',
       secuencia: p.secuencia || 1,
       um: (p.um || 'kg').toLowerCase(),
+      tipo: p.tipo || '',
       tipo_empaque: p.tipo_empaque || '',
+      // 🆕 Reconstruir el modo elegido: si es ROLLO con um=m → METROS; si no, el tipo_empaque
+      empaque_modo: p.empaque_modo || (p.tipo_empaque === 'ROLLO' && p.um_empaque === 'm' ? 'METROS' : (p.tipo_empaque || '')),
       cant_empaque: p.cant_empaque || '',
       um_empaque: p.um_empaque || '',
       contenedores_por_paquete: p.contenedores_por_paquete || '',
@@ -36513,23 +36543,45 @@ function modalEditarProductoPT() {
             </div>
           </div>
           
+          <!-- 🏭 TIPO DE PRODUCTO — define el flujo de producción (bolsa, película, rollo...) -->
+          <div style="margin-top:12px;padding:12px;background:#f0fdf4;border-radius:10px;border:1.5px solid #16a34a;">
+            <label class="field-label" style="color:#15803d;font-weight:800;">🏭 Tipo de producto <span style="font-weight:400;color:#94a3b8;font-size:10px;">(define cómo se produce)</span></label>
+            <select class="input form-pt-edit" data-field="tipo">
+              ${TIPOS_GEN.map(t => `<option value="${t.nombre}" ${f.tipo === t.nombre ? 'selected' : ''}>${t.nombre} (${t.codigo})</option>`).join('')}
+            </select>
+            <div style="font-size:10px;color:#166534;margin-top:4px;">Bolsa en rollo y bolsa suelta pasan a un 2º proceso (bolseo). Película lisa y rollo directo salen terminados de extrusión.</div>
+          </div>
+          
           <!-- 📦 EMPAQUE — cómo se entrega físicamente (independiente de la unidad de venta) -->
           <div style="margin-top:12px;padding:14px;background:#eff6ff;border-radius:10px;border:1.5px solid #3b82f6;">
-            <div style="font-size:13px;font-weight:800;color:#1e40af;margin-bottom:4px;">📦 ¿Cómo se empaca este producto?</div>
-            <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">La unidad de empaque es independiente de la unidad de venta. Ej: se vende en kg pero se entrega en piezas.</div>
+            <div style="font-size:13px;font-weight:800;color:#1e40af;margin-bottom:4px;">📦 ¿Cómo se entrega este producto?</div>
+            <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">Elige una opción. Solo se piden los datos necesarios para esa opción.</div>
             
-            <!-- Tipo de empaque: rollo / bulto / paquete -->
-            <div style="display:flex;gap:8px;margin-bottom:12px;">
-              ${[['ROLLO','🌀 Rollo','contiene piezas/kg'],['BULTO','📦 Bulto','contiene piezas/kg'],['PAQUETE','📦 Paquete','contiene varios rollos o bultos']].map(([cod,lbl,desc]) => `
-                <button type="button" onclick="window.setTipoEmpaquePT('${cod}')" style="flex:1;padding:11px 8px;border:2px solid ${f.tipo_empaque===cod?'#2563eb':'#cbd5e1'};background:${f.tipo_empaque===cod?'#dbeafe':'#fff'};border-radius:10px;cursor:pointer;text-align:center;">
-                  <div style="font-weight:800;font-size:13px;color:#0f172a;">${lbl}</div>
-                  <div style="font-size:9.5px;color:#64748b;margin-top:2px;">${desc}</div>
-                </button>
-              `).join('')}
-            </div>
+            <!-- 4 opciones: paquete / rollo / bulto / metros lineales -->
+            ${(() => {
+              // El "modo" elegido. Si es ROLLO con um=m, el modo es METROS.
+              const modo = f.empaque_modo
+                || (f.tipo_empaque === 'ROLLO' && f.um_empaque === 'm' ? 'METROS' : f.tipo_empaque)
+                || '';
+              const OPCIONES = [
+                ['PAQUETE', '📦 Paquete', 'varios rollos o bultos'],
+                ['ROLLO',   '🌀 Rollo',   'kg, piezas o millares'],
+                ['BULTO',   '📦 Bulto',   'kg, piezas o millares'],
+                ['METROS',  '📏 Metros lineales', 'va en rollo'],
+              ];
+              return `
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+                ${OPCIONES.map(([cod,lbl,desc]) => `
+                  <button type="button" onclick="window.setTipoEmpaquePT('${cod}')" style="padding:11px 8px;border:2px solid ${modo===cod?'#2563eb':'#cbd5e1'};background:${modo===cod?'#dbeafe':'#fff'};border-radius:10px;cursor:pointer;text-align:center;">
+                    <div style="font-weight:800;font-size:13px;color:#0f172a;">${lbl}</div>
+                    <div style="font-size:9.5px;color:#64748b;margin-top:2px;">${desc}</div>
+                  </button>
+                `).join('')}
+              </div>`;
+            })()}
             
             ${f.tipo_empaque === 'PAQUETE' ? `
-              <!-- PAQUETE: contiene varios rollos o bultos -->
+              <!-- PAQUETE: contiene varios rollos o bultos, cada uno con su contenido -->
               <div style="background:#fff;border-radius:8px;padding:12px;">
                 <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">Un paquete contiene:</div>
                 <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:8px;align-items:end;">
@@ -36551,18 +36603,45 @@ function modalEditarProductoPT() {
                   <div class="field" style="margin:0;">
                     <label class="field-label" style="font-size:10px;">de</label>
                     <select class="input form-pt-edit" data-field="um_empaque">
-                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar','m'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
+                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
                     </select>
                   </div>
                 </div>
-                ${f.contenedores_por_paquete && f.cant_empaque ? `
+                ${f.contenedores_por_paquete && f.cant_empaque ? (() => {
+                  const totalPorPaq = Number(f.contenedores_por_paquete) * Number(f.cant_empaque);
+                  const umTxt = f.um_empaque || 'pz';
+                  // Si la unidad es piezas, mostrar también el equivalente en millares
+                  const millaresTxt = (umTxt === 'pza') ? ` = ${fmtNum(totalPorPaq/1000 * 100)/100} millares` : '';
+                  return `
                   <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
-                    1 paquete = ${f.contenedores_por_paquete} ${f.nombre_contenedor || 'bulto'}s × ${f.cant_empaque} ${f.um_empaque || 'pz'} = ${fmtNum(Number(f.contenedores_por_paquete) * Number(f.cant_empaque))} ${f.um_empaque || 'pz'}
+                    1 paquete = ${f.contenedores_por_paquete} ${f.nombre_contenedor || 'bulto'}${Number(f.contenedores_por_paquete)>1?'s':''} × ${f.cant_empaque} ${umTxt} = ${fmtNum(totalPorPaq)} ${umTxt}${millaresTxt}
+                  </div>`;
+                })() : ''}
+              </div>
+            ` : (f.tipo_empaque === 'ROLLO' && f.um_empaque === 'm') ? `
+              <!-- METROS LINEALES: el producto va en rollo, se captura metros por rollo -->
+              <div style="background:#fff;border-radius:8px;padding:12px;">
+                <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">📏 Va en rollo · cada rollo contiene:</div>
+                <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;align-items:end;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Metros por rollo</label>
+                    <input class="input form-pt-edit" data-field="cant_empaque" type="number" step="any" placeholder="1000" value="${f.cant_empaque}" style="text-align:center;font-weight:800;font-size:16px;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Unidad</label>
+                    <input class="input" value="metros" readonly style="text-align:center;font-weight:700;background:#f1f5f9;color:#64748b;" />
+                    <input type="hidden" class="form-pt-edit" data-field="um_empaque" value="m" />
+                  </div>
+                </div>
+                ${f.cant_empaque ? `
+                  <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
+                    1 rollo = ${fmtNum(f.cant_empaque)} metros lineales
                   </div>
                 ` : ''}
+                <input type="hidden" class="form-pt-edit" data-field="contenedores_por_paquete" value="1" />
               </div>
             ` : f.tipo_empaque ? `
-              <!-- ROLLO o BULTO: contiene piezas/kg directamente -->
+              <!-- ROLLO o BULTO: contiene kg/piezas/millares directamente -->
               <div style="background:#fff;border-radius:8px;padding:12px;">
                 <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">Cada ${(f.tipo_empaque||'').toLowerCase()} contiene:</div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;">
@@ -36573,7 +36652,7 @@ function modalEditarProductoPT() {
                   <div class="field" style="margin:0;">
                     <label class="field-label" style="font-size:10px;">Unidad</label>
                     <select class="input form-pt-edit" data-field="um_empaque">
-                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar','m'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
+                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
                     </select>
                   </div>
                 </div>
@@ -36582,11 +36661,10 @@ function modalEditarProductoPT() {
                     1 ${(f.tipo_empaque||'').toLowerCase()} = ${f.cant_empaque} ${f.um_empaque || 'pz'}
                   </div>
                 ` : ''}
-                <!-- contenedores_por_paquete = 1 cuando no es paquete -->
                 <input type="hidden" class="form-pt-edit" data-field="contenedores_por_paquete" value="1" />
               </div>
             ` : `
-              <div style="font-size:11px;color:#94a3b8;font-style:italic;text-align:center;padding:8px;">⬆ Selecciona cómo se empaca</div>
+              <div style="font-size:11px;color:#94a3b8;font-style:italic;text-align:center;padding:8px;">⬆ Selecciona cómo se entrega</div>
             `}
           </div>
           
@@ -36899,7 +36977,8 @@ window._marcarFlujoManual = () => {
 
 // Helper: captura valores de inputs del modal PT antes de re-render
 function _capturarFormPT() {
-  document.querySelectorAll('.form-pt-edit').forEach(el => {
+  // Captura tanto el form de edición (.form-pt-edit) como el de creación (.form-pt)
+  document.querySelectorAll('.form-pt-edit, .form-pt').forEach(el => {
     const k = el.dataset.field;
     if (k && state.modalForm) state.modalForm[k] = el.value;
   });
@@ -36911,9 +36990,28 @@ function _capturarFormPT() {
 window.setTipoEmpaquePT = (tipo) => {
   _capturarFormPT();
   if (!state.modalForm) state.modalForm = {};
-  state.modalForm.tipo_empaque = tipo;
-  // Si pasa a paquete y no tiene contenedor definido, sugerir rollo
-  if (tipo === 'PAQUETE' && !state.modalForm.nombre_contenedor) state.modalForm.nombre_contenedor = 'rollo';
+  const f = state.modalForm;
+  
+  if (tipo === 'METROS') {
+    // 🆕 Metros lineales SIEMPRE es un rollo. Se marca empaque=ROLLO con contenido en metros.
+    f.tipo_empaque = 'ROLLO';
+    f.um_empaque = 'm';
+    f.empaque_modo = 'METROS'; // bandera para saber que el usuario eligió "metros lineales"
+    f.contenedores_por_paquete = 1;
+  } else if (tipo === 'PAQUETE') {
+    f.tipo_empaque = 'PAQUETE';
+    f.empaque_modo = 'PAQUETE';
+    // Sugerir rollo como contenedor por defecto si no hay
+    if (!f.nombre_contenedor) f.nombre_contenedor = 'rollo';
+    // Limpiar bandera de metros si venía de ahí
+    if (f.um_empaque === 'm') f.um_empaque = '';
+  } else {
+    // ROLLO o BULTO directo (contiene kg/piezas/millares)
+    f.tipo_empaque = tipo;
+    f.empaque_modo = tipo;
+    f.contenedores_por_paquete = 1;
+    if (f.um_empaque === 'm') f.um_empaque = ''; // metros solo aplica vía botón METROS
+  }
   render();
 };
 
@@ -37871,26 +37969,122 @@ function modalCrearProductoPT() {
           </div>
           
           <!-- 4. UM y Empaque -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
+          <div style="display:grid;grid-template-columns:1fr;gap:8px;">
             <div class="field">
-              <label class="field-label">UM venta *</label>
+              <label class="field-label">UM venta * <span style="font-weight:400;color:#94a3b8;font-size:10px;">(cómo se cobra)</span></label>
               <select class="input form-pt" data-field="um">
                 ${UM_OPCIONES.map(u => `<option value="${u}" ${f.um === u ? 'selected' : ''}>${UM_LABELS[u]}</option>`).join('')}
               </select>
             </div>
-            <div class="field"><label class="field-label">Empaque</label>
-              <select class="input form-pt" data-field="tipo_empaque">
-                <option value="">— Selecciona —</option>
-                ${TIPOS_EMPAQUE.map(t => `<option value="${t.codigo}" ${f.tipo_empaque === t.codigo ? 'selected' : ''}>${t.label}</option>`).join('')}
-              </select>
-            </div>
-            <div class="field"><label class="field-label">Cant. por empaque</label><input class="input form-pt" data-field="cant_empaque" type="number" step="any" placeholder="100" value="${f.cant_empaque}" /></div>
-            <div class="field"><label class="field-label">UM contenido</label>
-              <select class="input form-pt" data-field="um_empaque">
-                <option value="">—</option>
-                ${UM_EMPAQUE_OPCIONES.map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
-              </select>
-            </div>
+          </div>
+          
+          <!-- 📦 EMPAQUE — 4 opciones (mismo componente que en edición) -->
+          <div style="margin-top:10px;padding:14px;background:#eff6ff;border-radius:10px;border:1.5px solid #3b82f6;">
+            <div style="font-size:13px;font-weight:800;color:#1e40af;margin-bottom:4px;">📦 ¿Cómo se entrega este producto?</div>
+            <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">Elige una opción. Solo se piden los datos necesarios.</div>
+            ${(() => {
+              const modo = f.empaque_modo
+                || (f.tipo_empaque === 'ROLLO' && f.um_empaque === 'm' ? 'METROS' : f.tipo_empaque)
+                || '';
+              const OPCIONES = [
+                ['PAQUETE', '📦 Paquete', 'varios rollos o bultos'],
+                ['ROLLO',   '🌀 Rollo',   'kg, piezas o millares'],
+                ['BULTO',   '📦 Bulto',   'kg, piezas o millares'],
+                ['METROS',  '📏 Metros lineales', 'va en rollo'],
+              ];
+              return `
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+                ${OPCIONES.map(([cod,lbl,desc]) => `
+                  <button type="button" onclick="window.setTipoEmpaquePT('${cod}')" style="padding:11px 8px;border:2px solid ${modo===cod?'#2563eb':'#cbd5e1'};background:${modo===cod?'#dbeafe':'#fff'};border-radius:10px;cursor:pointer;text-align:center;">
+                    <div style="font-weight:800;font-size:13px;color:#0f172a;">${lbl}</div>
+                    <div style="font-size:9.5px;color:#64748b;margin-top:2px;">${desc}</div>
+                  </button>
+                `).join('')}
+              </div>`;
+            })()}
+            
+            ${f.tipo_empaque === 'PAQUETE' ? `
+              <div style="background:#fff;border-radius:8px;padding:12px;">
+                <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">Un paquete contiene:</div>
+                <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:8px;align-items:end;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">¿Cuántos?</label>
+                    <input class="input form-pt" data-field="contenedores_por_paquete" type="number" step="1" min="1" placeholder="5" value="${f.contenedores_por_paquete || ''}" style="text-align:center;font-weight:800;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">de tipo</label>
+                    <select class="input form-pt" data-field="nombre_contenedor">
+                      <option value="rollo" ${f.nombre_contenedor === 'rollo' ? 'selected' : ''}>Rollos</option>
+                      <option value="bulto" ${(f.nombre_contenedor === 'bulto' || !f.nombre_contenedor) ? 'selected' : ''}>Bultos</option>
+                    </select>
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">c/u con</label>
+                    <input class="input form-pt" data-field="cant_empaque" type="number" step="any" placeholder="500" value="${f.cant_empaque}" style="text-align:center;font-weight:800;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">de</label>
+                    <select class="input form-pt" data-field="um_empaque">
+                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+                ${f.contenedores_por_paquete && f.cant_empaque ? (() => {
+                  const totalPorPaq = Number(f.contenedores_por_paquete) * Number(f.cant_empaque);
+                  const umTxt = f.um_empaque || 'pz';
+                  const millaresTxt = (umTxt === 'pza') ? ` = ${fmtNum(totalPorPaq/1000 * 100)/100} millares` : '';
+                  return `
+                  <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
+                    1 paquete = ${f.contenedores_por_paquete} ${f.nombre_contenedor || 'bulto'}${Number(f.contenedores_por_paquete)>1?'s':''} × ${f.cant_empaque} ${umTxt} = ${fmtNum(totalPorPaq)} ${umTxt}${millaresTxt}
+                  </div>`;
+                })() : ''}
+              </div>
+            ` : (f.tipo_empaque === 'ROLLO' && f.um_empaque === 'm') ? `
+              <div style="background:#fff;border-radius:8px;padding:12px;">
+                <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">📏 Va en rollo · cada rollo contiene:</div>
+                <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;align-items:end;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Metros por rollo</label>
+                    <input class="input form-pt" data-field="cant_empaque" type="number" step="any" placeholder="1000" value="${f.cant_empaque}" style="text-align:center;font-weight:800;font-size:16px;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Unidad</label>
+                    <input class="input" value="metros" readonly style="text-align:center;font-weight:700;background:#f1f5f9;color:#64748b;" />
+                    <input type="hidden" class="form-pt" data-field="um_empaque" value="m" />
+                  </div>
+                </div>
+                ${f.cant_empaque ? `
+                  <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
+                    1 rollo = ${fmtNum(f.cant_empaque)} metros lineales
+                  </div>
+                ` : ''}
+                <input type="hidden" class="form-pt" data-field="contenedores_por_paquete" value="1" />
+              </div>
+            ` : f.tipo_empaque ? `
+              <div style="background:#fff;border-radius:8px;padding:12px;">
+                <div style="font-size:11px;font-weight:700;color:#1e40af;margin-bottom:8px;">Cada ${(f.tipo_empaque||'').toLowerCase()} contiene:</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end;">
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Cantidad</label>
+                    <input class="input form-pt" data-field="cant_empaque" type="number" step="any" placeholder="500" value="${f.cant_empaque}" style="text-align:center;font-weight:800;font-size:16px;" />
+                  </div>
+                  <div class="field" style="margin:0;">
+                    <label class="field-label" style="font-size:10px;">Unidad</label>
+                    <select class="input form-pt" data-field="um_empaque">
+                      ${UM_EMPAQUE_OPCIONES.filter(u=>['pza','kg','millar'].includes(u.codigo)).map(u => `<option value="${u.codigo}" ${f.um_empaque === u.codigo ? 'selected' : ''}>${u.label}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+                ${f.cant_empaque ? `
+                  <div style="margin-top:10px;padding:8px;background:#dbeafe;border-radius:6px;text-align:center;font-size:12px;font-weight:800;color:#1e40af;">
+                    1 ${(f.tipo_empaque||'').toLowerCase()} = ${f.cant_empaque} ${f.um_empaque || 'pz'}
+                  </div>
+                ` : ''}
+                <input type="hidden" class="form-pt" data-field="contenedores_por_paquete" value="1" />
+              </div>
+            ` : `
+              <div style="font-size:11px;color:#94a3b8;font-style:italic;text-align:center;padding:8px;">⬆ Selecciona cómo se entrega</div>
+            `}
           </div>
           
           <!-- 🏷️ Tipo de etiqueta -->
@@ -39480,6 +39674,10 @@ window.crearProductoPT = async () => {
       color: f.color, aditivo: f.aditivo,
       um: f.um,
       tipo_empaque: tipoEmp, cant_empaque: cantEmp, um_empaque: umEmp,
+      // 🆕 Modo de empaque elegido y jerarquía de contenedores
+      empaque_modo: f.empaque_modo || (tipoEmp === 'ROLLO' && umEmp === 'm' ? 'METROS' : tipoEmp),
+      contenedores_por_paquete: tipoEmp === 'PAQUETE' ? Math.max(1, Number(f.contenedores_por_paquete) || 1) : 1,
+      nombre_contenedor: tipoEmp === 'PAQUETE' ? (f.nombre_contenedor || 'rollo') : (tipoEmp || 'bulto').toLowerCase(),
       tipo_etiqueta: f.tipo_etiqueta || '',
       impresion: f.impresion || '',
       num_tintas: Number(f.num_tintas) || 0,
@@ -39494,6 +39692,11 @@ window.crearProductoPT = async () => {
       num_capas: Number(f.num_capas) || 1,
       capas: capasLimpias,
       estandarizacion_extrusion: estLimpia,
+      // 🆕 ESTADO TÉCNICO: comercial crea el producto sin fórmula ni extrusión.
+      //    Producción/planeación completa esto después.
+      ficha_tecnica_completa: window.tieneFichaTecnicaCompleta
+        ? window.tieneFichaTecnicaCompleta({ capas: capasLimpias, estandarizacion_extrusion: estLimpia })
+        : false,
       // 🆕 F3 — Campos de peletizado y proceso secundario
       tipo_material_peletizado: matPel,
       color_peletizado: colPel,
@@ -39606,7 +39809,11 @@ window.guardarProductoPT = async (codigo) => {
     const updates = {
       descripcion: f.descripcion,
       um: f.um,
+      // 🆕 Tipo de producto (define el flujo) — ahora editable
+      tipo: f.tipo || productoPrev?.tipo || '',
       tipo_empaque: tipoEmpEdit,
+      // 🆕 Modo de empaque elegido (PAQUETE/ROLLO/BULTO/METROS) — para reconstruir la UI
+      empaque_modo: f.empaque_modo || (tipoEmpEdit === 'ROLLO' && umEmpEdit === 'm' ? 'METROS' : tipoEmpEdit),
       cant_empaque: cantEmpEdit,
       um_empaque: umEmpEdit,
       // Empaque jerárquico: solo PAQUETE tiene varios contenedores; rollo/bulto = 1
@@ -39626,6 +39833,10 @@ window.guardarProductoPT = async (codigo) => {
       num_capas: Number(f.num_capas) || 1,
       capas: capasLimpias,
       estandarizacion_extrusion: estLimpia,
+      // 🆕 Recalcular estado técnico: si producción ya agregó fórmula + extrusión, queda completo
+      ficha_tecnica_completa: window.tieneFichaTecnicaCompleta
+        ? window.tieneFichaTecnicaCompleta({ capas: capasLimpias, estandarizacion_extrusion: estLimpia })
+        : false,
       formulacion: null, // limpiar formato antiguo
       // 🆕 F3 — Actualizar también clasificación de peletizado al editar
       tipo_material_peletizado: f.tipo_material_peletizado || (
