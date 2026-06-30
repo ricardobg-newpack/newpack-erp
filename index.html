@@ -9723,6 +9723,24 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
       avance_procesos: avanceProc,
       updated_at: serverTimestamp()
     };
+    
+    // 🆕 MANDAR AL FINAL DE LA COLA DE SU MÁQUINA: al pausar, la orden cede su lugar.
+    //    Se le asigna un prioridad_cola mayor que el de todas las órdenes de la MISMA
+    //    máquina y proceso, para que quede al final. Planeación luego la reordena.
+    const maqPausada = odp.maquinas_asignadas?.[procPausar] || '';
+    if (maqPausada) {
+      const colaMismaMaq = (state.ordenes_produccion || []).filter(o => {
+        if (o.id === odpId || o.archivada) return false;
+        if (!['programada','en_produccion'].includes(o.estatus)) return false;
+        const rt = o.ruta_procesos || [];
+        if (!rt.includes(procPausar)) return false;
+        return (o.maquinas_asignadas?.[procPausar] || '') === maqPausada;
+      });
+      const maxCola = colaMismaMaq.reduce((mx, o) =>
+        Math.max(mx, Number.isFinite(o.prioridad_cola) ? o.prioridad_cola : 0), 0);
+      updates.prioridad_cola = maxCola + 10; // al final de la cola de esa máquina
+    }
+    
     // Si es el proceso actual, también reflejarlo en el estado global (compatibilidad)
     if (esActual) {
       updates.proceso_estatus_actual = 'pausado';
@@ -9736,9 +9754,10 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
     if (odpLocal) {
       odpLocal.avance_procesos = avanceProc;
+      if (updates.prioridad_cola != null) odpLocal.prioridad_cola = updates.prioridad_cola;
       if (esActual) odpLocal.proceso_estatus_actual = 'pausado';
     }
-    toast(`⏸ ${getProc(procPausar)?.nombre || procPausar} pausado en ${odp.folio} · ${motivoTxt}`, 'info');
+    toast(`⏸ ${getProc(procPausar)?.nombre || procPausar} pausado en ${odp.folio} · enviada al final de la cola · ${motivoTxt}`, 'info');
   } catch (e) {
     console.error('Error pausar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
@@ -9797,17 +9816,39 @@ window.soloPausarSinCambiar = async (odpId) => {
 
 // 🆕 Pausar la actual Y arrancar otra orden en el mismo proceso (flujo sin parar producción)
 window.pausarYArrancarOtra = async (odpPausarId, odpArrancarId) => {
+  // 🆕 Capturar TODO al inicio, antes de cualquier await/render que pueda alterar state.
   const motivo = state.modalForm?.motivo_elegido || 'Cambio de orden';
-  const procProc = state.modalForm?.proceso_pausar || state.panelOpProc || '';
-  const odpArrancar = (state.ordenes_produccion || []).find(o => o.id === odpArrancarId);
+  let procProc = state.modalForm?.proceso_pausar || state.panelOpProc || '';
+  // Guardar el ID a arrancar en variables locales inmutables (no depender de state)
+  const idArrancar = String(odpArrancarId);
+  const idPausar = String(odpPausarId);
+  const odpArrancar = (state.ordenes_produccion || []).find(o => o.id === idArrancar);
+  if (!odpArrancar) { toast('No se encontró la orden a arrancar', 'error'); return; }
+  // 🆕 Si el proceso no está en la ruta de la orden a arrancar, usar el proceso
+  //    correcto de ESA orden (su proceso esperando/actual), para no arrancar mal.
+  const rutaArr = odpArrancar.ruta_procesos || [];
+  if (!procProc || !rutaArr.includes(procProc)) {
+    procProc = rutaArr[odpArrancar.proceso_actual_idx || 0] || rutaArr[0] || procProc;
+  }
+  const folioArrancar = odpArrancar.folio;
+  console.log(`[pausarYArrancar] Pausar=${idPausar} Arrancar=${idArrancar} (${folioArrancar}) proc=${procProc}`);
   try {
-    // 1) Pausar la orden actual con el motivo
-    await window.confirmarPausaODP(odpPausarId, motivo);
-    // 2) Arrancar la nueva orden en este proceso
+    // 🆕 Fijar el proceso del panel ANTES, para que iniciar y el modal de captura
+    //    usen el proceso correcto de esta orden (no el que tuviera el panel).
+    state.panelOpProc = procProc;
+    // 1) Pausar la orden actual con el motivo (esto cierra el modal y hace render)
+    await window.confirmarPausaODP(idPausar, motivo);
+    // 2) Arrancar la nueva orden — usa el ID capturado al inicio, no state
     if (typeof window.iniciarProduccionODP === 'function') {
-      await window.iniciarProduccionODP(odpArrancarId, procProc);
+      await window.iniciarProduccionODP(idArrancar, procProc);
     }
-    toast(`⏸ Pausada · ▶️ Arrancando ${odpArrancar?.folio || 'la orden'}`, 'success');
+    // 🆕 BLINDAJE: garantizar que el modal de captura quede apuntando a la orden
+    //    que se arrancó (idArrancar), no a otra que un render intermedio pudiera dejar.
+    if (state.modal === 'capturar-turno' && state.modalData !== idArrancar) {
+      console.warn(`[pausarYArrancar] Corrigiendo modalData: era ${state.modalData}, debe ser ${idArrancar}`);
+      state.modalData = idArrancar;
+      window.forzarRender && window.forzarRender();
+    }
   } catch (e) {
     console.error('Error en pausar y arrancar:', e);
     toast('Error: ' + e.message, 'error');
