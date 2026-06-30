@@ -9448,12 +9448,21 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   const miProc = av?.procesos?.[idxProc];
   const esProcesoParalelo = idxProc > 0 && miProc && !miProc.completado;
   const disponibleAhora = miProc?.disponible_para_trabajar || 0;
+  // 🆕 ARRANQUE DESDE EL SELECTOR DE PAUSA: una orden en_produccion cuyo proceso
+  //    seleccionado está pausado, esperando o sin iniciar (NO corriendo ni completado)
+  //    también se puede arrancar/reanudar. Esto cubre el hueco que daba el error
+  //    "no se puede iniciar en su estado actual".
+  const estEsteProc = window.estadoProceso ? window.estadoProceso(odp, procAIniciar) : '';
+  const procArrancable = idxProc >= 0 && estEsteProc !== 'completado' && estEsteProc !== 'en_proceso';
+  const esEnProduccionArrancable = odp.estatus === 'en_produccion' && procArrancable;
   
-  if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo) {
-    console.warn(`[iniciarODP] ⚠ ${odp.folio} no pasó la validación de estado: esProgramada=${esProgramada} esProcesoEsperando=${esProcesoEsperando} esProcesoParalelo=${esProcesoParalelo}`);
+  if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo && !esEnProduccionArrancable) {
+    console.warn(`[iniciarODP] ⚠ ${odp.folio} no pasó la validación: estatus=${odp.estatus} estEsteProc=${estEsteProc} idxProc=${idxProc}`);
     toast('Esta ODP no se puede iniciar en su estado actual', 'error');
     return;
   }
+  // 🆕 Si el proceso estaba pausado, esto es una REANUDACIÓN: limpiar la pausa
+  const esReanudacion = estEsteProc === 'pausado';
   
   // 🆕 Si es un proceso posterior (bolseo) y aún no hay material de extrusión, avisar pero permitir
   if (idxProc > 0 && disponibleAhora <= 0) {
@@ -9497,8 +9506,18 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
     // Marcar el avance del proceso que arranca
     const avProc = { ...(odp.avance_procesos || {}) };
     if (!avProc[procAIniciar]) avProc[procAIniciar] = { producido_kg: 0, liberado_kg: 0, estatus: 'en_proceso', completado: false };
-    else avProc[procAIniciar].estatus = 'en_proceso';
+    else avProc[procAIniciar] = { ...avProc[procAIniciar], estatus: 'en_proceso' };
+    // 🆕 Si venía pausado, limpiar los datos de pausa de ese proceso (es reanudación)
+    if (esReanudacion) {
+      delete avProc[procAIniciar].pausa_motivo;
+      delete avProc[procAIniciar].pausa_iniciada_at_ms;
+    }
     updates.avance_procesos = avProc;
+    // 🆕 Limpiar también la pausa global si este proceso es el actual
+    if (esReanudacion && (idxProc === 0 || idxProc === (odp.proceso_actual_idx ?? 0))) {
+      updates.pausa_motivo = null;
+      updates.pausa_iniciada_at = null;
+    }
     
     if (esProgramada && !odp.inicio_real_at) {
       updates.inicio_real_at = serverTimestamp();
@@ -9721,7 +9740,7 @@ function modalPausarODP() {
 }
 
 // Aplicar la pausa con el motivo elegido
-window.confirmarPausaODP = async (odpId, motivoTxt) => {
+window.confirmarPausaODP = async (odpId, motivoTxt, mandarAlFinal = false) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
@@ -9731,7 +9750,7 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
   const esActual = ruta.indexOf(procPausar) === (odp.proceso_actual_idx ?? 0);
   
   try {
-    state.loadingAccion = true; render();
+    state.loadingAccion = true;
     // Marcar el proceso específico como pausado en avance_procesos
     const avanceProc = JSON.parse(JSON.stringify(odp.avance_procesos || {}));
     if (!avanceProc[procPausar]) avanceProc[procPausar] = {};
@@ -9744,11 +9763,11 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
       updated_at: serverTimestamp()
     };
     
-    // 🆕 MANDAR AL FINAL DE LA COLA DE SU MÁQUINA: al pausar, la orden cede su lugar.
-    //    Se le asigna un prioridad_cola mayor que el de todas las órdenes de la MISMA
-    //    máquina y proceso, para que quede al final. Planeación luego la reordena.
+    // 🆕 MANDAR AL FINAL DE LA COLA solo si se pidió explícitamente (cuando el
+    //    operador pausa PARA arrancar otra orden). En una pausa normal (fin de turno,
+    //    cambio de medida), la orden CONSERVA su lugar para no desordenar la cola.
     const maqPausada = odp.maquinas_asignadas?.[procPausar] || '';
-    if (maqPausada) {
+    if (mandarAlFinal && maqPausada) {
       const colaMismaMaq = (state.ordenes_produccion || []).filter(o => {
         if (o.id === odpId || o.archivada) return false;
         if (!['programada','en_produccion'].includes(o.estatus)) return false;
@@ -9777,7 +9796,8 @@ window.confirmarPausaODP = async (odpId, motivoTxt) => {
       if (updates.prioridad_cola != null) odpLocal.prioridad_cola = updates.prioridad_cola;
       if (esActual) odpLocal.proceso_estatus_actual = 'pausado';
     }
-    toast(`⏸ ${getProc(procPausar)?.nombre || procPausar} pausado en ${odp.folio} · enviada al final de la cola · ${motivoTxt}`, 'info');
+    const sufijoCola = (mandarAlFinal && maqPausada) ? ' · enviada al final de la cola' : '';
+    toast(`⏸ ${getProc(procPausar)?.nombre || procPausar} pausado en ${odp.folio}${sufijoCola} · ${motivoTxt}`, 'info');
   } catch (e) {
     console.error('Error pausar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
@@ -9856,8 +9876,8 @@ window.pausarYArrancarOtra = async (odpPausarId, odpArrancarId) => {
     // 🆕 Fijar el proceso del panel ANTES, para que iniciar y el modal de captura
     //    usen el proceso correcto de esta orden (no el que tuviera el panel).
     state.panelOpProc = procProc;
-    // 1) Pausar la orden actual con el motivo (esto cierra el modal y hace render)
-    await window.confirmarPausaODP(idPausar, motivo);
+    // 1) Pausar la orden actual con el motivo (manda al final de la cola)
+    await window.confirmarPausaODP(idPausar, motivo, true);
     // 2) Arrancar la nueva orden — usa el ID capturado al inicio, no state
     if (typeof window.iniciarProduccionODP === 'function') {
       await window.iniciarProduccionODP(idArrancar, procProc);
