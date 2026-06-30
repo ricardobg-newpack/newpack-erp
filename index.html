@@ -9421,6 +9421,25 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   const ruta = odp.ruta_procesos || [];
   const idxProc = ruta.indexOf(procAIniciar);
   
+  // 🔍 DIAGNÓSTICO: registrar todo lo relevante para identificar por qué unas sí y otras no
+  console.log(`%c[iniciarODP] ${odp.folio}`, 'color:#16a34a;font-weight:bold', {
+    odpId,
+    folio: odp.folio,
+    procEspecifico,
+    panelOpProc: state.panelOpProc,
+    procAIniciar,
+    ruta: ruta.join(','),
+    idxProc,
+    estatus: odp.estatus,
+    proceso_estatus_actual: odp.proceso_estatus_actual,
+    proceso_actual_idx: odp.proceso_actual_idx,
+    maquinas_asignadas: JSON.stringify(odp.maquinas_asignadas || {}),
+    maquina_para_este_proc: odp.maquinas_asignadas?.[procAIniciar] || '(NINGUNA)'
+  });
+  if (idxProc < 0) {
+    console.warn(`[iniciarODP] ⚠ El proceso "${procAIniciar}" NO está en la ruta de ${odp.folio} [${ruta.join(',')}]. AQUÍ está el problema.`);
+  }
+  
   // 🆕 Aceptar también procesos intermedios cuando están 'esperando' (después de cerrar el anterior)
   const esProgramada = odp.estatus === 'programada';
   const esProcesoEsperando = odp.estatus === 'en_produccion' && odp.proceso_estatus_actual === 'esperando';
@@ -9431,6 +9450,7 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   const disponibleAhora = miProc?.disponible_para_trabajar || 0;
   
   if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo) {
+    console.warn(`[iniciarODP] ⚠ ${odp.folio} no pasó la validación de estado: esProgramada=${esProgramada} esProcesoEsperando=${esProcesoEsperando} esProcesoParalelo=${esProcesoParalelo}`);
     toast('Esta ODP no se puede iniciar en su estado actual', 'error');
     return;
   }
