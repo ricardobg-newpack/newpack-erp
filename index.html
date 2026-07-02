@@ -7537,7 +7537,7 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
             style="background:${esUltima||totalEnCola<2?'#e2e8f0':'#3b82f6'};color:#fff;border:none;width:30px;height:20px;border-radius:4px;cursor:${esUltima||totalEnCola<2?'not-allowed':'pointer'};font-size:11px;font-weight:800;line-height:1;" 
             ${esUltima||totalEnCola<2?'disabled':''} title="Bajar (entra después)">▼</button>
         </div>
-        <button onclick="event.stopPropagation();window.moverODPaOtraMaquina('${odp.id}','${maquina}')" 
+        <button onclick="event.stopPropagation();window.moverODPaOtraMaquina('${odp.id}','${maquina}','${_estKan.proceso || ''}')" 
           style="background:#fff;color:#7c3aed;border:1.5px solid #c4b5fd;width:34px;height:42px;border-radius:6px;cursor:pointer;font-size:15px;" title="Mover a otra máquina">🔀</button>
       ` : (opts.sinMaquina ? `
         <button onclick="event.stopPropagation();window.asignarMaquinaRapido('${odp.id}')" 
@@ -7625,7 +7625,7 @@ function _renderTarjetaKanban(odp, columna, opts) {
         style="background:${esUltima?'#e2e8f0':'#3b82f6'};color:${esUltima?'#94a3b8':'#fff'};border:none;padding:4px 10px;border-radius:4px;cursor:${esUltima?'not-allowed':'pointer'};font-size:13px;font-weight:800;line-height:1;min-width:32px;" 
         ${esUltima || totalEnCola < 2 ? 'disabled' : ''} title="${esUltima?'Ya está en la última posición':'Mover abajo (entra después)'}">▼</button>
     </div>
-    <button onclick="event.stopPropagation();window.moverODPaOtraMaquina('${odp.id}','${maquina}')" style="margin-top:4px;width:100%;background:#fff;color:#7c3aed;border:1.5px solid #c4b5fd;padding:5px;border-radius:5px;cursor:pointer;font-weight:800;font-size:10px;">🔀 Mover a otra máquina</button>
+    <button onclick="event.stopPropagation();window.moverODPaOtraMaquina('${odp.id}','${maquina}','${_estKan.proceso || ''}')" style="margin-top:4px;width:100%;background:#fff;color:#7c3aed;border:1.5px solid #c4b5fd;padding:5px;border-radius:5px;cursor:pointer;font-weight:800;font-size:10px;">🔀 Mover a otra máquina</button>
   ` : (columna === 'cola' && totalEnCola > 0 ? `
     <div style="margin-top:5px;">
       <span style="font-size:9.5px;color:#475569;font-weight:800;background:#fef3c7;padding:2px 6px;border-radius:4px;">📋 ${idx + 1} de ${totalEnCola}</span>
@@ -7866,8 +7866,11 @@ window.asignarMaquinaRapido = async (odpId) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
-  const idxProc = odp.proceso_actual_idx ?? 0;
-  const procCodigo = (odp.ruta_procesos || [])[idxProc];
+  // 🔧 Proceso a asignar: el que se está viendo en el Kanban (state.kanban_proceso) o el actual.
+  const rutaOdp = odp.ruta_procesos || [];
+  let procCodigo = (state.kanban_proceso && state.kanban_proceso !== 'todos' && rutaOdp.includes(state.kanban_proceso))
+    ? state.kanban_proceso
+    : rutaOdp[odp.proceso_actual_idx ?? 0];
   if (!procCodigo) { toast('La ODP no tiene proceso actual', 'error'); return; }
   
   const maqsProc = (state.maquinas || []).filter(m => 
@@ -7915,7 +7918,7 @@ window.asignarMaquinaRapido = async (odpId) => {
 };
 
 // 🆕 Mover una ODP a otra máquina del mismo proceso (reasignar carga entre máquinas)
-window.moverODPaOtraMaquina = async (odpId, maqOrigen) => {
+window.moverODPaOtraMaquina = async (odpId, maqOrigen, procForzado = null) => {
   const u = state.user || {};
   const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
   if (!puedeEditar) {
@@ -7925,9 +7928,21 @@ window.moverODPaOtraMaquina = async (odpId, maqOrigen) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
-  const idxProc = odp.proceso_actual_idx ?? 0;
-  const procCodigo = (odp.ruta_procesos || [])[idxProc];
-  if (!procCodigo) { toast('La ODP no tiene proceso actual', 'error'); return; }
+  // 🔧 Proceso a cambiar de máquina, en orden de confianza:
+  //    1) el proceso EXPLÍCITO de la columna del Kanban (procForzado) — fuente de verdad,
+  //    2) el filtro activo del Kanban, 3) el de la máquina origen, 4) el proceso actual.
+  //    Antes usaba proceso_actual_idx (global) y ofrecía extrusoras para una ODP en bolseo.
+  const rutaOdp = odp.ruta_procesos || [];
+  let procCodigo = (procForzado && rutaOdp.includes(procForzado)) ? procForzado : null;
+  if (!procCodigo && state.kanban_proceso && state.kanban_proceso !== 'todos' && rutaOdp.includes(state.kanban_proceso)) {
+    procCodigo = state.kanban_proceso;
+  }
+  if (!procCodigo && maqOrigen) {
+    const mOrig = (state.maquinas || []).find(m => m.codigo === maqOrigen);
+    if (mOrig?.proceso_codigo && rutaOdp.includes(mOrig.proceso_codigo)) procCodigo = mOrig.proceso_codigo;
+  }
+  if (!procCodigo) procCodigo = rutaOdp[odp.proceso_actual_idx ?? 0];
+  if (!procCodigo) { toast('La ODP no tiene proceso para cambiar de máquina', 'error'); return; }
   
   // Máquinas del MISMO proceso (a las que se puede mover), excepto la actual
   const maqsProc = (state.maquinas || []).filter(m => 
@@ -11001,59 +11016,59 @@ function _renderTimelineODP(odp) {
           const esActual = !esCompletado && i === procIdx && !produccionTerminada;
           const esFuturo = !esCompletado && !esActual;
           
+          // 🆕 Estado REAL de ESTE proceso (modelo paralelo): estadoProceso lee avance_procesos[proc],
+          //    así bolseo muestra su estado aunque extrusión siga siendo el proceso "actual" global.
+          const _estProc = window.estadoProceso(odp, procCod);
+          const _completo = esCompletado || _estProc === 'completado';
+
           let icono, bg, color, txt;
-          if (esCompletado) {
-            icono = '✅';
-            bg = '#dcfce7';
-            color = '#15803d';
-            txt = 'Completado';
+          if (_completo) {
+            icono = '✅'; bg = '#dcfce7'; color = '#15803d'; txt = 'Completado';
+          } else if (_estProc === 'en_proceso') {
+            icono = '⚙️'; bg = '#dbeafe'; color = '#1e40af'; txt = 'En proceso';
+          } else if (_estProc === 'pausado') {
+            icono = '⏸'; bg = '#fef3c7'; color = '#a16207'; txt = 'Pausado';
+          } else if (_estProc === 'esperando' && i > 0) {
+            icono = '⏳'; bg = '#fef3c7'; color = '#92400e'; txt = 'En cola';
           } else if (esActual) {
-            if (procEst === 'en_proceso') {
-              icono = '⚙️';
-              bg = '#dbeafe';
-              color = '#1e40af';
-              txt = 'En proceso';
-            } else if (procEst === 'pausado') {
-              icono = '⏸';
-              bg = '#fef3c7';
-              color = '#a16207';
-              txt = 'Pausado';
-            } else if (procEst === 'esperando' && i > 0) {
-              icono = '⏳';
-              bg = '#fef3c7';
-              color = '#92400e';
-              txt = 'En cola';
-            } else {
-              icono = '📦';
-              bg = '#fef3c7';
-              color = '#92400e';
-              txt = 'Por iniciar';
-            }
+            icono = '📦'; bg = '#fef3c7'; color = '#92400e'; txt = 'Por iniciar';
           } else {
-            icono = '⚪';
-            bg = '#f1f5f9';
-            color = '#94a3b8';
-            txt = 'Pendiente';
+            icono = '⚪'; bg = '#f1f5f9'; color = '#94a3b8'; txt = 'Pendiente';
           }
-          
-          // Stats: usar procesos_completados[i] si existe, sino calcular de capturas
+          const _activoVisual = !_completo && (_estProc === 'en_proceso' || _estProc === 'pausado' || esActual);
+
+          // 🆕 Avance por proceso — se muestra para CUALQUIER proceso que ya produjo algo (no solo el actual),
+          //    en AMBAS unidades: la UM del producto (ej. piezas) Y kg, para responder al cliente con exactitud.
           let stats = '';
+          const _maqProc = odp.maquinas_asignadas?.[procCod] || '';
+          const _kgMetaProc = Number(odp.cantidad_kg_produccion) || cantTotal || 0;
+          let _kgProc = 0, _mermaTxt = '';
           if (tieneEntradaCompletada) {
             const pc = procesosCompletados[i];
-            const kgProducido = Number(pc.cantidad_producida_kg) || Number(pc.cantidad_producida) || 0;
-            const maq = pc.maquina ? `🛠️ ${pc.maquina}` : '';
-            stats = `${fmtNum(kgProducido)} ${pc.mermas_kg ? `kg · ⚠ ${fmtNum(pc.mermas_kg)} kg merma` : (um === 'kg' ? 'kg' : um)}`;
-            if (maq) stats = `${maq} · ${stats}`;
-          } else if (esActual && procEst === 'en_proceso') {
-            // 🔧 Helper único: capturas + rollos en vivo (sin esperar cierre de turno)
-            const prod = window.kgProducidoProceso(odp, procCod);
-            const kgMeta = Number(odp.cantidad_kg_produccion) || cantTotal;
-            const pct = kgMeta > 0 ? Math.round((prod/kgMeta)*100) : 0;
-            const maq = odp.maquinas_asignadas?.[procCod] || '';
-            stats = `${maq ? '🛠️ ' + maq + ' · ' : ''}${fmtNum(Math.round(prod))} kg (${pct}%)`;
-          } else if (esActual && (procEst === 'esperando' || procEst === 'pausado')) {
-            const maq = odp.maquinas_asignadas?.[procCod] || '';
-            if (maq) stats = `🛠️ ${maq}`;
+            _kgProc = Number(pc.cantidad_producida_kg) || Number(pc.cantidad_producida) || window.kgProducidoProceso(odp, procCod) || 0;
+            if (pc.mermas_kg) _mermaTxt = ` · ⚠ ${fmtNum(pc.mermas_kg)} kg merma`;
+          } else {
+            _kgProc = window.kgProducidoProceso(odp, procCod) || 0;
+          }
+          if (_kgProc > 0) {
+            const _prodPT = (typeof window.getProductoPT === 'function') ? window.getProductoPT(odp.producto_codigo) : (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
+            const _pct = _kgMetaProc > 0 ? Math.round((_kgProc / _kgMetaProc) * 100) : 0;
+            let _umTxt = '';
+            if (um && um !== 'kg') {
+              // 🆕 Piezas REALES capturadas en este proceso (suma de producido_um de sus capturas
+              //    en la UM del producto), no una estimación desde kg. Ej.: bolseo registró
+              //    16 rollos × 300 = 4,800 pza. Si no hay capturas en esa UM (p.ej. extrusión en
+              //    kg), cae a la estimación por peso teórico.
+              const _capsUM = capturasValidas(state.capturas_produccion)
+                .filter(c => c.odp_id === odp.id && c.proceso === procCod
+                             && (c.um_captura || '').toLowerCase() === um && !c.es_solo_merma);
+              const _umReal = _capsUM.reduce((s, c) => s + (Number(c.producido_um) || 0), 0);
+              const _prodUM = _umReal > 0 ? _umReal : window.kgAUM(_kgProc, um, _prodPT);
+              if (_prodUM > 0) _umTxt = `${fmtNum(Math.round(_prodUM))} ${um} · `;
+            }
+            stats = `${_maqProc ? '🛠️ ' + _maqProc + ' · ' : ''}${_umTxt}${fmtNum(Math.round(_kgProc))} kg (${_pct}%)${_mermaTxt}`;
+          } else if (_activoVisual && _maqProc) {
+            stats = `🛠️ ${_maqProc}`;
           }
           
           return `
