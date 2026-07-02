@@ -683,14 +683,11 @@ window.estadoODPenProceso = (odp, procCodigo = null) => {
   // Estado granular: si es el actual, usa proceso_estatus_actual; si no, usa el del avance
   const procEst = esActual ? procEstGlobal : (odp.avance_procesos?.[proc]?.estatus || '');
   
-  // 🆕 REGLA: un proceso POSTERIOR a extrusión (idxProc > 0) solo aparece en su Kanban
-  //    cuando YA tiene material disponible para trabajar (aunque sea 1 rollo), o si ya
-  //    empezó/produjo algo. Si todavía no hay material de extrusión, NO se muestra.
-  if (idxProc > 0 && !completado && producido <= 0 && procEst !== 'en_proceso' && procEst !== 'pausado') {
-    if (disponible <= 0) {
-      return { columna: 'fuera', maquina, proceso: proc, idxProceso: idxProc, producido: 0, meta, completado: false, disponible_para_trabajar: 0 };
-    }
-  }
+  // 🔧 FLUJO: un proceso POSTERIOR a extrusión (idxProc > 0) SIEMPRE aparece en su Kanban,
+  //    igual que en el Panel del Operador, para coordinar el flujo. Si aún no hay material
+  //    de extrusión disponible, se muestra en cola marcado como "esperando material".
+  const esperandoMaterial = idxProc > 0 && !completado && disponible <= 0 && producido <= 0
+                            && procEst !== 'en_proceso' && procEst !== 'pausado';
   
   // DECIDIR COLUMNA (orden de prioridad claro):
   let columna;
@@ -711,7 +708,8 @@ window.estadoODPenProceso = (odp, procCodigo = null) => {
     producido, meta, completado,
     corriendo: columna === 'proceso',
     pausado: pausado(procEst),
-    disponible_para_trabajar: disponible
+    disponible_para_trabajar: disponible,
+    esperando_material: esperandoMaterial
   };
 };
 
@@ -7445,8 +7443,16 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
   const puedeReordenar = opts.puedeReordenar === true && columna === 'cola';
   const draggable = opts.draggable === true && columna === 'cola';
   const enProceso = columna === 'proceso';
-  
-  const procIdx = odp.proceso_actual_idx ?? 0;
+  // 🆕 Estado de material para procesos secundarios (bolseo, etc.), como en el Panel del Operador
+  const _estKan = window.estadoODPenProceso(odp, (state.kanban_proceso && state.kanban_proceso !== 'todos') ? state.kanban_proceso : null);
+  const _esSecundario = (_estKan.idxProceso || 0) > 0;
+  const _dispKg = _estKan.disponible_para_trabajar || 0;
+  const _espMat = _estKan.esperando_material === true;
+  const _badgeMaterial = _esSecundario
+    ? (_espMat
+        ? '<span style="font-size:9px;font-weight:800;color:#b45309;background:#fef3c7;padding:1px 7px;border-radius:99px;">⏳ ESPERA MATERIAL</span>'
+        : (_dispKg > 0 ? `<span style="font-size:9px;font-weight:800;color:#15803d;background:#dcfce7;padding:1px 7px;border-radius:99px;">🧵 ${fmtNum(Math.round(_dispKg))} kg listo</span>` : ''))
+    : '';
   const procEst = odp.proceso_estatus_actual || '';
   const um = (odp.um || 'kg').toLowerCase();
   const cantTotal = Number(odp.cantidad_kg_produccion || odp.cantidad) || 0;
@@ -7495,6 +7501,7 @@ function _renderFilaKanbanAgil(odp, columna, opts) {
           ${esPausada ? '<span style="font-size:9px;font-weight:800;color:#dc2626;background:#fee2e2;padding:1px 7px;border-radius:99px;">⏸ PAUSADA</span>' : ''}
           ${vencida ? '<span style="font-size:9px;font-weight:800;color:#dc2626;">🔴 VENCIDA</span>' : ''}
           ${odp.prioridad === 'urgente' ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#dc2626;padding:1px 7px;border-radius:99px;">🔥 URGENTE</span>' : ''}
+          ${_badgeMaterial}
         </div>
         <div style="font-size:11px;color:#64748b;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
           ${(odp.producto_descripcion || odp.producto_codigo || '').slice(0,50)} · ${cliente.length > 16 ? cliente.slice(0,15)+'…' : cliente}
@@ -8049,39 +8056,22 @@ window.moverODPCola = async (odpId, direccion) => {
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   
-  // Encontrar la máquina asignada a esta ODP en su proceso actual
-  const idxProc = odp.proceso_actual_idx ?? 0;
-  const procCodigo = (odp.ruta_procesos || [])[idxProc];
-  const maqs = odp.maquinas_asignadas || {};
-  let maqAsignada = null;
-  if (typeof maqs === 'object' && !Array.isArray(maqs)) maqAsignada = maqs[procCodigo];
-  else if (Array.isArray(maqs)) maqAsignada = maqs[idxProc];
-  else if (typeof maqs === 'string') maqAsignada = maqs;
-  
+  // 🔧 Reordenar SIEMPRE en el contexto del proceso que se está viendo en el Kanban
+  //    (state.kanban_proceso). Antes usaba proceso_actual_idx (el proceso GLOBAL de la ODP),
+  //    por eso al filtrar por bolseo intentaba reordenar en la máquina de extrusión y "no dejaba subir".
+  const procView = (state.kanban_proceso && state.kanban_proceso !== 'todos') ? state.kanban_proceso : null;
+  const estThis = window.estadoODPenProceso(odp, procView);
+  const maqAsignada = estThis.maquina;
+
   if (!maqAsignada) {
-    toast('Esta ODP no tiene máquina asignada', 'error'); return;
+    toast('Esta ODP no tiene máquina asignada en este proceso', 'error'); return;
   }
-  
-  // Obtener todas las ODPs en cola de la misma máquina (mismo conjunto que ve en el Kanban)
+
+  // Construir la cola EXACTA que muestra el Kanban para esa máquina/proceso (mismo clasificador).
   const odpsEnCola = (state.ordenes_produccion || []).filter(o => {
     if (o.archivada || o.estatus === 'cancelada') return false;
-    const idx2 = o.proceso_actual_idx ?? 0;
-    const maqs2 = o.maquinas_asignadas || {};
-    const proc2 = (o.ruta_procesos || [])[idx2];
-    let maq2 = null;
-    if (typeof maqs2 === 'object' && !Array.isArray(maqs2)) maq2 = maqs2[proc2];
-    else if (Array.isArray(maqs2)) maq2 = maqs2[idx2];
-    else if (typeof maqs2 === 'string') maq2 = maqs2;
-    if (maq2 !== maqAsignada) return false;
-    const est = o.estatus || '';
-    const procEst = o.proceso_estatus_actual || '';
-    // 🆕 Incluir TAMBIÉN ODPs que avanzaron de proceso anterior (en_produccion + esperando)
-    // Sin esto, las ODPs que pasaron de EXT a BS no se podían reordenar en BS.
-    return est === 'aprobada' 
-        || est === 'pendiente' 
-        || est === 'programada' 
-        || est === 'pendiente_planeacion'
-        || (est === 'en_produccion' && procEst !== 'en_proceso' && procEst !== 'completado');
+    const e = window.estadoODPenProceso(o, procView);
+    return e.maquina === maqAsignada && e.columna === 'cola';
   }).sort((a, b) => {
     const pa = Number.isFinite(a.prioridad_cola) ? a.prioridad_cola : Number.MAX_SAFE_INTEGER;
     const pb = Number.isFinite(b.prioridad_cola) ? b.prioridad_cola : Number.MAX_SAFE_INTEGER;
