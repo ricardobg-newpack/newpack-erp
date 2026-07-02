@@ -12095,11 +12095,54 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
               </div>
             ` : ''}
             
-            ${term.length > 0 ? `
-              <div style="border-top:1px solid #e2e8f0;padding:6px 12px;background:#f0fdf4;">
-                <div style="font-size:10px;color:#16a34a;font-weight:700;">✓ ${term.length} terminada(s) hoy</div>
-              </div>
-            ` : ''}
+            ${term.length > 0 ? (() => {
+              // 🆕 TERMINADAS: reimpresión de etiquetas aunque la orden ya salió de las columnas activas.
+              //    Resuelve el caso "terminé los rollos, la orden desapareció y ya no puedo imprimir".
+              const _inicioHoy = new Date(); _inicioHoy.setHours(0,0,0,0);
+              const _msHoy = _inicioHoy.getTime();
+              const _finMs = (od) => {
+                const ts = od.avance_procesos?.[procSel]?.completado_at || od.updated_at || od.created_at;
+                if (!ts) return 0;
+                return ts.toDate ? ts.toDate().getTime() : (ts.seconds ? ts.seconds * 1000 : new Date(ts).getTime());
+              };
+              const _ordenadas = [...term].sort((a, b) => _finMs(b) - _finMs(a));
+              const _hoyN = _ordenadas.filter(od => _finMs(od) >= _msHoy).length;
+              const _lista = _ordenadas.slice(0, 20);
+              const _abierto = !!(state.panelTermAbierto || {})[m.codigo];
+              const _btnEtiq = (od) => {
+                if (procSel === 'P1-EXT') {
+                  const _r = od.ruta_procesos || [];
+                  const _ix = _r.indexOf('P1-EXT');
+                  const _hay2do = _r.length > 1 && _ix >= 0 && _ix < _r.length - 1;
+                  return _hay2do
+                    ? `<button onclick="event.stopPropagation();window.imprimirEtiquetasRollosWIP('${od.id}')" style="width:100%;background:#3b82f6;color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">🏷️ Etiquetas WIP <span style="font-weight:600;opacity:.9;">(rollos → 2º proceso)</span></button>`
+                    : `<button onclick="event.stopPropagation();window.imprimirEtiquetasPDF('${od.id}')" style="width:100%;background:#16a34a;color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">🏷️ Etiquetas final <span style="font-weight:600;opacity:.9;">(cliente)</span></button>`;
+                }
+                return `<button onclick="event.stopPropagation();window.imprimirEtiquetasPDF('${od.id}')" style="width:100%;background:#f59e0b;color:#fff;border:none;padding:9px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">🏷️ Imprimir etiquetas</button>`;
+              };
+              return `
+                <div style="border-top:1px solid #e2e8f0;background:#f0fdf4;">
+                  <div onclick="state.panelTermAbierto=state.panelTermAbierto||{};state.panelTermAbierto['${m.codigo}']=!state.panelTermAbierto['${m.codigo}'];render();" style="padding:7px 12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;">
+                    <span style="font-size:10.5px;color:#16a34a;font-weight:800;">✓ ${_hoyN} terminada(s) hoy${term.length > _hoyN ? ` · ${term.length} recientes` : ''}</span>
+                    <span style="font-size:10px;color:#15803d;font-weight:800;background:#dcfce7;padding:2px 7px;border-radius:5px;">${_abierto ? '▲ ocultar' : '🏷️ etiquetas ▾'}</span>
+                  </div>
+                  ${_abierto ? `
+                    <div style="padding:2px 10px 10px;display:flex;flex-direction:column;gap:8px;">
+                      ${_lista.map(od => `
+                        <div style="background:#fff;border:1px solid #bbf7d0;border-radius:8px;padding:8px;">
+                          <div onclick="abrirModal('detalle-odp','${od.id}')" style="cursor:pointer;margin-bottom:6px;">
+                            <div style="font-size:13px;font-weight:900;font-family:monospace;color:#0f172a;">${od.folio}</div>
+                            <div style="font-size:10px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(od.descripcion || od.producto_codigo || '').slice(0, 44)} · ${fmtNum(od.cantidad_kg_produccion || od.cantidad)} kg</div>
+                          </div>
+                          ${_btnEtiq(od)}
+                        </div>
+                      `).join('')}
+                      ${term.length > _lista.length ? `<div style="font-size:9.5px;color:#94a3b8;text-align:center;">+${term.length - _lista.length} más antiguas — reimprímelas desde Almacén Intermedio</div>` : ''}
+                    </div>
+                  ` : ''}
+                </div>
+              `;
+            })() : ''}
           </div>
         `;
       }).join('')}
