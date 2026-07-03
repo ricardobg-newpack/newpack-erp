@@ -10914,6 +10914,35 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
 
 // Timeline visual de UNA ODP mostrando sus procesos
 function _renderTimelineODP(odp) {
+  // 🔹 Parcialidad liberada: unidad propia que viaja por la cadena. Render compacto CON su ubicación.
+  if (odp.es_liberacion_parcial) {
+    const _um = (odp.um || 'kg').toLowerCase();
+    const _tars = (state.tarimas || []).filter(t => t.odp_folio === odp.folio && t.activo !== false);
+    const _orden = ['pendiente_empaque','en_almacen_planta','en_transito_cedis','en_cedis_mty','en_cedis_mex','embarcada','entregada'];
+    const _tarLbl = {
+      pendiente_empaque:'📦 Liberada (por empacar)', en_almacen_planta:'📦 En almacén de planta',
+      en_transito_cedis:'🚚 En tránsito a CEDIS', en_cedis_mty:'🏬 En CEDIS-MTY',
+      en_cedis_mex:'🏬 En CEDIS-MEX', embarcada:'🚚 Embarcada al cliente', entregada:'✅ Entregada al cliente'
+    };
+    const _estLbl = {
+      pendiente_calidad:'🟡 En liberación de calidad', rechazada:'❌ Rechazada',
+      liberada_empaque:'📦 Liberada — en almacén de planta', en_almacen_planta:'📦 En almacén de planta',
+      en_cedis_mty:'🏬 En CEDIS-MTY', en_cedis_mex:'🏬 En CEDIS-MEX',
+      embarcada:'🚚 Embarcada al cliente', entregada:'✅ Entregada al cliente'
+    };
+    let _loc = _estLbl[odp.estatus] || '🟡 En proceso de liberación';
+    if (_tars.length) {
+      const _idxs = _tars.map(t => _orden.indexOf(t.estatus)).filter(i => i >= 0);
+      if (_idxs.length) { const _e = _orden[Math.max(..._idxs)]; if (_tarLbl[_e]) _loc = _tarLbl[_e]; }
+    }
+    const _cant = _um !== 'kg'
+      ? `${fmtNum(Number(odp.cantidad_producida_final || odp.cantidad || 0))} ${_um} · ${fmtNum(Number(odp.cantidad_producida_final_kg || 0))} kg`
+      : `${fmtNum(Number(odp.cantidad_producida_final_kg || odp.cantidad || 0))} kg`;
+    return `<div style="margin:6px 0;padding:10px 14px;background:#ecfdf5;border:1px solid #a7f3d0;border-left:4px solid #10b981;border-radius:10px;font-size:12.5px;color:#065f46;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <span>🔹 <strong>Parcialidad ${odp.folio}</strong> · ${_cant}</span>
+      <span style="font-weight:800;">${_loc}</span>
+    </div>`;
+  }
   const ruta = odp.ruta_procesos || [];
   const procIdx = odp.proceso_actual_idx ?? 0;
   const procEst = odp.proceso_estatus_actual || '';
@@ -10993,14 +11022,21 @@ function _renderTimelineODP(odp) {
         const salidas = (state.salidas_parciales || [])
           .filter(s => s.odp_id === odp.id)
           .sort((a, b) => (a.num_salida || 0) - (b.num_salida || 0));
+        // 🔹 Ubicación de las parcialidades liberadas (sus tarimas en la cadena)
+        const _tarsMadre = (state.tarimas || []).filter(t => t.odp_folio === odp.folio && t.activo !== false && t.estatus !== 'cancelada');
+        const _ubLbl = { pendiente_empaque:'📦 Liberada (por empacar)', en_almacen_planta:'📦 Almacén de planta', pendiente_almacen:'📦 Almacén de planta', en_transito_cedis:'🚚 En tránsito a CEDIS', en_cedis_mty:'🏬 CEDIS-MTY', en_cedis_mex:'🏬 CEDIS-MEX', embarcada:'🚚 Embarcada al cliente', entregada:'✅ Entregada al cliente' };
+        const _porUbic = {};
+        _tarsMadre.forEach(t => { const k = _ubLbl[t.estatus] || ('· ' + (t.estatus || '?')); _porUbic[k] = (_porUbic[k] || 0) + (Number(t.peso_neto_kg) || Number(t.peso_neto) || 0); });
+        const _ubicRows = Object.entries(_porUbic).map(([k, kg]) => `<div style="font-size:11px;color:#065f46;display:flex;justify-content:space-between;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:5px;padding:4px 8px;"><span>${k}</span><strong>${fmtNum(Math.round(kg))} kg</strong></div>`).join('');
         return `
           <div style="background:#eff6ff;border:1.5px solid #3b82f6;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
-            <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:6px;">📦 SALIDAS PARCIALES (la orden sigue siendo la misma)</div>
+            <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:6px;">📦 PARCIALES LIBERADAS (la orden sigue siendo la misma)</div>
             <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;">
               <div><span style="font-size:10px;color:#64748b;">YA LIBERADO</span><br><strong style="font-size:15px;color:#16a34a;">${fmtNum(Math.round(liberadoParcial))} kg</strong></div>
               <div><span style="font-size:10px;color:#64748b;">PENDIENTE POR PRODUCIR</span><br><strong style="font-size:15px;color:#a16207;">${fmtNum(Math.round(pendiente))} kg</strong></div>
               <div><span style="font-size:10px;color:#64748b;">META TOTAL</span><br><strong style="font-size:15px;color:#0f172a;">${fmtNum(Math.round(meta))} kg</strong></div>
             </div>
+            ${_ubicRows ? `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:${salidas.length>0?'8px':'0'};"><div style="font-size:10px;color:#64748b;font-weight:700;">📍 UBICACIÓN DEL MATERIAL LIBERADO</div>${_ubicRows}</div>` : ''}
             ${salidas.length > 0 ? `
               <div style="display:flex;flex-direction:column;gap:4px;">
                 ${salidas.map(s => {
@@ -13067,10 +13103,11 @@ function renderCalidad() {
                     <div style="font-size:22px;font-weight:900;color:#16a34a;">${fmtNum(Math.round(d.disponibleKg))} kg</div>
                     ${_piezasDisp ? `<div style="font-size:14px;font-weight:800;color:#16a34a;margin-top:-2px;">${_piezasDisp}</div>` : ''}
                     <div style="font-size:10.5px;color:#94a3b8;">registrado: ${fmtNum(Math.round(d.registradoKg))} kg${_piezasReg} · ya salió: ${fmtNum(Math.round(d.yaSalioKg))} kg${_piezasSalio}</div>
-                    ${o.tiene_salidas_parciales
-                      ? `<div style="margin-top:8px;padding:9px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:11px;color:#991b1b;line-height:1.45;">⚠ Esta ODP tiene una salida registrada con el mecanismo viejo (${fmtNum(Number(o.kg_liberado_parcial)||0)} kg). El material no se perdió — sigue registrado.${(state.user?.rol==='admin' || ['CEO','ADMIN'].includes(state.user?.depto)) ? `<button onclick="window.deshacerSalidaParcial('${o.id}')" style="display:block;margin-top:7px;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">↩ Deshacer salida y recuperar material</button>` : ' Pide a Dirección que la deshaga.'}</div>`
-                      : `<div style="margin-top:8px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:11px;color:#1e40af;line-height:1.4;">ℹ️ Material registrado. Para liberarlo, ve a <strong>"Por liberar" → Liberar calidad</strong> (genera tarimas). La salida al cliente la deciden CS/KAM en <strong>Embarques</strong>.</div>`
-                    }
+                    <button onclick="window.jalarParcialALiberar('${o.id}')" style="margin-top:8px;padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;">📦 Jalar parcial a liberación</button>
+                    <div style="margin-top:6px;font-size:10.5px;color:#64748b;line-height:1.4;">Crea una unidad rastreable que pasa por <strong>"Por liberar" → tarimas → cadena</strong>. La orden <strong>sigue produciendo</strong> el resto.</div>
+                    ${o.tiene_salidas_parciales && (state.user?.rol==='admin' || ['CEO','ADMIN'].includes(state.user?.depto))
+                      ? `<button onclick="window.deshacerSalidaParcial('${o.id}')" style="margin-top:6px;padding:7px 12px;background:#dc2626;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">↩ Deshacer salida vieja (${fmtNum(Number(o.kg_liberado_parcial)||0)} kg)</button>`
+                      : ''}
                   </div>
                 </div>
               </div>
@@ -27591,6 +27628,17 @@ window.imprimirEtiquetasTarimasPDF = (odpId) => {
     docPDF.text(`RFC: ${DATOS_EMPRESA.rfc}   ·   Tel: ${DATOS_EMPRESA.telefono}`, x + 48, y + 18.5);
     docPDF.text(`${DATOS_EMPRESA.email}`, x + 48, y + 22.5);
     
+    // 🔹 Sello PARCIAL (identificación física en la tarima)
+    if (t.es_parcial) {
+      docPDF.setFillColor(124, 58, 237);
+      docPDF.rect(x + etiqW - 34, y + 4, 30, 8, 'F');
+      docPDF.setFontSize(9);
+      docPDF.setFont('helvetica', 'bold');
+      docPDF.setTextColor(255, 255, 255);
+      docPDF.text('PARCIAL', x + etiqW - 19, y + 9.3, { align: 'center' });
+      docPDF.setTextColor(0, 0, 0);
+    }
+    
     // ===== NÚMERO DE TARIMA GIGANTE (banner azul oscuro) =====
     docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
     docPDF.rect(x, y + 26, etiqW, 22, 'F');
@@ -34949,8 +34997,9 @@ function modalLiberarCalidad() {
   
   const um = (odp.um || 'kg').toLowerCase();
   const stepCant = UM_ENTEROS.includes(um) ? '1' : '0.01';
-  const cantidadProducida = Number(odp.cantidad_producida_final) || 0;
-  const cantidadOriginal = Number(odp.cantidad) || 0;
+  const esParcialLib = !!(state.liberacionParcial && state.liberacionParcial.odpId === odp.id);
+  const cantidadProducida = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : (Number(odp.cantidad_producida_final) || 0);
+  const cantidadOriginal = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : (Number(odp.cantidad) || 0);
   const procesosCompletados = odp.procesos_completados || [];
   const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
   
@@ -35127,10 +35176,18 @@ function modalLiberarCalidad() {
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:920px;max-height:92vh;">
         <div class="modal-header">
-          <h2 style="font-size:18px;font-weight:800;">✅ Liberación de Calidad</h2>
+          <h2 style="font-size:18px;font-weight:800;">✅ Liberación de Calidad${esParcialLib ? ' · 🔹 PARCIAL' : ''}</h2>
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body">
+          ${esParcialLib ? `
+          <div style="padding:12px 14px;background:#f5f3ff;border:2px solid #7c3aed;border-radius:10px;margin-bottom:14px;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:24px;">🔹</span>
+            <div>
+              <div style="font-weight:900;color:#6d28d9;font-size:15px;">LIBERACIÓN PARCIAL</div>
+              <div style="font-size:12px;color:#5b21b6;line-height:1.4;">Estás liberando <strong>${fmtNum(cantidadProducida)} ${um}${(Number(state.liberacionParcial?.kg)||0) > 0 ? ' · ' + fmtNum(Number(state.liberacionParcial.kg)) + ' kg' : ''}</strong> de la orden. La orden <strong>seguirá produciendo el resto</strong>. Las tarimas y su etiqueta quedarán marcadas como <strong>PARCIAL</strong>.</div>
+            </div>
+          </div>` : ''}
           
           <div style="padding:12px;background:#fffbeb;border-radius:10px;margin-bottom:14px;font-size:12px;border-left:4px solid #f59e0b;">
             <strong>${odp.folio}</strong> · ${odp.cliente_nombre} · <span class="text-mono" style="font-size:11px;">${odp.producto_codigo}</span><br>
@@ -39493,7 +39550,7 @@ window.abrirModal = (m, data) => {
   if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina','crear-com','editar-com','salida-com','ajuste-com','transfer-com','generar-remision-ov','transportista','operador-logistica','unidad-logistica'].includes(m)) state.modalForm = null;
   window.forzarRender();
 };
-window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; state._mpSeleccionado = null; window.forzarRender(); };
+window.cerrarModal = () => { state.modal = null; state.modalData = null; state.modalForm = null; state._mpSeleccionado = null; state.liberacionParcial = null; window.forzarRender(); };
 window.cambiarTab = (vista, tab) => { state.tabs[vista] = tab; render(); };
 
 // Helpers para gestionar la ruta de procesos en el modal de programación
@@ -42107,6 +42164,107 @@ window.jalarMaterialCalidad = async (odpId) => {
   }
 };
 
+// 🆕 JALAR PARCIAL → crea una UNIDAD DE LIBERACIÓN propia (hija) por el material disponible.
+//    Esa unidad entra a "Por liberar" y pasa por el MISMO sistema (Liberar calidad → tarimas → cadena).
+//    La ODP MADRE sigue viva produciendo el resto. Se pueden jalar varios parciales.
+window.jalarParcialALiberar = async (odpId) => {
+  const u = state.user || {};
+  if (!(['ALP','CAL','PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 No autorizado. Depto: ${u.depto || '?'}`, 'error'); return;
+  }
+  const madre = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!madre) { toast('ODP no encontrada', 'error'); return; }
+  const disp = window.kgDisponibleParaJalar(madre);
+  const regKg = Math.round(disp.disponibleKg || 0);
+  if (regKg <= 0) { toast('No hay material disponible para jalar', 'error'); return; }
+
+  // Cantidad en la UM del producto: piezas REALES prorrateadas por el disponible
+  const um = (madre.um || 'kg').toLowerCase();
+  let prodUM = regKg;
+  if (um !== 'kg') {
+    const prodPT = window.getProductoPT?.(madre.producto_codigo);
+    const capsUM = capturasValidas(state.capturas_produccion)
+      .filter(c => c.odp_id === madre.id && c.proceso === disp.proceso
+                   && (c.um_captura || '').toLowerCase() === um && !c.es_solo_merma);
+    const realUM = capsUM.reduce((s, c) => s + (Number(c.producido_um) || 0), 0);
+    const regTotalKg = Number(disp.registradoKg) || regKg;
+    prodUM = (realUM > 0 && regTotalKg > 0)
+      ? Math.round(realUM * (regKg / regTotalKg))
+      : (window.kgAUM(regKg, um, prodPT) || regKg);
+  }
+
+  // 🔹 Liberación PARCIAL: se libera una PARTE de la orden con el MISMO modal de Liberar calidad.
+  //    La orden NO se parte ni se detiene; al confirmar, la madre sigue en producción y sus tarimas
+  //    (con lote/PKL/QR propios) viajan por la cadena. Un solo registro → sin doble conteo.
+  state.liberacionParcial = { odpId, kg: regKg, umAmount: prodUM };
+  window.abrirModal('liberar-calidad', odpId);
+};
+
+// 🆕 JALAR Y LIBERAR (bien hecho): envía el material registrado a "Por liberar" (pendiente_calidad),
+//    donde Calidad hace "Liberar calidad" y genera tarimas → Embarques. Reusa el QC estándar.
+window.jalarYLiberarACalidad = async (odpId) => {
+  const u = state.user || {};
+  if (!(['ALP','CAL','PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 No autorizado para enviar a calidad. Depto: ${u.depto || '?'}`, 'error'); return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  const disp = window.kgDisponibleParaJalar(odp);
+  const regKg = Math.round(disp.registradoKg || disp.disponibleKg || 0);
+  if (regKg <= 0) { toast('No hay material registrado para enviar a calidad', 'error'); return; }
+
+  // Cantidad en la UM del producto: piezas REALES capturadas en el proceso final (no estimadas)
+  const um = (odp.um || 'kg').toLowerCase();
+  let prodUM = regKg;
+  if (um !== 'kg') {
+    const prodPT = window.getProductoPT?.(odp.producto_codigo);
+    const capsUM = capturasValidas(state.capturas_produccion)
+      .filter(c => c.odp_id === odp.id && c.proceso === disp.proceso
+                   && (c.um_captura || '').toLowerCase() === um && !c.es_solo_merma);
+    const real = capsUM.reduce((s, c) => s + (Number(c.producido_um) || 0), 0);
+    prodUM = real > 0 ? real : (window.kgAUM(regKg, um, prodPT) || regKg);
+  }
+  const fUM = um !== 'kg' ? `${fmtNum(prodUM)} ${um} · ${fmtNum(regKg)} kg` : `${fmtNum(regKg)} kg`;
+
+  if (!confirm(
+    `📦 JALAR Y LIBERAR — enviar a calidad\n\n${odp.folio} · ${odp.producto_codigo}\n\n` +
+    `Se envía a "Por liberar": ${fUM}\n\n` +
+    `Calidad hará la liberación y generará las tarimas (que van a Embarques).\n` +
+    `La orden pasa a estado "pendiente de calidad".\n\n¿Continuar?`
+  )) return;
+
+  state.loadingAccion = true; render();
+  try {
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      estatus: 'pendiente_calidad',
+      proceso_estatus_actual: 'completado',
+      proceso_actual: null,
+      cantidad_producida_final: prodUM,
+      cantidad_producida_final_kg: regKg,
+      enviada_calidad_manual: true,
+      enviada_calidad_at: serverTimestamp(),
+      enviada_calidad_por: u.nombre || u.email || '',
+      updated_at: serverTimestamp(),
+    });
+    const l = state.ordenes_produccion.find(o => o.id === odpId);
+    if (l) {
+      l.estatus = 'pendiente_calidad'; l.proceso_estatus_actual = 'completado'; l.proceso_actual = null;
+      l.cantidad_producida_final = prodUM; l.cantidad_producida_final_kg = regKg;
+    }
+    state.loadingAccion = false;
+    await window.notificarEvento({
+      evento: 'enviada_a_calidad', folio: odp.folio,
+      extra: { cliente: odp.cliente_nombre, detalle: `${odp.folio} enviada a "Por liberar": ${fUM}` }
+    });
+    toast(`✅ ${odp.folio} enviada a "Por liberar" · ${fUM}. Ahora Calidad la libera y genera tarimas.`, 'success');
+    render();
+  } catch (e) {
+    console.error('Error al enviar a calidad:', e);
+    toast('Error: ' + e.message, 'error');
+    state.loadingAccion = false; render();
+  }
+};
+
 // 🆕 Deshacer una salida registrada con el mecanismo viejo (limpia salidas_parciales y resetea la ODP).
 //    NO toca producción ni capturas — solo revierte el registro de salida para recuperar el material.
 window.deshacerSalidaParcial = async (odpId) => {
@@ -43394,8 +43552,10 @@ window.confirmarLiberarCalidad = async (odpId) => {
   if (!odp) return;
   
   const cantAceptada = Number(f.cantidad_aceptada) || 0;
-  const cantidadProducida = Number(odp.cantidad_producida_final) || 0;
-  const cantidadOriginal = Number(odp.cantidad) || 0;
+  const esParcialLib = !!(state.liberacionParcial && state.liberacionParcial.odpId === odpId);
+  const parcialUM = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : 0;
+  const cantidadProducida = esParcialLib ? parcialUM : (Number(odp.cantidad_producida_final) || 0);
+  const cantidadOriginal = esParcialLib ? parcialUM : (Number(odp.cantidad) || 0);
   const um = (odp.um || 'kg').toLowerCase();
   const numTarimas = Number(f.num_tarimas) || 0;
   const notas = (f.notas || '').trim();
@@ -43622,6 +43782,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
           ruta_procesos_ejecutados: odp.ruta_procesos || [],
           liberacion_calidad: liberacionData,
           estatus_lote: 'liberado_pendiente_empaque',
+          es_parcial: esParcialLib,
           fecha_produccion: new Date().toISOString().split('T')[0],
           fecha_liberacion: new Date().toISOString().split('T')[0],
           notas, activo: true,
@@ -43641,7 +43802,8 @@ window.confirmarLiberarCalidad = async (odpId) => {
           cliente: odp.cliente_codigo,
           cantidad: cantTarima,
           um,
-          peso_neto: pesoNetoT
+          peso_neto: pesoNetoT,
+          parcial: esParcialLib
         });
         batchOps.set(tarimaRef, {
           codigo: codigoTarima,
@@ -43672,6 +43834,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
           qr_data: qrData,
           estatus: 'pendiente_empaque',
           almacen_actual: 'PENDIENTE-EMPAQUE',
+          es_parcial: esParcialLib,
           activo: true,
           created_at: serverTimestamp()
         });
@@ -43707,7 +43870,15 @@ window.confirmarLiberarCalidad = async (odpId) => {
       await batchOps.commit();
       
       // Actualizar ODP
-      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), esParcialLib ? {
+        // 🔹 Liberación PARCIAL: la orden NO se detiene, sigue produciendo el resto.
+        estatus: 'en_produccion',
+        kg_liberado_parcial: (Number(odp.kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
+        num_liberaciones_parciales: (Number(odp.num_liberaciones_parciales) || 0) + 1,
+        tiene_liberaciones_parciales: true,
+        ultima_liberacion_parcial_pkl: codigoPKL,
+        updated_at: serverTimestamp()
+      } : {
         estatus: 'liberada_empaque',
         liberacion_calidad: liberacionData,
         packing_list: codigoPKL,
@@ -43719,7 +43890,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
       
       // Si parcial, PI nuevo
       let mensajePI = '';
-      if (decision === 'parcial') {
+      if (!esParcialLib && decision === 'parcial') {
         const faltante = cantidadOriginal - cantAceptada;
         await generarPIDesdeRechazo(odp, faltante, `Reposición por ODP ${odp.folio}: liberado ${cantAceptada}/${cantidadOriginal} ${UM_LABELS[um]}, faltan ${fmtCantidadUM(faltante, um)} (decisión: PARCIAL)`);
         mensajePI = ` · PI nuevo generado por ${fmtCantidadUM(faltante, um)} faltante`;
@@ -43773,7 +43944,13 @@ window.confirmarLiberarCalidad = async (odpId) => {
       // (el snapshot realtime puede tardar unos ms; aquí garantizamos lectura inmediata)
       const odpIdx = state.ordenes_produccion.findIndex(o => o.id === odpId);
       if (odpIdx >= 0) {
-        state.ordenes_produccion[odpIdx] = {
+        state.ordenes_produccion[odpIdx] = esParcialLib ? {
+          ...state.ordenes_produccion[odpIdx],
+          estatus: 'en_produccion',
+          kg_liberado_parcial: (Number(state.ordenes_produccion[odpIdx].kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
+          num_liberaciones_parciales: (Number(state.ordenes_produccion[odpIdx].num_liberaciones_parciales) || 0) + 1,
+          tiene_liberaciones_parciales: true,
+        } : {
           ...state.ordenes_produccion[odpIdx],
           estatus: 'liberada_empaque',
           liberacion_calidad: liberacionData,
@@ -43818,14 +43995,16 @@ window.confirmarLiberarCalidad = async (odpId) => {
       }, 400);
     } else {
       // RECHAZADO
-      await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), esParcialLib ? {
+        estatus: 'en_produccion', updated_at: serverTimestamp()
+      } : {
         estatus: 'rechazada',
         liberacion_calidad: liberacionData,
         rechazada_at: serverTimestamp(),
         updated_at: serverTimestamp()
       });
       
-      await generarPIDesdeRechazo(odp, cantidadOriginal, `RECHAZADA por calidad - ODP ${odp.folio}: ${pctCalidad.toFixed(1)}% calidad (regla 90%). Reposición completa requerida.`);
+      if (!esParcialLib) await generarPIDesdeRechazo(odp, cantidadOriginal, `RECHAZADA por calidad - ODP ${odp.folio}: ${pctCalidad.toFixed(1)}% calidad (regla 90%). Reposición completa requerida.`);
       
       const batchNotif = writeBatch(db);
       ['CS', 'CEO', 'KAM', 'PRO', 'PLN'].forEach(depto => {
