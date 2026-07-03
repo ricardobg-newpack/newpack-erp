@@ -13067,7 +13067,10 @@ function renderCalidad() {
                     <div style="font-size:22px;font-weight:900;color:#16a34a;">${fmtNum(Math.round(d.disponibleKg))} kg</div>
                     ${_piezasDisp ? `<div style="font-size:14px;font-weight:800;color:#16a34a;margin-top:-2px;">${_piezasDisp}</div>` : ''}
                     <div style="font-size:10.5px;color:#94a3b8;">registrado: ${fmtNum(Math.round(d.registradoKg))} kg${_piezasReg} · ya salió: ${fmtNum(Math.round(d.yaSalioKg))} kg${_piezasSalio}</div>
-                    <div style="margin-top:8px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:11px;color:#1e40af;line-height:1.4;">ℹ️ Material registrado. Para liberarlo, ve a <strong>"Por liberar" → Liberar calidad</strong> (genera tarimas). La salida al cliente la deciden CS/KAM en <strong>Embarques</strong>.</div>
+                    ${o.tiene_salidas_parciales
+                      ? `<div style="margin-top:8px;padding:9px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:11px;color:#991b1b;line-height:1.45;">⚠ Esta ODP tiene una salida registrada con el mecanismo viejo (${fmtNum(Number(o.kg_liberado_parcial)||0)} kg). El material no se perdió — sigue registrado.${(state.user?.rol==='admin' || ['CEO','ADMIN'].includes(state.user?.depto)) ? `<button onclick="window.deshacerSalidaParcial('${o.id}')" style="display:block;margin-top:7px;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">↩ Deshacer salida y recuperar material</button>` : ' Pide a Dirección que la deshaga.'}</div>`
+                      : `<div style="margin-top:8px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:11px;color:#1e40af;line-height:1.4;">ℹ️ Material registrado. Para liberarlo, ve a <strong>"Por liberar" → Liberar calidad</strong> (genera tarimas). La salida al cliente la deciden CS/KAM en <strong>Embarques</strong>.</div>`
+                    }
                   </div>
                 </div>
               </div>
@@ -42101,6 +42104,45 @@ window.jalarMaterialCalidad = async (odpId) => {
         atendida_por: (u.nombre || u.email || ''),
       });
     } catch (e) { console.error(e); }
+  }
+};
+
+// 🆕 Deshacer una salida registrada con el mecanismo viejo (limpia salidas_parciales y resetea la ODP).
+//    NO toca producción ni capturas — solo revierte el registro de salida para recuperar el material.
+window.deshacerSalidaParcial = async (odpId) => {
+  const u = state.user || {};
+  if (!(['CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast('🔒 Solo Dirección/Admin puede deshacer salidas', 'error'); return;
+  }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  const sals = (state.salidas_parciales || []).filter(s => s.odp_id === odpId);
+  const totalKg = Number(odp.kg_liberado_parcial) || sals.reduce((a, s) => a + (Number(s.kg) || 0), 0);
+  if (!confirm(
+    `↩ DESHACER SALIDA de ${odp.folio}\n\n` +
+    `Se borrarán ${sals.length} registro(s) de salida (${fmtNum(totalKg)} kg) y la ODP volverá a mostrar TODO su material como disponible.\n\n` +
+    `La producción y las capturas NO se tocan.\n\n¿Continuar?`
+  )) return;
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    sals.forEach(s => batch.delete(doc(db, 'salidas_parciales', s.id)));
+    batch.update(doc(db, 'ordenes_produccion', odpId), {
+      kg_liberado_parcial: 0,
+      num_salidas_parciales: 0,
+      tiene_salidas_parciales: false,
+      updated_at: serverTimestamp(),
+    });
+    await batch.commit();
+    const l = state.ordenes_produccion.find(o => o.id === odpId);
+    if (l) { l.kg_liberado_parcial = 0; l.num_salidas_parciales = 0; l.tiene_salidas_parciales = false; }
+    state.salidas_parciales = (state.salidas_parciales || []).filter(s => s.odp_id !== odpId);
+    toast(`↩ Salida deshecha. ${odp.folio} recuperó su material disponible.`, 'success');
+  } catch (e) {
+    console.error('Error al deshacer salida:', e);
+    toast('Error al deshacer: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
   }
 };
 
