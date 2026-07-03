@@ -13034,6 +13034,22 @@ function renderCalidad() {
             const o = x.odp, d = x.disp;
             const um = (o.um || 'kg').toLowerCase();
             const proc = getProc(d.proceso);
+            // 🆕 Piezas REALES registradas (suma de producido_um capturado en el proceso final),
+            //    solo para productos que llevan piezas — los de puro kg (film) quedan igual.
+            let _piezasReg = '', _piezasDisp = '', _piezasSalio = '';
+            if (um !== 'kg') {
+              const _capsUM = capturasValidas(state.capturas_produccion)
+                .filter(c => c.odp_id === o.id && c.proceso === d.proceso
+                             && (c.um_captura || '').toLowerCase() === um && !c.es_solo_merma);
+              const _umReg = _capsUM.reduce((s, c) => s + (Number(c.producido_um) || 0), 0);
+              if (_umReg > 0) {
+                const _umDisp = d.registradoKg > 0 ? Math.round(_umReg * (d.disponibleKg / d.registradoKg)) : _umReg;
+                _piezasDisp = `${fmtNum(_umDisp)} ${um}`;
+                _piezasReg = ` / ${fmtNum(_umReg)} ${um}`;
+                if (d.yaSalioKg > 0 && d.registradoKg > 0)
+                  _piezasSalio = ` / ${fmtNum(Math.round(_umReg * (d.yaSalioKg / d.registradoKg)))} ${um}`;
+              }
+            }
             // ¿Tiene solicitud urgente pendiente?
             const solUrg = (state.solicitudes_urgentes || []).find(s => s.odp_id === o.id && s.estatus === 'pendiente');
             return `
@@ -13049,7 +13065,8 @@ function renderCalidad() {
                   <div style="text-align:right;min-width:170px;">
                     <div style="font-size:11px;color:#64748b;font-weight:700;">DISPONIBLE PARA JALAR</div>
                     <div style="font-size:22px;font-weight:900;color:#16a34a;">${fmtNum(Math.round(d.disponibleKg))} kg</div>
-                    <div style="font-size:10.5px;color:#94a3b8;">registrado: ${fmtNum(Math.round(d.registradoKg))} · ya salió: ${fmtNum(Math.round(d.yaSalioKg))}</div>
+                    ${_piezasDisp ? `<div style="font-size:14px;font-weight:800;color:#16a34a;margin-top:-2px;">${_piezasDisp}</div>` : ''}
+                    <div style="font-size:10.5px;color:#94a3b8;">registrado: ${fmtNum(Math.round(d.registradoKg))} kg${_piezasReg} · ya salió: ${fmtNum(Math.round(d.yaSalioKg))} kg${_piezasSalio}</div>
                     <button onclick="window.jalarMaterialCalidad('${o.id}')" style="margin-top:8px;padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;">📦 Jalar y liberar</button>
                   </div>
                 </div>
