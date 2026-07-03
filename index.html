@@ -437,12 +437,28 @@ function calcularWaterfallLinea(linea) {
     return s + kgProducidoODP(o);
   }, 0);
   
-  // Etapas (kg por etapa)
-  const odpsActivasP1 = odpsP1.filter(o => ['programada','en_produccion'].includes(o.estatus));
-  const odpsActivasSec = odpsP2plus.filter(o => ['programada','en_produccion'].includes(o.estatus));
-  
-  const kgEnExtrusion = odpsActivasP1.reduce((s, o) => s + kgProducidoODP(o), 0);
-  const kgEnProcesoSec = odpsActivasSec.reduce((s, o) => s + kgProducidoODP(o), 0);
+  // 🔧 Etapas por RUTA (modelo de ODP única: extrusión + secundario en la misma ruta_procesos).
+  //    El split viejo P-1/P-2 lumpeaba todo como "Extrusión". Ahora se separa por proceso real.
+  const odpsActivas = odps.filter(o => ['programada','en_produccion'].includes(o.estatus));
+  let kgEnExtrusion = 0, kgEnProcesoSec = 0;
+  let procSecCod = null, procSecMultiple = false;
+  for (const o of odpsActivas) {
+    const rutaO = o.ruta_procesos || [];
+    if (rutaO.length <= 1) {
+      // Proceso único (solo extrusión / directo): todo su producido va a "extrusión"
+      kgEnExtrusion += kgProducidoODP(o);
+    } else {
+      const extKg = window.kgProducidoProceso(o, rutaO[0]) || 0;              // extrusión
+      const secCod = rutaO[rutaO.length - 1];
+      const secKg = window.kgProducidoProceso(o, secCod) || 0;                // último proceso (bolseo/refilado…)
+      kgEnProcesoSec += secKg;                                               // ya transformado en el proceso final
+      kgEnExtrusion += Math.max(0, extKg - secKg);                           // film extruido aún sin pasar al final
+      if (procSecCod && procSecCod !== secCod) procSecMultiple = true;
+      else procSecCod = secCod;
+    }
+  }
+  const nombreProcSec = procSecMultiple ? 'Proc. sec.'
+    : (procSecCod ? (window.getProc?.(procSecCod)?.nombre || 'Proc. sec.') : 'Proc. sec.');
   
   // Por tarimas — 🔧 FIX: estatus reales del sistema
   let kgPteCalidad = 0, kgPlanta = 0, kgTransito = 0, kgCedis = 0, kgEmbarcada = 0, kgEntregada = 0;
@@ -486,6 +502,7 @@ function calcularWaterfallLinea(linea) {
     kg_en_espera_saldo: Math.round(kgEnEsperaSaldo),
     kg_en_extrusion: Math.round(kgEnExtrusion),
     kg_en_proceso_sec: Math.round(kgEnProcesoSec),
+    nombre_proc_sec: nombreProcSec,
     kg_pte_calidad: Math.round(kgPteCalidad),
     kg_planta: Math.round(kgPlanta),
     kg_transito: Math.round(kgTransito),
@@ -1024,7 +1041,7 @@ function renderTarjetaWaterfallLinea(w) {
     { label: 'En tránsito', kg: w.kg_transito, bg: '#C0DD97', fg: '#173404' },
     { label: 'En planta', kg: w.kg_planta, bg: '#FAC775', fg: '#412402' },
     { label: 'Pte calidad', kg: w.kg_pte_calidad, bg: '#FBEAF0', fg: '#4B1528' },
-    { label: 'Proc. sec.', kg: w.kg_en_proceso_sec, bg: '#F0997B', fg: '#4A1B0C' },
+    { label: w.nombre_proc_sec || 'Proc. sec.', kg: w.kg_en_proceso_sec, bg: '#F0997B', fg: '#4A1B0C' },
     { label: 'Extrusión', kg: w.kg_en_extrusion, bg: '#AFA9EC', fg: '#26215C' },
     { label: '⏸ En espera', kg: w.kg_en_espera_saldo || 0, bg: '#FDE68A', fg: '#78350F' },
     { label: 'Por fabricar', kg: w.kg_pte_fabricar, bg: '#D3D1C7', fg: '#2C2C2A' },
