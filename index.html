@@ -1050,6 +1050,13 @@ function renderTarjetaWaterfallLinea(w) {
   
   const totalSegs = segs.reduce((s, x) => s + x.kg, 0) || 1;
   
+  // 🆕 Doble unidad: si el producto se pide en pza/millar, mostrar equivalente además de kg
+  const _prodW = window.getProductoPT ? window.getProductoPT(w.linea.producto_codigo) : null;
+  const _umW = (w.linea.um || 'kg').toLowerCase();
+  const _mostrarUM = !!_prodW && _umW !== 'kg';
+  const _aUM = (kg) => window.kgAUM(kg, w.linea.um, _prodW);
+  const _fmtDual = (kg) => _mostrarUM ? `${fmtNum(kg)} kg · ${fmtNum(_aUM(kg))} ${w.linea.um}` : `${fmtNum(kg)} kg`;
+  
   // 🆕 Mapeo de estatus de tarima → label corto y color
   const estTarLbl = {
     pendiente_empaque: ['⏳ Pte empaque', '#92400e'], pendiente_calidad: ['⏳ Pte calidad', '#92400e'],
@@ -1078,7 +1085,7 @@ function renderTarjetaWaterfallLinea(w) {
       <!-- Barra de progreso por etapa -->
       <div style="height:28px;background:#f1f5f9;border-radius:6px;overflow:hidden;display:flex;margin:10px 0 8px;">
         ${segs.map(s => `
-          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${fmtNum(s.kg)} kg">${s.kg > totalSegs * 0.05 ? fmtNum(s.kg) : ''}</div>
+          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${_fmtDual(s.kg)}">${s.kg > totalSegs * 0.05 ? fmtNum(s.kg) : ''}</div>
         `).join('')}
       </div>
       
@@ -1087,7 +1094,7 @@ function renderTarjetaWaterfallLinea(w) {
         ${segs.map(s => `
           <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
             <span style="width:10px;height:10px;background:${s.bg};border-radius:2px;flex-shrink:0;"></span>
-            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${fmtNum(s.kg)} kg</strong></span>
+            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${fmtNum(s.kg)} kg</strong>${_mostrarUM ? ` <span style="color:#94a3b8;">· ${fmtNum(_aUM(s.kg))} ${w.linea.um}</span>` : ''}</span>
           </div>
         `).join('')}
       </div>
@@ -1138,7 +1145,7 @@ function renderTarjetaWaterfallLinea(w) {
       
       ${w.kg_pte_fabricar > 0 && (state.user?.depto === 'CS' || state.user?.depto === 'KAM' || state.user?.depto === 'PLN' || state.user?.depto === 'CEO' || state.user?.rol === 'admin') ? `
         <div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
-          <div style="font-size:11px;color:#92400e;font-weight:600;">⚠ Faltan ${fmtNum(w.kg_pte_fabricar)} kg por fabricar</div>
+          <div style="font-size:11px;color:#92400e;font-weight:600;">⚠ Faltan ${_fmtDual(w.kg_pte_fabricar)} por fabricar</div>
           <button onclick="window.generarODPFaltante('${w.linea.id}')" style="background:#f59e0b;color:#fff;border:none;padding:5px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">+ Generar ODP del faltante</button>
         </div>
       ` : ''}
@@ -3620,7 +3627,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-trace</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-cert-etq</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -12948,7 +12955,7 @@ function _renderCardCertificado(odp) {
         </div>
         
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}')" 
+          <button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}', null${odp.tiene_liberaciones_parciales ? `, '${odp.ultima_liberacion_parcial_pkl || odp.packing_list}'` : ''})" 
             style="flex:1;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11.5px;">
             📄 Ver / Descargar PDF
           </button>
@@ -12982,6 +12989,7 @@ function renderCalidad() {
     .filter(x => x.disp.disponibleKg > 0);
   const odpsLiberadas = state.ordenes_produccion.filter(o => 
     ['liberada_empaque','pendiente_almacen','en_almacen_planta','en_transito_cedis','en_cedis_mty','en_cedis_mex','embarcada','entregada'].includes(o.estatus)
+    || o.tiene_liberaciones_parciales || (Number(o.kg_liberado_parcial) || 0) > 0
   );
   const odpsRechazadas = state.ordenes_produccion.filter(o => o.estatus === 'rechazada');
   
@@ -13262,10 +13270,11 @@ function renderTarjetaCalidad(o, contexto) {
           return `<button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>`;
         })() : ''}
         ${o.estatus === 'liberada_empaque' || o.packing_list ? `
+          ${o.tiene_liberaciones_parciales ? `<div style="width:100%;font-size:10px;color:#92400e;font-weight:700;margin-bottom:2px;">🔹 Reimprime el último parcial (${o.ultima_liberacion_parcial_pkl || o.packing_list})</div>` : ''}
           <button onclick="imprimirPackingListPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📦 Packing List PDF</button>
-          <button onclick="imprimirEtiquetasTarimasPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🏷️ Etiquetas tarimas</button>
+          <button onclick="imprimirEtiquetasTarimasPDF('${o.id}'${o.tiene_liberaciones_parciales ? `, '${o.ultima_liberacion_parcial_pkl || o.packing_list}'` : ''})" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🏷️ Etiquetas tarimas</button>
           <button onclick="imprimirReporteProduccionPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📊 Reporte producción</button>
-          ${o.liberacion_calidad?.mediciones_calidad ? `<button onclick="imprimirCertificadoCalidadPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📄 Certificado Calidad</button>` : ''}
+          ${(o.liberacion_calidad?.mediciones_calidad || o.packing_list) ? `<button onclick="imprimirCertificadoCalidadPDF('${o.id}', null${o.tiene_liberaciones_parciales ? `, '${o.ultima_liberacion_parcial_pkl || o.packing_list}'` : ''})" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📄 Certificado Calidad</button>` : ''}
         ` : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
@@ -13472,17 +13481,20 @@ function calcularFasePI(p) {
   const tarimasEmbarcadasTmp = tarimasPItmp.filter(t => ['embarcada','entregada'].includes(t.estatus)).length;
   const todasTarimasEmbarcadas = tarimasPItmp.length > 0 && tarimasEmbarcadasTmp === tarimasPItmp.length;
   
-  if (ovsTotales > 0 && ovsCompletadas === ovsTotales) {
+  // 🔒 Si alguna ODP sigue produciendo (parciales), el PI NO está terminado aunque lo actual ya se entregó.
+  const hayProduccionPendiente = odps.some(o => ['programada','en_produccion','pausada'].includes(o.estatus));
+
+  if (ovsTotales > 0 && ovsCompletadas === ovsTotales && !hayProduccionPendiente) {
     fases[5].completada = true;
-  } else if (todasTarimasEmbarcadas) {
-    // Si todas las tarimas físicamente ya están entregadas, considerar embarque completo
+  } else if (todasTarimasEmbarcadas && !hayProduccionPendiente) {
+    // Todas las tarimas actuales entregadas y ya NO queda producción → embarque completo
     fases[5].completada = true;
   } else if (ovsEnProgreso > 0 || ovsCompletadas > 0 || tarimasEmbarcadasTmp > 0) {
     fases[5].en_curso = true;
   }
   
-  // ===== Si las OVs están completadas O todas las tarimas embarcadas, marcar todo lo anterior =====
-  const todoEntregado = (ovsTotales > 0 && ovsCompletadas === ovsTotales) || todasTarimasEmbarcadas;
+  // ===== Solo se considera "todo entregado" si ya NO queda producción pendiente =====
+  const todoEntregado = ((ovsTotales > 0 && ovsCompletadas === ovsTotales) || todasTarimasEmbarcadas) && !hayProduccionPendiente;
   
   // Producción
   if (todoEntregado) {
@@ -27567,13 +27579,13 @@ window.imprimirPackingListPDF = (odpId) => {
 // ============================================================
 // PDF: ETIQUETAS POR TARIMA (4 por hoja A4)
 // ============================================================
-window.imprimirEtiquetasTarimasPDF = (odpId) => {
+window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
   try {
     const odp = (state.ordenes_produccion || state.odps || []).find(x => x.id === odpId);
     if (!odp) { toast('ODP no encontrada', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
   
-  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
+  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId && (!pklFilter || t.packing_list === pklFilter))
     .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
   if (tarimas.length === 0) { toast('No hay tarimas para esta ODP', 'error'); return; }
   
@@ -44000,6 +44012,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
           cantidad: l.cantidad,
           paquetes: Number(t.paquetes) || 0,
           sueltos: Number(t.sueltos) || 0,
+          peso_neto_kg: Number(l.peso_neto_kg) || Number(l.peso_neto) || Number(t.peso_neto) || 0,
+          packing_list: codigoPKL,
+          es_parcial: esParcialLib,
           estatus: 'pendiente_empaque',
         };
       });
@@ -44010,12 +44025,16 @@ window.confirmarLiberarCalidad = async (odpId) => {
       });
       
       cerrarModal();
-      toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Generando Certificado de Calidad...`);
-      // 📄 Auto-generar Certificado de Calidad (NPA-CAL-FR-02)
+      toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Generando Certificado y Etiquetas...`);
+      // 📄 Auto-generar Certificado de Calidad (NPA-CAL-FR-02) + 🏷️ Etiquetas por tarima
       setTimeout(() => {
         try { window.imprimirCertificadoCalidadPDF(odpId, null, esParcialLib ? codigoPKL : null); }
         catch(e) { console.error('Error auto-cert:', e); toast('Liberado, pero error generando certificado: ' + e.message, 'warning'); }
       }, 400);
+      setTimeout(() => {
+        try { window.imprimirEtiquetasTarimasPDF(odpId, esParcialLib ? codigoPKL : null); }
+        catch(e) { console.error('Error auto-etiquetas:', e); toast('Liberado, pero error generando etiquetas: ' + e.message, 'warning'); }
+      }, 1100);
     } else {
       // RECHAZADO
       await updateDoc(doc(db, 'ordenes_produccion', odpId), esParcialLib ? {
