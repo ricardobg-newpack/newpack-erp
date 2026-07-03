@@ -3668,7 +3668,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-orden-parcial</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-borrar-capt</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -36014,14 +36014,58 @@ function modalLiberarCalidad() {
   `;
 }
 
+// 🗑️ Eliminar UNA captura de producción (Planeación/Admin). El avance se recalcula solo (es en vivo).
+window.eliminarCapturaProduccion = async (capId, odpId) => {
+  const u = state.user || {};
+  if (!(['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) { toast('🔒 Solo Planeación o Jefe de Producción puede eliminar capturas', 'error'); return; }
+  if (!confirm('¿Eliminar esta captura de producción?\n\nEl avance del proceso se recalcula. No se puede deshacer.')) return;
+  try {
+    await deleteDoc(doc(db, 'capturas_produccion', capId));
+    toast('🗑️ Captura eliminada · avance recalculado', 'success');
+  } catch (e) { toast('Error al eliminar: ' + e.message, 'error'); }
+};
+
+// 🗑️ Eliminar TODAS las capturas de un proceso de una ODP (Planeación/Admin) + limpiar el cierre guardado.
+window.eliminarCapturasProceso = async (odpId, proceso) => {
+  const u = state.user || {};
+  if (!(['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) { toast('🔒 Solo Planeación o Jefe de Producción puede eliminar capturas', 'error'); return; }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  const caps = (state.capturas_produccion || []).filter(c => c.odp_id === odpId && c.proceso === proceso);
+  if (caps.length === 0) { toast('No hay capturas de ese proceso', 'info'); return; }
+  const nom = window.getProc?.(proceso)?.nombre || proceso;
+  if (!confirm(`¿Eliminar TODAS las ${caps.length} capturas de "${nom}" en ${odp?.folio || ''}?\n\nSe borran los registros y se recalcula el avance. NO se puede deshacer.`)) return;
+  if (!confirm(`Confirmar de nuevo: se borrarán ${caps.length} registros de ${nom}. ¿Continuar?`)) return;
+  try {
+    let batch = writeBatch(db), n = 0;
+    for (const c of caps) {
+      batch.delete(doc(db, 'capturas_produccion', c.id));
+      if (++n % 400 === 0) { await batch.commit(); batch = writeBatch(db); }
+    }
+    await batch.commit();
+    // Limpiar el cierre guardado de ese proceso (si existía "completado") para que el avance se recompute sin esas capturas
+    if (odp && odp.avance_procesos && odp.avance_procesos[proceso]) {
+      const nuevoAvance = { ...odp.avance_procesos, [proceso]: { ...odp.avance_procesos[proceso], completado: false } };
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), { avance_procesos: nuevoAvance, updated_at: serverTimestamp() });
+    }
+    toast(`🗑️ ${caps.length} capturas de ${nom} eliminadas · avance recalculado`, 'success');
+  } catch (e) { toast('Error al eliminar: ' + e.message, 'error'); }
+};
+
 function modalDetalleODP() {
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return '';
+  const u = state.user || {};
   
   const capturas = capturasValidas(state.capturas_produccion).filter(c => c.odp_id === odp.id);
   const lotes = state.lotes.filter(l => l.odp_id === odp.id);
-  const totalProducido = capturas.reduce((s, c) => s + (Number(c.cantidad_producida) || 0), 0);
-  const totalMermas = capturas.reduce((s, c) => s + (Number(c.mermas) || 0), 0);
+  // 🔧 FIX: los campos reales son producido_um / producido_kg / mermas_kg (no cantidad_producida / mermas)
+  const _umLO = (odp.um || 'kg').toLowerCase();
+  const _rutaLO = odp.ruta_procesos || [];
+  const _ultProcLO = _rutaLO.length ? _rutaLO[_rutaLO.length - 1] : (odp.proceso_codigo || 'P1-EXT');
+  const totalProducido = _umLO !== 'kg'
+    ? (window.umRealProducidoProceso ? window.umRealProducidoProceso(odp.id, _ultProcLO, _umLO) : 0)
+    : window.kgProducidoProceso(odp, _ultProcLO);
+  const totalMermas = capturas.reduce((s, c) => s + (Number(c.mermas_kg) || 0), 0); // en kg
   
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
@@ -36126,18 +36170,41 @@ function modalDetalleODP() {
               </div>
               <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:14px;font-weight:800;margin-bottom:14px;">
                 <div style="color:#16a34a;">${fmtCantidadUM(totalProducido, odp.um)}</div>
-                <div style="color:#dc2626;">${fmtCantidadUM(totalMermas, odp.um)}</div>
+                <div style="color:#dc2626;">${fmtNum(totalMermas)} kg</div>
                 <div style="color:#3b82f6;">${odp.cantidad > 0 ? Math.round((totalProducido/odp.cantidad)*100) : 0}%</div>
               </div>
-              ${capturas.map(c => `
+              ${(['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin') ? (() => {
+                const _procs = [...new Set(capturas.map(c => c.proceso).filter(Boolean))];
+                if (_procs.length === 0) return '';
+                return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;">
+                  <span style="font-size:10px;color:#991b1b;font-weight:800;width:100%;">🗑️ Borrar capturas mal registradas (recalcula el avance):</span>
+                  ${_procs.map(pc => {
+                    const nom = window.getProc?.(pc)?.nombre || pc;
+                    const n = capturas.filter(c => c.proceso === pc).length;
+                    return `<button onclick="window.eliminarCapturasProceso('${odp.id}','${pc}')" style="padding:6px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">Borrar ${n} de ${nom}</button>`;
+                  }).join('')}
+                </div>`;
+              })() : ''}
+              ${capturas.map(c => {
+                const esBultos = c.tipo_captura === 'paquete_individual' || c.tipo_captura === 'paquete_incompleto';
+                const uCap = (esBultos ? (c.um_empaque || c.um_captura) : c.um_captura) || (odp.um || '');
+                const prodUM = Number(c.producido_um) || 0;
+                const prodKg = Number(c.producido_kg) || 0;
+                const mrm = Number(c.mermas_kg) || 0;
+                const puedeBorrar = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+                return `
                 <div style="font-size:12px;padding:8px;border-top:1px solid #e2e8f0;">
-                  <div style="display:flex;justify-content:space-between;">
-                    <span>${fmtFechaHora(c.created_at)} · ${c.operador || '—'} · Turno ${c.turno || '—'}</span>
-                    <span><strong>${fmtCantidadUM(c.cantidad_producida, odp.um)}</strong></span>
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <span>${fmtFechaHora(c.created_at)} · ${c.operador || '—'} · ${window.getProc?.(c.proceso)?.nombre || c.proceso || '—'} · Turno ${c.turno || '—'}</span>
+                    <span style="display:flex;align-items:center;gap:8px;white-space:nowrap;">
+                      <strong>${fmtNum(prodUM)} ${uCap}${prodKg > 0 ? ` · ${fmtNum(prodKg)} kg` : ''}</strong>
+                      ${mrm > 0 ? `<span style="color:#dc2626;font-size:10px;">merma ${fmtNum(mrm)} kg</span>` : ''}
+                      ${puedeBorrar ? `<button onclick="window.eliminarCapturaProduccion('${c.id}','${odp.id}')" title="Eliminar esta captura" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:0 2px;">🗑️</button>` : ''}
+                    </span>
                   </div>
                   ${c.notas ? `<div style="color:#64748b;margin-top:2px;">${c.notas}</div>` : ''}
                 </div>
-              `).join('')}
+              `; }).join('')}
             </div>
           `}
           
