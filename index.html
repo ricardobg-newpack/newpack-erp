@@ -444,14 +444,15 @@ function calcularWaterfallLinea(linea) {
   let procSecCod = null, procSecMultiple = false;
   for (const o of odpsActivas) {
     const rutaO = o.ruta_procesos || [];
+    const libKg = Number(o.kg_liberado_parcial) || 0;  // ya liberado → está en tarimas, NO en proceso
     if (rutaO.length <= 1) {
-      // Proceso único (solo extrusión / directo): todo su producido va a "extrusión"
-      kgEnExtrusion += kgProducidoODP(o);
+      // Proceso único (solo extrusión / directo): producido menos lo ya liberado
+      kgEnExtrusion += Math.max(0, kgProducidoODP(o) - libKg);
     } else {
       const extKg = window.kgProducidoProceso(o, rutaO[0]) || 0;              // extrusión
       const secCod = rutaO[rutaO.length - 1];
       const secKg = window.kgProducidoProceso(o, secCod) || 0;                // último proceso (bolseo/refilado…)
-      kgEnProcesoSec += secKg;                                               // ya transformado en el proceso final
+      kgEnProcesoSec += Math.max(0, secKg - libKg);                          // en el proceso final, SIN lo ya liberado
       kgEnExtrusion += Math.max(0, extKg - secKg);                           // film extruido aún sin pasar al final
       if (procSecCod && procSecCod !== secCod) procSecMultiple = true;
       else procSecCod = secCod;
@@ -3619,7 +3620,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-trace</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -31460,13 +31461,21 @@ window.imprimirFichaTecnicaPDF = (productoCodigo, clienteCodigo) => {
 // Argumentos:
 //   odpId: ID de la ODP liberada
 //   factura: (opcional) número de factura para anotar en el certificado
-window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
+window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
   try {
     const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
     if (!odp) { toast('ODP no encontrada', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
 
-    const med = odp.liberacion_calidad && odp.liberacion_calidad.mediciones_calidad;
+    let med = odp.liberacion_calidad && odp.liberacion_calidad.mediciones_calidad;
+    if (!med) {
+      // Fallback: tomar las mediciones del LOTE de este PKL (siempre las trae).
+      // Cubre parciales y el caso en que el estado de la ODP aún no propagó.
+      const _loteMed = (state.lotes || []).find(l =>
+        (pklFilter ? l.packing_list === pklFilter : l.odp_id === odpId)
+        && l.liberacion_calidad && l.liberacion_calidad.mediciones_calidad);
+      if (_loteMed) med = _loteMed.liberacion_calidad.mediciones_calidad;
+    }
     if (!med) {
       toast('Esta ODP no tiene mediciones de calidad capturadas. No se puede generar certificado.', 'error');
       return;
@@ -31483,8 +31492,8 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura) => {
     const resinaDesc = producto ? descripcionResina(producto) : 'Polietileno de baja densidad';
 
     // Tarimas de esta ODP
-    const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId);
-    const lotes = (state.lotes || []).filter(l => l.odp_id === odpId);
+    const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId && (!pklFilter || t.packing_list === pklFilter));
+    const lotes = (state.lotes || []).filter(l => l.odp_id === odpId && (!pklFilter || l.packing_list === pklFilter));
     const totalPaquetes = tarimas.reduce((s, t) => s + (Number(t.paquetes) || 0), 0);
     const totalPiezas = totalPaquetes * (Number(med.piezas_por_paq) || 0);
     
@@ -33509,7 +33518,11 @@ window.confirmarCargaOV = async (ovId) => {
         );
         // Las que NO están en este batch deben estar ya embarcada/entregada
         const restantesOk = tarimasDelPI.every(t => ['embarcada','entregada'].includes(t.estatus));
-        if (restantesOk && tarimasDelPI.length + (ov.tarimas_ids || []).length > 0) {
+        // 🔒 No cerrar el PI si alguna ODP sigue produciendo (parciales: la orden sigue viva)
+        const hayODPproduciendo = (state.ordenes_produccion || []).some(o =>
+          (o.pedido_folio === ov.pedido_folio || o.pedido_id === ov.pedido_id) && !o.archivada &&
+          ['programada','en_produccion','pausada'].includes(o.estatus));
+        if (restantesOk && !hayODPproduciendo && tarimasDelPI.length + (ov.tarimas_ids || []).length > 0) {
           batch.update(doc(db, 'pedidos', pedido.id), {
             estatus: 'completado',
             completado_at: serverTimestamp(),
@@ -33646,8 +33659,12 @@ window.marcarOVEntregada = async (ovId) => {
       if (pedido && pedido.estatus !== 'completado') {
         const ovsDelPedido = state.ordenes_venta.filter(o => o.pedido_folio === pedidoFolio);
         const otrasEntregadas = ovsDelPedido.filter(o => o.id !== ov.id && ['entregada','enviada','completada'].includes(o.estatus));
+        // 🔒 No cerrar el PI si alguna ODP sigue produciendo (parciales: la orden sigue viva)
+        const hayODPproduciendo = (state.ordenes_produccion || []).some(o =>
+          (o.pedido_folio === pedidoFolio || o.pedido_id === pedido.id) && !o.archivada &&
+          ['programada','en_produccion','pausada'].includes(o.estatus));
         // Si esta OV + las otras entregadas = total OVs, cerrar PI
-        if (otrasEntregadas.length + 1 === ovsDelPedido.length) {
+        if (otrasEntregadas.length + 1 === ovsDelPedido.length && !hayODPproduciendo) {
           batch.update(doc(db, 'pedidos', pedido.id), {
             estatus: 'completado',
             completado_at: serverTimestamp(),
@@ -43877,6 +43894,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
         num_liberaciones_parciales: (Number(odp.num_liberaciones_parciales) || 0) + 1,
         tiene_liberaciones_parciales: true,
         ultima_liberacion_parcial_pkl: codigoPKL,
+        // Datos de la última liberación (para que el Certificado de Calidad pueda generarse)
+        liberacion_calidad: liberacionData,
+        packing_list: codigoPKL,
         updated_at: serverTimestamp()
       } : {
         estatus: 'liberada_empaque',
@@ -43950,6 +43970,9 @@ window.confirmarLiberarCalidad = async (odpId) => {
           kg_liberado_parcial: (Number(state.ordenes_produccion[odpIdx].kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
           num_liberaciones_parciales: (Number(state.ordenes_produccion[odpIdx].num_liberaciones_parciales) || 0) + 1,
           tiene_liberaciones_parciales: true,
+          liberacion_calidad: liberacionData,
+          packing_list: codigoPKL,
+          ultima_liberacion_parcial_pkl: codigoPKL,
         } : {
           ...state.ordenes_produccion[odpIdx],
           estatus: 'liberada_empaque',
@@ -43990,7 +44013,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
       toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Generando Certificado de Calidad...`);
       // 📄 Auto-generar Certificado de Calidad (NPA-CAL-FR-02)
       setTimeout(() => {
-        try { window.imprimirCertificadoCalidadPDF(odpId); }
+        try { window.imprimirCertificadoCalidadPDF(odpId, null, esParcialLib ? codigoPKL : null); }
         catch(e) { console.error('Error auto-cert:', e); toast('Liberado, pero error generando certificado: ' + e.message, 'warning'); }
       }, 400);
     } else {
