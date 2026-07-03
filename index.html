@@ -3627,7 +3627,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-cert-etq2</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-docs-parcial</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -12955,10 +12955,19 @@ function _renderCardCertificado(odp) {
         </div>
         
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}', null${odp.tiene_liberaciones_parciales ? `, '${odp.ultima_liberacion_parcial_pkl || odp.packing_list}'` : ''})" 
-            style="flex:1;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11.5px;">
-            📄 Ver / Descargar PDF
-          </button>
+          ${(() => {
+            const _tars = (state.tarimas || []).filter(t => t.odp_id === odp.id);
+            const _grp = {};
+            _tars.forEach(t => { const pk = t.packing_list || '(sin PKL)'; if(!_grp[pk]) _grp[pk]={pkl:pk,n:0}; _grp[pk].n++; });
+            const _pkls = Object.values(_grp);
+            if ((odp.tiene_liberaciones_parciales || _pkls.length > 1) && _pkls.length > 0) {
+              return _pkls.map((g,i) => {
+                const pkArg = g.pkl !== '(sin PKL)' ? `, '${g.pkl}'` : '';
+                return `<button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}', null${pkArg})" title="${g.pkl}" style="flex:1;min-width:140px;padding:8px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">📄 Parcial ${i+1} (${g.n} tar.)</button>`;
+              }).join('');
+            }
+            return `<button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}')" style="flex:1;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11.5px;">📄 Ver / Descargar PDF</button>`;
+          })()}
           ${odp.cliente_email ? `
             <button onclick="window.enviarCertificadoEmail('${odp.id}')" 
               style="padding:8px 12px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11.5px;">
@@ -13144,11 +13153,14 @@ function renderTarjetaCalidad(o, contexto) {
   const procesosCompletados = o.procesos_completados || [];
   const lote = state.lotes.find(l => l.odp_id === o.id);
   
-  // 🆕 Conversión robusta: priorizar kg real y convertir a UM del pedido
+  // 🆕 Producido REAL con el helper canónico (evita datos guardados que quedaron con un parcial viejo)
+  const _cpf = window.cantidadProducidaFinalUM ? window.cantidadProducidaFinalUM(o) : null;
   const ultimoCalProc = procesosCompletados.length > 0 ? procesosCompletados[procesosCompletados.length - 1] : null;
-  const producidoKgCal = ultimoCalProc 
-    ? (Number(ultimoCalProc.cantidad_producida_kg) || Number(o.cantidad_producida_final_kg) || 0)
-    : (Number(o.cantidad_producida_final_kg) || 0);
+  const producidoKgCal = (_cpf && _cpf.kg > 0)
+    ? _cpf.kg
+    : (ultimoCalProc 
+        ? (Number(ultimoCalProc.cantidad_producida_kg) || Number(o.cantidad_producida_final_kg) || 0)
+        : (Number(o.cantidad_producida_final_kg) || 0));
   
   const productoCal = state.productos_pt.find(pp => pp.codigo === o.producto_codigo);
   let producidoEnUMCal = producidoKgCal;
@@ -13162,6 +13174,12 @@ function renderTarjetaCalidad(o, contexto) {
     if (pm > 0) producidoEnUMCal = Math.round((producidoKgCal / pm) * 1000) / 1000;
     else conversionPosibleCal = false;
   }
+  
+  // 🔹 Acumulado liberado (madres con liberaciones parciales)
+  const _kgLibParcial = Number(o.kg_liberado_parcial) || 0;
+  const _tieneParciales = !!(o.tiene_liberaciones_parciales || _kgLibParcial > 0);
+  const _numParciales = Number(o.num_liberaciones_parciales) || (_kgLibParcial > 0 ? 1 : 0);
+  const _libEnUM = (productoCal && um !== 'kg' && window.kgAUM) ? window.kgAUM(_kgLibParcial, o.um, productoCal) : _kgLibParcial;
   
   const cantidadOriginal = o.cantidad || 0;
   // Porcentaje sobre la UM real (no sobre kg)
@@ -13206,6 +13224,13 @@ function renderTarjetaCalidad(o, contexto) {
             <div style="font-size:10px;color:#dc2626;font-weight:700;background:#fee2e2;padding:3px 7px;border-radius:5px;margin-top:3px;">⚠ Falta peso del producto para convertir a ${o.um}</div>
           `) : ''}
           <div style="font-size:11px;color:${pctClass};font-weight:700;margin-top:2px;">${pctCalidad}% calidad</div>
+          ${_tieneParciales ? `
+            <div style="margin-top:8px;padding-top:6px;border-top:1px dashed #ddd6fe;">
+              <div style="font-size:11px;color:#7c3aed;font-weight:700;">🔹 Liberado (${_numParciales} parcial${_numParciales !== 1 ? 'es' : ''}):</div>
+              <div style="font-size:15px;font-weight:800;color:#7c3aed;">${fmtNum(_kgLibParcial)} kg</div>
+              ${um !== 'kg' && productoCal ? `<div style="font-size:12px;font-weight:700;color:#7c3aed;">≈ ${fmtCantidadUM(_libEnUM, o.um)}</div>` : ''}
+            </div>
+          ` : ''}
         </div>
       </div>
       
@@ -13270,15 +13295,41 @@ function renderTarjetaCalidad(o, contexto) {
           return `<button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>`;
         })() : ''}
         ${(o.estatus === 'liberada_empaque' || o.packing_list || o.tiene_liberaciones_parciales) && o.estatus !== 'rechazada' ? (() => {
-          const _pkl = o.ultima_liberacion_parcial_pkl || o.packing_list || null;
-          const _pklArg = (o.tiene_liberaciones_parciales && _pkl) ? `, '${_pkl}'` : '';
-          return `
-          ${o.tiene_liberaciones_parciales ? `<div style="width:100%;font-size:10px;color:#92400e;font-weight:700;margin-bottom:2px;">🔹 Reimprime el último parcial${_pkl ? ` (${_pkl})` : ''}</div>` : ''}
-          <button onclick="imprimirPackingListPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📦 Packing List PDF</button>
-          <button onclick="imprimirEtiquetasTarimasPDF('${o.id}'${_pklArg})" style="padding:8px 14px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🏷️ Etiquetas tarimas</button>
-          <button onclick="imprimirReporteProduccionPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📊 Reporte producción</button>
-          <button onclick="imprimirCertificadoCalidadPDF('${o.id}', null${_pklArg})" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📄 Certificado Calidad</button>
-        `; })() : ''}
+          // Agrupar tarimas de la ODP por PKL (cada parcial liberado = un PKL)
+          const _tars = (state.tarimas || []).filter(t => t.odp_id === o.id);
+          const _grp = {};
+          _tars.forEach(t => {
+            const pk = t.packing_list || '(sin PKL)';
+            if (!_grp[pk]) _grp[pk] = { pkl: pk, n: 0, kg: 0 };
+            _grp[pk].n++;
+            _grp[pk].kg += Number(t.peso_neto_kg) || Number(t.peso_neto) || 0;
+          });
+          const _pkls = Object.values(_grp);
+          const _esMulti = o.tiene_liberaciones_parciales || _pkls.length > 1;
+          let h = `
+            <button onclick="imprimirReporteProduccionPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#f59e0b;border:1px solid #f59e0b;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📊 Reporte producción</button>
+            <button onclick="imprimirEtiquetasTarimasPDF('${o.id}')" style="padding:8px 14px;background:#eff6ff;color:#3b82f6;border:1px solid #3b82f6;border-radius:6px;cursor:pointer;font-weight:800;font-size:12px;">🏷️ Etiquetas (todas · ${_tars.length})</button>`;
+          if (_esMulti && _pkls.length > 0) {
+            h += `<div style="width:100%;margin-top:8px;border-top:1px dashed #ddd6fe;padding-top:8px;">
+              <div style="font-size:11px;color:#7c3aed;font-weight:800;margin-bottom:6px;">🔹 Documentos por parcial (${_pkls.length}):</div>`;
+            _pkls.forEach((g, i) => {
+              const pkArg = g.pkl !== '(sin PKL)' ? `, '${g.pkl}'` : '';
+              h += `
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:5px;padding:6px 8px;background:#faf5ff;border-radius:6px;">
+                  <span style="font-size:11px;font-weight:700;color:#6b21a8;min-width:130px;">Parcial ${i+1} · ${g.pkl}</span>
+                  <span style="font-size:10px;color:#7c3aed;">${g.n} tarima${g.n!==1?'s':''} · ${fmtNum(g.kg)} kg</span>
+                  <button onclick="imprimirCertificadoCalidadPDF('${o.id}', null${pkArg})" style="padding:5px 10px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:5px;cursor:pointer;font-weight:700;font-size:11px;">📄 Certificado</button>
+                  <button onclick="imprimirEtiquetasTarimasPDF('${o.id}'${pkArg})" style="padding:5px 10px;background:#fff;color:#3b82f6;border:1px solid #3b82f6;border-radius:5px;cursor:pointer;font-weight:700;font-size:11px;">🏷️ Etiquetas</button>
+                </div>`;
+            });
+            h += `</div>`;
+          } else {
+            h += `
+              <button onclick="imprimirPackingListPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1px solid #16a34a;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📦 Packing List PDF</button>
+              <button onclick="imprimirCertificadoCalidadPDF('${o.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📄 Certificado Calidad</button>`;
+          }
+          return h;
+        })() : ''}
         <button class="btn-secondary" onclick="abrirModal('detalle-odp','${o.id}')" style="padding:8px 14px;margin-left:auto;">${ICONS.list} Detalle</button>
       </div>
     </div>
