@@ -580,6 +580,24 @@ window.cantidadProducidaFinalUM = (odp) => {
   return { um: enUM, kg: Math.round(kgFinal) };
 };
 
+// 🆕 Piezas/millares REALES producidos en un proceso, según lo CAPTURADO (no conversión desde kg).
+//    Maneja los dos modos de captura:
+//      - por bultos (paquete_individual/incompleto): producido_um está en la UM del EMPAQUE (um_empaque)
+//        p.ej. 15 rollos × 300 pza guardan 15 registros con producido_um=300 y um_empaque='pza'.
+//      - turno normal: producido_um está en la UM de captura (um_captura).
+//    Devuelve la suma en la UM pedida (um). Si no hay capturas en esa UM, devuelve 0.
+window.umRealProducidoProceso = (odpId, proceso, um) => {
+  um = (um || '').toLowerCase();
+  if (!um || um === 'kg') return 0;
+  return (window.capturasValidas ? window.capturasValidas(state.capturas_produccion) : (state.capturas_produccion || []))
+    .filter(c => c.odp_id === odpId && c.proceso === proceso && !c.es_solo_merma)
+    .reduce((s, c) => {
+      const esBultos = c.tipo_captura === 'paquete_individual' || c.tipo_captura === 'paquete_incompleto';
+      const uCap = ((esBultos ? (c.um_empaque || c.um_captura) : c.um_captura) || '').toLowerCase();
+      return uCap === um ? s + (Number(c.producido_um) || 0) : s;
+    }, 0);
+};
+
 // 🆕 MODELO 1 ODP — Avance independiente por proceso (procesos en paralelo)
 // Calcula, para cada proceso de la ruta, cuánto produjo y cuánto puede aún
 // trabajar el siguiente (regla: EXTRUSIÓN MANDA, el siguiente no se adelanta).
@@ -3627,7 +3645,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-docs-parcial</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-piezas-bultos</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13163,23 +13181,45 @@ function renderTarjetaCalidad(o, contexto) {
         : (Number(o.cantidad_producida_final_kg) || 0));
   
   const productoCal = state.productos_pt.find(pp => pp.codigo === o.producto_codigo);
-  let producidoEnUMCal = producidoKgCal;
-  let conversionPosibleCal = true;
-  if (um === 'pza' && productoCal) {
-    const pp = window.calcularPesoPieza(productoCal);
-    if (pp > 0) producidoEnUMCal = Math.round(producidoKgCal / pp);
-    else conversionPosibleCal = false;
-  } else if (um === 'millar' && productoCal) {
-    const pm = window.calcularPesoMillar(productoCal);
-    if (pm > 0) producidoEnUMCal = Math.round((producidoKgCal / pm) * 1000) / 1000;
-    else conversionPosibleCal = false;
-  }
-  
+
   // 🔹 Acumulado liberado (madres con liberaciones parciales)
   const _kgLibParcial = Number(o.kg_liberado_parcial) || 0;
   const _tieneParciales = !!(o.tiene_liberaciones_parciales || _kgLibParcial > 0);
   const _numParciales = Number(o.num_liberaciones_parciales) || (_kgLibParcial > 0 ? 1 : 0);
-  const _libEnUM = (productoCal && um !== 'kg' && window.kgAUM) ? window.kgAUM(_kgLibParcial, o.um, productoCal) : _kgLibParcial;
+
+  // Producido en kg nunca menor que lo ya liberado (evita "producido < liberado")
+  const producidoKgDisp = _tieneParciales ? Math.max(producidoKgCal, _kgLibParcial) : producidoKgCal;
+
+  // Piezas reales de las tarimas ya liberadas de esta ODP (suma directa, no conversión)
+  const _tarsODP = (state.tarimas || []).filter(t => t.odp_id === o.id);
+  const _libPzaReal = _tarsODP.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+
+  let producidoEnUMCal = producidoKgDisp;
+  let conversionPosibleCal = true;
+  let _libEnUM = _kgLibParcial;
+  if (um !== 'kg') {
+    if (productoCal) {
+      // 1) PRODUCIDO en piezas = piezas REALES capturadas en el último proceso (bultos o turno; no conversión kg→pza)
+      const _rutaR = o.ruta_procesos || [];
+      const _ultProcR = _rutaR.length > 0 ? _rutaR[_rutaR.length - 1] : (o.proceso_codigo || 'P1-EXT');
+      const _umRealProd = window.umRealProducidoProceso ? window.umRealProducidoProceso(o.id, _ultProcR, um) : 0;
+      if (_umRealProd > 0) {
+        producidoEnUMCal = _umRealProd;
+      } else if (um === 'pza') {
+        const pp = window.calcularPesoPieza(productoCal);
+        if (pp > 0) producidoEnUMCal = Math.round(producidoKgDisp / pp); else conversionPosibleCal = false;
+      } else if (um === 'millar') {
+        const pm = window.calcularPesoMillar(productoCal);
+        if (pm > 0) producidoEnUMCal = Math.round((producidoKgDisp / pm) * 1000) / 1000; else conversionPosibleCal = false;
+      }
+      // 2) LIBERADO en piezas = suma de piezas REALES de las tarimas (no conversión)
+      _libEnUM = _libPzaReal > 0 ? _libPzaReal : (window.kgAUM ? window.kgAUM(_kgLibParcial, o.um, productoCal) : _kgLibParcial);
+    } else {
+      conversionPosibleCal = false;
+    }
+    // Producido en piezas nunca menor que lo liberado
+    if (_tieneParciales) producidoEnUMCal = Math.max(producidoEnUMCal, _libEnUM);
+  }
   
   const cantidadOriginal = o.cantidad || 0;
   // Porcentaje sobre la UM real (no sobre kg)
@@ -13217,7 +13257,7 @@ function renderTarjetaCalidad(o, contexto) {
           <div style="font-size:11px;color:#64748b;">Solicitado:</div>
           <div style="font-size:14px;font-weight:600;">${fmtCantidadUM(cantidadOriginal, o.um)}</div>
           <div style="font-size:11px;color:#64748b;margin-top:6px;">Producido:</div>
-          <div style="font-size:16px;font-weight:800;">${fmtNum(producidoKgCal)} kg</div>
+          <div style="font-size:16px;font-weight:800;">${fmtNum(producidoKgDisp)} kg</div>
           ${um !== 'kg' ? (conversionPosibleCal ? `
             <div style="font-size:13px;font-weight:700;color:${pctClass};">≈ ${fmtCantidadUM(producidoEnUMCal, o.um)}</div>
           ` : `
@@ -42261,19 +42301,22 @@ window.jalarParcialALiberar = async (odpId) => {
   const regKg = Math.round(disp.disponibleKg || 0);
   if (regKg <= 0) { toast('No hay material disponible para jalar', 'error'); return; }
 
-  // Cantidad en la UM del producto: piezas REALES prorrateadas por el disponible
+  // Cantidad en la UM del producto: piezas REALES disponibles = producidas reales − ya liberadas
   const um = (madre.um || 'kg').toLowerCase();
   let prodUM = regKg;
   if (um !== 'kg') {
     const prodPT = window.getProductoPT?.(madre.producto_codigo);
-    const capsUM = capturasValidas(state.capturas_produccion)
-      .filter(c => c.odp_id === madre.id && c.proceso === disp.proceso
-                   && (c.um_captura || '').toLowerCase() === um && !c.es_solo_merma);
-    const realUM = capsUM.reduce((s, c) => s + (Number(c.producido_um) || 0), 0);
-    const regTotalKg = Number(disp.registradoKg) || regKg;
-    prodUM = (realUM > 0 && regTotalKg > 0)
-      ? Math.round(realUM * (regKg / regTotalKg))
-      : (window.kgAUM(regKg, um, prodPT) || regKg);
+    const realUM = window.umRealProducidoProceso(madre.id, disp.proceso, um);
+    // Piezas reales ya liberadas (suma de cantidad de las tarimas de esta ODP)
+    const yaLibUM = (state.tarimas || [])
+      .filter(t => t.odp_id === madre.id)
+      .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+    if (realUM > 0) {
+      prodUM = Math.max(0, realUM - yaLibUM);
+    } else {
+      // Sin piezas capturadas → último recurso: conversión teórica desde kg disponible
+      prodUM = window.kgAUM(regKg, um, prodPT) || regKg;
+    }
   }
 
   // 🔹 Liberación PARCIAL: se libera una PARTE de la orden con el MISMO modal de Liberar calidad.
