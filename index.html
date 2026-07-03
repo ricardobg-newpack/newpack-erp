@@ -440,11 +440,13 @@ function calcularWaterfallLinea(linea) {
   // 🔧 Etapas por RUTA (modelo de ODP única: extrusión + secundario en la misma ruta_procesos).
   //    El split viejo P-1/P-2 lumpeaba todo como "Extrusión". Ahora se separa por proceso real.
   const odpsActivas = odps.filter(o => ['programada','en_produccion'].includes(o.estatus));
-  let kgEnExtrusion = 0, kgEnProcesoSec = 0;
+  let kgEnExtrusion = 0, kgEnProcesoSec = 0, pzaEnProcesoSec = 0;
   let procSecCod = null, procSecMultiple = false;
   for (const o of odpsActivas) {
     const rutaO = o.ruta_procesos || [];
     const libKg = Number(o.kg_liberado_parcial) || 0;  // ya liberado → está en tarimas, NO en proceso
+    // Piezas REALES ya liberadas de esta ODP (para no contarlas otra vez como "en proceso")
+    const libUM = (state.tarimas || []).filter(t => t.odp_id === o.id).reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
     if (rutaO.length <= 1) {
       // Proceso único (solo extrusión / directo): producido menos lo ya liberado
       kgEnExtrusion += Math.max(0, kgProducidoODP(o) - libKg);
@@ -454,6 +456,9 @@ function calcularWaterfallLinea(linea) {
       const secKg = window.kgProducidoProceso(o, secCod) || 0;                // último proceso (bolseo/refilado…)
       kgEnProcesoSec += Math.max(0, secKg - libKg);                          // en el proceso final, SIN lo ya liberado
       kgEnExtrusion += Math.max(0, extKg - secKg);                           // film extruido aún sin pasar al final
+      // Piezas REALES en el proceso final (capturas), sin lo ya liberado
+      const umSec = window.umRealProducidoProceso ? window.umRealProducidoProceso(o.id, secCod, (o.um || '').toLowerCase()) : 0;
+      pzaEnProcesoSec += Math.max(0, umSec - libUM);
       if (procSecCod && procSecCod !== secCod) procSecMultiple = true;
       else procSecCod = secCod;
     }
@@ -463,21 +468,23 @@ function calcularWaterfallLinea(linea) {
   
   // Por tarimas — 🔧 FIX: estatus reales del sistema
   let kgPteCalidad = 0, kgPlanta = 0, kgTransito = 0, kgCedis = 0, kgEmbarcada = 0, kgEntregada = 0;
+  let pzaPteCalidad = 0, pzaPlanta = 0, pzaTransito = 0, pzaCedis = 0, pzaEmbarcada = 0, pzaEntregada = 0;
   for (const t of tarimas) {
     const k = kgPorTarima(t);
+    const pz = Number(t.cantidad) || 0;  // piezas REALES de la tarima
     switch (t.estatus) {
       case 'pendiente_empaque': case 'pendiente_calidad': case 'en_calidad': 
-        kgPteCalidad += k; break;
+        kgPteCalidad += k; pzaPteCalidad += pz; break;
       case 'liberada_empaque': case 'liberada': case 'pendiente_almacen': case 'en_almacen_planta': 
-        kgPlanta += k; break;
+        kgPlanta += k; pzaPlanta += pz; break;
       case 'en_transito': case 'en_transito_cedis': case 'en_transito_cedis_mty': case 'en_transito_cedis_mex': 
-        kgTransito += k; break;
+        kgTransito += k; pzaTransito += pz; break;
       case 'en_cedis_mty': case 'en_cedis_mex': 
-        kgCedis += k; break;
+        kgCedis += k; pzaCedis += pz; break;
       case 'embarcada': 
-        kgEmbarcada += k; break;
+        kgEmbarcada += k; pzaEmbarcada += pz; break;
       case 'entregada': 
-        kgEntregada += k; break;
+        kgEntregada += k; pzaEntregada += pz; break;
     }
   }
   
@@ -510,6 +517,14 @@ function calcularWaterfallLinea(linea) {
     kg_cedis: Math.round(kgCedis),
     kg_embarcada: Math.round(kgEmbarcada),
     kg_entregada: Math.round(kgEntregada),
+    // 🆕 Piezas REALES por etapa (tarimas y proceso final), no conversión desde kg
+    pza_pte_calidad: Math.round(pzaPteCalidad),
+    pza_planta: Math.round(pzaPlanta),
+    pza_transito: Math.round(pzaTransito),
+    pza_cedis: Math.round(pzaCedis),
+    pza_embarcada: Math.round(pzaEmbarcada),
+    pza_entregada: Math.round(pzaEntregada),
+    pza_en_proceso_sec: Math.round(pzaEnProcesoSec),
     pct_completado: pctCompletado,
     odps_p1: odpsP1,
     odps_p2plus: odpsP2plus,
@@ -951,6 +966,10 @@ function renderModalWaterfallPedido() {
   // 🆕 Resumen global del pedido
   const totKgPedidos = waterfalls.reduce((s, w) => s + w.kg_pedidos, 0);
   const totKgEntregados = waterfalls.reduce((s, w) => s + w.kg_entregada, 0);
+  // 🆕 Piezas REALES entregadas (de tarimas), no conversión desde kg
+  const totPzaEntregados = waterfalls.reduce((s, w) => s + (Number(w.pza_entregada) || 0), 0);
+  const _umPI = (waterfalls[0]?.linea?.um || '').toLowerCase();
+  const _mostrarPzaPI = _umPI && _umPI !== 'kg' && totPzaEntregados > 0;
   const totKgCedis = waterfalls.reduce((s, w) => s + w.kg_cedis + w.kg_embarcada, 0);
   const totKgPlanta = waterfalls.reduce((s, w) => s + w.kg_planta + w.kg_pte_calidad + w.kg_transito, 0);
   const totKgFaltante = waterfalls.reduce((s, w) => s + w.kg_pte_fabricar, 0);
@@ -991,6 +1010,7 @@ function renderModalWaterfallPedido() {
             <div style="background:#eff6ff;border-radius:10px;padding:12px;text-align:center;">
               <div style="font-size:10px;color:#1e40af;font-weight:700;">ENTREGADO</div>
               <div style="font-size:20px;font-weight:800;color:#1e40af;">${fmtNum(totKgEntregados)} kg</div>
+              ${_mostrarPzaPI ? `<div style="font-size:12px;font-weight:700;color:#3b82f6;">${fmtNum(totPzaEntregados)} ${_umPI}</div>` : ''}
             </div>
             <div style="background:#f0fdf4;border-radius:10px;padding:12px;text-align:center;">
               <div style="font-size:10px;color:#15803d;font-weight:700;">EN CEDIS/RUTA</div>
@@ -1054,13 +1074,13 @@ function renderModalWaterfallPedido() {
 function renderTarjetaWaterfallLinea(w) {
   const kPed = w.kg_pedidos || 1;
   const segs = [
-    { label: 'Entregado', kg: w.kg_entregada, bg: '#85B7EB', fg: '#042C53' },
-    { label: 'Embarcado', kg: w.kg_embarcada, bg: '#5DCAA5', fg: '#04342C' },
-    { label: 'En CEDIS', kg: w.kg_cedis, bg: '#97C459', fg: '#173404' },
-    { label: 'En tránsito', kg: w.kg_transito, bg: '#C0DD97', fg: '#173404' },
-    { label: 'En planta', kg: w.kg_planta, bg: '#FAC775', fg: '#412402' },
-    { label: 'Pte calidad', kg: w.kg_pte_calidad, bg: '#FBEAF0', fg: '#4B1528' },
-    { label: w.nombre_proc_sec || 'Proc. sec.', kg: w.kg_en_proceso_sec, bg: '#F0997B', fg: '#4A1B0C' },
+    { label: 'Entregado', kg: w.kg_entregada, pza: w.pza_entregada, bg: '#85B7EB', fg: '#042C53' },
+    { label: 'Embarcado', kg: w.kg_embarcada, pza: w.pza_embarcada, bg: '#5DCAA5', fg: '#04342C' },
+    { label: 'En CEDIS', kg: w.kg_cedis, pza: w.pza_cedis, bg: '#97C459', fg: '#173404' },
+    { label: 'En tránsito', kg: w.kg_transito, pza: w.pza_transito, bg: '#C0DD97', fg: '#173404' },
+    { label: 'En planta', kg: w.kg_planta, pza: w.pza_planta, bg: '#FAC775', fg: '#412402' },
+    { label: 'Pte calidad', kg: w.kg_pte_calidad, pza: w.pza_pte_calidad, bg: '#FBEAF0', fg: '#4B1528' },
+    { label: w.nombre_proc_sec || 'Proc. sec.', kg: w.kg_en_proceso_sec, pza: w.pza_en_proceso_sec, bg: '#F0997B', fg: '#4A1B0C' },
     { label: 'Extrusión', kg: w.kg_en_extrusion, bg: '#AFA9EC', fg: '#26215C' },
     { label: '⏸ En espera', kg: w.kg_en_espera_saldo || 0, bg: '#FDE68A', fg: '#78350F' },
     { label: 'Por fabricar', kg: w.kg_pte_fabricar, bg: '#D3D1C7', fg: '#2C2C2A' },
@@ -1073,7 +1093,10 @@ function renderTarjetaWaterfallLinea(w) {
   const _umW = (w.linea.um || 'kg').toLowerCase();
   const _mostrarUM = !!_prodW && _umW !== 'kg';
   const _aUM = (kg) => window.kgAUM(kg, w.linea.um, _prodW);
+  // Piezas del segmento: reales si el bucket las trae (tarimas/capturas), si no conversión desde kg (film WIP)
+  const _segUM = (s) => (typeof s.pza === 'number') ? s.pza : _aUM(s.kg);
   const _fmtDual = (kg) => _mostrarUM ? `${fmtNum(kg)} kg · ${fmtNum(_aUM(kg))} ${w.linea.um}` : `${fmtNum(kg)} kg`;
+  const _fmtDualSeg = (s) => _mostrarUM ? `${fmtNum(s.kg)} kg · ${fmtNum(_segUM(s))} ${w.linea.um}` : `${fmtNum(s.kg)} kg`;
   
   // 🆕 Mapeo de estatus de tarima → label corto y color
   const estTarLbl = {
@@ -1103,7 +1126,7 @@ function renderTarjetaWaterfallLinea(w) {
       <!-- Barra de progreso por etapa -->
       <div style="height:28px;background:#f1f5f9;border-radius:6px;overflow:hidden;display:flex;margin:10px 0 8px;">
         ${segs.map(s => `
-          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${_fmtDual(s.kg)}">${s.kg > totalSegs * 0.05 ? fmtNum(s.kg) : ''}</div>
+          <div style="width:${(s.kg / totalSegs * 100).toFixed(2)}%;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.fg};font-size:10px;font-weight:700;min-width:0;" title="${s.label}: ${_fmtDualSeg(s)}">${s.kg > totalSegs * 0.05 ? fmtNum(s.kg) : ''}</div>
         `).join('')}
       </div>
       
@@ -1112,7 +1135,7 @@ function renderTarjetaWaterfallLinea(w) {
         ${segs.map(s => `
           <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
             <span style="width:10px;height:10px;background:${s.bg};border-radius:2px;flex-shrink:0;"></span>
-            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${fmtNum(s.kg)} kg</strong>${_mostrarUM ? ` <span style="color:#94a3b8;">· ${fmtNum(_aUM(s.kg))} ${w.linea.um}</span>` : ''}</span>
+            <span style="color:#64748b;">${s.label}: <strong style="color:#0f172a;">${fmtNum(s.kg)} kg</strong>${_mostrarUM ? ` <span style="color:#94a3b8;">· ${fmtNum(_segUM(s))} ${w.linea.um}</span>` : ''}</span>
           </div>
         `).join('')}
       </div>
@@ -3645,7 +3668,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-piezas-bultos</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-trazabilidad</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13110,16 +13133,16 @@ function renderCalidad() {
             //    solo para productos que llevan piezas — los de puro kg (film) quedan igual.
             let _piezasReg = '', _piezasDisp = '', _piezasSalio = '';
             if (um !== 'kg') {
-              const _capsUM = capturasValidas(state.capturas_produccion)
-                .filter(c => c.odp_id === o.id && c.proceso === d.proceso
-                             && (c.um_captura || '').toLowerCase() === um && !c.es_solo_merma);
-              const _umReg = _capsUM.reduce((s, c) => s + (Number(c.producido_um) || 0), 0);
+              // Piezas REALES: registrado (capturas, bultos o turno) y ya salido (piezas de tarimas liberadas)
+              const _umReg = window.umRealProducidoProceso ? window.umRealProducidoProceso(o.id, d.proceso, um) : 0;
+              const _umSalio = (state.tarimas || [])
+                .filter(t => t.odp_id === o.id)
+                .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
               if (_umReg > 0) {
-                const _umDisp = d.registradoKg > 0 ? Math.round(_umReg * (d.disponibleKg / d.registradoKg)) : _umReg;
+                const _umDisp = Math.max(0, _umReg - _umSalio);
                 _piezasDisp = `${fmtNum(_umDisp)} ${um}`;
                 _piezasReg = ` / ${fmtNum(_umReg)} ${um}`;
-                if (d.yaSalioKg > 0 && d.registradoKg > 0)
-                  _piezasSalio = ` / ${fmtNum(Math.round(_umReg * (d.yaSalioKg / d.registradoKg)))} ${um}`;
+                if (_umSalio > 0) _piezasSalio = ` / ${fmtNum(_umSalio)} ${um}`;
               }
             }
             // ¿Tiene solicitud urgente pendiente?
