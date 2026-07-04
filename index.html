@@ -3668,7 +3668,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-borrar-capt</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-sel-capt</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -36021,6 +36021,9 @@ window.eliminarCapturaProduccion = async (capId, odpId) => {
   if (!confirm('¿Eliminar esta captura de producción?\n\nEl avance del proceso se recalcula. No se puede deshacer.')) return;
   try {
     await deleteDoc(doc(db, 'capturas_produccion', capId));
+    // Refresco inmediato (optimista) sin esperar el snapshot ni recargar
+    state.capturas_produccion = (state.capturas_produccion || []).filter(c => c.id !== capId);
+    if (typeof renderSoloModal === 'function') renderSoloModal();
     toast('🗑️ Captura eliminada · avance recalculado', 'success');
   } catch (e) { toast('Error al eliminar: ' + e.message, 'error'); }
 };
@@ -36046,8 +36049,57 @@ window.eliminarCapturasProceso = async (odpId, proceso) => {
     if (odp && odp.avance_procesos && odp.avance_procesos[proceso]) {
       const nuevoAvance = { ...odp.avance_procesos, [proceso]: { ...odp.avance_procesos[proceso], completado: false } };
       await updateDoc(doc(db, 'ordenes_produccion', odpId), { avance_procesos: nuevoAvance, updated_at: serverTimestamp() });
+      if (odp.avance_procesos) odp.avance_procesos = nuevoAvance;
     }
+    // Refresco inmediato (optimista)
+    const idsBorrados = caps.map(c => c.id);
+    state.capturas_produccion = (state.capturas_produccion || []).filter(c => !idsBorrados.includes(c.id));
+    if (typeof renderSoloModal === 'function') renderSoloModal();
     toast(`🗑️ ${caps.length} capturas de ${nom} eliminadas · avance recalculado`, 'success');
+  } catch (e) { toast('Error al eliminar: ' + e.message, 'error'); }
+};
+
+// 🗑️ Eliminar capturas SELECCIONADAS con casillas (Planeación/Jefe Prod/Admin)
+window.toggleTodasCapturas = (master) => {
+  document.querySelectorAll('.chk-captura').forEach(el => { el.checked = master.checked; });
+  window.actualizarContadorCapturas();
+};
+window.actualizarContadorCapturas = () => {
+  const n = document.querySelectorAll('.chk-captura:checked').length;
+  const btn = document.getElementById('btn-borrar-sel');
+  const cnt = document.getElementById('cnt-cap-sel');
+  if (cnt) cnt.textContent = n;
+  if (btn) { btn.disabled = n === 0; btn.style.opacity = n === 0 ? '0.5' : '1'; btn.style.cursor = n === 0 ? 'default' : 'pointer'; }
+};
+window.eliminarCapturasSeleccionadas = async (odpId) => {
+  const u = state.user || {};
+  if (!(['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) { toast('🔒 Solo Planeación o Jefe de Producción puede eliminar capturas', 'error'); return; }
+  const ids = [...document.querySelectorAll('.chk-captura:checked')].map(el => el.value);
+  if (ids.length === 0) { toast('Selecciona al menos una captura', 'info'); return; }
+  if (!confirm(`¿Eliminar ${ids.length} captura(s) seleccionada(s)?\n\nEl avance se recalcula. No se puede deshacer.`)) return;
+  try {
+    let batch = writeBatch(db), n = 0;
+    for (const id of ids) {
+      batch.delete(doc(db, 'capturas_produccion', id));
+      if (++n % 400 === 0) { await batch.commit(); batch = writeBatch(db); }
+    }
+    await batch.commit();
+    // Si al borrar se vacía un proceso que estaba "completado", limpiar la bandera
+    const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+    const borradas = (state.capturas_produccion || []).filter(c => ids.includes(c.id));
+    state.capturas_produccion = (state.capturas_produccion || []).filter(c => !ids.includes(c.id));
+    if (odp && odp.avance_procesos) {
+      const procsAfectados = [...new Set(borradas.map(c => c.proceso).filter(Boolean))];
+      let cambio = false;
+      const nuevoAvance = { ...odp.avance_procesos };
+      for (const pc of procsAfectados) {
+        const quedan = state.capturas_produccion.some(c => c.odp_id === odpId && c.proceso === pc);
+        if (!quedan && nuevoAvance[pc] && nuevoAvance[pc].completado) { nuevoAvance[pc] = { ...nuevoAvance[pc], completado: false }; cambio = true; }
+      }
+      if (cambio) { await updateDoc(doc(db, 'ordenes_produccion', odpId), { avance_procesos: nuevoAvance, updated_at: serverTimestamp() }); odp.avance_procesos = nuevoAvance; }
+    }
+    if (typeof renderSoloModal === 'function') renderSoloModal();
+    toast(`🗑️ ${ids.length} captura(s) eliminada(s) · avance recalculado`, 'success');
   } catch (e) { toast('Error al eliminar: ' + e.message, 'error'); }
 };
 
@@ -36185,6 +36237,14 @@ function modalDetalleODP() {
                   }).join('')}
                 </div>`;
               })() : ''}
+              ${(['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin') && capturas.length > 0 ? `
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;padding:8px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#9a3412;cursor:pointer;">
+                    <input type="checkbox" onchange="window.toggleTodasCapturas(this)"> Seleccionar todas
+                  </label>
+                  <button id="btn-borrar-sel" disabled onclick="window.eliminarCapturasSeleccionadas('${odp.id}')" style="margin-left:auto;padding:6px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:default;opacity:0.5;font-weight:700;font-size:11px;">🗑️ Eliminar seleccionadas (<span id="cnt-cap-sel">0</span>)</button>
+                </div>
+              ` : ''}
               ${capturas.map(c => {
                 const esBultos = c.tipo_captura === 'paquete_individual' || c.tipo_captura === 'paquete_incompleto';
                 const uCap = (esBultos ? (c.um_empaque || c.um_captura) : c.um_captura) || (odp.um || '');
@@ -36195,7 +36255,10 @@ function modalDetalleODP() {
                 return `
                 <div style="font-size:12px;padding:8px;border-top:1px solid #e2e8f0;">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                    <span>${fmtFechaHora(c.created_at)} · ${c.operador || '—'} · ${window.getProc?.(c.proceso)?.nombre || c.proceso || '—'} · Turno ${c.turno || '—'}</span>
+                    <span style="display:flex;align-items:center;gap:8px;">
+                      ${puedeBorrar ? `<input type="checkbox" class="chk-captura" value="${c.id}" onchange="window.actualizarContadorCapturas()" style="cursor:pointer;">` : ''}
+                      <span>${fmtFechaHora(c.created_at)} · ${c.operador || '—'} · ${window.getProc?.(c.proceso)?.nombre || c.proceso || '—'} · Turno ${c.turno || '—'}</span>
+                    </span>
                     <span style="display:flex;align-items:center;gap:8px;white-space:nowrap;">
                       <strong>${fmtNum(prodUM)} ${uCap}${prodKg > 0 ? ` · ${fmtNum(prodKg)} kg` : ''}</strong>
                       ${mrm > 0 ? `<span style="color:#dc2626;font-size:10px;">merma ${fmtNum(mrm)} kg</span>` : ''}
