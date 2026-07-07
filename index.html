@@ -112,6 +112,7 @@ import {
   query, where, orderBy, limit, onSnapshot, serverTimestamp, runTransaction, writeBatch, increment
 } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js';
+import { initializeAppCheck, ReCaptchaV3Provider } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app-check.js';
 
 // ============================================================
 // CONFIGURACIÓN — REEMPLAZA CON LA TUYA
@@ -127,6 +128,30 @@ const firebaseConfig = {
 };
 
 const fbApp = initializeApp(firebaseConfig);
+
+// ============================================================
+// 🛡️ APP CHECK — bloquea cualquier acceso a Firestore/Auth que NO venga de esta app,
+//    aunque alguien copie tu config. Es la capa que faltaba.
+//    PASOS (una sola vez):
+//      1) Firebase Console → Build → App Check → apps → registra esta app WEB → reCAPTCHA v3
+//      2) Copia la "SITE KEY" (clave pública de reCAPTCHA v3) y pégala abajo
+//      3) Déjalo unos días SIN enforzar (modo monitor) para confirmar que tu tráfico pasa;
+//         luego en App Check → Firestore → "Aplicar" (enforce).
+//    Hasta que pegues una key real, esto NO afecta la app (solo avisa en consola).
+// ============================================================
+const RECAPTCHA_SITE_KEY = '6LfdM0gtAAAAALW_9OUCUrLIbW3ZvHI1tlKqfzSq';
+if (RECAPTCHA_SITE_KEY && !RECAPTCHA_SITE_KEY.startsWith('PON_AQUI')) {
+  try {
+    initializeAppCheck(fbApp, {
+      provider: new ReCaptchaV3Provider(RECAPTCHA_SITE_KEY),
+      isTokenAutoRefreshEnabled: true
+    });
+    console.log('🛡️ App Check activo');
+  } catch (e) { console.warn('⚠️ App Check no se pudo inicializar:', e); }
+} else {
+  console.warn('🛡️ App Check PENDIENTE: pega tu SITE KEY de reCAPTCHA v3 en la constante RECAPTCHA_SITE_KEY (index.html).');
+}
+
 const auth = getAuth(fbApp);
 const db = getFirestore(fbApp);
 const functions = getFunctions(fbApp);
@@ -3668,7 +3693,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0703-sel-capt</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-appcheck2</span></div>
         </div>
         
         ${supervisorRestringido ? `
