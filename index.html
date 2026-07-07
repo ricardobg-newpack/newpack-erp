@@ -3763,7 +3763,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmaui</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmacard</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13365,24 +13365,48 @@ function renderDevoluciones() {
     return `<span style="background:${s.color}22;color:${s.color};padding:3px 10px;border-radius:6px;font-size:11px;font-weight:800;">${s.label}</span>`;
   };
 
-  // Botones de acción según etapa y rol
+  // Botones de acción según etapa y rol — estilo consistente
+  const _btnMain = (onclick, label) => `<button onclick="${onclick}" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;display:inline-flex;align-items:center;gap:6px;">${label}</button>`;
+  const _btnGhost = (onclick, label) => `<button onclick="${onclick}" style="padding:9px 16px;background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;display:inline-flex;align-items:center;gap:6px;">${label}</button>`;
   const acciones = (d) => {
     const btns = [];
     if (d.estatus === 'solicitada' && puedePlanta) {
-      btns.push(`<button onclick="const f=prompt('Fecha de recolección (opcional, dd/mm/aaaa):','');window.rmaSolicitarRecoleccion('${d.id}', f||'')" style="padding:7px 12px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🚚 Solicitar recolección</button>`);
-      btns.push(`<button onclick="window.rmaRecibir('${d.id}')" style="padding:7px 12px;background:#8b5cf6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📦 Recibir ya</button>`);
+      btns.push(_btnMain(`const f=prompt('Fecha de recolección (opcional, dd/mm/aaaa):','');window.rmaSolicitarRecoleccion('${d.id}', f||'')`, '🚚 Solicitar recolección'));
+      btns.push(_btnGhost(`window.rmaRecibir('${d.id}')`, '📦 Recibir ya'));
     }
     if (d.estatus === 'recoleccion_solicitada' && puedePlanta) {
-      btns.push(`<button onclick="window.rmaRecibir('${d.id}')" style="padding:7px 12px;background:#8b5cf6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📦 Recibir en planta</button>`);
+      btns.push(_btnMain(`window.rmaRecibir('${d.id}')`, '📦 Recibir en planta'));
     }
     if (d.estatus === 'recibida' && puedePlanta) {
-      btns.push(`<button onclick="window.abrirDictamenRMA('${d.id}')" style="padding:7px 12px;background:#0891b2;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🔬 Inspeccionar y dictaminar</button>`);
+      btns.push(_btnMain(`window.abrirDictamenRMA('${d.id}')`, '🔬 Inspeccionar y dictaminar'));
     }
     if (d.estatus === 'dictaminada' && puedePlanta) {
-      btns.push(`<button onclick="window.rmaCerrar('${d.id}')" style="padding:7px 12px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">✅ Cerrar caso</button>`);
+      btns.push(_btnMain(`window.rmaCerrar('${d.id}')`, '✅ Cerrar caso'));
     }
-    btns.push(`<button onclick="window.imprimirReporteRMA('${d.id}')" style="padding:7px 12px;background:#0f172a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📄 Reporte RMA</button>`);
+    btns.push(_btnGhost(`window.imprimirReporteRMA('${d.id}')`, '📄 Reporte RMA'));
     return btns.join(' ');
+  };
+
+  // Stepper visual de las 5 etapas
+  const ORDEN_ETAPAS = ['solicitada','recoleccion_solicitada','recibida','dictaminada','cerrada'];
+  const ETAPA_CORTA = { solicitada:'Solicitada', recoleccion_solicitada:'Recolección', recibida:'Recibida', dictaminada:'Dictaminada', cerrada:'Cerrada' };
+  const stepper = (estatus) => {
+    const idx = ORDEN_ETAPAS.indexOf(estatus);
+    return `<div style="display:flex;align-items:center;gap:0;margin:12px 0 4px;">
+      ${ORDEN_ETAPAS.map((e, i) => {
+        const done = i < idx, curr = i === idx;
+        const bg = done ? '#16a34a' : curr ? '#3b82f6' : '#e2e8f0';
+        const fg = (done||curr) ? '#fff' : '#94a3b8';
+        const line = i < ORDEN_ETAPAS.length-1 ? `<div style="flex:1;height:2px;background:${i<idx?'#16a34a':'#e2e8f0'};min-width:14px;"></div>` : '';
+        return `<div style="display:flex;align-items:center;${i<ORDEN_ETAPAS.length-1?'flex:1;':''}">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:3px;">
+            <div style="width:22px;height:22px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0;">${done?'✓':i+1}</div>
+            <div style="font-size:8.5px;color:${curr?'#3b82f6':done?'#16a34a':'#94a3b8'};font-weight:${curr?'800':'600'};white-space:nowrap;">${ETAPA_CORTA[e]}</div>
+          </div>
+          ${line}
+        </div>`;
+      }).join('')}
+    </div>`;
   };
 
   return `
@@ -13438,33 +13462,47 @@ function renderDevoluciones() {
 
       <div style="font-weight:800;color:#0f172a;margin:16px 0 8px;">Tablero de casos</div>
       ${devs.length === 0 ? `<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay casos RMA.</div>` : `
-      <div style="display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;flex-direction:column;gap:14px;">
         ${devs.map(d => {
           const s = RMA_ESTADOS[d.estatus] || {color:'#64748b'};
+          const numTarima = d.tarima_numero || (d.tarima_lote ? d.tarima_lote : '');
           return `
-          <div class="panel" style="border-left:5px solid ${s.color};">
-            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-              <div style="flex:1;min-width:240px;">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                  <span style="font-weight:900;color:#0f172a;font-size:15px;">${d.codigo}</span>
+          <div class="panel" style="border-top:3px solid ${s.color};padding:0;">
+            <!-- Cabecera -->
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:16px 18px 0;">
+              <div>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                  <span style="font-weight:900;color:#0f172a;font-size:17px;letter-spacing:-0.3px;">${d.codigo}</span>
                   ${badge(d.estatus)}
                 </div>
-                <div style="font-size:12px;color:#475569;margin-top:5px;">
-                  <strong>${d.cliente_nombre||d.cliente_codigo||'—'}</strong> · ODP ${d.odp_folio||'—'} · ${d.producto_codigo||''}
-                </div>
-                <div style="font-size:11px;color:#64748b;margin-top:2px;">
-                  Tarima ${d.tarima_lote||'—'} · ${fmtNum(d.cantidad_devuelta||0)} ${d.um||'pza'} · ${fmtNum(Math.round(d.peso_neto_kg||0))} kg · ${RMA_MOTIVOS[d.motivo]||''}
-                </div>
-                ${d.notas_reclamo?`<div style="font-size:11px;color:#94a3b8;margin-top:3px;font-style:italic;">Reclamo: "${d.notas_reclamo}"</div>`:''}
-                ${d.fecha_recoleccion?`<div style="font-size:11px;color:#b45309;margin-top:3px;">🚚 Recolección: ${d.fecha_recoleccion}</div>`:''}
-                ${d.destino_texto?`<div style="font-size:11px;color:#0891b2;margin-top:3px;font-weight:700;">Dictamen: ${d.destino_texto}${d.causa_raiz?' · Causa: '+d.causa_raiz:''}</div>`:''}
+                <div style="font-size:13px;color:#0f172a;font-weight:700;margin-top:6px;">${d.cliente_nombre||d.cliente_codigo||'—'}</div>
               </div>
-              <div style="text-align:right;font-size:10px;color:#94a3b8;min-width:140px;">
+              <div style="text-align:right;font-size:10.5px;color:#94a3b8;white-space:nowrap;">
                 <div>${fmtFecha(d.created_at)}</div>
                 <div>por ${d.creado_por_nombre||''}</div>
               </div>
             </div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid #f1f5f9;">
+
+            <!-- Stepper -->
+            <div style="padding:0 18px;">${stepper(d.estatus)}</div>
+
+            <!-- Datos en grilla -->
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 20px;padding:12px 18px;background:#f8fafc;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;">
+              <div><div style="font-size:9.5px;text-transform:uppercase;color:#94a3b8;font-weight:700;letter-spacing:0.4px;">Orden / Producto</div><div style="font-size:12.5px;color:#0f172a;font-weight:600;margin-top:2px;">${d.odp_folio||'—'} · ${d.producto_codigo||'—'}</div></div>
+              <div><div style="font-size:9.5px;text-transform:uppercase;color:#94a3b8;font-weight:700;letter-spacing:0.4px;">Lote / Tarima</div><div style="font-size:12.5px;color:#0f172a;font-weight:600;margin-top:2px;">${d.tarima_lote||'—'}</div></div>
+              <div><div style="font-size:9.5px;text-transform:uppercase;color:#94a3b8;font-weight:700;letter-spacing:0.4px;">Cantidad</div><div style="font-size:12.5px;color:#0f172a;font-weight:600;margin-top:2px;">${fmtNum(d.cantidad_devuelta||0)} ${d.um||'pza'} · ${fmtNum(Math.round(d.peso_neto_kg||0))} kg</div></div>
+              <div><div style="font-size:9.5px;text-transform:uppercase;color:#94a3b8;font-weight:700;letter-spacing:0.4px;">Motivo</div><div style="font-size:12.5px;color:#0f172a;font-weight:600;margin-top:2px;">${RMA_MOTIVOS[d.motivo]||'—'}</div></div>
+            </div>
+
+            <!-- Reclamo / recolección / dictamen -->
+            <div style="padding:12px 18px 0;">
+              ${d.notas_reclamo?`<div style="font-size:12px;color:#475569;margin-bottom:6px;"><span style="color:#94a3b8;">Reclamo del cliente:</span> <span style="font-style:italic;">"${d.notas_reclamo}"</span></div>`:''}
+              ${d.fecha_recoleccion?`<div style="display:inline-block;font-size:11px;color:#b45309;background:#fef3c7;padding:3px 10px;border-radius:6px;margin-bottom:6px;font-weight:600;">🚚 Recolección: ${d.fecha_recoleccion}</div>`:''}
+              ${d.destino_texto?('<div style="font-size:12px;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>🔬 Dictamen:</strong> '+d.destino_texto+(d.causa_raiz?'<br><span style="color:#475569;">Causa raíz: '+d.causa_raiz+'</span>':'')+'</div>'):''}
+            </div>
+
+            <!-- Acciones -->
+            <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px 16px;">
               ${acciones(d)}
             </div>
           </div>`;
