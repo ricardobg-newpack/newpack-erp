@@ -201,6 +201,7 @@ const state = {
   operadores_logistica: [],
   unidades_logistica: [],
   remisiones: [],
+  devoluciones: [],
   comentarios_pedidos: [],
   notificaciones: [],
   maquinas: [],
@@ -3297,6 +3298,10 @@ async function cargarTodo() {
         state.remisiones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
+      onSnapshot(query(collection(db, 'devoluciones'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.devoluciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       onSnapshot(query(collection(db, 'comentarios_pedidos'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.comentarios_pedidos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -3758,7 +3763,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-pklfix</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-rma</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3803,6 +3808,7 @@ function renderApp() {
         ` : ''}
         ${(esCS || esKAM || esCAL || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'certificados_calidad' ? 'active' : ''}" data-vista="certificados_calidad">📜 Certificados de Calidad</button>
+          <button class="nav-item ${state.vista === 'devoluciones' ? 'active' : ''}" data-vista="devoluciones">🔄 Devoluciones (RMA)</button>
         ` : ''}
         
         ${esALP ? `
@@ -4048,6 +4054,7 @@ function renderVista() {
   if (v === 'panel_operador') return renderPanelOperador();
   if (v === 'calidad') return renderCalidad();
   if (v === 'certificados_calidad') return renderCertificadosCalidad();
+  if (v === 'devoluciones') return renderDevoluciones();
   if (v === 'seguimiento') return renderSeguimiento();
   if (v === 'almacen_planta') return renderAlmacenPlanta();
   if (v === 'oti_planta') return renderOTIPlanta();
@@ -10525,6 +10532,117 @@ window.cancelarODPConDevolucion = async (odpId) => {
   }
 };
 
+// 🔄 REGISTRO DE DEVOLUCIÓN DE CLIENTE (RMA)
+// ─────────────────────────────────────────────────────────────
+// Restringido a Calidad / CEO / Admin. Registra la devolución de una tarima
+// ya entregada, con motivo y destino (cuarentena o desecho/peletizado),
+// y deja rastro en la trazabilidad del lote (tarima → estatus 'devuelta').
+window.registrarDevolucion = async ({ tarimaId, motivo, destino, cantidad_devuelta, notas = '' }) => {
+  const u = state.user || {};
+  if (!(['CAL','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo Calidad, CEO o Admin pueden registrar devoluciones. Tu depto: ${u.depto || '?'}`, 'error');
+    return;
+  }
+  const tarima = (state.tarimas || []).find(t => t.id === tarimaId);
+  if (!tarima) { toast('Tarima no encontrada', 'error'); return; }
+  if (tarima.estatus !== 'entregada') {
+    toast('Solo se pueden devolver tarimas ya ENTREGADAS al cliente.', 'error'); return;
+  }
+  if (!motivo) { toast('Indica el motivo de la devolución.', 'error'); return; }
+  if (!destino) { toast('Indica el destino del material devuelto.', 'error'); return; }
+
+  const MOTIVOS = {
+    defecto_calidad: 'Defecto de calidad',
+    danado_transporte: 'Dañado en transporte',
+    error_pedido: 'Error de pedido (medida/color)',
+    cliente_cancelo: 'Cliente canceló / no lo quiso',
+    otros: 'Otros'
+  };
+  const DESTINOS = {
+    cuarentena: 'Cuarentena (pendiente de revisar)',
+    desecho: 'Desecho / Peletizado'
+  };
+
+  const odp = (state.ordenes_produccion || []).find(o => o.id === tarima.odp_id) || {};
+  const cliente = (state.clientes || []).find(c => c.codigo === (odp.cliente_codigo || tarima.cliente_codigo));
+  const cantDev = Number(cantidad_devuelta) || Number(tarima.cantidad) || 0;
+  const kgDev = Number(tarima.peso_neto_kg) || Number(tarima.peso_neto) || 0;
+
+  const resumen =
+    `🔄 REGISTRAR DEVOLUCIÓN\n\n` +
+    `Tarima: ${tarima.lote || tarima.id?.slice(0,6)} (${tarima.numero_tarima || '—'})\n` +
+    `ODP: ${odp.folio || '—'} · Cliente: ${cliente?.nombre || odp.cliente_codigo || '—'}\n` +
+    `Producto: ${odp.producto_codigo || tarima.producto_codigo || '—'}\n` +
+    `Cantidad: ${fmtNum(cantDev)} ${odp.um || tarima.um || 'pza'} · ${fmtNum(Math.round(kgDev))} kg\n\n` +
+    `Motivo: ${MOTIVOS[motivo]}\n` +
+    `Destino: ${DESTINOS[destino]}\n\n` +
+    `Esto marcará la tarima como DEVUELTA y quedará registrado en la trazabilidad. ¿Confirmar?`;
+  if (!confirm(resumen)) return;
+
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const folio = await siguienteFolio('devolucion');
+    const codigoDev = `DEV-${new Date().getFullYear()}-${String(folio).padStart(5, '0')}`;
+
+    // 1) Crear registro de devolución (trazabilidad)
+    await addDoc(collection(db, 'devoluciones'), {
+      codigo: codigoDev,
+      tarima_id: tarimaId,
+      tarima_lote: tarima.lote || '',
+      packing_list: tarima.packing_list || '',
+      odp_id: tarima.odp_id || '',
+      odp_folio: odp.folio || '',
+      producto_codigo: odp.producto_codigo || tarima.producto_codigo || '',
+      cliente_codigo: odp.cliente_codigo || tarima.cliente_codigo || '',
+      cliente_nombre: cliente?.nombre || '',
+      cantidad_devuelta: cantDev,
+      um: odp.um || tarima.um || 'pza',
+      peso_neto_kg: kgDev,
+      motivo, motivo_texto: MOTIVOS[motivo],
+      destino, destino_texto: DESTINOS[destino],
+      notas,
+      estatus: destino === 'cuarentena' ? 'en_cuarentena' : 'a_desecho',
+      registrado_por_uid: u.uid || '',
+      registrado_por_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp(),
+    });
+
+    // 2) Afectar la tarima: marcarla como devuelta (sale del inventario entregado)
+    await updateDoc(doc(db, 'tarimas', tarimaId), {
+      estatus: 'devuelta',
+      devolucion_codigo: codigoDev,
+      devolucion_motivo: motivo,
+      devolucion_destino: destino,
+      devuelta_at: serverTimestamp(),
+    });
+
+    // 3) Si el destino es desecho, alimentar el flujo de desecho existente
+    if (destino === 'desecho' && kgDev > 0) {
+      const mat = tarima.tipo_material || odp.tipo_material || 'MIX';
+      const col = tarima.color || odp.color || 'MIX';
+      const desechoId = `DESECHO-${mat}-${col}`;
+      const desRef = doc(db, 'almacen_desecho_venta', desechoId);
+      const desSnap = await getDoc(desRef);
+      if (desSnap.exists()) {
+        await updateDoc(desRef, { stock_kg: (Number(desSnap.data().stock_kg) || 0) + kgDev });
+      } else {
+        await setDoc(desRef, { id: desechoId, tipo_material: mat, color: col, stock_kg: kgDev, origen: 'devolucion', created_at: serverTimestamp() });
+      }
+    }
+
+    // Optimistic UI
+    const tLocal = state.tarimas.find(t => t.id === tarimaId);
+    if (tLocal) { tLocal.estatus = 'devuelta'; tLocal.devolucion_codigo = codigoDev; }
+    toast(`✅ Devolución ${codigoDev} registrada (${DESTINOS[destino]}).`, 'success');
+    window.cerrarModal?.();
+  } catch (e) {
+    console.error('Error registrar devolución:', e);
+    toast('Error al registrar devolución: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
 // 3️⃣ Cancelar OC (Orden de Compra)
 window.cancelarOCConDevolucion = async (ocId) => {
   const oc = (state.ordenes_compra || []).find(o => o.id === ocId);
@@ -13163,6 +13281,111 @@ window.enviarCertificadoEmail = (odpId) => {
   toast(`📧 Funcionalidad pendiente: enviar a ${odp.cliente_email || odp.cliente_nombre}`, 'info');
   // Futuro: genera el PDF y abre mailto: o lo manda por backend
 };
+
+// 🔄 VISTA: DEVOLUCIONES (RMA) — Calidad / CEO / Admin
+function renderDevoluciones() {
+  const u = state.user || {};
+  const puedeRegistrar = ['CAL','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const devs = (state.devoluciones || []).slice().sort((a,b) => (b.created_at?.seconds||0)-(a.created_at?.seconds||0));
+  const entregadas = (state.tarimas || []).filter(t => t.estatus === 'entregada');
+  const MOTIVOS = {
+    defecto_calidad: '🔬 Defecto de calidad',
+    danado_transporte: '🚚 Dañado en transporte',
+    error_pedido: '📋 Error de pedido',
+    cliente_cancelo: '🚫 Cliente canceló',
+    otros: '• Otros'
+  };
+  const badgeEstatus = (e) => e === 'en_cuarentena'
+    ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">🟡 En cuarentena</span>'
+    : e === 'a_desecho'
+    ? '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">🔴 A desecho</span>'
+    : `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;">${e||'—'}</span>`;
+  const enCuarentena = devs.filter(d => d.estatus === 'en_cuarentena').length;
+
+  return `
+    <div style="max-width:1200px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:6px;">
+        <div>
+          <div style="font-size:22px;font-weight:900;color:#0f172a;">🔄 Devoluciones (RMA)</div>
+          <div style="font-size:12px;color:#64748b;">Retorno de producto entregado · trazabilidad y destino del material</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          ${enCuarentena>0?`<span style="background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">🟡 ${enCuarentena} en cuarentena</span>`:''}
+          <span style="background:#0f172a;color:#fff;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">${devs.length} devoluciones</span>
+        </div>
+      </div>
+
+      ${!puedeRegistrar ? `<div style="padding:12px;background:#f1f5f9;border-radius:8px;color:#64748b;font-size:12px;margin:10px 0;">🔒 Solo Calidad, CEO o Admin pueden registrar devoluciones. Puedes consultar el historial.</div>` : `
+      <div class="panel" style="margin:14px 0;border-left:5px solid #dc2626;">
+        <div style="font-weight:800;color:#0f172a;margin-bottom:10px;">➕ Registrar nueva devolución</div>
+        ${entregadas.length === 0 ? `<div style="color:#94a3b8;font-size:12px;padding:8px;">No hay tarimas entregadas disponibles para devolver.</div>` : `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:end;">
+          <div style="grid-column:1/-1;">
+            <label style="font-size:11px;font-weight:700;color:#475569;">Tarima entregada a devolver</label>
+            <select id="dev-tarima" style="width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;">
+              <option value="">— Selecciona tarima —</option>
+              ${entregadas.map(t => {
+                const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
+                return `<option value="${t.id}">${t.lote||t.id.slice(0,6)} · ODP ${odp.folio||'—'} · ${odp.producto_codigo||''} · ${fmtNum(t.cantidad||0)} ${odp.um||'pza'}</option>`;
+              }).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;font-weight:700;color:#475569;">Motivo</label>
+            <select id="dev-motivo" style="width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;">
+              <option value="defecto_calidad">🔬 Defecto de calidad</option>
+              <option value="danado_transporte">🚚 Dañado en transporte</option>
+              <option value="error_pedido">📋 Error de pedido (medida/color)</option>
+              <option value="cliente_cancelo">🚫 Cliente canceló / no lo quiso</option>
+              <option value="otros">• Otros</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;font-weight:700;color:#475569;">Destino del material</label>
+            <select id="dev-destino" style="width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;">
+              <option value="cuarentena">🟡 Cuarentena (revisar después)</option>
+              <option value="desecho">🔴 Desecho / Peletizado</option>
+            </select>
+          </div>
+          <div style="grid-column:1/-1;">
+            <label style="font-size:11px;font-weight:700;color:#475569;">Notas (opcional)</label>
+            <input id="dev-notas" type="text" placeholder="Detalle del reclamo, folio del cliente, etc." style="width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;" />
+          </div>
+          <div style="grid-column:1/-1;">
+            <button onclick="window.registrarDevolucion({tarimaId:document.getElementById('dev-tarima').value, motivo:document.getElementById('dev-motivo').value, destino:document.getElementById('dev-destino').value, notas:document.getElementById('dev-notas').value})" style="width:100%;padding:11px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;">🔄 Registrar devolución</button>
+          </div>
+        </div>`}
+      </div>`}
+
+      <div style="font-weight:800;color:#0f172a;margin:16px 0 8px;">Historial de devoluciones</div>
+      ${devs.length === 0 ? `<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay devoluciones registradas.</div>` : `
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        ${devs.map(d => `
+          <div class="panel" style="border-left:5px solid ${d.estatus==='a_desecho'?'#dc2626':'#f59e0b'};">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+              <div>
+                <span style="font-weight:900;color:#0f172a;font-size:15px;">${d.codigo}</span>
+                ${badgeEstatus(d.estatus)}
+                <div style="font-size:12px;color:#475569;margin-top:4px;">
+                  <strong>${d.cliente_nombre||d.cliente_codigo||'—'}</strong> · ODP ${d.odp_folio||'—'} · ${d.producto_codigo||''}
+                </div>
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">
+                  Tarima ${d.tarima_lote||'—'} · ${fmtNum(d.cantidad_devuelta||0)} ${d.um||'pza'} · ${fmtNum(Math.round(d.peso_neto_kg||0))} kg
+                </div>
+                ${d.notas?`<div style="font-size:11px;color:#94a3b8;margin-top:3px;font-style:italic;">"${d.notas}"</div>`:''}
+              </div>
+              <div style="text-align:right;font-size:11px;color:#64748b;">
+                <div>${MOTIVOS[d.motivo]||d.motivo_texto||'—'}</div>
+                <div style="margin-top:3px;">${d.destino_texto||''}</div>
+                <div style="margin-top:6px;color:#94a3b8;">${fmtFecha(d.created_at)} · ${d.registrado_por_nombre||''}</div>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>`}
+    </div>
+  `;
+}
 
 function renderCalidad() {
   const subTab = state.tabs.calidad || 'pendientes';
