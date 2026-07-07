@@ -3763,7 +3763,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-rma</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-rmapdf</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13378,6 +13378,7 @@ function renderDevoluciones() {
                 <div>${MOTIVOS[d.motivo]||d.motivo_texto||'—'}</div>
                 <div style="margin-top:3px;">${d.destino_texto||''}</div>
                 <div style="margin-top:6px;color:#94a3b8;">${fmtFecha(d.created_at)} · ${d.registrado_por_nombre||''}</div>
+                <button onclick="window.imprimirReporteRMA('${d.id}')" style="margin-top:8px;padding:7px 12px;background:#0f172a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📄 Reporte RMA</button>
               </div>
             </div>
           </div>
@@ -28071,6 +28072,138 @@ window.imprimirPackingListPDF = (idOrPkl, pklFilter = null) => {
   } catch (e) {
     console.error('Error generando Packing List:', e);
     toast('Error generando Packing List: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// PDF: REPORTE FORMAL DE DEVOLUCIÓN (RMA) — para el cliente
+// Documento de trazabilidad que demuestra la revisión del error.
+// ============================================================
+window.imprimirReporteRMA = (devId) => {
+  try {
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    const dev = (state.devoluciones || []).find(d => d.id === devId);
+    if (!dev) { toast('Devolución no encontrada', 'error'); return; }
+
+    const odp = (state.ordenes_produccion || []).find(o => o.id === dev.odp_id) || {};
+    const cliente = (state.clientes || []).find(c => c.codigo === dev.cliente_codigo) || {};
+    const producto = (state.productos_pt || []).find(p => p.codigo === dev.producto_codigo) || {};
+    const tarima = (state.tarimas || []).find(t => t.id === dev.tarima_id) || {};
+    const pi = (state.pedidos || []).find(p => p.id === odp.pedido_id) || {};
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    let y = _pdfHeaderEmpresa(docPDF, 'REPORTE DE DEVOLUCIÓN', dev.codigo);
+
+    // ===== Banda de título con estatus =====
+    const estBg = dev.estatus === 'a_desecho' ? [220,38,38] : [245,158,11];
+    docPDF.setFillColor(estBg[0], estBg[1], estBg[2]);
+    docPDF.roundedRect(14, y, 182, 10, 1.5, 1.5, 'F');
+    docPDF.setTextColor(255,255,255);
+    docPDF.setFontSize(10); docPDF.setFont('helvetica','bold');
+    const estTxt = dev.estatus === 'a_desecho' ? 'MATERIAL ENVIADO A DESECHO / PELETIZADO' : 'MATERIAL EN CUARENTENA — EN REVISIÓN';
+    docPDF.text(`RMA ${dev.codigo}  ·  ${estTxt}`, 105, y + 6.5, { align: 'center' });
+    y += 16;
+
+    // ===== INFORMACIÓN DEL CLIENTE =====
+    y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DEL CLIENTE', _COL_AZUL);
+    docPDF.setFontSize(9); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+    const infoCli = [
+      ['Cliente:', dev.cliente_nombre || cliente.nombre || dev.cliente_codigo || '—'],
+      ['Código cliente:', dev.cliente_codigo || '—'],
+      ['RFC:', cliente.rfc || '—'],
+      ['Contacto:', cliente.contacto || pi?.contacto || '—'],
+    ];
+    infoCli.forEach((row, i) => {
+      const yy = y + (i * 5.5);
+      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+      docPDF.text(row[0], 16, yy);
+      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+      docPDF.text(String(row[1]), 52, yy);
+    });
+    y += infoCli.length * 5.5 + 4;
+
+    // ===== DATOS DEL PRODUCTO DEVUELTO =====
+    y = _pdfSeccionTitulo(docPDF, y, 'PRODUCTO DEVUELTO', _COL_AZUL);
+    docPDF.setFontSize(9);
+    const descProd = producto.descripcion || producto.nombre || '';
+    const infoProd = [
+      ['Código:', dev.producto_codigo || '—'],
+      ['Descripción:', descProd || '—'],
+      ['ODP origen:', dev.odp_folio || '—'],
+      ['Pedido (PI):', pi?.folio || '—'],
+      ['Packing List:', dev.packing_list || '—'],
+      ['Lote / Tarima:', dev.tarima_lote || tarima.lote || '—'],
+    ];
+    infoProd.forEach((row, i) => {
+      const yy = y + (i * 5.5);
+      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+      docPDF.text(row[0], 16, yy);
+      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+      docPDF.text(docPDF.splitTextToSize(String(row[1]), 140), 52, yy);
+    });
+    y += infoProd.length * 5.5 + 4;
+
+    // ===== CANTIDAD DEVUELTA (caja destacada) =====
+    docPDF.setFillColor(248, 250, 252);
+    docPDF.setDrawColor(203, 213, 225);
+    docPDF.roundedRect(14, y, 182, 18, 1.5, 1.5, 'FD');
+    docPDF.setFontSize(7); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(100,116,139);
+    docPDF.text('CANTIDAD DEVUELTA', 20, y + 6);
+    docPDF.text('PESO NETO', 110, y + 6);
+    docPDF.setFontSize(14); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(0,0,0);
+    docPDF.text(`${fmtNum(dev.cantidad_devuelta || 0)} ${dev.um || 'pza'}`, 20, y + 14);
+    docPDF.text(`${fmtNum(Math.round(dev.peso_neto_kg || 0))} kg`, 110, y + 14);
+    y += 24;
+
+    // ===== MOTIVO Y DICTAMEN (lo importante para el cliente) =====
+    y = _pdfSeccionTitulo(docPDF, y, 'DICTAMEN DE LA DEVOLUCIÓN', _COL_VERDE);
+    docPDF.setFontSize(9); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+    docPDF.text('Motivo reportado:', 16, y);
+    docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+    docPDF.text(dev.motivo_texto || dev.motivo || '—', 60, y);
+    y += 6;
+    docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+    docPDF.text('Destino del material:', 16, y);
+    docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+    docPDF.text(dev.destino_texto || dev.destino || '—', 60, y);
+    y += 6;
+    if (dev.notas) {
+      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+      docPDF.text('Observaciones / hallazgos:', 16, y);
+      y += 5;
+      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+      const notasWrap = docPDF.splitTextToSize(dev.notas, 178);
+      docPDF.text(notasWrap, 16, y);
+      y += notasWrap.length * 4.5 + 2;
+    }
+    y += 4;
+
+    // ===== TRAZABILIDAD (demuestra el rastro completo) =====
+    y = _pdfSeccionTitulo(docPDF, y, 'TRAZABILIDAD DEL LOTE', _COL_AZUL);
+    docPDF.setFontSize(8); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(71,85,105);
+    const traza = `Este material fue producido bajo la orden ${dev.odp_folio || '—'}, liberado por control de calidad con lote ${dev.tarima_lote || '—'} y documentado en el packing list ${dev.packing_list || '—'}. La devolución quedó registrada en el sistema ERP con folio ${dev.codigo}, permitiendo el rastreo completo desde la materia prima hasta el retorno del cliente.`;
+    const trazaWrap = docPDF.splitTextToSize(traza, 180);
+    docPDF.text(trazaWrap, 14, y);
+    y += trazaWrap.length * 4 + 8;
+
+    // ===== FIRMAS =====
+    const yF = Math.max(y, 250);
+    docPDF.setDrawColor(148, 163, 184); docPDF.setLineWidth(0.3);
+    docPDF.line(24, yF, 84, yF);
+    docPDF.line(122, yF, 182, yF);
+    docPDF.setFontSize(8); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(0,0,0);
+    docPDF.text('Calidad', 54, yF + 5, { align: 'center' });
+    docPDF.text('Cliente / Recibe', 152, yF + 5, { align: 'center' });
+    docPDF.setFontSize(7); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(100,116,139);
+    docPDF.text(dev.registrado_por_nombre || '', 54, yF + 9, { align: 'center' });
+
+    _pdfPiePagina(docPDF);
+    docPDF.save(`RMA_${dev.codigo}_${(dev.cliente_nombre||'cliente').replace(/[^a-z0-9]/gi,'_').slice(0,20)}.pdf`);
+    toast(`📄 Reporte RMA ${dev.codigo} generado`, 'success');
+  } catch (e) {
+    console.error('Error generando reporte RMA:', e);
+    toast('Error generando reporte RMA: ' + e.message, 'error');
   }
 };
 
