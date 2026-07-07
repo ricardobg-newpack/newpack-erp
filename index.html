@@ -3758,7 +3758,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-libhelper2</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0706-pklparcial</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13123,10 +13123,10 @@ function _renderCardCertificado(odp) {
             if ((odp.tiene_liberaciones_parciales || _pkls.length > 1) && _pkls.length > 0) {
               return _pkls.map((g,i) => {
                 const pkArg = g.pkl !== '(sin PKL)' ? `, '${g.pkl}'` : '';
-                return `<button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}', null${pkArg})" title="${g.pkl}" style="flex:1;min-width:140px;padding:8px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">📄 Parcial ${i+1} (${g.n} tar.)</button>`;
+                return `<button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}', null${pkArg})" title="${g.pkl}" style="flex:1;min-width:140px;padding:8px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">📄 Cert. Parcial ${i+1} (${g.n} tar.)</button>`;
               }).join('');
             }
-            return `<button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}')" style="flex:1;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11.5px;">📄 Ver / Descargar PDF</button>`;
+            return `<button onclick="window.imprimirCertificadoCalidadPDF('${odp.id}')" style="flex:1;padding:8px 12px;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11.5px;">📄 Certificado PDF</button>`;
           })()}
           ${odp.cliente_email ? `
             <button onclick="window.enviarCertificadoEmail('${odp.id}')" 
@@ -13134,6 +13134,22 @@ function _renderCardCertificado(odp) {
               ✉️
             </button>
           ` : ''}
+        </div>
+        
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+          ${(() => {
+            const _tars = (state.tarimas || []).filter(t => t.odp_id === odp.id);
+            const _grp = {};
+            _tars.forEach(t => { const pk = t.packing_list || '(sin PKL)'; if(!_grp[pk]) _grp[pk]={pkl:pk,n:0}; _grp[pk].n++; });
+            const _pkls = Object.values(_grp).sort((a,b) => String(a.pkl).localeCompare(String(b.pkl), undefined, {numeric:true}));
+            if ((odp.tiene_liberaciones_parciales || _pkls.length > 1) && _pkls.length > 0) {
+              return _pkls.map((g,i) => {
+                const pkArg = g.pkl !== '(sin PKL)' ? `, '${g.pkl}'` : '';
+                return `<button onclick="window.imprimirPackingListPDF('${odp.id}'${pkArg})" title="${g.pkl}" style="flex:1;min-width:140px;padding:8px 10px;background:#0891b2;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">📦 PKL Parcial ${i+1} (${g.n} tar.)</button>`;
+              }).join('');
+            }
+            return `<button onclick="window.imprimirPackingListPDF('${odp.id}')" style="flex:1;padding:8px 12px;background:#0891b2;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11.5px;">📦 Packing List PDF</button>`;
+          })()}
         </div>
       </div>
     </div>
@@ -16506,7 +16522,7 @@ function renderTarimasPendientes(arr) {
         </div>
         <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn-primary" onclick='abrirRecepcionPKL("${pkl}")' style="padding:8px 14px;background:#16a34a;">${ICONS.check} Recibir todo el packing list</button>
-          <button class="btn-secondary" onclick='imprimirPackingList("${pkl}")' style="padding:8px 14px;">📄 Ver Packing List</button>
+          <button class="btn-secondary" onclick='imprimirPackingListPDF("${pkl}")' style="padding:8px 14px;">📦 Packing List PDF</button>
         </div>
       </div>
     `;
@@ -27470,23 +27486,44 @@ window.imprimirListaCargaPDF = (ovId) => {
 // ============================================================
 // PDF: PACKING LIST (al liberar calidad - documento de trazabilidad)
 // ============================================================
-window.imprimirPackingListPDF = (odpId) => {
+window.imprimirPackingListPDF = (idOrPkl, pklFilter = null) => {
   try {
-    const odp = (state.ordenes_produccion || state.odps || []).find(x => x.id === odpId);
-    if (!odp) { toast('ODP no encontrada', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
-  
-  // Buscar PI, producto, packing list y tarimas (con fallbacks)
+
+  // 🔧 UNIFICADO + PARCIALES: acepta un odpId o un código de packing list.
+  //    - Si es código de PKL → ese packing list exacto (un parcial).
+  //    - Si es odpId + pklFilter → solo las tarimas de ese parcial (packing_list).
+  //    - Si es odpId sin filtro → TODAS las tarimas de la ODP (consolidado de todos los parciales).
+  let odp, tarimas, pkl;
+  const pklPorCodigo = (state.packing_lists || []).find(p => p.codigo === idOrPkl);
+  if (pklPorCodigo) {
+    // Modo por código de PKL: exactamente ese packing list (un parcial concreto)
+    pkl = pklPorCodigo;
+    tarimas = (state.tarimas || []).filter(t => (t.packing_list === idOrPkl) && t.activo !== false && t.estatus !== 'rechazada')
+      .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+    const odpIdRef = pkl.odp_id || (tarimas[0] && tarimas[0].odp_id);
+    odp = (state.ordenes_produccion || state.odps || []).find(x => x.id === odpIdRef) || {};
+  } else {
+    // Modo por odpId (con o sin filtro de parcial)
+    const odpId = idOrPkl;
+    odp = (state.ordenes_produccion || state.odps || []).find(x => x.id === odpId);
+    if (!odp) { toast('ODP no encontrada', 'error'); return; }
+    tarimas = (state.tarimas || []).filter(t =>
+      t.odp_id === odpId && t.activo !== false && t.estatus !== 'rechazada'
+      && (!pklFilter || t.packing_list === pklFilter)   // 🎯 si hay filtro, solo ese parcial
+    ).sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
+    // El PKL de encabezado: el del filtro si se pasó, si no el de la ODP
+    pkl = pklFilter
+      ? (state.packing_lists || []).find(p => p.codigo === pklFilter)
+      : (state.packing_lists || []).find(p => p.odp_id === odpId);
+  }
+
+  // Buscar PI y producto (con fallbacks)
   const pi = (state.pedidos || []).find(p => p.id === odp.pedido_id);
   const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
-  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId)
-    .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
-  
-  if (tarimas.length === 0) { toast('No hay tarimas para esta ODP', 'error'); return; }
-  
-  // Buscar packing list (lote calidad)
-  const pkl = (state.packing_lists || []).find(p => p.odp_id === odpId);
-  
+
+  if (tarimas.length === 0) { toast('No hay tarimas para este packing list', 'error'); return; }
+
   const totalPiezas = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0) * (t.um === 'millar' ? 1000 : 1), 0);
   const totalCant = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
   const totalKgBruto = tarimas.reduce((s, t) => s + (Number(t.peso_bruto || t.peso_neto_kg || t.peso_neto) || 0), 0);
@@ -27495,7 +27532,9 @@ window.imprimirPackingListPDF = (odpId) => {
   const { jsPDF } = window.jspdf;
   const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
   
-  let y = _pdfHeaderEmpresa(docPDF, 'PACKING LIST', pkl?.folio || `PL-${odp.folio}`);
+  // Folio del encabezado: doc del PKL → filtro directo (string) → folio de ODP
+  const _folioPKL = pkl?.folio || pkl?.codigo || pklFilter || (tarimas[0] && tarimas[0].packing_list) || `PL-${odp.folio || ''}`;
+  let y = _pdfHeaderEmpresa(docPDF, 'PACKING LIST', _folioPKL);
   
   // ===== TÍTULO PRINCIPAL =====
   docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
@@ -44833,9 +44872,11 @@ window.imprimirPackingList = async (codigoPKL) => {
 </div>
 
 <div class="header">
-  <div>
-    <div class="logo">📦 NEWPACK</div>
-    <div style="font-size:10px;color:#475569;">Abastecedora de Empaques · Monterrey, NL</div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:52px;width:auto;" />
+    <div>
+      <div style="font-size:9px;color:#475569;line-height:1.4;">${DATOS_EMPRESA.razon_social}<br>RFC: ${DATOS_EMPRESA.rfc} · Tel: ${DATOS_EMPRESA.telefono}<br>${DATOS_EMPRESA.direccion}</div>
+    </div>
   </div>
   <div>
     <div class="doc-title">PACKING LIST</div>
@@ -44954,7 +44995,9 @@ window.imprimirPackingList = async (codigoPKL) => {
 </div>
 
 <div class="footer">
-  Documento ${codigoPKL} · NewPack Abastecedora de Empaques · Generado por sistema ERP NewPack v6
+  <strong>${DATOS_EMPRESA.razon_social}</strong> · RFC: ${DATOS_EMPRESA.rfc}<br>
+  ${DATOS_EMPRESA.direccion} · Tel: ${DATOS_EMPRESA.telefono} · ${DATOS_EMPRESA.email}<br>
+  <span style="color:#cbd5e1;">Documento ${codigoPKL} · Generado por sistema ERP NewPack v6</span>
 </div>
 
 </body></html>`;
