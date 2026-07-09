@@ -3768,7 +3768,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-embflow</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmapanel</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -10571,7 +10571,12 @@ const RMA_ESTADOS = {
   recoleccion_solicitada: { label: '🚚 Recolección solicitada', color: '#f59e0b' },
   recibida: { label: '📦 Recibida en planta', color: '#8b5cf6' },
   dictaminada: { label: '🔬 Dictaminada', color: '#0891b2' },
+  resuelta: { label: '💼 Resuelta (CS)', color: '#7c3aed' },
   cerrada: { label: '✅ Cerrada', color: '#16a34a' },
+};
+const RMA_RESOLUCIONES = {
+  nota_credito: 'Nota de crédito',
+  cambio_fisico: 'Cambio físico (reposición de material)',
 };
 const _esPlanta = (u) => ['CAL','ALP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
 const _esComercial = (u) => ['CS','KAM','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
@@ -10721,12 +10726,35 @@ window.rmaDictaminar = async (devId, { destino, causa_raiz = '', dictamen_notas 
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
-// PASO 5 — Cierre del caso
+// PASO 5 — CS resuelve comercialmente (nota de crédito o cambio físico)
+window.rmaResolver = async (devId, { resolucion, resolucion_notas = '', monto_nc = '' }) => {
+  const u = state.user || {};
+  if (!_esComercial(u)) { toast('🔒 Solo CS/KAM resuelve comercialmente el caso.', 'error'); return; }
+  const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
+  if (dev.estatus !== 'dictaminada') { toast('El caso debe estar dictaminado por Calidad antes de resolverse.', 'error'); return; }
+  if (!resolucion) { toast('Selecciona la resolución (nota de crédito o cambio físico).', 'error'); return; }
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    await updateDoc(doc(db, 'devoluciones', devId), {
+      estatus: 'resuelta',
+      resolucion, resolucion_texto: RMA_RESOLUCIONES[resolucion] || resolucion,
+      resolucion_notas,
+      monto_nota_credito: resolucion === 'nota_credito' ? (monto_nc || '') : '',
+      resuelta_at: serverTimestamp(),
+      resuelta_por: u.nombre || u.email || '',
+      bitacora: _rmaBitacora(dev, `Resolución comercial: ${RMA_RESOLUCIONES[resolucion] || resolucion}${monto_nc ? ' · $' + monto_nc : ''}${resolucion_notas ? ' · ' + resolucion_notas : ''}`),
+    });
+    toast(`💼 Resolución registrada: ${RMA_RESOLUCIONES[resolucion]}. Listo para cerrar.`, 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// PASO 6 — Cierre del caso (tras resolución comercial)
 window.rmaCerrar = async (devId) => {
   const u = state.user || {};
-  if (!_esPlanta(u)) { toast('🔒 Solo Calidad/CEO puede cerrar el caso.', 'error'); return; }
+  if (!(_esComercial(u) || _esPlanta(u))) { toast('🔒 Sin permiso para cerrar.', 'error'); return; }
   const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
-  if (dev.estatus !== 'dictaminada') { toast('El caso debe estar dictaminado antes de cerrarse.', 'error'); return; }
+  if (dev.estatus !== 'resuelta') { toast('El caso debe estar resuelto por CS (nota de crédito o cambio) antes de cerrarse.', 'error'); return; }
   if (!confirm(`Cerrar definitivamente el caso ${dev.codigo}?`)) return;
   state.loadingAccion = true; window.forzarRender();
   try {
@@ -13737,16 +13765,22 @@ function renderDevoluciones() {
     if (d.estatus === 'recibida' && puedePlanta) {
       btns.push(_btnMain(`window.abrirDictamenRMA('${d.id}')`, '🔬 Inspeccionar y dictaminar'));
     }
-    if (d.estatus === 'dictaminada' && puedePlanta) {
+    if (d.estatus === 'dictaminada' && puedeComercial) {
+      btns.push(_btnMain(`window.abrirResolucionRMA('${d.id}')`, '💼 Resolver (NC / cambio)'));
+    }
+    if (d.estatus === 'dictaminada' && puedePlanta && !puedeComercial) {
+      btns.push(`<span style="font-size:11px;color:#94a3b8;padding:9px 4px;">Esperando resolución comercial de CS/KAM…</span>`);
+    }
+    if (d.estatus === 'resuelta' && (puedeComercial || puedePlanta)) {
       btns.push(_btnMain(`window.rmaCerrar('${d.id}')`, '✅ Cerrar caso'));
     }
     btns.push(_btnGhost(`window.imprimirReporteRMA('${d.id}')`, '📄 Reporte RMA'));
     return btns.join(' ');
   };
 
-  // Stepper visual de las 5 etapas
-  const ORDEN_ETAPAS = ['solicitada','recoleccion_solicitada','recibida','dictaminada','cerrada'];
-  const ETAPA_CORTA = { solicitada:'Solicitada', recoleccion_solicitada:'Recolección', recibida:'Recibida', dictaminada:'Dictaminada', cerrada:'Cerrada' };
+  // Stepper visual de las 6 etapas
+  const ORDEN_ETAPAS = ['solicitada','recoleccion_solicitada','recibida','dictaminada','resuelta','cerrada'];
+  const ETAPA_CORTA = { solicitada:'Solicitada', recoleccion_solicitada:'Recolección', recibida:'Recibida', dictaminada:'Dictamen', resuelta:'Resolución', cerrada:'Cerrada' };
   const stepper = (estatus) => {
     const idx = ORDEN_ETAPAS.indexOf(estatus);
     return `<div style="display:flex;align-items:center;gap:0;margin:12px 0 4px;">
@@ -13996,6 +14030,7 @@ function renderDevoluciones() {
               ${d.fecha_recoleccion?('<div style="font-size:11.5px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>🚚 Recolección:</strong> '+d.fecha_recoleccion+(d.tipo_recoleccion_texto?' · '+d.tipo_recoleccion_texto:'')+(d.transportista_recoleccion?' · '+d.transportista_recoleccion:'')+(d.num_tarimas_recoger?' · '+d.num_tarimas_recoger+' tarima(s)':'')+(d.contacto_recoleccion?'<br><span style="color:#b45309;">Contacto: '+d.contacto_recoleccion+'</span>':'')+'</div>'):''}
               ${d.recibido_por?('<div style="font-size:11.5px;color:#5b21b6;background:#f5f3ff;border:1px solid #ddd6fe;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>📦 Recibido:</strong> '+(d.tarimas_recibidas||'?')+(d.tarimas_esperadas?'/'+d.tarimas_esperadas:'')+' tarima(s) · '+(d.estado_fisico_recibo||'')+' · por '+d.recibido_por+(d.notas_recibo?'<br><span style="color:#6d28d9;">'+d.notas_recibo+'</span>':'')+'</div>'):''}
               ${d.destino_texto?('<div style="font-size:12px;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>🔬 Dictamen:</strong> '+d.destino_texto+(d.causa_raiz?'<br><span style="color:#475569;">Causa raíz: '+d.causa_raiz+'</span>':'')+'</div>'):''}
+              ${d.resolucion_texto?('<div style="font-size:12px;color:#6b21a8;background:#faf5ff;border:1px solid #e9d5ff;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>💼 Resolución CS:</strong> '+d.resolucion_texto+(d.monto_nota_credito?(' · $'+fmtNum(d.monto_nota_credito)):'')+(d.resolucion_notas?'<br><span style="color:#475569;">'+d.resolucion_notas+'</span>':'')+'</div>'):''}
             </div>
 
             <!-- Acciones -->
@@ -14013,67 +14048,198 @@ function renderDevoluciones() {
 window.abrirDictamenRMA = (devId) => {
   const dev = (state.devoluciones || []).find(d => d.id === devId);
   if (!dev) return;
-  const opt = prompt(
-    `🔬 DICTAMEN — ${dev.codigo}\n${dev.cliente_nombre||''} · ${dev.producto_codigo||''}\n\n` +
-    `Destino del material — escribe el número:\n` +
-    `  1 = 🟡 Cuarentena (revisar más)\n` +
-    `  2 = 🔴 Desecho / Peletizado\n` +
-    `  3 = 🟢 Reingreso a stock (conforme)`,
-    '2'
-  );
-  if (opt === null) return;
-  const map = { '1': 'cuarentena', '2': 'desecho', '3': 'reingreso' };
-  const destino = map[String(opt).trim()];
-  if (!destino) { toast('Opción inválida. Escribe 1, 2 o 3.', 'error'); return; }
-  const causa_raiz = prompt('Causa raíz (ej. sellado deficiente, error de medida, daño en carga):', '') || '';
-  const dictamen_notas = prompt('Observaciones / hallazgos de la inspección física:', '') || '';
-  window.rmaDictaminar(devId, { destino, causa_raiz, dictamen_notas });
+  state.modal = 'rma-dictamen'; state.modalData = devId;
+  window.forzarRender();
 };
 
-// Programar recolección (CS/KAM) — auto-rellena datos del cliente/pedido
+// Programar recolección (CS/KAM) — panel con auto-relleno
 window.abrirRecoleccionRMA = (devId) => {
   const dev = (state.devoluciones || []).find(d => d.id === devId);
   if (!dev) return;
-  // Auto-relleno desde el cliente ya registrado
-  const cliente = (state.clientes || []).find(c => c.codigo === dev.cliente_codigo) || {};
-  const dirDefault = cliente.direccion || '';
-  const contactoDefault = cliente.contacto || '';
-
-  const fecha = prompt(`🚚 PROGRAMAR RECOLECCIÓN — ${dev.codigo}\nCliente: ${dev.cliente_nombre||''}\n\nFecha programada de recolección (dd/mm/aaaa):`, '');
-  if (fecha === null || !fecha.trim()) { if(fecha!==null) toast('La fecha es obligatoria.', 'error'); return; }
-
-  const tOpt = prompt(`Tipo de recolección — escribe el número:\n  1 = 🚛 Transporte NewPack va por el material\n  2 = 📦 El cliente lo envía\n  3 = 🚚 Paquetería externa`, '1');
-  if (tOpt === null) return;
-  const tipoMap = { '1':'propio', '2':'cliente', '3':'paqueteria' };
-  const tipo_recoleccion = tipoMap[String(tOpt).trim()] || 'propio';
-
-  const transportista = prompt('Transportista / quién recoge (opcional):', tipo_recoleccion==='propio'?'NewPack Logística':'') || '';
-  const num_tarimas = prompt('Número de tarimas/bultos a recoger:', String(dev.num_tarimas_recoger || '1')) || '';
-  const direccion = prompt('Dirección de recolección (auto del cliente, edítala si aplica):', dirDefault) || '';
-  const contacto = prompt('Contacto en sitio del cliente:', contactoDefault) || '';
-
-  window.rmaProgramarRecoleccion(devId, { fecha: fecha.trim(), tipo_recoleccion, transportista, num_tarimas, direccion, contacto });
+  state.modal = 'rma-recoleccion'; state.modalData = devId;
+  window.forzarRender();
 };
 
-// Recibir en planta — captura estado físico, conteo, quién y notas
+// Recibir en planta — panel
 window.abrirReciboRMA = (devId) => {
   const dev = (state.devoluciones || []).find(d => d.id === devId);
   if (!dev) return;
-  const u = state.user || {};
-  const esperadas = dev.num_tarimas_recoger || '';
-  const tarimas_recibidas = prompt(`📦 RECIBO EN PLANTA — ${dev.codigo}\n${esperadas?('Esperadas: '+esperadas+' tarima(s)\n'):''}\n¿Cuántas tarimas/bultos se recibieron?`, esperadas || '1');
-  if (tarimas_recibidas === null) return;
-
-  const eOpt = prompt(`Estado físico al llegar — escribe el número:\n  1 = ✅ Buen estado\n  2 = ⚠️ Daño parcial\n  3 = ❌ Daño severo`, '1');
-  if (eOpt === null) return;
-  const estMap = { '1':'Buen estado', '2':'Daño parcial', '3':'Daño severo' };
-  const estado_fisico = estMap[String(eOpt).trim()] || 'Buen estado';
-
-  const notas_recibo = prompt('Notas del recibo (marcas, humedad, empaque roto, etc.):', '') || '';
-  const recibido_por = prompt('¿Quién recibió en planta?', u.nombre || u.email || '') || '';
-
-  window.rmaRecibir(devId, { tarimas_recibidas, estado_fisico, recibido_por, notas_recibo });
+  state.modal = 'rma-recibo'; state.modalData = devId;
+  window.forzarRender();
 };
+
+// Resolución comercial (CS) — panel
+window.abrirResolucionRMA = (devId) => {
+  const dev = (state.devoluciones || []).find(d => d.id === devId);
+  if (!dev) return;
+  state.modal = 'rma-resolucion'; state.modalData = devId;
+  window.forzarRender();
+};
+
+// ═══ PANELES (MODALES) DEL RMA ═══
+// Ficha de contexto reutilizable arriba de cada panel
+function _rmaFichaContexto(dev) {
+  const odp = (state.ordenes_produccion||[]).find(o=>o.id===dev.odp_id)||{};
+  return `
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:18px;">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:15px;font-weight:900;color:#0f172a;">${dev.codigo}</div>
+        <div style="font-size:12px;color:#64748b;">${dev.cliente_nombre||dev.cliente_codigo||''}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px 16px;margin-top:10px;">
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Producto</div><div style="font-size:12px;color:#0f172a;font-weight:600;">${dev.producto_codigo||'—'}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Lote / Tarima</div><div style="font-size:12px;color:#0f172a;font-weight:600;">${dev.tarima_lote||'—'}${dev.tarima_numero?(' · T'+dev.tarima_numero):''}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Cantidad</div><div style="font-size:12px;color:#0f172a;font-weight:600;">${fmtNum(dev.cantidad_devuelta||0)} ${dev.um||'pza'}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Motivo</div><div style="font-size:12px;color:#0f172a;font-weight:600;">${RMA_MOTIVOS[dev.motivo]||'—'}</div></div>
+      </div>
+    </div>`;
+}
+const _rmaLabel = 'display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;';
+const _rmaInput = 'width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;';
+
+// PANEL: Programar recolección (CS/KAM)
+function modalRmaRecoleccion() {
+  const dev = (state.devoluciones||[]).find(d=>d.id===state.modalData); if(!dev) return '';
+  const cliente = (state.clientes||[]).find(c=>c.codigo===dev.cliente_codigo)||{};
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border-bottom:2px solid #f59e0b;">
+          <h2 style="font-size:18px;font-weight:800;color:#92400e;">🚚 Programar recolección</h2>
+          <button class="icon-btn" onclick="cerrarModal()">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          ${_rmaFichaContexto(dev)}
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+              <div><label style="${_rmaLabel}">Fecha de recolección *</label><input id="rec-fecha" type="date" style="${_rmaInput}" /></div>
+              <div><label style="${_rmaLabel}">Tipo de recolección</label>
+                <select id="rec-tipo" style="${_rmaInput}background:#fff;">
+                  <option value="propio">🚛 Transporte NewPack</option>
+                  <option value="cliente">📦 El cliente lo envía</option>
+                  <option value="paqueteria">🚚 Paquetería externa</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+              <div><label style="${_rmaLabel}">Transportista / quién recoge</label><input id="rec-transp" type="text" value="NewPack Logística" style="${_rmaInput}" /></div>
+              <div><label style="${_rmaLabel}">Nº de tarimas/bultos</label><input id="rec-num" type="number" value="${dev.num_tarimas_recoger||1}" style="${_rmaInput}" /></div>
+            </div>
+            <div><label style="${_rmaLabel}">Dirección de recolección (auto del cliente)</label><input id="rec-dir" type="text" value="${(cliente.direccion||'').replace(/"/g,'&quot;')}" style="${_rmaInput}" /></div>
+            <div><label style="${_rmaLabel}">Contacto en sitio</label><input id="rec-contacto" type="text" value="${(cliente.contacto||'').replace(/"/g,'&quot;')}" style="${_rmaInput}" /></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" style="background:#f59e0b;" onclick="const f=document.getElementById('rec-fecha').value; if(!f){toast('Indica la fecha','error');return;} window.rmaProgramarRecoleccion('${dev.id}',{fecha:f,tipo_recoleccion:document.getElementById('rec-tipo').value,transportista:document.getElementById('rec-transp').value,num_tarimas:document.getElementById('rec-num').value,direccion:document.getElementById('rec-dir').value,contacto:document.getElementById('rec-contacto').value}); cerrarModal();">🚚 Programar recolección</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// PANEL: Recibir en planta
+function modalRmaRecibo() {
+  const dev = (state.devoluciones||[]).find(d=>d.id===state.modalData); if(!dev) return '';
+  const u = state.user||{};
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f5f3ff,#ddd6fe);border-bottom:2px solid #8b5cf6;">
+          <h2 style="font-size:18px;font-weight:800;color:#5b21b6;">📦 Recibir devolución en planta</h2>
+          <button class="icon-btn" onclick="cerrarModal()">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          ${_rmaFichaContexto(dev)}
+          ${dev.num_tarimas_recoger?`<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px;font-size:12px;color:#1e40af;margin-bottom:14px;">Se esperaban <strong>${dev.num_tarimas_recoger}</strong> tarima(s) según la recolección programada.</div>`:''}
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+              <div><label style="${_rmaLabel}">Tarimas/bultos recibidos *</label><input id="rcb-num" type="number" value="${dev.num_tarimas_recoger||1}" style="${_rmaInput}" /></div>
+              <div><label style="${_rmaLabel}">Estado físico al llegar</label>
+                <select id="rcb-estado" style="${_rmaInput}background:#fff;">
+                  <option value="Buen estado">✅ Buen estado</option>
+                  <option value="Daño parcial">⚠️ Daño parcial</option>
+                  <option value="Daño severo">❌ Daño severo</option>
+                </select>
+              </div>
+            </div>
+            <div><label style="${_rmaLabel}">Notas del recibo (marcas, humedad, empaque roto…)</label><textarea id="rcb-notas" rows="2" style="${_rmaInput}"></textarea></div>
+            <div><label style="${_rmaLabel}">¿Quién recibió en planta?</label><input id="rcb-por" type="text" value="${(u.nombre||u.email||'').replace(/"/g,'&quot;')}" style="${_rmaInput}" /></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" style="background:#8b5cf6;" onclick="window.rmaRecibir('${dev.id}',{tarimas_recibidas:document.getElementById('rcb-num').value,estado_fisico:document.getElementById('rcb-estado').value,notas_recibo:document.getElementById('rcb-notas').value,recibido_por:document.getElementById('rcb-por').value}); cerrarModal();">📦 Confirmar recibo</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// PANEL: Dictamen de calidad
+function modalRmaDictamen() {
+  const dev = (state.devoluciones||[]).find(d=>d.id===state.modalData); if(!dev) return '';
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#ecfeff,#a5f3fc);border-bottom:2px solid #0891b2;">
+          <h2 style="font-size:18px;font-weight:800;color:#0e7490;">🔬 Dictamen de inspección (Calidad)</h2>
+          <button class="icon-btn" onclick="cerrarModal()">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          ${_rmaFichaContexto(dev)}
+          ${dev.notas_reclamo?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:12px;color:#92400e;margin-bottom:14px;"><strong>Reclamo del cliente:</strong> "${dev.notas_reclamo}"</div>`:''}
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div><label style="${_rmaLabel}">Destino del material *</label>
+              <select id="dic-destino" style="${_rmaInput}background:#fff;">
+                <option value="cuarentena">🟡 Cuarentena (revisar más)</option>
+                <option value="desecho">🔴 Desecho / Peletizado</option>
+                <option value="reingreso">🟢 Reingreso a stock (producto conforme)</option>
+              </select>
+            </div>
+            <div><label style="${_rmaLabel}">Causa raíz</label><input id="dic-causa" type="text" placeholder="Ej. sellado deficiente, error de medida, daño en carga" style="${_rmaInput}" /></div>
+            <div><label style="${_rmaLabel}">Observaciones / hallazgos de la inspección</label><textarea id="dic-notas" rows="3" placeholder="Detalle de lo encontrado en la revisión física" style="${_rmaInput}"></textarea></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" style="background:#0891b2;" onclick="window.rmaDictaminar('${dev.id}',{destino:document.getElementById('dic-destino').value,causa_raiz:document.getElementById('dic-causa').value,dictamen_notas:document.getElementById('dic-notas').value}); cerrarModal();">🔬 Guardar dictamen</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// PANEL: Resolución comercial (CS)
+function modalRmaResolucion() {
+  const dev = (state.devoluciones||[]).find(d=>d.id===state.modalData); if(!dev) return '';
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f5f3ff,#e9d5ff);border-bottom:2px solid #7c3aed;">
+          <h2 style="font-size:18px;font-weight:800;color:#6b21a8;">💼 Resolución comercial (CS)</h2>
+          <button class="icon-btn" onclick="cerrarModal()">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          ${_rmaFichaContexto(dev)}
+          <div style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:10px;font-size:12px;color:#0e7490;margin-bottom:16px;">
+            <strong>🔬 Dictamen de Calidad:</strong> ${dev.destino_texto||'—'}${dev.causa_raiz?(' · Causa: '+dev.causa_raiz):''}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div><label style="${_rmaLabel}">Resolución para el cliente *</label>
+              <select id="res-tipo" onchange="document.getElementById('res-monto-wrap').style.display=this.value==='nota_credito'?'block':'none'" style="${_rmaInput}background:#fff;">
+                <option value="nota_credito">💳 Nota de crédito</option>
+                <option value="cambio_fisico">🔄 Cambio físico (reposición de material)</option>
+              </select>
+            </div>
+            <div id="res-monto-wrap"><label style="${_rmaLabel}">Monto de la nota de crédito (MXN)</label><input id="res-monto" type="number" placeholder="0.00" style="${_rmaInput}" /></div>
+            <div><label style="${_rmaLabel}">Detalle de la resolución</label><textarea id="res-notas" rows="3" placeholder="Acuerdo con el cliente, folio de NC, fecha de reposición, etc." style="${_rmaInput}"></textarea></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" style="background:#7c3aed;" onclick="window.rmaResolver('${dev.id}',{resolucion:document.getElementById('res-tipo').value,monto_nc:document.getElementById('res-monto').value,resolucion_notas:document.getElementById('res-notas').value}); cerrarModal();">💼 Registrar resolución</button>
+        </div>
+      </div>
+    </div>`;
+}
 
 // 🔍 Drill-down del RMA: al elegir un nivel, limpia los siguientes y re-renderiza
 window.rmaDrill = (nivel, valor) => {
@@ -15074,6 +15240,10 @@ function modalAyudaPanelOp() {
 
 function renderModal() {
   const m = state.modal;
+  if (m === 'rma-recoleccion') return modalRmaRecoleccion();
+  if (m === 'rma-recibo') return modalRmaRecibo();
+  if (m === 'rma-dictamen') return modalRmaDictamen();
+  if (m === 'rma-resolucion') return modalRmaResolucion();
   if (m === 'ayuda-panel-op') return modalAyudaPanelOp();
   if (m === 'como-producir') return modalComoProducir();
   if (m === 'crear-cliente') return modalCrearCliente();
@@ -28823,48 +28993,62 @@ window.imprimirReporteRMA = (devId) => {
     docPDF.setTextColor(255,255,255);
     docPDF.setFontSize(10); docPDF.setFont('helvetica','bold');
     docPDF.text(`RMA ${dev.codigo}  ·  ${_est.label.replace(/[^\x00-\x7F]/g,'').trim()}`, 105, y + 6.5, { align: 'center' });
-    y += 16;
+    y += 18;
+
+    // ── Helpers de layout robustos ──────────────────────────────
+    const MARGEN_BOTTOM = 250;
+    const saltarSiHaceFalta = (alto) => { if (y + alto > MARGEN_BOTTOM) { docPDF.addPage(); y = 24; } };
+    // Título de sección con espacio garantizado debajo
+    const seccion = (titulo, color) => {
+      saltarSiHaceFalta(16);
+      y = _pdfSeccionTitulo(docPDF, y, titulo, color);
+      y += 3; // aire tras el título para que la 1ª fila no se encime
+    };
+    // Fila etiqueta:valor (2 columnas), con wrap y avance correcto
+    const fila = (etiqueta, valor, opts = {}) => {
+      const xLabel = 16, xVal = opts.xVal || 56, anchoVal = opts.anchoVal || 138;
+      const valorTxt = String(valor == null ? '—' : valor);
+      const wrap = docPDF.splitTextToSize(valorTxt, anchoVal);
+      const alto = Math.max(5.5, wrap.length * 4.6);
+      saltarSiHaceFalta(alto);
+      docPDF.setFontSize(9);
+      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+      docPDF.text(etiqueta, xLabel, y);
+      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+      docPDF.text(wrap, xVal, y);
+      y += alto;
+    };
+    const parrafo = (texto, opts = {}) => {
+      docPDF.setFontSize(opts.size || 8);
+      docPDF.setFont('helvetica', opts.bold ? 'bold' : 'normal');
+      docPDF.setTextColor(opts.color ? opts.color[0] : 71, opts.color ? opts.color[1] : 85, opts.color ? opts.color[2] : 105);
+      const wrap = docPDF.splitTextToSize(texto, 180);
+      saltarSiHaceFalta(wrap.length * 4.2 + 2);
+      docPDF.text(wrap, 16, y);
+      y += wrap.length * 4.2 + 2;
+    };
+    const espacio = (n) => { y += (n || 5); };
 
     // ===== INFORMACIÓN DEL CLIENTE =====
-    y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DEL CLIENTE', _COL_AZUL);
-    docPDF.setFontSize(9); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-    const infoCli = [
-      ['Cliente:', dev.cliente_nombre || cliente.nombre || dev.cliente_codigo || '—'],
-      ['Código cliente:', dev.cliente_codigo || '—'],
-      ['RFC:', cliente.rfc || '—'],
-      ['Contacto:', cliente.contacto || pi?.contacto || '—'],
-    ];
-    infoCli.forEach((row, i) => {
-      const yy = y + (i * 5.5);
-      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-      docPDF.text(row[0], 16, yy);
-      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-      docPDF.text(String(row[1]), 52, yy);
-    });
-    y += infoCli.length * 5.5 + 4;
+    seccion('INFORMACIÓN DEL CLIENTE', _COL_AZUL);
+    fila('Cliente:', dev.cliente_nombre || cliente.nombre || dev.cliente_codigo);
+    fila('Código cliente:', dev.cliente_codigo);
+    fila('RFC:', cliente.rfc);
+    fila('Contacto:', cliente.contacto || pi?.contacto);
+    espacio(4);
 
-    // ===== DATOS DEL PRODUCTO DEVUELTO =====
-    y = _pdfSeccionTitulo(docPDF, y, 'PRODUCTO DEVUELTO', _COL_AZUL);
-    docPDF.setFontSize(9);
-    const descProd = producto.descripcion || producto.nombre || '';
-    const infoProd = [
-      ['Código:', dev.producto_codigo || '—'],
-      ['Descripción:', descProd || '—'],
-      ['ODP origen:', dev.odp_folio || '—'],
-      ['Pedido (PI):', pi?.folio || '—'],
-      ['Packing List:', dev.packing_list || '—'],
-      ['Lote / Tarima:', (dev.tarima_lote || tarima.lote_codigo || tarima.lote || '—') + (dev.tarima_numero || tarima.numero_tarima ? ` · Tarima ${dev.tarima_numero || tarima.numero_tarima}` : '')],
-    ];
-    infoProd.forEach((row, i) => {
-      const yy = y + (i * 5.5);
-      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-      docPDF.text(row[0], 16, yy);
-      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-      docPDF.text(docPDF.splitTextToSize(String(row[1]), 140), 52, yy);
-    });
-    y += infoProd.length * 5.5 + 4;
+    // ===== PRODUCTO DEVUELTO =====
+    seccion('PRODUCTO DEVUELTO', _COL_AZUL);
+    fila('Código:', dev.producto_codigo);
+    fila('Descripción:', producto.descripcion || producto.nombre);
+    fila('ODP origen:', dev.odp_folio);
+    fila('Pedido (PI):', pi?.folio);
+    fila('Packing List:', dev.packing_list);
+    fila('Lote / Tarima:', (dev.tarima_lote || tarima.lote_codigo || tarima.lote || '—') + (dev.tarima_numero || tarima.numero_tarima ? ` · Tarima ${dev.tarima_numero || tarima.numero_tarima}` : ''));
+    espacio(4);
 
     // ===== CANTIDAD DEVUELTA (caja destacada) =====
+    saltarSiHaceFalta(22);
     docPDF.setFillColor(248, 250, 252);
     docPDF.setDrawColor(203, 213, 225);
     docPDF.roundedRect(14, y, 182, 18, 1.5, 1.5, 'FD');
@@ -28874,86 +29058,56 @@ window.imprimirReporteRMA = (devId) => {
     docPDF.setFontSize(14); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(0,0,0);
     docPDF.text(`${fmtNum(dev.cantidad_devuelta || 0)} ${dev.um || 'pza'}`, 20, y + 14);
     docPDF.text(`${fmtNum(Math.round(dev.peso_neto_kg || 0))} kg`, 110, y + 14);
-    y += 24;
+    y += 26;
 
     // ===== LOGÍSTICA (recolección + recibo) =====
     if (dev.fecha_recoleccion || dev.recibido_por) {
-      y = _pdfSeccionTitulo(docPDF, y, 'LOGÍSTICA DE LA DEVOLUCIÓN', _COL_AZUL);
-      docPDF.setFontSize(9);
-      const logRows = [];
-      if (dev.fecha_recoleccion) logRows.push(['Recolección programada:', `${dev.fecha_recoleccion}${dev.tipo_recoleccion_texto ? ' · ' + dev.tipo_recoleccion_texto : ''}`]);
-      if (dev.transportista_recoleccion) logRows.push(['Transportista:', dev.transportista_recoleccion]);
-      if (dev.num_tarimas_recoger) logRows.push(['Tarimas a recoger:', String(dev.num_tarimas_recoger)]);
-      if (dev.recibido_por) logRows.push(['Recibido por:', `${dev.recibido_por}${dev.tarimas_recibidas ? ' · ' + dev.tarimas_recibidas + (dev.tarimas_esperadas ? '/' + dev.tarimas_esperadas : '') + ' tarima(s)' : ''}`]);
-      if (dev.estado_fisico_recibo) logRows.push(['Estado al recibir:', dev.estado_fisico_recibo]);
-      if (dev.notas_recibo) logRows.push(['Notas de recibo:', dev.notas_recibo]);
-      logRows.forEach((row, i) => {
-        const yy = y + (i * 5.5);
-        docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-        docPDF.text(row[0], 16, yy);
-        docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-        docPDF.text(docPDF.splitTextToSize(String(row[1]), 130), 62, yy);
-      });
-      y += logRows.length * 5.5 + 4;
+      seccion('LOGÍSTICA DE LA DEVOLUCIÓN', _COL_AZUL);
+      if (dev.fecha_recoleccion) fila('Recolección:', `${dev.fecha_recoleccion}${dev.tipo_recoleccion_texto ? ' · ' + dev.tipo_recoleccion_texto : ''}`);
+      if (dev.transportista_recoleccion) fila('Transportista:', dev.transportista_recoleccion);
+      if (dev.num_tarimas_recoger) fila('Tarimas a recoger:', String(dev.num_tarimas_recoger));
+      if (dev.recibido_por) fila('Recibido por:', `${dev.recibido_por}${dev.tarimas_recibidas ? ' · ' + dev.tarimas_recibidas + (dev.tarimas_esperadas ? '/' + dev.tarimas_esperadas : '') + ' tarima(s)' : ''}`);
+      if (dev.estado_fisico_recibo) fila('Estado al recibir:', dev.estado_fisico_recibo);
+      if (dev.notas_recibo) fila('Notas de recibo:', dev.notas_recibo);
+      espacio(4);
     }
 
-    // ===== MOTIVO Y DICTAMEN (lo importante para el cliente) =====
-    y = _pdfSeccionTitulo(docPDF, y, 'DICTAMEN DE LA DEVOLUCIÓN', _COL_VERDE);
-    docPDF.setFontSize(9); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-    docPDF.text('Motivo reportado:', 16, y);
-    docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-    docPDF.text(dev.motivo_texto || dev.motivo || '—', 60, y);
-    y += 6;
-    docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-    docPDF.text('Destino del material:', 16, y);
-    docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-    docPDF.text(dev.destino_texto || 'Pendiente de dictamen', 60, y);
-    y += 6;
-    if (dev.causa_raiz) {
-      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-      docPDF.text('Causa raíz:', 16, y);
-      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-      docPDF.text(docPDF.splitTextToSize(dev.causa_raiz, 135), 60, y);
-      y += 6;
-    }
-    const obsTexto = dev.dictamen_notas || dev.notas_reclamo || dev.notas || '';
-    if (obsTexto) {
-      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
-      docPDF.text('Observaciones / hallazgos:', 16, y);
-      y += 5;
-      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-      const notasWrap = docPDF.splitTextToSize(obsTexto, 178);
-      docPDF.text(notasWrap, 16, y);
-      y += notasWrap.length * 4.5 + 2;
-    }
-    y += 4;
+    // ===== DICTAMEN =====
+    seccion('DICTAMEN DE CALIDAD', _COL_VERDE);
+    fila('Motivo reportado:', dev.motivo_texto || dev.motivo);
+    fila('Destino del material:', dev.destino_texto || 'Pendiente de dictamen');
+    if (dev.causa_raiz) fila('Causa raíz:', dev.causa_raiz);
+    if (dev.dictamen_notas) fila('Hallazgos:', dev.dictamen_notas);
+    espacio(4);
 
-    // ===== BITÁCORA DEL PROCESO (demuestra las etapas y quién las hizo) =====
+    // ===== RESOLUCIÓN COMERCIAL =====
+    if (dev.resolucion_texto) {
+      seccion('RESOLUCIÓN COMERCIAL', _COL_AZUL_OSCURO);
+      fila('Resolución:', dev.resolucion_texto);
+      if (dev.monto_nota_credito) fila('Monto NC:', `$${fmtNum(dev.monto_nota_credito)} MXN`);
+      if (dev.resolucion_notas) fila('Detalle:', dev.resolucion_notas);
+      if (dev.resuelta_por) fila('Resuelto por:', dev.resuelta_por);
+      espacio(4);
+    }
+
+    // ===== BITÁCORA DEL PROCESO =====
     if (Array.isArray(dev.bitacora) && dev.bitacora.length > 0) {
-      y = _pdfSeccionTitulo(docPDF, y, 'BITÁCORA DEL PROCESO', _COL_AZUL);
-      docPDF.setFontSize(8); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(71,85,105);
+      seccion('BITÁCORA DEL PROCESO', _COL_AZUL);
       dev.bitacora.forEach(b => {
         const fecha = b.fecha ? new Date(b.fecha).toLocaleString('es-MX') : '';
-        const linea = `• ${fecha} — ${b.texto}${b.por ? ' (' + b.por + ')' : ''}`;
-        const wrap = docPDF.splitTextToSize(linea, 180);
-        docPDF.text(wrap, 16, y);
-        y += wrap.length * 4 + 1;
+        parrafo(`• ${fecha} — ${b.texto}${b.por ? ' (' + b.por + ')' : ''}`);
       });
-      y += 4;
+      espacio(3);
     }
 
-    // ===== TRAZABILIDAD (demuestra el rastro completo) =====
-    y = _pdfSeccionTitulo(docPDF, y, 'TRAZABILIDAD DEL LOTE', _COL_AZUL);
-    docPDF.setFontSize(8); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(71,85,105);
-    const traza = `Este material fue producido bajo la orden ${dev.odp_folio || '—'}, liberado por control de calidad con lote ${dev.tarima_lote || '—'} y documentado en el packing list ${dev.packing_list || '—'}. La devolución quedó registrada en el sistema ERP con folio ${dev.codigo}, permitiendo el rastreo completo desde la materia prima hasta el retorno del cliente.`;
-    const trazaWrap = docPDF.splitTextToSize(traza, 180);
-    docPDF.text(trazaWrap, 14, y);
-    y += trazaWrap.length * 4 + 8;
+    // ===== TRAZABILIDAD =====
+    seccion('TRAZABILIDAD DEL LOTE', _COL_AZUL);
+    parrafo(`Este material fue producido bajo la orden ${dev.odp_folio || '—'}, liberado por control de calidad con lote ${dev.tarima_lote || '—'} y documentado en el packing list ${dev.packing_list || '—'}. La devolución quedó registrada en el sistema ERP con folio ${dev.codigo}, permitiendo el rastreo completo desde la materia prima hasta el retorno del cliente.`);
+    espacio(8);
 
     // ===== FIRMAS =====
-    // Si el contenido ya invadió la zona baja, saltar a página nueva para las firmas
-    if (y > 245) { docPDF.addPage(); y = 24; }
-    const yF = Math.max(y, 250);
+    if (y > 245) { docPDF.addPage(); y = 30; }
+    const yF = Math.max(y, 248);
     docPDF.setDrawColor(148, 163, 184); docPDF.setLineWidth(0.3);
     docPDF.line(24, yF, 84, yF);
     docPDF.line(122, yF, 182, yF);
