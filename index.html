@@ -3768,7 +3768,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmabusca</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-embflow</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3790,6 +3790,10 @@ function renderApp() {
         <button class="nav-item ${state.vista === 'pedidos' ? 'active' : ''}" data-vista="pedidos">${ICONS.cart} Pedidos (PI/OV/ODP)</button>
         ${esCS ? `
           <button class="nav-item ${state.vista === 'seguimiento' ? 'active' : ''}" data-vista="seguimiento">📊 Seguimiento Comercial</button>
+        ` : ''}
+        ${(esCS && !esCEDMTY && !esCEDMEX) ? `
+          <button class="nav-item ${state.vista === 'embarques_mty' ? 'active' : ''}" data-vista="embarques_mty">🚚 Embarques MTY</button>
+          <button class="nav-item ${state.vista === 'embarques_mex' ? 'active' : ''}" data-vista="embarques_mex">🚚 Embarques MEX</button>
         ` : ''}
         ${(esCS || esPLN || esPRO || esCAL) ? `
           <button class="nav-item ${state.vista === 'seguimiento_pedidos' ? 'active' : ''}" data-vista="seguimiento_pedidos">📍 Seguimiento Producción</button>
@@ -13586,7 +13590,7 @@ function renderLogisticaRutas() {
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
         <div>
           <div style="font-size:22px;font-weight:900;color:#0f172a;">🚛 Logística / Rutas</div>
-          <div style="font-size:12px;color:#64748b;margin-top:2px;">Programa rutas de envío y recolección · propias y externas · una o varias paradas</div>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">Programa rutas con las OVs que CEDIS ya marcó como listas · propias y externas · una o varias paradas</div>
         </div>
         <div style="display:flex;gap:8px;">
           ${abiertas>0?`<span style="background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">🚚 ${abiertas} activas</span>`:''}
@@ -13665,11 +13669,13 @@ window.abrirAgregarParada = (rutaId) => {
   let parada = { tipo };
 
   if (tipo === 'entrega' || tipo === 'combinada') {
-    // Listar OVs disponibles (no archivadas)
-    const ovs = (state.ordenes_venta || []).filter(o => !o.archivada).slice(0, 40);
-    if (ovs.length === 0) { toast('No hay OVs disponibles.', 'error'); return; }
+    // Solo OVs que CEDIS ya marcó como LISTAS PARA EMBARCAR (según el flujo real)
+    const ovs = (state.ordenes_venta || []).filter(o =>
+      !o.archivada && (o.estatus === 'lista_embarcar' || o.estatus === 'por_cargar')
+    ).slice(0, 60);
+    if (ovs.length === 0) { toast('No hay OVs listas para embarcar. CEDIS debe marcar el material como listo primero.', 'error'); return; }
     const lista = ovs.map((o, i) => `${i+1}) ${o.folio} · ${o.cliente_nombre||o.cliente_codigo||''}`).join('\n');
-    const sel = prompt(`Elige la OV a entregar (escribe el número):\n\n${lista}`, '1');
+    const sel = prompt(`Elige la OV a entregar (solo listas para embarcar):\n\n${lista}`, '1');
     if (sel === null) return;
     const ov = ovs[Number(sel)-1];
     if (!ov) { toast('OV inválida.', 'error'); return; }
