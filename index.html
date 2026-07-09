@@ -202,6 +202,7 @@ const state = {
   unidades_logistica: [],
   remisiones: [],
   devoluciones: [],
+  rutas_logistica: [],
   comentarios_pedidos: [],
   notificaciones: [],
   maquinas: [],
@@ -3302,6 +3303,10 @@ async function cargarTodo() {
         state.devoluciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
+      onSnapshot(query(collection(db, 'rutas_logistica'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.rutas_logistica = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       onSnapshot(query(collection(db, 'comentarios_pedidos'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.comentarios_pedidos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -3763,7 +3768,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmacard</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rutas</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3809,6 +3814,7 @@ function renderApp() {
         ${(esCS || esKAM || esCAL || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'certificados_calidad' ? 'active' : ''}" data-vista="certificados_calidad">📜 Certificados de Calidad</button>
           <button class="nav-item ${state.vista === 'devoluciones' ? 'active' : ''}" data-vista="devoluciones">🔄 Devoluciones (RMA)</button>
+          <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas</button>
         ` : ''}
         
         ${esALP ? `
@@ -4055,6 +4061,7 @@ function renderVista() {
   if (v === 'calidad') return renderCalidad();
   if (v === 'certificados_calidad') return renderCertificadosCalidad();
   if (v === 'devoluciones') return renderDevoluciones();
+  if (v === 'logistica_rutas') return renderLogisticaRutas();
   if (v === 'seguimiento') return renderSeguimiento();
   if (v === 'almacen_planta') return renderAlmacenPlanta();
   if (v === 'oti_planta') return renderOTIPlanta();
@@ -10592,13 +10599,14 @@ window.rmaCrearCaso = async ({ tarimaId, motivo, notas = '' }) => {
       codigo: codigoDev,
       estatus: 'solicitada',
       tarima_id: tarimaId,
-      tarima_lote: tarima.lote || '',
+      tarima_lote: tarima.lote_codigo || tarima.lote || '',
+      tarima_numero: tarima.numero_tarima || '',
       packing_list: tarima.packing_list || '',
       odp_id: tarima.odp_id || '',
-      odp_folio: odp.folio || '',
+      odp_folio: odp.folio || tarima.odp_folio || '',
       producto_codigo: odp.producto_codigo || tarima.producto_codigo || '',
       cliente_codigo: odp.cliente_codigo || tarima.cliente_codigo || '',
-      cliente_nombre: cliente?.nombre || '',
+      cliente_nombre: cliente?.nombre || tarima.cliente_nombre || '',
       cantidad_devuelta: Number(tarima.cantidad) || 0,
       um: odp.um || tarima.um || 'pza',
       peso_neto_kg: Number(tarima.peso_neto_kg) || Number(tarima.peso_neto) || 0,
@@ -10617,37 +10625,52 @@ window.rmaCrearCaso = async ({ tarimaId, motivo, notas = '' }) => {
   } finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
-// PASO 2 — Calidad solicita recolección a Logística (fecha opcional)
-window.rmaSolicitarRecoleccion = async (devId, fecha = '') => {
+// PASO 2 — CS/KAM programa la recolección (datos auto-rellenados del pedido/cliente)
+window.rmaProgramarRecoleccion = async (devId, datos) => {
   const u = state.user || {};
-  if (!_esPlanta(u)) { toast('🔒 Solo Calidad/Logística de planta puede solicitar recolección.', 'error'); return; }
+  if (!_esComercial(u)) { toast('🔒 Solo CS/KAM programa la recolección.', 'error'); return; }
   const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
+  const { fecha = '', tipo_recoleccion = '', transportista = '', num_tarimas = '', direccion = '', contacto = '' } = datos || {};
+  if (!fecha) { toast('Indica la fecha programada de recolección.', 'error'); return; }
   state.loadingAccion = true; window.forzarRender();
   try {
+    const TIPOS = { propio: 'Transporte NewPack', cliente: 'Cliente lo envía', paqueteria: 'Paquetería externa' };
     await updateDoc(doc(db, 'devoluciones', devId), {
       estatus: 'recoleccion_solicitada',
-      fecha_recoleccion: fecha || '',
-      bitacora: _rmaBitacora(dev, `Recolección solicitada a Logística${fecha ? ' para el ' + fecha : ''}`),
+      fecha_recoleccion: fecha,
+      tipo_recoleccion, tipo_recoleccion_texto: TIPOS[tipo_recoleccion] || tipo_recoleccion,
+      transportista_recoleccion: transportista,
+      num_tarimas_recoger: num_tarimas,
+      direccion_recoleccion: direccion,
+      contacto_recoleccion: contacto,
+      recoleccion_programada_por: u.nombre || u.email || '',
+      bitacora: _rmaBitacora(dev, `Recolección programada para ${fecha}${tipo_recoleccion ? ' · ' + (TIPOS[tipo_recoleccion]||tipo_recoleccion) : ''}${transportista ? ' · ' + transportista : ''}. Planta/Calidad avisados.`),
     });
-    toast('🚚 Recolección solicitada a Logística.', 'success');
+    toast('🚚 Recolección programada. Planta/Calidad avisados.', 'success');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
-// PASO 3 — Planta recibe físicamente la devolución
-window.rmaRecibir = async (devId) => {
+// PASO 3 — Planta recibe físicamente (estado, recibidos vs esperados, quién, fecha real)
+window.rmaRecibir = async (devId, datos) => {
   const u = state.user || {};
   if (!_esPlanta(u)) { toast('🔒 Solo Calidad/Logística de planta puede recibir la devolución.', 'error'); return; }
   const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
-  if (!confirm(`Confirmar RECIBO físico de la devolución ${dev.codigo} en planta?`)) return;
+  const { tarimas_recibidas = '', estado_fisico = '', recibido_por = '', notas_recibo = '' } = datos || {};
   state.loadingAccion = true; window.forzarRender();
   try {
+    const esperadas = dev.num_tarimas_recoger || '';
+    const discrepancia = (esperadas && tarimas_recibidas && Number(tarimas_recibidas) !== Number(esperadas));
     await updateDoc(doc(db, 'devoluciones', devId), {
       estatus: 'recibida',
       fecha_recibido: serverTimestamp(),
-      bitacora: _rmaBitacora(dev, 'Material recibido físicamente en planta'),
+      tarimas_recibidas: tarimas_recibidas || '',
+      tarimas_esperadas: esperadas,
+      estado_fisico_recibo: estado_fisico || '',
+      recibido_por: recibido_por || u.nombre || u.email || '',
+      notas_recibo: notas_recibo || '',
+      bitacora: _rmaBitacora(dev, `Recibido en planta por ${recibido_por || u.nombre || u.email}. Tarimas: ${tarimas_recibidas || '?'}${esperadas ? '/' + esperadas : ''}${discrepancia ? ' ⚠ DISCREPANCIA' : ''}. Estado: ${estado_fisico || 'sin nota'}`),
     });
-    // La tarima entregada pasa a 'devuelta' al recibirse físicamente
     if (dev.tarima_id) {
       await updateDoc(doc(db, 'tarimas', dev.tarima_id), {
         estatus: 'devuelta', devolucion_codigo: dev.codigo, devuelta_at: serverTimestamp(),
@@ -10655,7 +10678,7 @@ window.rmaRecibir = async (devId) => {
       const tLocal = state.tarimas.find(t => t.id === dev.tarima_id);
       if (tLocal) tLocal.estatus = 'devuelta';
     }
-    toast('📦 Devolución recibida en planta. Lista para inspección.', 'success');
+    toast(`📦 Devolución recibida en planta.${discrepancia ? ' ⚠ Revisa la discrepancia de tarimas.' : ''}`, discrepancia ? 'info' : 'success');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
@@ -10708,6 +10731,142 @@ window.rmaCerrar = async (devId) => {
       bitacora: _rmaBitacora(dev, 'Caso cerrado'),
     });
     toast('✅ Caso RMA cerrado.', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🚛 MÓDULO LOGÍSTICA / RUTAS
+// ─────────────────────────────────────────────────────────────────────────────
+// Una RUTA es un viaje programado (fecha, unidad, propio/externo) con 1+ PARADAS.
+// Cada parada es una entrega de pedido (OV) y/o una recolección de RMA.
+// Roles: CS/KAM y Logística/Planta (CAL/ALP) + CEO/ADMIN.
+// ═══════════════════════════════════════════════════════════════════════════
+const RUTA_TIPOS = { propia: '🚛 Propia (NewPack)', externa: '📦 Externa (subcontratada)' };
+const RUTA_ESTADOS = {
+  programada: { label: '📅 Programada', color: '#3b82f6' },
+  en_ruta: { label: '🚚 En ruta', color: '#f59e0b' },
+  completada: { label: '✅ Completada', color: '#16a34a' },
+  cancelada: { label: '✗ Cancelada', color: '#94a3b8' },
+};
+const PARADA_TIPOS = {
+  entrega: '📤 Entrega de pedido',
+  recoleccion: '📥 Recolección RMA',
+  combinada: '🔄 Entrega + Recolección',
+};
+const _esLogistica = (u) => ['CS','KAM','CAL','ALP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+
+// Crear una ruta
+window.crearRutaLogistica = async ({ fecha, tipo, origen, transportista = '', unidad = '', operador = '', notas = '' }) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Solo CS/KAM o Logística pueden programar rutas.', 'error'); return; }
+  if (!fecha) { toast('Indica la fecha de la ruta.', 'error'); return; }
+  if (!tipo) { toast('Indica si la ruta es propia o externa.', 'error'); return; }
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const folio = await siguienteFolio('ruta');
+    const codigo = `RUT-${new Date().getFullYear()}-${String(folio).padStart(5, '0')}`;
+    await addDoc(collection(db, 'rutas_logistica'), {
+      codigo, estatus: 'programada',
+      fecha, tipo, tipo_texto: RUTA_TIPOS[tipo] || tipo,
+      origen: origen || 'CEDIS-MTY',
+      transportista, unidad, operador, notas,
+      paradas: [],
+      creado_por_nombre: u.nombre || u.email || '',
+      creado_por_uid: u.uid || '',
+      created_at: serverTimestamp(),
+    });
+    toast(`✅ Ruta ${codigo} creada. Ahora agrégale paradas.`, 'success');
+  } catch (e) { console.error('Error crear ruta:', e); toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Agregar una parada a la ruta (entrega de OV, recolección de RMA, o combinada)
+window.agregarParadaRuta = async (rutaId, parada) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
+  if (ruta.estatus === 'completada' || ruta.estatus === 'cancelada') { toast('La ruta ya está cerrada.', 'error'); return; }
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const nuevaParada = {
+      id: `P${Date.now()}`,
+      tipo: parada.tipo || 'entrega',
+      ov_id: parada.ov_id || '',
+      ov_folio: parada.ov_folio || '',
+      rma_id: parada.rma_id || '',
+      rma_codigo: parada.rma_codigo || '',
+      cliente_nombre: parada.cliente_nombre || '',
+      direccion: parada.direccion || '',
+      orden: (ruta.paradas || []).length + 1,
+      entregada: false,
+    };
+    await updateDoc(doc(db, 'rutas_logistica', rutaId), {
+      paradas: [...(ruta.paradas || []), nuevaParada],
+    });
+    toast('📍 Parada agregada a la ruta.', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Quitar una parada
+window.quitarParadaRuta = async (rutaId, paradaId) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
+  if (ruta.estatus !== 'programada') { toast('Solo puedes quitar paradas de rutas programadas.', 'error'); return; }
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const nuevas = (ruta.paradas || []).filter(p => p.id !== paradaId).map((p, i) => ({ ...p, orden: i + 1 }));
+    await updateDoc(doc(db, 'rutas_logistica', rutaId), { paradas: nuevas });
+    toast('Parada quitada.', 'info');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Cambiar estado de la ruta: programada → en_ruta → completada
+window.avanzarRuta = async (rutaId, nuevoEstado) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
+  if (nuevoEstado === 'en_ruta' && (!ruta.paradas || ruta.paradas.length === 0)) {
+    toast('Agrega al menos una parada antes de despachar la ruta.', 'error'); return;
+  }
+  if (nuevoEstado === 'completada' && !confirm(`¿Marcar la ruta ${ruta.codigo} como COMPLETADA?\n\nEsto marcará sus entregas y recolecciones como realizadas.`)) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const patch = { estatus: nuevoEstado };
+    if (nuevoEstado === 'en_ruta') patch.despachada_at = serverTimestamp();
+    if (nuevoEstado === 'completada') {
+      patch.completada_at = serverTimestamp();
+      // Efectos: marcar RMAs recolectadas y OVs como en tránsito de entrega
+      for (const p of (ruta.paradas || [])) {
+        if ((p.tipo === 'recoleccion' || p.tipo === 'combinada') && p.rma_id) {
+          const dev = (state.devoluciones || []).find(d => d.id === p.rma_id);
+          if (dev && dev.estatus === 'recoleccion_solicitada') {
+            await updateDoc(doc(db, 'devoluciones', p.rma_id), {
+              bitacora: _rmaBitacora(dev, `Recolectado en ruta ${ruta.codigo}`),
+            }).catch(()=>{});
+          }
+        }
+      }
+    }
+    await updateDoc(doc(db, 'rutas_logistica', rutaId), patch);
+    toast(nuevoEstado === 'completada' ? '✅ Ruta completada.' : nuevoEstado === 'en_ruta' ? '🚚 Ruta despachada.' : 'Ruta actualizada.', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Cancelar ruta
+window.cancelarRutaLogistica = async (rutaId) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
+  if (!confirm(`¿Cancelar la ruta ${ruta.codigo}?`)) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    await updateDoc(doc(db, 'rutas_logistica', rutaId), { estatus: 'cancelada', cancelada_at: serverTimestamp() });
+    toast('Ruta cancelada.', 'info');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
@@ -13351,6 +13510,196 @@ window.enviarCertificadoEmail = (odpId) => {
   // Futuro: genera el PDF y abre mailto: o lo manda por backend
 };
 
+// 🚛 VISTA: LOGÍSTICA / RUTAS
+function renderLogisticaRutas() {
+  const u = state.user || {};
+  const puede = ['CS','KAM','CAL','ALP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const rutas = (state.rutas_logistica || []).slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  const abiertas = rutas.filter(r => r.estatus === 'programada' || r.estatus === 'en_ruta').length;
+  const sub = state.tabs?.logistica || 'tablero';
+
+  const badge = (e) => {
+    const s = RUTA_ESTADOS[e] || { label: e, color: '#64748b' };
+    return `<span style="background:${s.color}22;color:${s.color};padding:3px 10px;border-radius:6px;font-size:11px;font-weight:800;">${s.label}</span>`;
+  };
+
+  // Tarjeta de una ruta
+  const cardRuta = (r) => {
+    const s = RUTA_ESTADOS[r.estatus] || {color:'#64748b'};
+    const paradas = r.paradas || [];
+    return `
+    <div class="panel" style="border-top:3px solid ${s.color};padding:0;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:16px 18px 0;">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span style="font-weight:900;color:#0f172a;font-size:16px;">${r.codigo}</span>
+            ${badge(r.estatus)}
+            <span style="font-size:11px;color:#64748b;">${r.tipo_texto||''}</span>
+          </div>
+          <div style="font-size:12.5px;color:#0f172a;font-weight:700;margin-top:6px;">📅 ${fmtFecha(r.fecha)} · ${r.origen||''}</div>
+        </div>
+        <div style="text-align:right;font-size:10.5px;color:#94a3b8;white-space:nowrap;">
+          <div>${r.transportista||'—'}</div>
+          <div>${r.unidad||''} ${r.operador?('· '+r.operador):''}</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 18px;padding:10px 18px;background:#f8fafc;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;margin-top:12px;">
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Paradas</div><div style="font-size:13px;color:#0f172a;font-weight:700;">${paradas.length}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Entregas</div><div style="font-size:13px;color:#0f172a;font-weight:700;">${paradas.filter(p=>p.tipo==='entrega'||p.tipo==='combinada').length}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Recolecciones</div><div style="font-size:13px;color:#0f172a;font-weight:700;">${paradas.filter(p=>p.tipo==='recoleccion'||p.tipo==='combinada').length}</div></div>
+      </div>
+
+      <div style="padding:10px 18px 0;">
+        ${paradas.length===0 ? `<div style="font-size:12px;color:#94a3b8;padding:6px 0;">Sin paradas. Agrega entregas o recolecciones.</div>` :
+          paradas.map(p => `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;">
+              <div style="font-size:12px;">
+                <span style="font-weight:800;color:#334155;">${p.orden}.</span>
+                ${PARADA_TIPOS[p.tipo]||p.tipo} ·
+                <strong>${p.cliente_nombre||'—'}</strong>
+                ${p.ov_folio?(' · OV '+p.ov_folio):''}${p.rma_codigo?(' · '+p.rma_codigo):''}
+              </div>
+              ${r.estatus==='programada'?`<button onclick="window.quitarParadaRuta('${r.id}','${p.id}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;font-weight:800;">✕</button>`:''}
+            </div>`).join('')}
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px 16px;">
+        ${r.estatus==='programada'&&puede?`
+          <button onclick="window.abrirAgregarParada('${r.id}')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Agregar parada</button>
+          <button onclick="window.avanzarRuta('${r.id}','en_ruta')" style="padding:9px 16px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🚚 Despachar ruta</button>
+          <button onclick="window.cancelarRutaLogistica('${r.id}')" style="padding:9px 16px;background:#fff;color:#dc2626;border:1px solid #fecaca;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;">Cancelar</button>
+        `:''}
+        ${r.estatus==='en_ruta'&&puede?`<button onclick="window.avanzarRuta('${r.id}','completada')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✅ Marcar completada</button>`:''}
+        <button onclick="window.imprimirHojaRuta('${r.id}')" style="padding:9px 16px;background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;">📄 Hoja de ruta</button>
+      </div>
+    </div>`;
+  };
+
+  // Agrupar por fecha para el tablero/calendario
+  const porFecha = {};
+  rutas.forEach(r => { const f = r.fecha || 'sin-fecha'; if(!porFecha[f]) porFecha[f]=[]; porFecha[f].push(r); });
+  const fechasOrdenadas = Object.keys(porFecha).sort((a,b) => b.localeCompare(a));
+
+  return `
+    <div style="max-width:1200px;margin:0 auto;padding:8px 4px 40px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+        <div>
+          <div style="font-size:22px;font-weight:900;color:#0f172a;">🚛 Logística / Rutas</div>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">Programa rutas de envío y recolección · propias y externas · una o varias paradas</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          ${abiertas>0?`<span style="background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">🚚 ${abiertas} activas</span>`:''}
+          <span style="background:#0f172a;color:#fff;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">${rutas.length} rutas</span>
+        </div>
+      </div>
+
+      ${puede?`
+      <div class="panel" style="margin:16px 0;border-left:5px solid #16a34a;padding:20px;">
+        <div style="font-weight:800;color:#0f172a;margin-bottom:4px;font-size:15px;">➕ Nueva ruta</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Crea la ruta y luego agrégale las paradas (entregas y/o recolecciones).</div>
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Fecha de la ruta</label>
+              <input id="rut-fecha" type="date" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Tipo</label>
+              <select id="rut-tipo" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+                <option value="propia">🚛 Propia (NewPack)</option>
+                <option value="externa">📦 Externa (subcontratada)</option>
+              </select>
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Origen</label>
+              <select id="rut-origen" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+                <option value="CEDIS-MTY">CEDIS Monterrey</option>
+                <option value="CEDIS-MEX">CEDIS México</option>
+                <option value="Planta">Planta MTY</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Transportista</label>
+              <input id="rut-transp" type="text" placeholder="NewPack / nombre externo" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Unidad / placas</label>
+              <input id="rut-unidad" type="text" placeholder="Ej. Camión 3 / ABC-123" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
+            </div>
+            <div>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Operador</label>
+              <input id="rut-operador" type="text" placeholder="Chofer" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;">
+            <button onclick="window.crearRutaLogistica({fecha:document.getElementById('rut-fecha').value, tipo:document.getElementById('rut-tipo').value, origen:document.getElementById('rut-origen').value, transportista:document.getElementById('rut-transp').value, unidad:document.getElementById('rut-unidad').value, operador:document.getElementById('rut-operador').value})" style="padding:11px 28px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;box-shadow:0 2px 6px rgba(22,163,74,0.3);">🚛 Crear ruta</button>
+          </div>
+        </div>
+      </div>`:''}
+
+      <div style="font-weight:800;color:#0f172a;margin:16px 0 8px;">Tablero por día</div>
+      ${rutas.length===0?`<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay rutas programadas.</div>`:
+        fechasOrdenadas.map(f => `
+          <div style="margin-bottom:20px;">
+            <div style="font-size:13px;font-weight:800;color:#334155;background:#eff6ff;padding:8px 14px;border-radius:8px;margin-bottom:10px;display:inline-block;">📅 ${f==='sin-fecha'?'Sin fecha':fmtFecha(f)} · ${porFecha[f].length} ruta(s)</div>
+            <div style="display:flex;flex-direction:column;gap:14px;">
+              ${porFecha[f].map(cardRuta).join('')}
+            </div>
+          </div>`).join('')}
+    </div>
+  `;
+}
+
+// Agregar parada: elige tipo, luego OV o RMA
+window.abrirAgregarParada = (rutaId) => {
+  const u = state.user || {};
+  const tOpt = prompt(`📍 AGREGAR PARADA — escribe el número:\n  1 = 📤 Entrega de pedido (OV)\n  2 = 📥 Recolección de RMA\n  3 = 🔄 Entrega + Recolección (mismo cliente)`, '1');
+  if (tOpt === null) return;
+  const tipoMap = { '1':'entrega', '2':'recoleccion', '3':'combinada' };
+  const tipo = tipoMap[String(tOpt).trim()];
+  if (!tipo) { toast('Opción inválida.', 'error'); return; }
+
+  let parada = { tipo };
+
+  if (tipo === 'entrega' || tipo === 'combinada') {
+    // Listar OVs disponibles (no archivadas)
+    const ovs = (state.ordenes_venta || []).filter(o => !o.archivada).slice(0, 40);
+    if (ovs.length === 0) { toast('No hay OVs disponibles.', 'error'); return; }
+    const lista = ovs.map((o, i) => `${i+1}) ${o.folio} · ${o.cliente_nombre||o.cliente_codigo||''}`).join('\n');
+    const sel = prompt(`Elige la OV a entregar (escribe el número):\n\n${lista}`, '1');
+    if (sel === null) return;
+    const ov = ovs[Number(sel)-1];
+    if (!ov) { toast('OV inválida.', 'error'); return; }
+    parada.ov_id = ov.id; parada.ov_folio = ov.folio;
+    parada.cliente_nombre = ov.cliente_nombre || ov.cliente_codigo || '';
+    const cli = (state.clientes||[]).find(c => c.codigo === ov.cliente_codigo);
+    parada.direccion = cli?.direccion || '';
+  }
+
+  if (tipo === 'recoleccion' || tipo === 'combinada') {
+    // Listar RMAs con recolección solicitada
+    const rmas = (state.devoluciones || []).filter(d => d.estatus === 'recoleccion_solicitada' || d.estatus === 'solicitada');
+    if (rmas.length === 0) {
+      if (tipo === 'recoleccion') { toast('No hay RMAs pendientes de recolección.', 'error'); return; }
+    } else {
+      const listaR = rmas.map((d, i) => `${i+1}) ${d.codigo} · ${d.cliente_nombre||''}`).join('\n');
+      const selR = prompt(`Elige el RMA a recolectar (escribe el número):\n\n${listaR}`, '1');
+      if (selR !== null) {
+        const rma = rmas[Number(selR)-1];
+        if (rma) {
+          parada.rma_id = rma.id; parada.rma_codigo = rma.codigo;
+          if (!parada.cliente_nombre) parada.cliente_nombre = rma.cliente_nombre || '';
+        }
+      }
+    }
+  }
+
+  window.agregarParadaRuta(rutaId, parada);
+};
+
 // 🔄 VISTA: DEVOLUCIONES (RMA) — Tablero por etapas
 function renderDevoluciones() {
   const u = state.user || {};
@@ -13370,12 +13719,14 @@ function renderDevoluciones() {
   const _btnGhost = (onclick, label) => `<button onclick="${onclick}" style="padding:9px 16px;background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;display:inline-flex;align-items:center;gap:6px;">${label}</button>`;
   const acciones = (d) => {
     const btns = [];
-    if (d.estatus === 'solicitada' && puedePlanta) {
-      btns.push(_btnMain(`const f=prompt('Fecha de recolección (opcional, dd/mm/aaaa):','');window.rmaSolicitarRecoleccion('${d.id}', f||'')`, '🚚 Solicitar recolección'));
-      btns.push(_btnGhost(`window.rmaRecibir('${d.id}')`, '📦 Recibir ya'));
+    if (d.estatus === 'solicitada' && puedeComercial) {
+      btns.push(_btnMain(`window.abrirRecoleccionRMA('${d.id}')`, '🚚 Programar recolección'));
     }
     if (d.estatus === 'recoleccion_solicitada' && puedePlanta) {
-      btns.push(_btnMain(`window.rmaRecibir('${d.id}')`, '📦 Recibir en planta'));
+      btns.push(_btnMain(`window.abrirReciboRMA('${d.id}')`, '📦 Recibir en planta'));
+    }
+    if (d.estatus === 'solicitada' && puedePlanta && !puedeComercial) {
+      btns.push(`<span style="font-size:11px;color:#94a3b8;padding:9px 4px;">Esperando que CS/KAM programe la recolección…</span>`);
     }
     if (d.estatus === 'recibida' && puedePlanta) {
       btns.push(_btnMain(`window.abrirDictamenRMA('${d.id}')`, '🔬 Inspeccionar y dictaminar'));
@@ -13434,7 +13785,7 @@ function renderDevoluciones() {
               <option value="">— Selecciona tarima —</option>
               ${entregadas.map(t => {
                 const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
-                return `<option value="${t.id}">${t.lote||t.id.slice(0,6)} · ODP ${odp.folio||'—'} · ${odp.producto_codigo||''} · ${fmtNum(t.cantidad||0)} ${odp.um||'pza'}</option>`;
+                return `<option value="${t.id}">${t.lote_codigo||t.lote||t.id.slice(0,6)}${t.numero_tarima?(' · T'+t.numero_tarima):''} · ODP ${odp.folio||'—'} · ${odp.producto_codigo||''} · ${fmtNum(t.cantidad||0)} ${odp.um||t.um||'pza'}</option>`;
               }).join('')}
             </select>
           </div>
@@ -13494,10 +13845,11 @@ function renderDevoluciones() {
               <div><div style="font-size:9.5px;text-transform:uppercase;color:#94a3b8;font-weight:700;letter-spacing:0.4px;">Motivo</div><div style="font-size:12.5px;color:#0f172a;font-weight:600;margin-top:2px;">${RMA_MOTIVOS[d.motivo]||'—'}</div></div>
             </div>
 
-            <!-- Reclamo / recolección / dictamen -->
+            <!-- Reclamo / recolección / recibo / dictamen -->
             <div style="padding:12px 18px 0;">
               ${d.notas_reclamo?`<div style="font-size:12px;color:#475569;margin-bottom:6px;"><span style="color:#94a3b8;">Reclamo del cliente:</span> <span style="font-style:italic;">"${d.notas_reclamo}"</span></div>`:''}
-              ${d.fecha_recoleccion?`<div style="display:inline-block;font-size:11px;color:#b45309;background:#fef3c7;padding:3px 10px;border-radius:6px;margin-bottom:6px;font-weight:600;">🚚 Recolección: ${d.fecha_recoleccion}</div>`:''}
+              ${d.fecha_recoleccion?('<div style="font-size:11.5px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>🚚 Recolección:</strong> '+d.fecha_recoleccion+(d.tipo_recoleccion_texto?' · '+d.tipo_recoleccion_texto:'')+(d.transportista_recoleccion?' · '+d.transportista_recoleccion:'')+(d.num_tarimas_recoger?' · '+d.num_tarimas_recoger+' tarima(s)':'')+(d.contacto_recoleccion?'<br><span style="color:#b45309;">Contacto: '+d.contacto_recoleccion+'</span>':'')+'</div>'):''}
+              ${d.recibido_por?('<div style="font-size:11.5px;color:#5b21b6;background:#f5f3ff;border:1px solid #ddd6fe;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>📦 Recibido:</strong> '+(d.tarimas_recibidas||'?')+(d.tarimas_esperadas?'/'+d.tarimas_esperadas:'')+' tarima(s) · '+(d.estado_fisico_recibo||'')+' · por '+d.recibido_por+(d.notas_recibo?'<br><span style="color:#6d28d9;">'+d.notas_recibo+'</span>':'')+'</div>'):''}
               ${d.destino_texto?('<div style="font-size:12px;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;padding:8px 12px;border-radius:8px;margin-bottom:6px;"><strong>🔬 Dictamen:</strong> '+d.destino_texto+(d.causa_raiz?'<br><span style="color:#475569;">Causa raíz: '+d.causa_raiz+'</span>':'')+'</div>'):''}
             </div>
 
@@ -13531,6 +13883,51 @@ window.abrirDictamenRMA = (devId) => {
   const causa_raiz = prompt('Causa raíz (ej. sellado deficiente, error de medida, daño en carga):', '') || '';
   const dictamen_notas = prompt('Observaciones / hallazgos de la inspección física:', '') || '';
   window.rmaDictaminar(devId, { destino, causa_raiz, dictamen_notas });
+};
+
+// Programar recolección (CS/KAM) — auto-rellena datos del cliente/pedido
+window.abrirRecoleccionRMA = (devId) => {
+  const dev = (state.devoluciones || []).find(d => d.id === devId);
+  if (!dev) return;
+  // Auto-relleno desde el cliente ya registrado
+  const cliente = (state.clientes || []).find(c => c.codigo === dev.cliente_codigo) || {};
+  const dirDefault = cliente.direccion || '';
+  const contactoDefault = cliente.contacto || '';
+
+  const fecha = prompt(`🚚 PROGRAMAR RECOLECCIÓN — ${dev.codigo}\nCliente: ${dev.cliente_nombre||''}\n\nFecha programada de recolección (dd/mm/aaaa):`, '');
+  if (fecha === null || !fecha.trim()) { if(fecha!==null) toast('La fecha es obligatoria.', 'error'); return; }
+
+  const tOpt = prompt(`Tipo de recolección — escribe el número:\n  1 = 🚛 Transporte NewPack va por el material\n  2 = 📦 El cliente lo envía\n  3 = 🚚 Paquetería externa`, '1');
+  if (tOpt === null) return;
+  const tipoMap = { '1':'propio', '2':'cliente', '3':'paqueteria' };
+  const tipo_recoleccion = tipoMap[String(tOpt).trim()] || 'propio';
+
+  const transportista = prompt('Transportista / quién recoge (opcional):', tipo_recoleccion==='propio'?'NewPack Logística':'') || '';
+  const num_tarimas = prompt('Número de tarimas/bultos a recoger:', String(dev.num_tarimas_recoger || '1')) || '';
+  const direccion = prompt('Dirección de recolección (auto del cliente, edítala si aplica):', dirDefault) || '';
+  const contacto = prompt('Contacto en sitio del cliente:', contactoDefault) || '';
+
+  window.rmaProgramarRecoleccion(devId, { fecha: fecha.trim(), tipo_recoleccion, transportista, num_tarimas, direccion, contacto });
+};
+
+// Recibir en planta — captura estado físico, conteo, quién y notas
+window.abrirReciboRMA = (devId) => {
+  const dev = (state.devoluciones || []).find(d => d.id === devId);
+  if (!dev) return;
+  const u = state.user || {};
+  const esperadas = dev.num_tarimas_recoger || '';
+  const tarimas_recibidas = prompt(`📦 RECIBO EN PLANTA — ${dev.codigo}\n${esperadas?('Esperadas: '+esperadas+' tarima(s)\n'):''}\n¿Cuántas tarimas/bultos se recibieron?`, esperadas || '1');
+  if (tarimas_recibidas === null) return;
+
+  const eOpt = prompt(`Estado físico al llegar — escribe el número:\n  1 = ✅ Buen estado\n  2 = ⚠️ Daño parcial\n  3 = ❌ Daño severo`, '1');
+  if (eOpt === null) return;
+  const estMap = { '1':'Buen estado', '2':'Daño parcial', '3':'Daño severo' };
+  const estado_fisico = estMap[String(eOpt).trim()] || 'Buen estado';
+
+  const notas_recibo = prompt('Notas del recibo (marcas, humedad, empaque roto, etc.):', '') || '';
+  const recibido_por = prompt('¿Quién recibió en planta?', u.nombre || u.email || '') || '';
+
+  window.rmaRecibir(devId, { tarimas_recibidas, estado_fisico, recibido_por, notas_recibo });
 };
 
 
@@ -28280,7 +28677,7 @@ window.imprimirReporteRMA = (devId) => {
       ['ODP origen:', dev.odp_folio || '—'],
       ['Pedido (PI):', pi?.folio || '—'],
       ['Packing List:', dev.packing_list || '—'],
-      ['Lote / Tarima:', dev.tarima_lote || tarima.lote || '—'],
+      ['Lote / Tarima:', (dev.tarima_lote || tarima.lote_codigo || tarima.lote || '—') + (dev.tarima_numero || tarima.numero_tarima ? ` · Tarima ${dev.tarima_numero || tarima.numero_tarima}` : '')],
     ];
     infoProd.forEach((row, i) => {
       const yy = y + (i * 5.5);
@@ -28302,6 +28699,27 @@ window.imprimirReporteRMA = (devId) => {
     docPDF.text(`${fmtNum(dev.cantidad_devuelta || 0)} ${dev.um || 'pza'}`, 20, y + 14);
     docPDF.text(`${fmtNum(Math.round(dev.peso_neto_kg || 0))} kg`, 110, y + 14);
     y += 24;
+
+    // ===== LOGÍSTICA (recolección + recibo) =====
+    if (dev.fecha_recoleccion || dev.recibido_por) {
+      y = _pdfSeccionTitulo(docPDF, y, 'LOGÍSTICA DE LA DEVOLUCIÓN', _COL_AZUL);
+      docPDF.setFontSize(9);
+      const logRows = [];
+      if (dev.fecha_recoleccion) logRows.push(['Recolección programada:', `${dev.fecha_recoleccion}${dev.tipo_recoleccion_texto ? ' · ' + dev.tipo_recoleccion_texto : ''}`]);
+      if (dev.transportista_recoleccion) logRows.push(['Transportista:', dev.transportista_recoleccion]);
+      if (dev.num_tarimas_recoger) logRows.push(['Tarimas a recoger:', String(dev.num_tarimas_recoger)]);
+      if (dev.recibido_por) logRows.push(['Recibido por:', `${dev.recibido_por}${dev.tarimas_recibidas ? ' · ' + dev.tarimas_recibidas + (dev.tarimas_esperadas ? '/' + dev.tarimas_esperadas : '') + ' tarima(s)' : ''}`]);
+      if (dev.estado_fisico_recibo) logRows.push(['Estado al recibir:', dev.estado_fisico_recibo]);
+      if (dev.notas_recibo) logRows.push(['Notas de recibo:', dev.notas_recibo]);
+      logRows.forEach((row, i) => {
+        const yy = y + (i * 5.5);
+        docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+        docPDF.text(row[0], 16, yy);
+        docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+        docPDF.text(docPDF.splitTextToSize(String(row[1]), 130), 62, yy);
+      });
+      y += logRows.length * 5.5 + 4;
+    }
 
     // ===== MOTIVO Y DICTAMEN (lo importante para el cliente) =====
     y = _pdfSeccionTitulo(docPDF, y, 'DICTAMEN DE LA DEVOLUCIÓN', _COL_VERDE);
@@ -28357,6 +28775,8 @@ window.imprimirReporteRMA = (devId) => {
     y += trazaWrap.length * 4 + 8;
 
     // ===== FIRMAS =====
+    // Si el contenido ya invadió la zona baja, saltar a página nueva para las firmas
+    if (y > 245) { docPDF.addPage(); y = 24; }
     const yF = Math.max(y, 250);
     docPDF.setDrawColor(148, 163, 184); docPDF.setLineWidth(0.3);
     docPDF.line(24, yF, 84, yF);
@@ -28365,14 +28785,92 @@ window.imprimirReporteRMA = (devId) => {
     docPDF.text('Calidad', 54, yF + 5, { align: 'center' });
     docPDF.text('Cliente / Recibe', 152, yF + 5, { align: 'center' });
     docPDF.setFontSize(7); docPDF.setFont('helvetica','normal'); docPDF.setTextColor(100,116,139);
-    docPDF.text(dev.registrado_por_nombre || '', 54, yF + 9, { align: 'center' });
+    docPDF.text(dev.dictaminada_por || dev.recibido_por || '', 54, yF + 9, { align: 'center' });
 
     _pdfPiePagina(docPDF);
-    docPDF.save(`RMA_${dev.codigo}_${(dev.cliente_nombre||'cliente').replace(/[^a-z0-9]/gi,'_').slice(0,20)}.pdf`);
+    const filename = `RMA_${dev.codigo}_${(dev.cliente_nombre||'cliente').replace(/[^a-z0-9]/gi,'_').slice(0,20)}.pdf`;
+    if (typeof _mostrarVistaPreviaPDF === 'function') {
+      _mostrarVistaPreviaPDF(docPDF, filename, `Reporte RMA ${dev.codigo}`);
+    } else {
+      docPDF.save(filename);
+    }
     toast(`📄 Reporte RMA ${dev.codigo} generado`, 'success');
   } catch (e) {
     console.error('Error generando reporte RMA:', e);
     toast('Error generando reporte RMA: ' + e.message, 'error');
+  }
+};
+
+// ============================================================
+// PDF: HOJA DE RUTA (para el chofer / transportista)
+// ============================================================
+window.imprimirHojaRuta = (rutaId) => {
+  try {
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId);
+    if (!ruta) { toast('Ruta no encontrada', 'error'); return; }
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    let y = _pdfHeaderEmpresa(docPDF, 'HOJA DE RUTA', ruta.codigo);
+
+    // Datos de la ruta
+    y = _pdfSeccionTitulo(docPDF, y, 'DATOS DE LA RUTA', _COL_AZUL);
+    docPDF.setFontSize(9);
+    const rows = [
+      ['Fecha:', fmtFecha(ruta.fecha)],
+      ['Tipo:', ruta.tipo_texto || ruta.tipo || '—'],
+      ['Origen:', ruta.origen || '—'],
+      ['Transportista:', ruta.transportista || '—'],
+      ['Unidad / placas:', ruta.unidad || '—'],
+      ['Operador:', ruta.operador || '—'],
+    ];
+    rows.forEach((row, i) => {
+      const yy = y + (i * 5.5);
+      docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
+      docPDF.text(row[0], 16, yy);
+      docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
+      docPDF.text(String(row[1]), 55, yy);
+    });
+    y += rows.length * 5.5 + 6;
+
+    // Paradas
+    y = _pdfSeccionTitulo(docPDF, y, `PARADAS (${(ruta.paradas||[]).length})`, _COL_VERDE);
+    docPDF.setFontSize(9);
+    (ruta.paradas || []).forEach((p) => {
+      if (y > 260) { docPDF.addPage(); y = 24; }
+      docPDF.setDrawColor(203,213,225); docPDF.setLineWidth(0.2);
+      docPDF.roundedRect(14, y, 182, 16, 1.5, 1.5, 'S');
+      docPDF.setFont('helvetica','bold'); docPDF.setFontSize(11); docPDF.setTextColor(0,0,0);
+      docPDF.text(`${p.orden}.`, 18, y + 7);
+      docPDF.setFontSize(9);
+      docPDF.text(`${(PARADA_TIPOS[p.tipo]||p.tipo).replace(/[^\x00-\x7F]/g,'').trim()} — ${p.cliente_nombre||'—'}`, 26, y + 6);
+      docPDF.setFont('helvetica','normal'); docPDF.setFontSize(8); docPDF.setTextColor(80,80,80);
+      const ref = [p.ov_folio?('OV '+p.ov_folio):'', p.rma_codigo||''].filter(Boolean).join(' · ');
+      if (ref) docPDF.text(ref, 26, y + 11);
+      if (p.direccion) docPDF.text(docPDF.splitTextToSize(p.direccion, 150), 26, y + 14.5);
+      // casilla de firma/entregado
+      docPDF.setDrawColor(150,150,150);
+      docPDF.rect(180, y + 5, 6, 6, 'S');
+      y += 20;
+    });
+
+    y += 4;
+    if (y > 250) { docPDF.addPage(); y = 30; }
+    docPDF.setDrawColor(148,163,184); docPDF.setLineWidth(0.3);
+    docPDF.line(24, y+10, 84, y+10);
+    docPDF.line(122, y+10, 182, y+10);
+    docPDF.setFontSize(8); docPDF.setFont('helvetica','bold'); docPDF.setTextColor(0,0,0);
+    docPDF.text('Operador / Chofer', 54, y+15, { align:'center' });
+    docPDF.text('Supervisor Logística', 152, y+15, { align:'center' });
+
+    _pdfPiePagina(docPDF);
+    const filename = `HojaRuta_${ruta.codigo}.pdf`;
+    if (typeof _mostrarVistaPreviaPDF === 'function') _mostrarVistaPreviaPDF(docPDF, filename, `Hoja de Ruta ${ruta.codigo}`);
+    else docPDF.save(filename);
+    toast(`📄 Hoja de ruta ${ruta.codigo} generada`, 'success');
+  } catch (e) {
+    console.error('Error hoja de ruta:', e);
+    toast('Error generando hoja de ruta: ' + e.message, 'error');
   }
 };
 
