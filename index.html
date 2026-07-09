@@ -3768,7 +3768,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmadrill</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmabusca</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13776,26 +13776,50 @@ function renderDevoluciones() {
       ${puedeComercial ? (() => {
         // 🔍 DRILL-DOWN: Cliente → Pedido → Tarima (para no ver 1000+ órdenes)
         const sel = state.rmaSeleccion || {};
+        const busq = (state.rmaBusqueda || '').trim().toLowerCase();
+
+        // Fecha helper para tarima
+        const fEntrega = (t) => t.fecha_entrega || t.entregada_at || null;
+
+        // 🔎 BÚSQUEDA RÁPIDA: si hay texto, filtra tarimas por cliente/folio/producto/remisión/lote
+        let resultadosBusq = [];
+        if (busq) {
+          resultadosBusq = entregadas.filter(t => {
+            const cli = (state.clientes||[]).find(c => c.codigo === t.cliente_codigo);
+            const hay = [
+              t.cliente_nombre, cli?.nombre, t.cliente_codigo,
+              t.pedido_folio, t.odp_folio, t.producto_codigo,
+              t.lote_codigo, t.remision_folio, t.packing_list
+            ].filter(Boolean).join(' ').toLowerCase();
+            return hay.includes(busq);
+          }).slice(0, 25);
+        }
+
         // Clientes que tienen al menos una tarima entregada
         const clientesConEntregas = {};
         entregadas.forEach(t => {
           const cc = t.cliente_codigo || '(sin cliente)';
           if (!clientesConEntregas[cc]) {
             const cli = (state.clientes||[]).find(c => c.codigo === cc);
-            clientesConEntregas[cc] = { codigo: cc, nombre: cli?.nombre || t.cliente_nombre || cc, count: 0 };
+            clientesConEntregas[cc] = { codigo: cc, nombre: cli?.nombre || t.cliente_nombre || cc, count: 0, ultima: null };
           }
           clientesConEntregas[cc].count++;
+          const f = fEntrega(t);
+          if (f && (!clientesConEntregas[cc].ultima || (f.seconds||0) > (clientesConEntregas[cc].ultima.seconds||0))) clientesConEntregas[cc].ultima = f;
         });
         const listaClientes = Object.values(clientesConEntregas).sort((a,b) => a.nombre.localeCompare(b.nombre));
 
-        // Nivel 2: pedidos/envíos del cliente seleccionado
+        // Nivel 2: pedidos/envíos del cliente seleccionado (con fecha y remisión)
         let pedidosCliente = [];
         if (sel.cliente) {
           const grupos = {};
           entregadas.filter(t => (t.cliente_codigo||'(sin cliente)') === sel.cliente).forEach(t => {
             const key = t.pedido_folio || t.pedido_id || t.odp_folio || '(sin pedido)';
-            if (!grupos[key]) grupos[key] = { key, pedido_folio: t.pedido_folio||'', count: 0, fecha: t.fecha_entrega||t.entregada_at };
+            if (!grupos[key]) grupos[key] = { key, pedido_folio: t.pedido_folio||'', count: 0, fecha: fEntrega(t), remision: t.remision_folio||'', productos: new Set() };
             grupos[key].count++;
+            if (t.producto_codigo) grupos[key].productos.add(t.producto_codigo);
+            const f = fEntrega(t);
+            if (f && (!grupos[key].fecha || (f.seconds||0) > (grupos[key].fecha.seconds||0))) grupos[key].fecha = f;
           });
           pedidosCliente = Object.values(grupos).sort((a,b) => String(b.key).localeCompare(String(a.key), undefined, {numeric:true}));
         }
@@ -13812,7 +13836,28 @@ function renderDevoluciones() {
         return `
       <div class="panel" style="margin:16px 0;border-left:5px solid #3b82f6;padding:20px;">
         <div style="font-weight:800;color:#0f172a;margin-bottom:4px;font-size:15px;">➕ Levantar caso RMA</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Identifica el producto reclamado paso a paso: primero el cliente, luego su envío, luego la tarima.</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Busca directo o identifica paso a paso: cliente → envío → tarima.</div>
+
+        <!-- 🔎 BÚSQUEDA RÁPIDA -->
+        <div style="margin-bottom:16px;">
+          <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">🔎 Búsqueda rápida (cliente, pedido, producto, remisión o lote)</label>
+          <input type="text" value="${state.rmaBusqueda||''}" oninput="window.rmaBuscar(this.value)" placeholder="Ej. OWENS, PI-00056, LDBR1100, REM-000..." style="width:100%;padding:11px;border:2px solid ${busq?'#3b82f6':'#cbd5e1'};border-radius:8px;font-size:13px;box-sizing:border-box;" />
+          ${busq ? `
+            <div style="margin-top:10px;border:1px solid #e2e8f0;border-radius:8px;max-height:280px;overflow-y:auto;">
+              ${resultadosBusq.length === 0 ? `<div style="padding:14px;color:#94a3b8;font-size:12px;text-align:center;">Sin resultados para "${busq}"</div>` :
+                resultadosBusq.map(t => {
+                  const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
+                  const cli = (state.clientes||[]).find(c=>c.codigo===t.cliente_codigo);
+                  const f = fEntrega(t);
+                  return `<div onclick="window.rmaPickDirecto('${t.id}')" style="padding:10px 12px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12px;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='#fff'">
+                    <div style="font-weight:700;color:#0f172a;">${cli?.nombre||t.cliente_nombre||t.cliente_codigo||'—'} · ${t.producto_codigo||odp.producto_codigo||''}</div>
+                    <div style="color:#64748b;margin-top:2px;">Pedido ${t.pedido_folio||'—'} · Lote ${t.lote_codigo||'—'}${t.numero_tarima?(' · T'+t.numero_tarima):''} · ${f?('📅 '+fmtFecha(f)):'sin fecha'}${t.remision_folio?(' · '+t.remision_folio):''}</div>
+                  </div>`;
+                }).join('')}
+            </div>` : ''}
+        </div>
+
+        <div style="text-align:center;color:#cbd5e1;font-size:11px;margin:4px 0 12px;">— o identifica paso a paso —</div>
 
         <!-- Pasos de identificación -->
         <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
@@ -13838,7 +13883,7 @@ function renderDevoluciones() {
             <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">👤 Paso 1 — Cliente que reporta</label>
             <select onchange="window.rmaDrill('cliente', this.value)" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
               <option value="">— Selecciona el cliente —</option>
-              ${listaClientes.map(c => `<option value="${c.codigo}" ${sel.cliente===c.codigo?'selected':''}>${c.nombre} (${c.count} entrega${c.count>1?'s':''})</option>`).join('')}
+              ${listaClientes.map(c => `<option value="${c.codigo}" ${sel.cliente===c.codigo?'selected':''}>${c.nombre} — ${c.count} entrega${c.count>1?'s':''}${c.ultima?(' · última '+fmtFecha(c.ultima)):''}</option>`).join('')}
             </select>
           </div>
 
@@ -13848,7 +13893,7 @@ function renderDevoluciones() {
             <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">📦 Paso 2 — Envío / Pedido de ese cliente</label>
             <select onchange="window.rmaDrill('pedido', this.value)" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
               <option value="">— Selecciona el envío —</option>
-              ${pedidosCliente.map(p => `<option value="${p.key}" ${sel.pedido===p.key?'selected':''}>${p.pedido_folio||p.key} (${p.count} tarima${p.count>1?'s':''})</option>`).join('')}
+              ${pedidosCliente.map(p => `<option value="${p.key}" ${sel.pedido===p.key?'selected':''}>${p.pedido_folio||p.key}${p.fecha?(' · 📅 '+fmtFecha(p.fecha)):''} · ${p.count} tarima${p.count>1?'s':''}${p.productos.size?(' · '+Array.from(p.productos).slice(0,2).join(', ')+(p.productos.size>2?'…':'')):''}${p.remision?(' · '+p.remision):''}</option>`).join('')}
             </select>
           </div>` : ''}
 
@@ -13860,7 +13905,8 @@ function renderDevoluciones() {
               <option value="">— Selecciona la tarima —</option>
               ${tarimasPedido.map(t => {
                 const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
-                return `<option value="${t.id}" ${sel.tarima===t.id?'selected':''}>${t.producto_codigo||odp.producto_codigo||''} · Lote ${t.lote_codigo||'—'}${t.numero_tarima?(' · T'+t.numero_tarima):''} · ${fmtNum(t.cantidad||0)} ${t.um||odp.um||'pza'}</option>`;
+                const f = t.fecha_entrega || t.entregada_at;
+                return `<option value="${t.id}" ${sel.tarima===t.id?'selected':''}>${t.producto_codigo||odp.producto_codigo||''} · Lote ${t.lote_codigo||'—'}${t.numero_tarima?(' · T'+t.numero_tarima):''} · ${fmtNum(t.cantidad||0)} ${t.um||odp.um||'pza'}${f?(' · 📅 '+fmtFecha(f)):''}</option>`;
               }).join('')}
             </select>
           </div>` : ''}
@@ -13869,10 +13915,12 @@ function renderDevoluciones() {
           ${sel.tarima ? (() => {
             const t = entregadas.find(x => x.id === sel.tarima) || {};
             const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
+            const f = t.fecha_entrega || t.entregada_at;
             return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;font-size:12px;color:#166534;">
               <strong>✓ Producto identificado — trazabilidad completa:</strong><br>
               Producto <strong>${t.producto_codigo||odp.producto_codigo||'—'}</strong> · Lote ${t.lote_codigo||'—'} · Tarima ${t.numero_tarima||'—'}<br>
-              Producido en ODP ${odp.folio||t.odp_folio||'—'} · Pedido ${t.pedido_folio||'—'} · PKL ${t.packing_list||'—'}
+              Producido en ODP ${odp.folio||t.odp_folio||'—'} · Pedido ${t.pedido_folio||'—'} · PKL ${t.packing_list||'—'}<br>
+              ${f?('📅 Entregado el '+fmtFecha(f)):''}${t.remision_folio?(' · Remisión '+t.remision_folio):''}
             </div>`;
           })() : ''}
 
@@ -14032,6 +14080,24 @@ window.rmaDrill = (nivel, valor) => {
 window.rmaDrillReset = (silent) => {
   state.rmaSeleccion = {};
   if (!silent) window.forzarRender();
+};
+// Búsqueda rápida: guarda el texto sin perder foco (debounce ligero vía state)
+window.rmaBuscar = (texto) => {
+  state.rmaBusqueda = texto;
+  clearTimeout(window._rmaBusqTimer);
+  window._rmaBusqTimer = setTimeout(() => window.forzarRender(), 250);
+};
+// Al hacer clic en un resultado de búsqueda: precarga toda la cadena (cliente→pedido→tarima)
+window.rmaPickDirecto = (tarimaId) => {
+  const t = (state.tarimas || []).find(x => x.id === tarimaId);
+  if (!t) return;
+  state.rmaSeleccion = {
+    cliente: t.cliente_codigo || '(sin cliente)',
+    pedido: t.pedido_folio || t.pedido_id || t.odp_folio || '(sin pedido)',
+    tarima: tarimaId,
+  };
+  state.rmaBusqueda = '';
+  window.forzarRender();
 };
 
 
