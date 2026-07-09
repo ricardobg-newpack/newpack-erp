@@ -3769,7 +3769,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-pausafix</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-estadofix</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -9636,16 +9636,33 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   // 🆕 ARRANQUE DESDE EL SELECTOR DE PAUSA: una orden en_produccion cuyo proceso
   //    seleccionado está pausado, esperando o sin iniciar (NO corriendo ni completado)
   //    también se puede arrancar/reanudar.
-  const estEsteProc = window.estadoProceso ? window.estadoProceso(odp, procAIniciar) : '';
+  let estEsteProc = window.estadoProceso ? window.estadoProceso(odp, procAIniciar) : '';
+
+  // 🔧 FIX CONTRADICCIÓN DE DATOS: puede haber inconsistencia entre el estado por-proceso
+  //    (avance_procesos[proc].estatus) y el global (proceso_estatus_actual). Ejemplo real:
+  //    una pausa que actualizó el global a 'pausado' pero dejó el por-proceso en 'en_proceso'.
+  //    El Kanban muestra 'pausada' (usa el global) pero la validación la rechazaba como
+  //    'ya corriendo' (usa el por-proceso). Reconciliar: si NO hay una captura/rollo activo
+  //    real y los estados se contradicen, confiar en el global y tratar como pausada/arrancable.
+  const avEsteProc = odp.avance_procesos?.[procAIniciar] || {};
+  const globalDiceOtra = odp.proceso_estatus_actual && odp.proceso_estatus_actual !== 'en_proceso';
+  const idxActualOdp = odp.proceso_actual_idx ?? 0;
+  const esProcActual = idxProc === idxActualOdp;
+  let estadoContradictorio = false;
+  if (estEsteProc === 'en_proceso' && esProcActual && globalDiceOtra) {
+    // El por-proceso dice corriendo pero el global dice otra cosa (pausado/esperando/etc.)
+    // → dato inconsistente. Usar el global como verdad.
+    estadoContradictorio = true;
+    estEsteProc = odp.proceso_estatus_actual; // ej. 'pausado'
+    console.warn(`[iniciarODP] ⚠ Estado inconsistente en ${odp.folio}: avance_procesos.${procAIniciar}=en_proceso pero global=${odp.proceso_estatus_actual}. Se reconcilia usando el global.`);
+  }
+
   const procArrancable = idxProc >= 0 && estEsteProc !== 'completado' && estEsteProc !== 'en_proceso';
   const esEnProduccionArrancable = odp.estatus === 'en_produccion' && procArrancable;
 
   // 🔧 FIX DESCONEXIÓN COLA↔VALIDACIÓN: la cola muestra una ODP como "lista para iniciar"
-  //    usando proceso_estatus_actual (global), pero antes la validación usaba solo
-  //    estadoProceso (por-proceso). Si ambos no coincidían, la ODP aparecía iniciable
-  //    pero era rechazada. Ahora: si el proceso NO está corriendo ni completado y la ODP
-  //    está en un estado de producción válido (no cerrada), es arrancable — consistente
-  //    con lo que el panel muestra.
+  //    usando proceso_estatus_actual (global). Si el proceso NO está corriendo ni completado
+  //    y la ODP está en un estado de producción válido (no cerrada), es arrancable.
   const estadosVivos = ['programada','en_produccion','pausada','en_cola','pendiente'];
   const estadoGlobalOK = estadosVivos.includes(odp.estatus);
   const procNoBloqueado = idxProc >= 0 && estEsteProc !== 'completado' && estEsteProc !== 'en_proceso';
@@ -9653,31 +9670,29 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
 
   if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo && !esEnProduccionArrancable && !esArrancablePorCola) {
     console.warn(`[iniciarODP] ⚠ ${odp.folio} no pasó la validación: estatus=${odp.estatus} estEsteProc=${estEsteProc} idxProc=${idxProc} procAIniciar=${procAIniciar} ruta=[${ruta.join(',')}]`);
-    // Mensaje más claro según la causa probable
     if (idxProc < 0) {
       toast(`El proceso "${getProc(procAIniciar)?.nombre || procAIniciar}" no está en la ruta de esta orden.`, 'error');
     } else if (estEsteProc === 'completado') {
       toast('Este proceso ya está completado en esta orden.', 'error');
     } else if (estEsteProc === 'en_proceso') {
+      // Solo llega aquí si NO era contradicción: realmente está corriendo
       toast('Este proceso ya está corriendo.', 'info');
     } else {
       toast('Esta ODP no se puede iniciar en su estado actual', 'error');
     }
     return;
   }
-  // 🆕 Si el proceso estaba pausado, esto es una REANUDACIÓN: limpiar la pausa
-  const esReanudacion = estEsteProc === 'pausado';
+  // 🆕 Si el proceso estaba pausado (o se reconcilió a pausado), esto es una REANUDACIÓN
+  const esReanudacion = estEsteProc === 'pausado' || estadoContradictorio;
 
-  // 🔧 Si la orden está pausada (ej. se pausó para reordenar la cola) y ahora vuelve a ser
-  //    la siguiente, reanudarla es lo natural. Redirigir a reanudarODP para no duplicar lógica
-  //    de histórico de pausas. Excepción: si nunca produjo nada, se trata como inicio limpio.
+  // 🔧 Si la orden está pausada y ya había producido, reanudar formalmente. Si nunca produjo
+  //    (o era estado contradictorio sin captura activa), se arranca limpio abajo.
   if (esReanudacion) {
     const producidoProc = window.kgProducidoProceso ? window.kgProducidoProceso(odp, procAIniciar) : 0;
-    if (producidoProc > 0) {
-      // Ya había producción real: reanudar formalmente (conserva histórico de la pausa)
+    if (producidoProc > 0 && !estadoContradictorio) {
       return window.reanudarODP(odpId, procAIniciar);
     }
-    // Nunca produjo: la "pausa" era solo para sacarla de turno. Se arranca limpio abajo.
+    // Nunca produjo o estado inconsistente: se arranca limpio (el bloque de updates limpia la pausa).
   }
   
   // 🆕 Si es un proceso posterior (bolseo) y aún no hay material de extrusión, avisar pero permitir
