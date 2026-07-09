@@ -3769,7 +3769,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-prodfix</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-pausafix</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -9667,6 +9667,18 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   }
   // 🆕 Si el proceso estaba pausado, esto es una REANUDACIÓN: limpiar la pausa
   const esReanudacion = estEsteProc === 'pausado';
+
+  // 🔧 Si la orden está pausada (ej. se pausó para reordenar la cola) y ahora vuelve a ser
+  //    la siguiente, reanudarla es lo natural. Redirigir a reanudarODP para no duplicar lógica
+  //    de histórico de pausas. Excepción: si nunca produjo nada, se trata como inicio limpio.
+  if (esReanudacion) {
+    const producidoProc = window.kgProducidoProceso ? window.kgProducidoProceso(odp, procAIniciar) : 0;
+    if (producidoProc > 0) {
+      // Ya había producción real: reanudar formalmente (conserva histórico de la pausa)
+      return window.reanudarODP(odpId, procAIniciar);
+    }
+    // Nunca produjo: la "pausa" era solo para sacarla de turno. Se arranca limpio abajo.
+  }
   
   // 🆕 Si es un proceso posterior (bolseo) y aún no hay material de extrusión, avisar pero permitir
   if (idxProc > 0 && disponibleAhora <= 0) {
