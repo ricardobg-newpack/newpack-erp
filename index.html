@@ -3769,7 +3769,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0708-audit</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-prodfix</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -9635,15 +9635,34 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   const disponibleAhora = miProc?.disponible_para_trabajar || 0;
   // 🆕 ARRANQUE DESDE EL SELECTOR DE PAUSA: una orden en_produccion cuyo proceso
   //    seleccionado está pausado, esperando o sin iniciar (NO corriendo ni completado)
-  //    también se puede arrancar/reanudar. Esto cubre el hueco que daba el error
-  //    "no se puede iniciar en su estado actual".
+  //    también se puede arrancar/reanudar.
   const estEsteProc = window.estadoProceso ? window.estadoProceso(odp, procAIniciar) : '';
   const procArrancable = idxProc >= 0 && estEsteProc !== 'completado' && estEsteProc !== 'en_proceso';
   const esEnProduccionArrancable = odp.estatus === 'en_produccion' && procArrancable;
-  
-  if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo && !esEnProduccionArrancable) {
-    console.warn(`[iniciarODP] ⚠ ${odp.folio} no pasó la validación: estatus=${odp.estatus} estEsteProc=${estEsteProc} idxProc=${idxProc}`);
-    toast('Esta ODP no se puede iniciar en su estado actual', 'error');
+
+  // 🔧 FIX DESCONEXIÓN COLA↔VALIDACIÓN: la cola muestra una ODP como "lista para iniciar"
+  //    usando proceso_estatus_actual (global), pero antes la validación usaba solo
+  //    estadoProceso (por-proceso). Si ambos no coincidían, la ODP aparecía iniciable
+  //    pero era rechazada. Ahora: si el proceso NO está corriendo ni completado y la ODP
+  //    está en un estado de producción válido (no cerrada), es arrancable — consistente
+  //    con lo que el panel muestra.
+  const estadosVivos = ['programada','en_produccion','pausada','en_cola','pendiente'];
+  const estadoGlobalOK = estadosVivos.includes(odp.estatus);
+  const procNoBloqueado = idxProc >= 0 && estEsteProc !== 'completado' && estEsteProc !== 'en_proceso';
+  const esArrancablePorCola = estadoGlobalOK && procNoBloqueado;
+
+  if (!esProgramada && !esProcesoEsperando && !esProcesoParalelo && !esEnProduccionArrancable && !esArrancablePorCola) {
+    console.warn(`[iniciarODP] ⚠ ${odp.folio} no pasó la validación: estatus=${odp.estatus} estEsteProc=${estEsteProc} idxProc=${idxProc} procAIniciar=${procAIniciar} ruta=[${ruta.join(',')}]`);
+    // Mensaje más claro según la causa probable
+    if (idxProc < 0) {
+      toast(`El proceso "${getProc(procAIniciar)?.nombre || procAIniciar}" no está en la ruta de esta orden.`, 'error');
+    } else if (estEsteProc === 'completado') {
+      toast('Este proceso ya está completado en esta orden.', 'error');
+    } else if (estEsteProc === 'en_proceso') {
+      toast('Este proceso ya está corriendo.', 'info');
+    } else {
+      toast('Esta ODP no se puede iniciar en su estado actual', 'error');
+    }
     return;
   }
   // 🆕 Si el proceso estaba pausado, esto es una REANUDACIÓN: limpiar la pausa
@@ -10845,6 +10864,49 @@ window.crearRutaDesdeForm = () => {
   const proveedor_id = tipo === 'externo' ? (document.getElementById('rut-proveedor')?.value || '') : '';
   if (!fecha) { toast('Indica la fecha de envío.', 'error'); return; }
   window.crearRutaLogistica({ fecha, tipo, origen, proveedor_id });
+};
+
+// 📌 Programar una OV a una ruta: elige ruta abierta o guía a crear una
+window.programarOVEnRuta = async (ovId) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ov = (state.ordenes_venta || []).find(o => o.id === ovId);
+  if (!ov) { toast('OV no encontrada.', 'error'); return; }
+  // Rutas abiertas (programadas, no despachadas) a las que se puede agregar
+  const rutasAbiertas = (state.rutas_logistica || []).filter(r => r.estatus === 'programada');
+  if (rutasAbiertas.length === 0) {
+    toast('No hay rutas programadas. Crea una ruta abajo y luego agrega esta OV.', 'info');
+    // Scroll al formulario de nueva ruta
+    setTimeout(() => { const el = document.getElementById('rut-fecha'); if (el) { el.scrollIntoView({behavior:'smooth',block:'center'}); el.focus(); } }, 100);
+    return;
+  }
+  // Elegir ruta
+  let rutaDestino;
+  if (rutasAbiertas.length === 1) {
+    rutaDestino = rutasAbiertas[0];
+    if (!confirm(`Agregar ${ov.folio} a la ruta ${rutaDestino.codigo} (${fmtFecha(rutaDestino.fecha)})?`)) return;
+  } else {
+    const lista = rutasAbiertas.map((r,i) => `${i+1}) ${r.codigo} · ${fmtFecha(r.fecha)} · ${r.transportista||''}`).join('\n');
+    const sel = prompt(`¿A qué ruta agregar ${ov.folio}?\n\n${lista}`, '1');
+    if (sel === null) return;
+    rutaDestino = rutasAbiertas[Number(sel)-1];
+    if (!rutaDestino) { toast('Ruta inválida.', 'error'); return; }
+  }
+  // Congelar tarimas/kg
+  let tarimasOV = (state.tarimas || []).filter(t => (ov.tarimas_ids || []).includes(t.id));
+  if (tarimasOV.length === 0) tarimasOV = (state.tarimas || []).filter(t => t.ov_id === ov.id);
+  const cli = (state.clientes||[]).find(c => c.codigo === ov.cliente_codigo);
+  const parada = {
+    tipo: 'entrega',
+    ov_id: ov.id, ov_folio: ov.folio,
+    remision_folio: ov.remision_folio || '',
+    producto_codigo: ov.producto_codigo || (tarimasOV[0] && tarimasOV[0].producto_codigo) || '',
+    num_tarimas: tarimasOV.length,
+    kg: tarimasOV.reduce((s,t)=>s+Number(t.peso_neto_kg||t.peso_neto||0),0),
+    cliente_nombre: ov.cliente_nombre || cli?.nombre || ov.cliente_codigo || '',
+    direccion: cli?.direccion || '',
+  };
+  await window.agregarParadaRuta(rutaDestino.id, parada);
 };
 
 // Agregar una parada a la ruta (entrega de OV, recolección de RMA, o combinada)
@@ -13631,6 +13693,15 @@ function renderLogisticaRutas() {
   const abiertas = rutas.filter(r => r.estatus === 'programada' || r.estatus === 'en_ruta').length;
   const sub = state.tabs?.logistica || 'tablero';
 
+  // 🔗 OVs remisionadas (por_cargar) que NO están en ninguna ruta activa = pendientes de programar
+  const ovsEnRutas = new Set();
+  rutas.filter(r => r.estatus !== 'cancelada').forEach(r => {
+    (r.paradas || []).forEach(p => { if (p.ov_id) ovsEnRutas.add(p.ov_id); });
+  });
+  const ovsPorProgramar = (state.ordenes_venta || []).filter(o =>
+    !o.archivada && o.estatus === 'por_cargar' && !ovsEnRutas.has(o.id)
+  );
+
   const badge = (e) => {
     const s = RUTA_ESTADOS[e] || { label: e, color: '#64748b' };
     return `<span style="background:${s.color}22;color:${s.color};padding:3px 10px;border-radius:6px;font-size:11px;font-weight:800;">${s.label}</span>`;
@@ -13653,7 +13724,7 @@ function renderLogisticaRutas() {
         </div>
         <div style="text-align:right;font-size:10.5px;color:#94a3b8;white-space:nowrap;">
           <div style="font-weight:700;color:#334155;">${r.transportista||'—'}</div>
-          <div>${r.unidad||''} ${r.operador?('· '+r.operador):''}</div>
+          <div>${r.notas||''}</div>
         </div>
       </div>
 
@@ -13718,6 +13789,44 @@ function renderLogisticaRutas() {
           <span style="background:#0f172a;color:#fff;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">${rutas.length} rutas</span>
         </div>
       </div>
+
+      ${puede ? (() => {
+        // 📌 PANEL: OVs remisionadas esperando ruta
+        if (ovsPorProgramar.length === 0) {
+          return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:20px;">✅</span>
+            <div><div style="font-weight:800;color:#166534;font-size:13px;">Todo remisionado ya está programado</div><div style="font-size:11px;color:#15803d;">No hay OVs esperando ruta. Cuando CS genere una remisión nueva, aparecerá aquí.</div></div>
+          </div>`;
+        }
+        // Calcular tarimas/kg de cada OV pendiente
+        const ovMetrica = (o) => {
+          let tars = (state.tarimas||[]).filter(t => (o.tarimas_ids||[]).includes(t.id));
+          if (tars.length === 0) tars = (state.tarimas||[]).filter(t => t.ov_id === o.id);
+          const kg = tars.reduce((s,t)=>s+Number(t.peso_neto_kg||t.peso_neto||0),0);
+          return { tarimas: tars.length, kg };
+        };
+        return `
+        <div class="panel" style="border:2px solid #f59e0b;border-radius:12px;padding:0;margin-bottom:16px;overflow:hidden;">
+          <div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-weight:900;color:#92400e;font-size:14px;">📌 OVs remisionadas esperando ruta (${ovsPorProgramar.length})</div>
+            <div style="font-size:11px;color:#b45309;">Ya tienen remisión y factura. Falta programarles el envío.</div>
+          </div>
+          <div style="padding:8px;max-height:280px;overflow-y:auto;">
+            ${ovsPorProgramar.map(o => {
+              const m = ovMetrica(o);
+              const cli = (state.clientes||[]).find(c=>c.codigo===o.cliente_codigo);
+              return `
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap;">
+                  <div style="flex:1;min-width:180px;">
+                    <div style="font-weight:800;color:#0f172a;font-size:13px;">${o.folio} · ${cli?.nombre||o.cliente_nombre||o.cliente_codigo||'—'}</div>
+                    <div style="font-size:11px;color:#64748b;margin-top:2px;">${o.remision_folio?('📄 '+o.remision_folio+' · '):''}${o.cedis||''} · ${m.tarimas} tarima(s) · ${fmtNum(Math.round(m.kg))} kg</div>
+                  </div>
+                  <button onclick="window.programarOVEnRuta('${o.id}')" style="padding:8px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;white-space:nowrap;">➕ Programar a ruta</button>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      })() : ''}
 
       ${puede?(() => {
         const transportistas = (state.transportistas || []).filter(t => t.activo !== false);
@@ -29376,20 +29485,23 @@ window.imprimirHojaRuta = (rutaId) => {
     // Datos de la ruta
     y = _pdfSeccionTitulo(docPDF, y, 'DATOS DE LA RUTA', _COL_AZUL);
     docPDF.setFontSize(9);
+    // Limpiar emojis (jsPDF no los renderiza) del texto de tipo
+    const _limpiarEmoji = (s) => String(s || '').replace(/[^\x00-\x7FáéíóúñÁÉÍÓÚÑüÜ.,:;/()\-\s]/g, '').trim();
+    const tipoLimpio = _limpiarEmoji(ruta.tipo_texto || ruta.tipo) || '—';
     const rows = [
       ['Fecha:', fmtFecha(ruta.fecha)],
-      ['Tipo:', ruta.tipo_texto || ruta.tipo || '—'],
-      ['Origen:', ruta.origen || '—'],
+      ['Tipo de transporte:', tipoLimpio],
+      ['Sale de:', ruta.origen || '—'],
       ['Transportista:', ruta.transportista || '—'],
-      ['Unidad / placas:', ruta.unidad || '—'],
-      ['Operador:', ruta.operador || '—'],
+      ['Estatus:', _limpiarEmoji((RUTA_ESTADOS[ruta.estatus]||{}).label) || ruta.estatus || '—'],
     ];
+    if (ruta.notas) rows.push(['Notas:', ruta.notas]);
     rows.forEach((row, i) => {
       const yy = y + (i * 5.5);
       docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
       docPDF.text(row[0], 16, yy);
       docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-      docPDF.text(String(row[1]), 55, yy);
+      docPDF.text(String(row[1]), 60, yy);
     });
     y += rows.length * 5.5 + 6;
 
