@@ -3768,7 +3768,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rutas</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmadrill</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13773,22 +13773,111 @@ function renderDevoluciones() {
         </div>
       </div>
 
-      ${puedeComercial ? `
+      ${puedeComercial ? (() => {
+        // 🔍 DRILL-DOWN: Cliente → Pedido → Tarima (para no ver 1000+ órdenes)
+        const sel = state.rmaSeleccion || {};
+        // Clientes que tienen al menos una tarima entregada
+        const clientesConEntregas = {};
+        entregadas.forEach(t => {
+          const cc = t.cliente_codigo || '(sin cliente)';
+          if (!clientesConEntregas[cc]) {
+            const cli = (state.clientes||[]).find(c => c.codigo === cc);
+            clientesConEntregas[cc] = { codigo: cc, nombre: cli?.nombre || t.cliente_nombre || cc, count: 0 };
+          }
+          clientesConEntregas[cc].count++;
+        });
+        const listaClientes = Object.values(clientesConEntregas).sort((a,b) => a.nombre.localeCompare(b.nombre));
+
+        // Nivel 2: pedidos/envíos del cliente seleccionado
+        let pedidosCliente = [];
+        if (sel.cliente) {
+          const grupos = {};
+          entregadas.filter(t => (t.cliente_codigo||'(sin cliente)') === sel.cliente).forEach(t => {
+            const key = t.pedido_folio || t.pedido_id || t.odp_folio || '(sin pedido)';
+            if (!grupos[key]) grupos[key] = { key, pedido_folio: t.pedido_folio||'', count: 0, fecha: t.fecha_entrega||t.entregada_at };
+            grupos[key].count++;
+          });
+          pedidosCliente = Object.values(grupos).sort((a,b) => String(b.key).localeCompare(String(a.key), undefined, {numeric:true}));
+        }
+
+        // Nivel 3: tarimas del pedido seleccionado
+        let tarimasPedido = [];
+        if (sel.cliente && sel.pedido) {
+          tarimasPedido = entregadas.filter(t =>
+            (t.cliente_codigo||'(sin cliente)') === sel.cliente &&
+            (t.pedido_folio || t.pedido_id || t.odp_folio || '(sin pedido)') === sel.pedido
+          ).sort((a,b) => (a.numero_tarima||0)-(b.numero_tarima||0));
+        }
+
+        return `
       <div class="panel" style="margin:16px 0;border-left:5px solid #3b82f6;padding:20px;">
         <div style="font-weight:800;color:#0f172a;margin-bottom:4px;font-size:15px;">➕ Levantar caso RMA</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Registra el reclamo del cliente. Calidad se encargará de la recolección e inspección.</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Identifica el producto reclamado paso a paso: primero el cliente, luego su envío, luego la tarima.</div>
+
+        <!-- Pasos de identificación -->
+        <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:90px;text-align:center;padding:8px;border-radius:8px;background:${sel.cliente?'#dbeafe':'#eff6ff'};border:1px solid ${sel.cliente?'#3b82f6':'#dbeafe'};">
+            <div style="font-size:9px;text-transform:uppercase;color:#64748b;font-weight:700;">Paso 1</div>
+            <div style="font-size:11px;font-weight:800;color:#1e40af;">👤 Cliente</div>
+          </div>
+          <div style="flex:1;min-width:90px;text-align:center;padding:8px;border-radius:8px;background:${sel.pedido?'#dbeafe':'#f8fafc'};border:1px solid ${sel.pedido?'#3b82f6':'#e2e8f0'};opacity:${sel.cliente?'1':'0.5'};">
+            <div style="font-size:9px;text-transform:uppercase;color:#64748b;font-weight:700;">Paso 2</div>
+            <div style="font-size:11px;font-weight:800;color:#1e40af;">📦 Envío/Pedido</div>
+          </div>
+          <div style="flex:1;min-width:90px;text-align:center;padding:8px;border-radius:8px;background:${sel.tarima?'#dbeafe':'#f8fafc'};border:1px solid ${sel.tarima?'#3b82f6':'#e2e8f0'};opacity:${sel.pedido?'1':'0.5'};">
+            <div style="font-size:9px;text-transform:uppercase;color:#64748b;font-weight:700;">Paso 3</div>
+            <div style="font-size:11px;font-weight:800;color:#1e40af;">🏷️ Producto/Tarima</div>
+          </div>
+        </div>
+
         ${entregadas.length === 0 ? `<div style="color:#94a3b8;font-size:12px;padding:8px;">No hay tarimas entregadas disponibles para devolver.</div>` : `
         <div style="display:flex;flex-direction:column;gap:14px;">
+
+          <!-- PASO 1: Cliente -->
           <div>
-            <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Tarima entregada reclamada</label>
-            <select id="rma-tarima" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
-              <option value="">— Selecciona tarima —</option>
-              ${entregadas.map(t => {
-                const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
-                return `<option value="${t.id}">${t.lote_codigo||t.lote||t.id.slice(0,6)}${t.numero_tarima?(' · T'+t.numero_tarima):''} · ODP ${odp.folio||'—'} · ${odp.producto_codigo||''} · ${fmtNum(t.cantidad||0)} ${odp.um||t.um||'pza'}</option>`;
-              }).join('')}
+            <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">👤 Paso 1 — Cliente que reporta</label>
+            <select onchange="window.rmaDrill('cliente', this.value)" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+              <option value="">— Selecciona el cliente —</option>
+              ${listaClientes.map(c => `<option value="${c.codigo}" ${sel.cliente===c.codigo?'selected':''}>${c.nombre} (${c.count} entrega${c.count>1?'s':''})</option>`).join('')}
             </select>
           </div>
+
+          <!-- PASO 2: Pedido/Envío -->
+          ${sel.cliente ? `
+          <div>
+            <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">📦 Paso 2 — Envío / Pedido de ese cliente</label>
+            <select onchange="window.rmaDrill('pedido', this.value)" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+              <option value="">— Selecciona el envío —</option>
+              ${pedidosCliente.map(p => `<option value="${p.key}" ${sel.pedido===p.key?'selected':''}>${p.pedido_folio||p.key} (${p.count} tarima${p.count>1?'s':''})</option>`).join('')}
+            </select>
+          </div>` : ''}
+
+          <!-- PASO 3: Producto/Tarima -->
+          ${sel.cliente && sel.pedido ? `
+          <div>
+            <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">🏷️ Paso 3 — Producto / Tarima reclamada</label>
+            <select onchange="window.rmaDrill('tarima', this.value)" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+              <option value="">— Selecciona la tarima —</option>
+              ${tarimasPedido.map(t => {
+                const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
+                return `<option value="${t.id}" ${sel.tarima===t.id?'selected':''}>${t.producto_codigo||odp.producto_codigo||''} · Lote ${t.lote_codigo||'—'}${t.numero_tarima?(' · T'+t.numero_tarima):''} · ${fmtNum(t.cantidad||0)} ${t.um||odp.um||'pza'}</option>`;
+              }).join('')}
+            </select>
+          </div>` : ''}
+
+          <!-- Ficha de trazabilidad de lo seleccionado -->
+          ${sel.tarima ? (() => {
+            const t = entregadas.find(x => x.id === sel.tarima) || {};
+            const odp = (state.ordenes_produccion||[]).find(o=>o.id===t.odp_id)||{};
+            return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;font-size:12px;color:#166534;">
+              <strong>✓ Producto identificado — trazabilidad completa:</strong><br>
+              Producto <strong>${t.producto_codigo||odp.producto_codigo||'—'}</strong> · Lote ${t.lote_codigo||'—'} · Tarima ${t.numero_tarima||'—'}<br>
+              Producido en ODP ${odp.folio||t.odp_folio||'—'} · Pedido ${t.pedido_folio||'—'} · PKL ${t.packing_list||'—'}
+            </div>`;
+          })() : ''}
+
+          <!-- Motivo + detalle (solo cuando ya hay tarima) -->
+          ${sel.tarima ? `
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
             <div>
               <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Motivo del reclamo</label>
@@ -13805,11 +13894,13 @@ function renderDevoluciones() {
               <input id="rma-notas" type="text" placeholder="Qué reporta el cliente, folio de queja…" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
             </div>
           </div>
-          <div style="display:flex;justify-content:flex-end;margin-top:4px;">
-            <button onclick="window.rmaCrearCaso({tarimaId:document.getElementById('rma-tarima').value, motivo:document.getElementById('rma-motivo').value, notas:document.getElementById('rma-notas').value})" style="padding:11px 28px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;box-shadow:0 2px 6px rgba(59,130,246,0.3);">📝 Levantar caso RMA</button>
-          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+            <button onclick="window.rmaDrillReset()" style="padding:9px 16px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;">↺ Empezar de nuevo</button>
+            <button onclick="window.rmaCrearCaso({tarimaId:'${sel.tarima}', motivo:document.getElementById('rma-motivo').value, notas:document.getElementById('rma-notas').value}); window.rmaDrillReset(true);" style="padding:11px 28px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;box-shadow:0 2px 6px rgba(59,130,246,0.3);">📝 Levantar caso RMA</button>
+          </div>` : ''}
         </div>`}
-      </div>` : `<div style="padding:12px;background:#f1f5f9;border-radius:8px;color:#64748b;font-size:12px;margin:10px 0;">Los casos RMA los levanta CS/KAM. Aquí puedes ver el tablero y, si eres de Planta/Calidad, gestionar las etapas.</div>`}
+      </div>`;
+      })() : `<div style="padding:12px;background:#f1f5f9;border-radius:8px;color:#64748b;font-size:12px;margin:10px 0;">Los casos RMA los levanta CS/KAM. Aquí puedes ver el tablero y, si eres de Planta/Calidad, gestionar las etapas.</div>`}
 
       <div style="font-weight:800;color:#0f172a;margin:16px 0 8px;">Tablero de casos</div>
       ${devs.length === 0 ? `<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay casos RMA.</div>` : `
@@ -13928,6 +14019,19 @@ window.abrirReciboRMA = (devId) => {
   const recibido_por = prompt('¿Quién recibió en planta?', u.nombre || u.email || '') || '';
 
   window.rmaRecibir(devId, { tarimas_recibidas, estado_fisico, recibido_por, notas_recibo });
+};
+
+// 🔍 Drill-down del RMA: al elegir un nivel, limpia los siguientes y re-renderiza
+window.rmaDrill = (nivel, valor) => {
+  const sel = state.rmaSeleccion || {};
+  if (nivel === 'cliente') { state.rmaSeleccion = { cliente: valor || '' }; }
+  else if (nivel === 'pedido') { state.rmaSeleccion = { cliente: sel.cliente, pedido: valor || '' }; }
+  else if (nivel === 'tarima') { state.rmaSeleccion = { cliente: sel.cliente, pedido: sel.pedido, tarima: valor || '' }; }
+  window.forzarRender();
+};
+window.rmaDrillReset = (silent) => {
+  state.rmaSeleccion = {};
+  if (!silent) window.forzarRender();
 };
 
 
