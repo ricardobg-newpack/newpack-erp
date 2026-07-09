@@ -3742,6 +3742,7 @@ function renderApp() {
   const esALP = u.depto === 'ALP' || esCEO;
   const esCEDMTY = u.depto === 'CEDMTY' || esCEO;
   const esCEDMEX = u.depto === 'CEDMEX' || esCEO;
+  const esFAC = u.depto === 'FAC' || esCEO;
   const esCOMP = u.depto === 'COMP' || esCEO;
   const esMTTO = u.depto === 'MTTO' || esCEO;
   const esADMIN = u.depto === 'ADMIN' || esCEO || u.rol === 'admin';
@@ -3768,7 +3769,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0707-rmapanel</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0708-audit</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3818,6 +3819,8 @@ function renderApp() {
         ${(esCS || esKAM || esCAL || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'certificados_calidad' ? 'active' : ''}" data-vista="certificados_calidad">📜 Certificados de Calidad</button>
           <button class="nav-item ${state.vista === 'devoluciones' ? 'active' : ''}" data-vista="devoluciones">🔄 Devoluciones (RMA)</button>
+        ` : ''}
+        ${(esCS || esKAM || esCAL || esFAC || esCEDMTY || esCEDMEX || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas</button>
         ` : ''}
         
@@ -10640,6 +10643,7 @@ window.rmaProgramarRecoleccion = async (devId, datos) => {
   if (!_esComercial(u)) { toast('🔒 Solo CS/KAM programa la recolección.', 'error'); return; }
   const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
   const { fecha = '', tipo_recoleccion = '', transportista = '', num_tarimas = '', direccion = '', contacto = '' } = datos || {};
+  if (dev.estatus !== 'solicitada') { toast('La recolección solo se programa en casos recién solicitados.', 'error'); return; }
   if (!fecha) { toast('Indica la fecha programada de recolección.', 'error'); return; }
   state.loadingAccion = true; window.forzarRender();
   try {
@@ -10665,6 +10669,7 @@ window.rmaRecibir = async (devId, datos) => {
   const u = state.user || {};
   if (!_esPlanta(u)) { toast('🔒 Solo Calidad/Logística de planta puede recibir la devolución.', 'error'); return; }
   const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
+  if (dev.estatus !== 'recoleccion_solicitada') { toast('Solo se puede recibir un caso con recolección ya programada.', 'error'); return; }
   const { tarimas_recibidas = '', estado_fisico = '', recibido_por = '', notas_recibo = '' } = datos || {};
   state.loadingAccion = true; window.forzarRender();
   try {
@@ -10697,6 +10702,7 @@ window.rmaDictaminar = async (devId, { destino, causa_raiz = '', dictamen_notas 
   const u = state.user || {};
   if (!_esPlanta(u)) { toast('🔒 Solo Calidad puede dictaminar.', 'error'); return; }
   const dev = (state.devoluciones || []).find(d => d.id === devId); if (!dev) return;
+  if (dev.estatus !== 'recibida') { toast('Solo se dictamina un caso ya recibido en planta.', 'error'); return; }
   if (!destino) { toast('Selecciona el destino del material.', 'error'); return; }
   state.loadingAccion = true; window.forzarRender();
   try {
@@ -10774,7 +10780,11 @@ window.rmaCerrar = async (devId) => {
 // Cada parada es una entrega de pedido (OV) y/o una recolección de RMA.
 // Roles: CS/KAM y Logística/Planta (CAL/ALP) + CEO/ADMIN.
 // ═══════════════════════════════════════════════════════════════════════════
-const RUTA_TIPOS = { propia: '🚛 Propia (NewPack)', externa: '📦 Externa (subcontratada)' };
+const RUTA_TIPOS = {
+  interno: '🏠 NewPack Logística',
+  externo: '🚛 Proveedor externo',
+  cliente: '🙋 Cliente recoge',
+};
 const RUTA_ESTADOS = {
   programada: { label: '📅 Programada', color: '#3b82f6' },
   en_ruta: { label: '🚚 En ruta', color: '#f59e0b' },
@@ -10786,31 +10796,55 @@ const PARADA_TIPOS = {
   recoleccion: '📥 Recolección RMA',
   combinada: '🔄 Entrega + Recolección',
 };
-const _esLogistica = (u) => ['CS','KAM','CAL','ALP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+const _esLogistica = (u) => ['CS','KAM','CAL','ALP','FAC','CEDMTY','CEDMEX','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
 
 // Crear una ruta
-window.crearRutaLogistica = async ({ fecha, tipo, origen, transportista = '', unidad = '', operador = '', notas = '' }) => {
+window.crearRutaLogistica = async ({ fecha, tipo, origen, transportista = '', proveedor_id = '', notas = '' }) => {
   const u = state.user || {};
   if (!_esLogistica(u)) { toast('🔒 Solo CS/KAM o Logística pueden programar rutas.', 'error'); return; }
-  if (!fecha) { toast('Indica la fecha de la ruta.', 'error'); return; }
-  if (!tipo) { toast('Indica si la ruta es propia o externa.', 'error'); return; }
+  if (!fecha) { toast('Indica la fecha de envío.', 'error'); return; }
+  const tipoT = tipo || 'interno';
   state.loadingAccion = true; window.forzarRender();
   try {
     const folio = await siguienteFolio('ruta');
     const codigo = `RUT-${new Date().getFullYear()}-${String(folio).padStart(5, '0')}`;
+    // Resolver nombre del transporte
+    let transporteNombre = 'NewPack Logística';
+    if (tipoT === 'externo' && proveedor_id) {
+      const prov = (state.transportistas || []).find(t => t.id === proveedor_id);
+      transporteNombre = prov?.nombre || 'Proveedor externo';
+    } else if (tipoT === 'cliente') {
+      transporteNombre = 'Cliente recoge';
+    }
     await addDoc(collection(db, 'rutas_logistica'), {
       codigo, estatus: 'programada',
-      fecha, tipo, tipo_texto: RUTA_TIPOS[tipo] || tipo,
+      fecha, tipo: tipoT, tipo_texto: RUTA_TIPOS[tipoT] || tipoT,
       origen: origen || 'CEDIS-MTY',
-      transportista, unidad, operador, notas,
+      transportista: transporteNombre,
+      proveedor_id: proveedor_id || '',
+      notas,
       paradas: [],
       creado_por_nombre: u.nombre || u.email || '',
       creado_por_uid: u.uid || '',
       created_at: serverTimestamp(),
     });
-    toast(`✅ Ruta ${codigo} creada. Ahora agrégale paradas.`, 'success');
+    toast(`✅ Ruta ${codigo} creada. Ahora agrega las OVs remisionadas.`, 'success');
   } catch (e) { console.error('Error crear ruta:', e); toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Helpers del formulario de ruta
+window.rutaTipoTransporteChange = (val) => {
+  const wrap = document.getElementById('rut-externo-wrap');
+  if (wrap) wrap.style.display = (val === 'externo') ? 'block' : 'none';
+};
+window.crearRutaDesdeForm = () => {
+  const fecha = document.getElementById('rut-fecha')?.value;
+  const tipo = document.getElementById('rut-transporte')?.value || 'interno';
+  const origen = document.getElementById('rut-origen')?.value || 'CEDIS-MTY';
+  const proveedor_id = tipo === 'externo' ? (document.getElementById('rut-proveedor')?.value || '') : '';
+  if (!fecha) { toast('Indica la fecha de envío.', 'error'); return; }
+  window.crearRutaLogistica({ fecha, tipo, origen, proveedor_id });
 };
 
 // Agregar una parada a la ruta (entrega de OV, recolección de RMA, o combinada)
@@ -10826,6 +10860,10 @@ window.agregarParadaRuta = async (rutaId, parada) => {
       tipo: parada.tipo || 'entrega',
       ov_id: parada.ov_id || '',
       ov_folio: parada.ov_folio || '',
+      remision_folio: parada.remision_folio || '',
+      producto_codigo: parada.producto_codigo || '',
+      num_tarimas: parada.num_tarimas || 0,
+      kg: parada.kg || 0,
       rma_id: parada.rma_id || '',
       rma_codigo: parada.rma_codigo || '',
       cliente_nombre: parada.cliente_nombre || '',
@@ -10868,11 +10906,30 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
   state.loadingAccion = true; window.forzarRender();
   try {
     const patch = { estatus: nuevoEstado };
-    if (nuevoEstado === 'en_ruta') patch.despachada_at = serverTimestamp();
+    if (nuevoEstado === 'en_ruta') {
+      patch.despachada_at = serverTimestamp();
+      // 🔗 Al despachar (CEDIS marca salida): las OVs de la ruta pasan a 'enviada'
+      for (const p of (ruta.paradas || [])) {
+        if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
+          await updateDoc(doc(db, 'ordenes_venta', p.ov_id), {
+            estatus: 'enviada', ruta_codigo: ruta.codigo, enviada_at: serverTimestamp(),
+          }).catch(()=>{});
+          const ovLocal = (state.ordenes_venta||[]).find(o => o.id === p.ov_id);
+          if (ovLocal) ovLocal.estatus = 'enviada';
+        }
+      }
+    }
     if (nuevoEstado === 'completada') {
       patch.completada_at = serverTimestamp();
-      // Efectos: marcar RMAs recolectadas y OVs como en tránsito de entrega
+      // Efectos: OVs entregadas + RMAs recolectadas
       for (const p of (ruta.paradas || [])) {
+        if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
+          await updateDoc(doc(db, 'ordenes_venta', p.ov_id), {
+            estatus: 'entregada', entregada_at: serverTimestamp(),
+          }).catch(()=>{});
+          const ovLocal = (state.ordenes_venta||[]).find(o => o.id === p.ov_id);
+          if (ovLocal) ovLocal.estatus = 'entregada';
+        }
         if ((p.tipo === 'recoleccion' || p.tipo === 'combinada') && p.rma_id) {
           const dev = (state.devoluciones || []).find(d => d.id === p.rma_id);
           if (dev && dev.estatus === 'recoleccion_solicitada') {
@@ -10884,7 +10941,7 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
       }
     }
     await updateDoc(doc(db, 'rutas_logistica', rutaId), patch);
-    toast(nuevoEstado === 'completada' ? '✅ Ruta completada.' : nuevoEstado === 'en_ruta' ? '🚚 Ruta despachada.' : 'Ruta actualizada.', 'success');
+    toast(nuevoEstado === 'completada' ? '✅ Ruta completada. OVs entregadas.' : nuevoEstado === 'en_ruta' ? '🚚 Ruta despachada. OVs marcadas como enviadas.' : 'Ruta actualizada.', 'success');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
@@ -13542,10 +13599,34 @@ window.enviarCertificadoEmail = (odpId) => {
   // Futuro: genera el PDF y abre mailto: o lo manda por backend
 };
 
+// Métricas de una ruta: tarimas, kg, entregas/recolecciones
+function _rutaMetricas(r) {
+  let tarimas = 0, kg = 0, entregas = 0, recolecciones = 0, entregadas = 0;
+  (r.paradas || []).forEach(p => {
+    if (p.tipo === 'entrega' || p.tipo === 'combinada') {
+      entregas++;
+      // Preferir el dato congelado en la parada; si no existe (paradas viejas), calcular de la OV/tarimas
+      if (p.num_tarimas != null && p.num_tarimas > 0) {
+        tarimas += Number(p.num_tarimas) || 0;
+        kg += Number(p.kg) || 0;
+      } else {
+        const ov = (state.ordenes_venta || []).find(o => o.id === p.ov_id);
+        let tars = ov && ov.tarimas_ids ? (state.tarimas || []).filter(t => ov.tarimas_ids.includes(t.id)) : [];
+        if (tars.length === 0 && p.ov_id) tars = (state.tarimas || []).filter(t => t.ov_id === p.ov_id);
+        tarimas += tars.length;
+        kg += tars.reduce((s,t) => s + Number(t.peso_neto_kg || t.peso_neto || 0), 0);
+      }
+    }
+    if (p.tipo === 'recoleccion' || p.tipo === 'combinada') recolecciones++;
+    if (p.entregada) entregadas++;
+  });
+  return { tarimas, kg, entregas, recolecciones, entregadas, totalParadas: (r.paradas||[]).length };
+}
+
 // 🚛 VISTA: LOGÍSTICA / RUTAS
 function renderLogisticaRutas() {
   const u = state.user || {};
-  const puede = ['CS','KAM','CAL','ALP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const puede = ['CS','KAM','CAL','ALP','FAC','CEDMTY','CEDMEX','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
   const rutas = (state.rutas_logistica || []).slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
   const abiertas = rutas.filter(r => r.estatus === 'programada' || r.estatus === 'en_ruta').length;
   const sub = state.tabs?.logistica || 'tablero';
@@ -13571,16 +13652,28 @@ function renderLogisticaRutas() {
           <div style="font-size:12.5px;color:#0f172a;font-weight:700;margin-top:6px;">📅 ${fmtFecha(r.fecha)} · ${r.origen||''}</div>
         </div>
         <div style="text-align:right;font-size:10.5px;color:#94a3b8;white-space:nowrap;">
-          <div>${r.transportista||'—'}</div>
+          <div style="font-weight:700;color:#334155;">${r.transportista||'—'}</div>
           <div>${r.unidad||''} ${r.operador?('· '+r.operador):''}</div>
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 18px;padding:10px 18px;background:#f8fafc;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;margin-top:12px;">
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Paradas</div><div style="font-size:13px;color:#0f172a;font-weight:700;">${paradas.length}</div></div>
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Entregas</div><div style="font-size:13px;color:#0f172a;font-weight:700;">${paradas.filter(p=>p.tipo==='entrega'||p.tipo==='combinada').length}</div></div>
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Recolecciones</div><div style="font-size:13px;color:#0f172a;font-weight:700;">${paradas.filter(p=>p.tipo==='recoleccion'||p.tipo==='combinada').length}</div></div>
+      ${(() => {
+        const m = _rutaMetricas(r);
+        const pct = m.totalParadas ? Math.round((m.entregadas/m.totalParadas)*100) : 0;
+        return `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px 18px;padding:10px 18px;background:#f8fafc;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;margin-top:12px;">
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Paradas</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.totalParadas}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Entregas</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.entregas}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Recolecc.</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.recolecciones}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Tarimas</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.tarimas}</div></div>
+        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Peso</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${fmtNum(Math.round(m.kg))} kg</div></div>
       </div>
+      ${r.estatus==='en_ruta'||r.estatus==='completada'?`
+      <div style="padding:8px 18px 0;">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#64748b;margin-bottom:3px;"><span>Progreso de entregas</span><span style="font-weight:700;">${m.entregadas}/${m.totalParadas} · ${pct}%</span></div>
+        <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${pct===100?'#16a34a':'#f59e0b'};border-radius:3px;transition:width 0.3s;"></div></div>
+      </div>`:''}`;
+      })()}
 
       <div style="padding:10px 18px 0;">
         ${paradas.length===0 ? `<div style="font-size:12px;color:#94a3b8;padding:6px 0;">Sin paradas. Agrega entregas o recolecciones.</div>` :
@@ -13618,7 +13711,7 @@ function renderLogisticaRutas() {
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
         <div>
           <div style="font-size:22px;font-weight:900;color:#0f172a;">🚛 Logística / Rutas</div>
-          <div style="font-size:12px;color:#64748b;margin-top:2px;">Programa rutas con las OVs que CEDIS ya marcó como listas · propias y externas · una o varias paradas</div>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">Programa el envío de OVs ya remisionadas · CS agenda, Facturación ajusta, CEDIS despacha</div>
         </div>
         <div style="display:flex;gap:8px;">
           ${abiertas>0?`<span style="background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">🚚 ${abiertas} activas</span>`:''}
@@ -13626,25 +13719,21 @@ function renderLogisticaRutas() {
         </div>
       </div>
 
-      ${puede?`
+      ${puede?(() => {
+        const transportistas = (state.transportistas || []).filter(t => t.activo !== false);
+        const externos = transportistas.filter(t => t.tipo === 'externo');
+        return `
       <div class="panel" style="margin:16px 0;border-left:5px solid #16a34a;padding:20px;">
-        <div style="font-weight:800;color:#0f172a;margin-bottom:4px;font-size:15px;">➕ Nueva ruta</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Crea la ruta y luego agrégale las paradas (entregas y/o recolecciones).</div>
+        <div style="font-weight:800;color:#0f172a;margin-bottom:4px;font-size:15px;">➕ Nueva ruta / envío</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Programa el envío de OVs ya remisionadas. Define fecha, transporte y luego agrega las OVs.</div>
         <div style="display:flex;flex-direction:column;gap:14px;">
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
             <div>
-              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Fecha de la ruta</label>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">📅 Fecha de envío *</label>
               <input id="rut-fecha" type="date" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
             </div>
             <div>
-              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Tipo</label>
-              <select id="rut-tipo" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
-                <option value="propia">🚛 Propia (NewPack)</option>
-                <option value="externa">📦 Externa (subcontratada)</option>
-              </select>
-            </div>
-            <div>
-              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Origen</label>
+              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Sale de</label>
               <select id="rut-origen" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
                 <option value="CEDIS-MTY">CEDIS Monterrey</option>
                 <option value="CEDIS-MEX">CEDIS México</option>
@@ -13652,37 +13741,168 @@ function renderLogisticaRutas() {
               </select>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
-            <div>
-              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Transportista</label>
-              <input id="rut-transp" type="text" placeholder="NewPack / nombre externo" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
-            </div>
-            <div>
-              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Unidad / placas</label>
-              <input id="rut-unidad" type="text" placeholder="Ej. Camión 3 / ABC-123" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
-            </div>
-            <div>
-              <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Operador</label>
-              <input id="rut-operador" type="text" placeholder="Chofer" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;box-sizing:border-box;" />
-            </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">🚚 Transporte</label>
+            <select id="rut-transporte" onchange="window.rutaTipoTransporteChange(this.value)" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+              <option value="interno">🏠 NewPack Logística (transporte propio)</option>
+              <option value="externo">🚛 Proveedor externo</option>
+              <option value="cliente">🙋 El cliente viene por el material</option>
+            </select>
+          </div>
+          <div id="rut-externo-wrap" style="display:none;">
+            <label style="display:block;font-size:11px;font-weight:700;color:#475569;margin-bottom:5px;">Proveedor externo</label>
+            ${externos.length === 0
+              ? `<div style="font-size:12px;color:#b45309;background:#fef3c7;border-radius:8px;padding:10px;">No hay proveedores externos registrados. Agrégalos en <strong>Catálogo Logística</strong>.</div>`
+              : `<select id="rut-proveedor" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;">
+                  ${externos.map(t => `<option value="${t.id}">${t.nombre}${t.telefono?(' · '+t.telefono):''}</option>`).join('')}
+                </select>`}
           </div>
           <div style="display:flex;justify-content:flex-end;">
-            <button onclick="window.crearRutaLogistica({fecha:document.getElementById('rut-fecha').value, tipo:document.getElementById('rut-tipo').value, origen:document.getElementById('rut-origen').value, transportista:document.getElementById('rut-transp').value, unidad:document.getElementById('rut-unidad').value, operador:document.getElementById('rut-operador').value})" style="padding:11px 28px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;box-shadow:0 2px 6px rgba(22,163,74,0.3);">🚛 Crear ruta</button>
+            <button onclick="window.crearRutaDesdeForm()" style="padding:11px 28px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;box-shadow:0 2px 6px rgba(22,163,74,0.3);">🚛 Crear ruta</button>
           </div>
         </div>
-      </div>`:''}
+      </div>`;
+      })():''}
 
-      <div style="font-weight:800;color:#0f172a;margin:16px 0 8px;">Tablero por día</div>
-      ${rutas.length===0?`<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay rutas programadas.</div>`:
-        fechasOrdenadas.map(f => `
-          <div style="margin-bottom:20px;">
-            <div style="font-size:13px;font-weight:800;color:#334155;background:#eff6ff;padding:8px 14px;border-radius:8px;margin-bottom:10px;display:inline-block;">📅 ${f==='sin-fecha'?'Sin fecha':fmtFecha(f)} · ${porFecha[f].length} ruta(s)</div>
-            <div style="display:flex;flex-direction:column;gap:14px;">
-              ${porFecha[f].map(cardRuta).join('')}
-            </div>
-          </div>`).join('')}
+      <!-- Switch de vista + navegación -->
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin:16px 0 12px;">
+        <div style="display:flex;gap:4px;background:#f1f5f9;padding:4px;border-radius:10px;">
+          <button onclick="window.setVistaRutas('calendario')" style="padding:7px 16px;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:12px;background:${(state.rutasVista||'calendario')==='calendario'?'#fff':'transparent'};color:${(state.rutasVista||'calendario')==='calendario'?'#0f172a':'#64748b'};box-shadow:${(state.rutasVista||'calendario')==='calendario'?'0 1px 3px rgba(0,0,0,0.1)':'none'};">📅 Calendario semanal</button>
+          <button onclick="window.setVistaRutas('lista')" style="padding:7px 16px;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:12px;background:${state.rutasVista==='lista'?'#fff':'transparent'};color:${state.rutasVista==='lista'?'#0f172a':'#64748b'};box-shadow:${state.rutasVista==='lista'?'0 1px 3px rgba(0,0,0,0.1)':'none'};">📋 Lista</button>
+        </div>
+      </div>
+
+      ${(state.rutasVista||'calendario')==='calendario' ? _rutasCalendarioSemanal(rutas, badge) : `
+        <div style="font-weight:800;color:#0f172a;margin:8px 0;">Tablero por día</div>
+        ${rutas.length===0?`<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay rutas programadas.</div>`:
+          fechasOrdenadas.map(f => `
+            <div style="margin-bottom:20px;">
+              <div style="font-size:13px;font-weight:800;color:#334155;background:#eff6ff;padding:8px 14px;border-radius:8px;margin-bottom:10px;display:inline-block;">📅 ${f==='sin-fecha'?'Sin fecha':fmtFecha(f)} · ${porFecha[f].length} ruta(s)</div>
+              <div style="display:flex;flex-direction:column;gap:14px;">
+                ${porFecha[f].map(cardRuta).join('')}
+              </div>
+            </div>`).join('')}
+      `}
     </div>
   `;
+}
+
+window.setVistaRutas = (v) => { state.rutasVista = v; window.forzarRender(); };
+window.navSemanaRutas = (delta) => {
+  const base = state.rutasSemanaOffset || 0;
+  state.rutasSemanaOffset = base + delta;
+  window.forzarRender();
+};
+
+// 📅 CALENDARIO SEMANAL de programación de envíos
+function _rutasCalendarioSemanal(rutas, badge) {
+  const offset = state.rutasSemanaOffset || 0;
+  // Lunes de la semana actual + offset
+  const hoy = new Date();
+  hoy.setHours(0,0,0,0);
+  const diaSemana = (hoy.getDay() + 6) % 7; // 0 = lunes
+  const lunes = new Date(hoy);
+  lunes.setDate(hoy.getDate() - diaSemana + (offset * 7));
+
+  const dias = [];
+  const nombresDia = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(lunes);
+    d.setDate(lunes.getDate() + i);
+    const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    dias.push({ nombre: nombresDia[i], fecha: d, iso, esHoy: d.getTime() === hoy.getTime() });
+  }
+
+  // Rutas por día ISO
+  const rutasPorDia = {};
+  rutas.forEach(r => { if(!rutasPorDia[r.fecha]) rutasPorDia[r.fecha]=[]; rutasPorDia[r.fecha].push(r); });
+
+  const rangoTxt = `${lunes.getDate()} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][lunes.getMonth()]} — ${dias[6].fecha.getDate()} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][dias[6].fecha.getMonth()]} ${dias[6].fecha.getFullYear()}`;
+
+  // Mini-tarjeta de ruta dentro del día
+  const miniRuta = (r) => {
+    const s = RUTA_ESTADOS[r.estatus] || {color:'#64748b'};
+    const nParadas = (r.paradas||[]).length;
+    const clientes = (r.paradas||[]).map(p => p.cliente_nombre).filter(Boolean).slice(0,2).join(', ');
+    return `
+      <div onclick="window.setVistaRutas('lista')" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${s.color};border-radius:8px;padding:8px 10px;margin-bottom:8px;cursor:pointer;" title="Ver detalle en lista">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
+          <span style="font-weight:800;color:#0f172a;font-size:11px;">${r.codigo}</span>
+          <span style="width:8px;height:8px;border-radius:50%;background:${s.color};flex-shrink:0;"></span>
+        </div>
+        <div style="font-size:10px;color:#64748b;margin-top:3px;">${(r.tipo_texto||'').replace(/^\S+\s/,'')} · ${nParadas} parada(s)</div>
+        ${clientes?`<div style="font-size:10px;color:#334155;margin-top:2px;font-weight:600;">${clientes}${(r.paradas||[]).length>2?'…':''}</div>`:''}
+      </div>`;
+  };
+
+  // Métricas de la semana (KPIs) — solo días visibles
+  const rutasSemana = dias.flatMap(d => rutasPorDia[d.iso] || []);
+  let kpiTarimas = 0, kpiKg = 0, kpiEntregas = 0, kpiRecolec = 0;
+  const porTipo = { interno: 0, externo: 0, cliente: 0 };
+  rutasSemana.forEach(r => {
+    const m = _rutaMetricas(r);
+    kpiTarimas += m.tarimas; kpiKg += m.kg; kpiEntregas += m.entregas; kpiRecolec += m.recolecciones;
+    if (porTipo[r.tipo] != null) porTipo[r.tipo]++;
+  });
+  const kpiCompletadas = rutasSemana.filter(r => r.estatus === 'completada').length;
+  const pctSemana = rutasSemana.length ? Math.round((kpiCompletadas/rutasSemana.length)*100) : 0;
+
+  const kpi = (valor, etiqueta, color, icono) => `
+    <div style="flex:1;min-width:110px;background:#fff;border:1px solid #e2e8f0;border-top:3px solid ${color};border-radius:10px;padding:12px 14px;">
+      <div style="font-size:10px;text-transform:uppercase;color:#94a3b8;font-weight:700;letter-spacing:0.3px;">${icono} ${etiqueta}</div>
+      <div style="font-size:22px;font-weight:900;color:#0f172a;margin-top:3px;line-height:1;">${valor}</div>
+    </div>`;
+
+  return `
+    <!-- KPIs de la semana -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+      ${kpi(rutasSemana.length, 'Envíos', '#3b82f6', '🚚')}
+      ${kpi(kpiEntregas, 'Entregas', '#0891b2', '📤')}
+      ${kpi(kpiRecolec, 'Recolecc.', '#f59e0b', '📥')}
+      ${kpi(kpiTarimas, 'Tarimas', '#8b5cf6', '📦')}
+      ${kpi(fmtNum(Math.round(kpiKg))+' kg', 'Peso total', '#16a34a', '⚖️')}
+      <div style="flex:1;min-width:130px;background:#fff;border:1px solid #e2e8f0;border-top:3px solid #16a34a;border-radius:10px;padding:12px 14px;">
+        <div style="font-size:10px;text-transform:uppercase;color:#94a3b8;font-weight:700;">✅ Completado</div>
+        <div style="font-size:22px;font-weight:900;color:#0f172a;margin-top:3px;line-height:1;">${pctSemana}%</div>
+        <div style="height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-top:6px;"><div style="height:100%;width:${pctSemana}%;background:#16a34a;"></div></div>
+      </div>
+    </div>
+    ${rutasSemana.length>0?`<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;font-size:11px;color:#64748b;">
+      <span>🏠 NewPack: <strong>${porTipo.interno}</strong></span>
+      <span>🚛 Externo: <strong>${porTipo.externo}</strong></span>
+      <span>🙋 Cliente recoge: <strong>${porTipo.cliente}</strong></span>
+    </div>`:''}
+
+    <div class="panel" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:15px;font-weight:900;color:#0f172a;">📅 Semana: ${rangoTxt}</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button onclick="window.navSemanaRutas(-1)" style="padding:6px 12px;border:1px solid #cbd5e1;background:#fff;border-radius:7px;cursor:pointer;font-weight:700;font-size:12px;">← Anterior</button>
+          <button onclick="window.rutasSemanaOffset=0;window.forzarRender()" style="padding:6px 12px;border:1px solid #cbd5e1;background:#fff;border-radius:7px;cursor:pointer;font-weight:700;font-size:12px;">Hoy</button>
+          <button onclick="window.navSemanaRutas(1)" style="padding:6px 12px;border:1px solid #cbd5e1;background:#fff;border-radius:7px;cursor:pointer;font-weight:700;font-size:12px;">Siguiente →</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;overflow-x:auto;">
+        ${dias.map(d => {
+          const rs = (rutasPorDia[d.iso] || []).sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo)));
+          // Totales del día
+          let diaKg = 0, diaTar = 0;
+          rs.forEach(r => { const m = _rutaMetricas(r); diaKg += m.kg; diaTar += m.tarimas; });
+          return `
+            <div style="min-width:120px;background:${d.esHoy?'#eff6ff':'#f8fafc'};border:1px solid ${d.esHoy?'#3b82f6':'#e2e8f0'};border-radius:10px;padding:10px 8px;min-height:140px;">
+              <div style="text-align:center;margin-bottom:8px;">
+                <div style="font-size:11px;font-weight:800;color:${d.esHoy?'#1e40af':'#334155'};text-transform:uppercase;">${d.nombre}</div>
+                <div style="font-size:18px;font-weight:900;color:${d.esHoy?'#3b82f6':'#0f172a'};">${d.fecha.getDate()}</div>
+                ${rs.length>0?`<div style="font-size:9px;color:#64748b;">${rs.length} envío(s)</div><div style="font-size:9px;color:#8b5cf6;font-weight:700;">${diaTar} tar · ${fmtNum(Math.round(diaKg))}kg</div>`:''}
+              </div>
+              ${rs.length===0?`<div style="text-align:center;color:#cbd5e1;font-size:10px;padding:10px 0;">—</div>`:rs.map(miniRuta).join('')}
+            </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #f1f5f9;">
+        ${Object.entries(RUTA_ESTADOS).map(([k,v]) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:#64748b;"><span style="width:9px;height:9px;border-radius:50%;background:${v.color};"></span>${v.label.replace(/^\S+\s/,'')}</span>`).join('')}
+      </div>
+    </div>`;
 }
 
 // Agregar parada: elige tipo, luego OV o RMA
@@ -13697,20 +13917,30 @@ window.abrirAgregarParada = (rutaId) => {
   let parada = { tipo };
 
   if (tipo === 'entrega' || tipo === 'combinada') {
-    // Solo OVs que CEDIS ya marcó como LISTAS PARA EMBARCAR (según el flujo real)
+    // Solo OVs ya REMISIONADAS (por_cargar) — material listo y en facturación
     const ovs = (state.ordenes_venta || []).filter(o =>
-      !o.archivada && (o.estatus === 'lista_embarcar' || o.estatus === 'por_cargar')
+      !o.archivada && o.estatus === 'por_cargar'
     ).slice(0, 60);
-    if (ovs.length === 0) { toast('No hay OVs listas para embarcar. CEDIS debe marcar el material como listo primero.', 'error'); return; }
-    const lista = ovs.map((o, i) => `${i+1}) ${o.folio} · ${o.cliente_nombre||o.cliente_codigo||''}`).join('\n');
-    const sel = prompt(`Elige la OV a entregar (solo listas para embarcar):\n\n${lista}`, '1');
+    if (ovs.length === 0) { toast('No hay OVs remisionadas listas. CS debe generar la remisión primero.', 'error'); return; }
+    const lista = ovs.map((o, i) => `${i+1}) ${o.folio} · ${o.cliente_nombre||o.cliente_codigo||''}${o.remision_folio?(' · '+o.remision_folio):''}`).join('\n');
+    const sel = prompt(`Elige la OV remisionada a enviar:\n\n${lista}`, '1');
     if (sel === null) return;
     const ov = ovs[Number(sel)-1];
     if (!ov) { toast('OV inválida.', 'error'); return; }
     parada.ov_id = ov.id; parada.ov_folio = ov.folio;
+    parada.remision_folio = ov.remision_folio || '';
     parada.cliente_nombre = ov.cliente_nombre || ov.cliente_codigo || '';
     const cli = (state.clientes||[]).find(c => c.codigo === ov.cliente_codigo);
     parada.direccion = cli?.direccion || '';
+    // 📦 Congelar tarimas y kg en la parada (trazabilidad: la ruta registra lo que llevó)
+    let tarimasOV = (state.tarimas || []).filter(t => (ov.tarimas_ids || []).includes(t.id));
+    if (tarimasOV.length === 0) {
+      // Fallback: buscar tarimas ligadas directamente a esta OV
+      tarimasOV = (state.tarimas || []).filter(t => t.ov_id === ov.id);
+    }
+    parada.num_tarimas = tarimasOV.length;
+    parada.kg = tarimasOV.reduce((s,t) => s + Number(t.peso_neto_kg || t.peso_neto || 0), 0);
+    parada.producto_codigo = ov.producto_codigo || (tarimasOV[0] && tarimasOV[0].producto_codigo) || '';
   }
 
   if (tipo === 'recoleccion' || tipo === 'combinada') {
