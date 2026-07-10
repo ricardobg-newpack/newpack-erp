@@ -3775,7 +3775,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-libfix2</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-libbtn</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -15041,7 +15041,18 @@ function renderTarjetaCalidad(o, contexto) {
       ` : ''}
       
       <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
-        ${o.estatus === 'pendiente_calidad' ? (() => {
+        ${(() => {
+          // 🔧 El botón "Liberar" aparece si la ODP está marcada pendiente_calidad, O si
+          //    está en_produccion pero ya produjo su meta completa y aún tiene material por
+          //    liberar (caso: orden terminada que nadie marcó "terminar" manualmente).
+          const _metaKg = Number(o.cantidad_kg_produccion) || 0;
+          const _disp = window.kgDisponibleParaJalar(o);
+          const _regTotal = (Number(_disp.registradoKg) || 0) + (Number(o.kg_liberado_parcial) || 0);
+          const _completa = _metaKg > 0 && _regTotal >= _metaKg * 0.98;
+          const _hayPorLiberar = (Number(_disp.disponibleKg) || 0) > 0.5;
+          const _puedeLiberar = o.estatus === 'pendiente_calidad'
+            || (o.estatus === 'en_produccion' && !o.archivada && _completa && _hayPorLiberar);
+          if (!_puedeLiberar) return '';
           // 🆕 DETECCIÓN DE ERROR DE FLUJO: ¿esta ODP llegó a Calidad sin hacer un 2º proceso?
           //    Señales: (a) el producto requiere un proceso que NO está en la ruta, o
           //             (b) hay rollos de extrusión en intermedio sin consumir (no bolseados).
@@ -15069,7 +15080,7 @@ function renderTarjetaCalidad(o, contexto) {
             `;
           }
           return `<button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>`;
-        })() : ''}
+        })()}
         ${(o.estatus === 'liberada_empaque' || o.packing_list || o.tiene_liberaciones_parciales) && o.estatus !== 'rechazada' ? (() => {
           // Agrupar tarimas de la ODP por PKL (cada parcial liberado = un PKL)
           const _tars = (state.tarimas || []).filter(t => t.odp_id === o.id);
