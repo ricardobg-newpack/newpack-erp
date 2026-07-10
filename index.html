@@ -3800,7 +3800,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rutaedit</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-cierrelib</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -46597,7 +46597,27 @@ window.confirmarLiberarCalidad = async (odpId) => {
       await batchOps.commit();
       
       // Actualizar ODP
-      await updateDoc(doc(db, 'ordenes_produccion', odpId), esParcialLib ? {
+      // 🔧 CIERRE AUTOMÁTICO: si esta liberación (aunque sea parcial) deja la orden SIN
+      //    material pendiente por liberar (ya se liberó todo lo producido y la producción
+      //    está completa), la orden debe CERRARSE como liberada_empaque en vez de quedarse
+      //    en_produccion. Así no quedan órdenes "abiertas" que ya entregaron todo.
+      let cerrarComoTotal = !esParcialLib;
+      if (esParcialLib) {
+        const _metaKg = Number(odp.cantidad_kg_produccion) || 0;
+        const _yaLiberadoAntes = Number(odp.kg_liberado_parcial) || 0;
+        const _liberadoAhora = Number(totalPesoNeto.toFixed(2));
+        const _liberadoTotalAcum = _yaLiberadoAntes + _liberadoAhora;
+        // ¿Cuánto se produjo realmente? (para saber si ya no queda nada por liberar)
+        const _prodFinal = window.cantidadProducidaFinalUM ? window.cantidadProducidaFinalUM(odp) : { kg: 0 };
+        const _dispDespues = window.kgDisponibleParaJalar ? window.kgDisponibleParaJalar(odp) : { disponibleKg: 0 };
+        const _quedaDisponible = (Number(_dispDespues.disponibleKg) || 0) - _liberadoAhora;
+        // Cierra si: la producción alcanzó su meta (98%) Y ya no queda material por liberar
+        const _produccionCompleta = _metaKg > 0 && (_liberadoTotalAcum >= _metaKg * 0.98);
+        if (_produccionCompleta && _quedaDisponible <= 0.5) {
+          cerrarComoTotal = true;
+        }
+      }
+      await updateDoc(doc(db, 'ordenes_produccion', odpId), !cerrarComoTotal ? {
         // 🔹 Liberación PARCIAL: la orden NO se detiene, sigue produciendo el resto.
         estatus: 'en_produccion',
         kg_liberado_parcial: (Number(odp.kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
@@ -46610,6 +46630,13 @@ window.confirmarLiberarCalidad = async (odpId) => {
         updated_at: serverTimestamp()
       } : {
         estatus: 'liberada_empaque',
+        // 🆕 Si venía de parciales, acumular el último y marcar que cerró completa
+        ...(esParcialLib ? {
+          kg_liberado_parcial: (Number(odp.kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
+          num_liberaciones_parciales: (Number(odp.num_liberaciones_parciales) || 0) + 1,
+          tiene_liberaciones_parciales: true,
+          cerrada_desde_parcial: true,
+        } : {}),
         liberacion_calidad: liberacionData,
         packing_list: codigoPKL,
         lotes_generados: lotesGenerados.map(l => l.codigo_lote),
