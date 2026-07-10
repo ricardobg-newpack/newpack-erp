@@ -3494,6 +3494,12 @@ window.forzarRender = () => {
   render();
 };
 
+// Navegar a una vista específica desde código (ej. botones que redirigen a otro módulo)
+window.irAVista = (vista) => {
+  state.vista = vista;
+  window.forzarRender();
+};
+
 function _doRender() {
   const root = $('#app');
   if (!state.user) {
@@ -3769,7 +3775,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rollkg</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-embhoy</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -10983,6 +10989,21 @@ window.quitarParadaRuta = async (rutaId, paradaId) => {
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
+// 🚚 Marcar/desmarcar una parada (OV) como CARGADA en la unidad (CEDIS la va cargando)
+window.toggleParadaCargada = async (rutaId, paradaId) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
+  if (ruta.estatus !== 'programada') { toast('Solo se carga en rutas programadas.', 'error'); return; }
+  const nuevas = (ruta.paradas || []).map(p =>
+    p.id === paradaId ? { ...p, cargada: !p.cargada, cargada_at: !p.cargada ? Date.now() : null } : p
+  );
+  try {
+    await updateDoc(doc(db, 'rutas_logistica', rutaId), { paradas: nuevas });
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { window.forzarRender(); }
+};
+
 // Cambiar estado de la ruta: programada → en_ruta → completada
 window.avanzarRuta = async (rutaId, nuevoEstado) => {
   const u = state.user || {};
@@ -10990,6 +11011,16 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
   const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
   if (nuevoEstado === 'en_ruta' && (!ruta.paradas || ruta.paradas.length === 0)) {
     toast('Agrega al menos una parada antes de despachar la ruta.', 'error'); return;
+  }
+  // 🚚 Antes de enviar: todas las entregas deben estar CARGADAS
+  if (nuevoEstado === 'en_ruta') {
+    const entregas = (ruta.paradas || []).filter(p => p.tipo === 'entrega' || p.tipo === 'combinada');
+    const sinCargar = entregas.filter(p => !p.cargada);
+    if (sinCargar.length > 0) {
+      toast(`Faltan ${sinCargar.length} pedido(s) por cargar. Márcalos como cargados antes de enviar la ruta.`, 'error');
+      return;
+    }
+    if (!confirm(`¿Enviar la ruta ${ruta.codigo}?\n\nSe marcarán ${entregas.length} pedido(s) como ENVIADOS.`)) return;
   }
   if (nuevoEstado === 'completada' && !confirm(`¿Marcar la ruta ${ruta.codigo} como COMPLETADA?\n\nEsto marcará sus entregas y recolecciones como realizadas.`)) return;
   state.loadingAccion = true; window.forzarRender();
@@ -13855,6 +13886,52 @@ function renderLogisticaRutas() {
         </div>`;
       })() : ''}
 
+      ${puede ? (() => {
+        // 🚚 EMBARQUES DE HOY: rutas programadas para hoy que CEDIS debe cargar y enviar
+        const hoyISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+        const rutasHoy = rutas.filter(r => r.fecha === hoyISO && r.estatus === 'programada');
+        if (rutasHoy.length === 0) return '';
+        return `
+        <div class="panel" style="border:2px solid #06b6d4;border-radius:12px;padding:0;margin-bottom:16px;overflow:hidden;">
+          <div style="background:linear-gradient(135deg,#cffafe,#a5f3fc);padding:12px 18px;">
+            <div style="font-weight:900;color:#0e7490;font-size:15px;">🚚 Embarques de HOY — para cargar y enviar (${rutasHoy.length})</div>
+            <div style="font-size:11px;color:#0891b2;margin-top:2px;">CEDIS: marca cada pedido conforme lo cargas. Cuando toda la ruta esté cargada, envíala.</div>
+          </div>
+          <div style="padding:12px;display:flex;flex-direction:column;gap:12px;">
+            ${rutasHoy.map(r => {
+              const m = _rutaMetricas(r);
+              const entregas = (r.paradas || []).filter(p => p.tipo === 'entrega' || p.tipo === 'combinada');
+              const cargadas = entregas.filter(p => p.cargada).length;
+              const todasCargadas = entregas.length > 0 && cargadas === entregas.length;
+              return `
+                <div style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+                    <div>
+                      <span style="font-weight:900;color:#0f172a;font-size:15px;">${r.codigo}</span>
+                      <span style="font-size:11px;color:#64748b;margin-left:8px;">${(r.tipo_texto||'').replace(/^\S+\s/,'')} · ${r.transportista||''}</span>
+                    </div>
+                    <div style="font-size:12px;font-weight:700;color:${todasCargadas?'#16a34a':'#b45309'};">${cargadas}/${entregas.length} cargados</div>
+                  </div>
+                  ${entregas.length === 0 ? `<div style="font-size:12px;color:#94a3b8;padding:6px;">Sin pedidos de entrega en esta ruta.</div>` :
+                    entregas.map(p => `
+                      <div onclick="window.toggleParadaCargada('${r.id}','${p.id}')" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:8px;cursor:pointer;margin-bottom:6px;background:${p.cargada?'#f0fdf4':'#f8fafc'};border:1px solid ${p.cargada?'#bbf7d0':'#e2e8f0'};">
+                        <span style="font-size:18px;">${p.cargada?'✅':'⬜'}</span>
+                        <div style="flex:1;">
+                          <div style="font-weight:700;color:#0f172a;font-size:13px;">${p.ov_folio||''} · ${p.cliente_nombre||''}</div>
+                          <div style="font-size:11px;color:#64748b;">${p.remision_folio?('📄 '+p.remision_folio+' · '):''}${p.num_tarimas||0} tarima(s) · ${fmtNum(Math.round(p.kg||0))} kg</div>
+                        </div>
+                        <span style="font-size:11px;font-weight:700;color:${p.cargada?'#16a34a':'#94a3b8'};">${p.cargada?'CARGADO':'toca para cargar'}</span>
+                      </div>`).join('')}
+                  <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+                    <button onclick="window.avanzarRuta('${r.id}','en_ruta')" ${todasCargadas?'':'disabled'} style="flex:1;min-width:160px;padding:11px;background:${todasCargadas?'#16a34a':'#cbd5e1'};color:#fff;border:none;border-radius:8px;cursor:${todasCargadas?'pointer':'not-allowed'};font-weight:800;font-size:13px;">🚚 ${todasCargadas?'Enviar ruta completa':'Carga todo para enviar'}</button>
+                    <button onclick="window.imprimirHojaRuta('${r.id}')" style="padding:11px 16px;background:#fff;color:#0891b2;border:1px solid #0891b2;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📄 Hoja de ruta</button>
+                  </div>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      })() : ''}
+
       ${puede?(() => {
         const transportistas = (state.transportistas || []).filter(t => t.activo !== false);
         const externos = transportistas.filter(t => t.tipo === 'externo');
@@ -14641,10 +14718,29 @@ window.rmaPickDirecto = (tarimaId) => {
 
 function renderCalidad() {
   const subTab = state.tabs.calidad || 'pendientes';
-  const odpsPendientes = state.ordenes_produccion.filter(o => o.estatus === 'pendiente_calidad');
-  // 🆕 ODP en producción con material REGISTRADO disponible para jalar (flujo pull)
+
+  // 🔧 Helper: ¿la ODP ya terminó TODA su producción? (produjo su meta, no queda por producir)
+  //    Si sí, aunque siga en_produccion, debe tratarse como TERMINADA → "Por liberar".
+  const _produccionCompleta = (o) => {
+    const meta = Number(o.cantidad_kg_produccion) || 0;
+    if (meta <= 0) return false;
+    const disp = window.kgDisponibleParaJalar(o);
+    const yaLiberado = Number(o.kg_liberado_parcial) || 0;
+    const registradoTotal = (Number(disp.registradoKg) || 0) + yaLiberado;
+    // Terminada si lo registrado (disponible + ya liberado) alcanza el 98% de la meta
+    return registradoTotal >= meta * 0.98;
+  };
+
+  const odpsPendientes = (state.ordenes_produccion || []).filter(o =>
+    o.estatus === 'pendiente_calidad' ||
+    // 🆕 Órdenes que ya produjeron su meta completa (aunque sigan 'en_produccion' por no
+    //    haberse marcado "terminar" manualmente) van a Por liberar, NO a parcial.
+    (o.estatus === 'en_produccion' && !o.archivada && _produccionCompleta(o))
+  );
+
+  // 🆕 ODP en producción con material disponible PERO que AÚN NO termina su meta (parcial real)
   const odpsConMaterial = (state.ordenes_produccion || [])
-    .filter(o => !o.archivada && o.estatus === 'en_produccion')
+    .filter(o => !o.archivada && o.estatus === 'en_produccion' && !_produccionCompleta(o))
     .map(o => ({ odp: o, disp: window.kgDisponibleParaJalar(o) }))
     .filter(x => x.disp.disponibleKg > 0);
   const odpsLiberadas = state.ordenes_produccion.filter(o => 
@@ -19443,7 +19539,12 @@ function renderTarjetaOV(o, subTab) {
     acciones += `<button class="btn-primary" onclick="abrirModal('generar-remision-ov','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📄 Generar remisión/factura</button>`;
   }
   if (o.estatus === 'por_cargar' && esCEDIS) {
-    acciones += `<button class="btn-primary" onclick="confirmarCargaOV('${o.id}')" style="padding:8px 14px;background:#06b6d4;">🚚 Confirmar carga y enviar</button>`;
+    // 🔧 UN SOLO CANAL: el envío se hace desde Logística/Rutas, no aquí.
+    if (o.ruta_codigo) {
+      acciones += `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#8b5cf6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 En ruta ${o.ruta_codigo} — ver en Logística</button>`;
+    } else {
+      acciones += `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📌 Programar envío en Logística/Rutas</button>`;
+    }
   }
   if (o.estatus === 'enviada' && (esCS || esCEO)) {
     acciones += `<button class="btn-primary" onclick="marcarOVEntregada('${o.id}')" style="padding:8px 14px;background:#15803d;">✅ Marcar entregada</button>`;
