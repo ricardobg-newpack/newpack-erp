@@ -3775,7 +3775,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rutasimple</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-calprod</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -37269,7 +37269,16 @@ function modalLiberarCalidad() {
   const um = (odp.um || 'kg').toLowerCase();
   const stepCant = UM_ENTEROS.includes(um) ? '1' : '0.01';
   const esParcialLib = !!(state.liberacionParcial && state.liberacionParcial.odpId === odp.id);
-  const cantidadProducida = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : (Number(odp.cantidad_producida_final) || 0);
+  // 🔧 FIX: lo PRODUCIDO real = lo que registró el ÚLTIMO proceso de la ruta (sea extrusión,
+  //    bolsa en rollo, etc.), vía helper único. Antes leía odp.cantidad_producida_final, que
+  //    está en 0 mientras la orden sigue en_produccion → Calidad veía "PRODUCIDO: 0".
+  const _prodFinal = window.cantidadProducidaFinalUM ? window.cantidadProducidaFinalUM(odp) : { um: 0, kg: 0 };
+  const _prodRealUM = Number(_prodFinal.um) || 0;
+  const _rutaLib = odp.ruta_procesos || [];
+  const _prodFinal_procCod = _rutaLib.length > 0 ? _rutaLib[_rutaLib.length - 1] : (odp.proceso_codigo || 'P1-EXT');
+  const cantidadProducida = esParcialLib
+    ? (Number(state.liberacionParcial.umAmount) || 0)
+    : (_prodRealUM || Number(odp.cantidad_producida_final) || 0);
   const cantidadOriginal = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : (Number(odp.cantidad) || 0);
   const procesosCompletados = odp.procesos_completados || [];
   const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
@@ -37566,20 +37575,25 @@ function modalLiberarCalidad() {
           })()}
           
           <!-- Resumen producción -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:6px;">
             <div style="padding:8px;background:#f8fafc;border-radius:8px;text-align:center;">
               <div style="font-size:9px;color:#64748b;font-weight:700;text-transform:uppercase;">Solicitado</div>
               <div style="font-size:14px;font-weight:800;">${fmtCantidadUM(cantidadOriginal, um)}</div>
             </div>
-            <div style="padding:8px;background:#f0fdf4;border-radius:8px;text-align:center;">
-              <div style="font-size:9px;color:#16a34a;font-weight:700;text-transform:uppercase;">Producido</div>
+            <div style="padding:8px;background:#f0fdf4;border-radius:8px;text-align:center;border:1.5px solid #86efac;">
+              <div style="font-size:9px;color:#16a34a;font-weight:700;text-transform:uppercase;">Te entregaron</div>
               <div style="font-size:14px;font-weight:800;color:#16a34a;">${fmtCantidadUM(cantidadProducida, um)}</div>
+              ${um !== 'kg' && _prodFinal.kg > 0 ? `<div style="font-size:10px;color:#15803d;font-weight:700;">${fmtNum(_prodFinal.kg)} kg</div>` : ''}
             </div>
             <div style="padding:8px;background:#fee2e2;border-radius:8px;text-align:center;">
               <div style="font-size:9px;color:#dc2626;font-weight:700;text-transform:uppercase;">Mermas</div>
               <div style="font-size:14px;font-weight:800;color:#dc2626;">${fmtCantidadUM(totalMermas, um)}</div>
             </div>
           </div>
+          ${!esParcialLib ? `
+          <div style="margin-bottom:14px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:11px;color:#1e40af;">
+            💡 <strong>${(getProc(_prodFinal_procCod)?.nombre) || 'El proceso final'}</strong> registró y entregó <strong>${fmtCantidadUM(cantidadProducida, um)}${um !== 'kg' && _prodFinal.kg > 0 ? ' (' + fmtNum(_prodFinal.kg) + ' kg)' : ''}</strong>. Ajusta abajo solo si Calidad acepta una cantidad diferente.
+          </div>` : ''}
           
           <!-- Cantidad aceptada -->
           <div class="field">
