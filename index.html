@@ -3769,7 +3769,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rollospar</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rollkg</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -46304,18 +46304,46 @@ window.asignarRolloATarima = (rolloId, tarimaIdxStr) => {
 };
 
 // Asignar TODOS los rollos a la tarima 01
-// 🔧 Helper único: rollos de la ODP que AÚN NO fueron liberados (excluye los ya asignados
-//    a tarimas de parcialidades previas). Fuente de verdad para todo el modo rollos.
+// 🔧 Helper único: rollos de la ODP que AÚN NO fueron liberados. Fuente de verdad del modo rollos.
+//    Método 1: excluye rollos ya asignados a tarimas (rollos_ids guardados).
+//    Método 2 (fallback): si hay kg_liberado_parcial que NO quedó cubierto por rollos_ids
+//    (tarimas viejas sin ese dato), descuenta los rollos MÁS ANTIGUOS hasta cubrir esos kg
+//    (los primeros producidos fueron los primeros en salir).
 window._rollosDisponiblesODP = (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId) || {};
+  // Rollos ya asignados a alguna tarima existente (método directo por id)
   const rollosYaLiberados = new Set();
+  let kgCubiertoPorIds = 0;
   (state.tarimas || []).forEach(t => {
     if (t.odp_id === odpId && Array.isArray(t.rollos_ids)) {
-      t.rollos_ids.forEach(id => rollosYaLiberados.add(id));
+      t.rollos_ids.forEach(id => {
+        if (!rollosYaLiberados.has(id)) {
+          rollosYaLiberados.add(id);
+          const r = (state.rollos_extrusion || []).find(x => x.id === id);
+          if (r) kgCubiertoPorIds += Number(r.peso_kg) || 0;
+        }
+      });
     }
   });
-  return (state.rollos_extrusion || []).filter(r =>
-    r.odp_id === odpId && !r.anulado && !rollosYaLiberados.has(r.id)
-  );
+  // Todos los rollos vivos de la ODP, ordenados por número (orden de producción)
+  let vivos = (state.rollos_extrusion || [])
+    .filter(r => r.odp_id === odpId && !r.anulado && !rollosYaLiberados.has(r.id))
+    .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0));
+  // Fallback por kg: cuánto se liberó que NO quedó cubierto por rollos_ids
+  const kgLiberadoParcial = Number(odp.kg_liberado_parcial) || 0;
+  let kgPendienteDescontar = kgLiberadoParcial - kgCubiertoPorIds;
+  if (kgPendienteDescontar > 1) {
+    // Quitar los rollos más antiguos hasta cubrir los kg ya liberados
+    let acum = 0;
+    let corte = 0;
+    for (let i = 0; i < vivos.length; i++) {
+      if (acum >= kgPendienteDescontar - 1) break;
+      acum += Number(vivos[i].peso_kg) || 0;
+      corte = i + 1;
+    }
+    vivos = vivos.slice(corte);
+  }
+  return vivos;
 };
 
 window.asignarRollosTodosT01 = () => {
