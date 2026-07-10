@@ -3800,7 +3800,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-cierrelib</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-comprasfull</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3882,6 +3882,7 @@ function renderApp() {
         
         ${(esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS) ? `
           <div class="sidebar-section">Requisiciones de Compra</div>
+          <button class="nav-item ${state.vista === 'compras_tablero' ? 'active' : ''}" data-vista="compras_tablero">🧭 Tablero de Compras</button>
           <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Requisiciones (RC)</button>
         ` : ''}
         
@@ -4120,6 +4121,7 @@ function renderVista() {
   if (v === 'maquinas') return renderMaquinas();
   if (v === 'personal') return renderPersonal();
   if (v === 'materias_primas') return renderMateriasPrimas();
+  if (v === 'compras_tablero') return renderComprasTablero();
   if (v === 'requisiciones') return renderRequisiciones();
   if (v === 'ordenes_compra') return renderOrdenesCompra();
   if (v === 'recepciones_mp') return renderRecepcionesMP();
@@ -23969,6 +23971,121 @@ window.ESTATUS_RC = ESTATUS_RC;
 window.PRIORIDADES_RC = PRIORIDADES_RC;
 
 // ============================================================
+// VISTA CONSOLIDADA: TABLERO DE COMPRAS (trazabilidad RC → OC → Recepción)
+// ============================================================
+function renderComprasTablero() {
+  const u = state.user || {};
+  const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
+  const esCOMP = u.depto === 'COMP' || esCEO;
+  const veTodo = esCOMP;
+
+  // Universo de RCs (filtrado por rol)
+  let rcs = (state.requisiciones_compras || []).filter(r => !r.archivada);
+  if (!veTodo) rcs = rcs.filter(r => r.solicitante_id === u.id || r.depto === u.depto);
+  const ocs = (state.ordenes_compra || []).filter(o => !o.archivada);
+
+  const filtro = (state.filtros.compras_tablero || '').toLowerCase();
+
+  // Clasificar cada RC por su etapa en el flujo
+  const colPorAprobar = rcs.filter(r => r.estatus === 'pendiente');
+  const colAprobadas  = rcs.filter(r => r.estatus === 'aprobada');
+  const colEnOC       = rcs.filter(r => r.estatus === 'oc_generada');
+  const colRecibidas  = rcs.filter(r => r.estatus === 'recibida');
+
+  const aplicaFiltro = (r) => !filtro || ((r.folio||'')+' '+(r.solicitante_nombre||'')+' '+(r.depto||'')+' '+(r.oc_folio||'')+' '+(r.lineas||[]).map(l=>`${l.mp_codigo} ${l.descripcion}`).join(' ')).toLowerCase().includes(filtro);
+
+  // Métricas de decisión
+  const emergenciasAbiertas = rcs.filter(r => r.prioridad === 'emergencia' && !['recibida','cancelada'].includes(r.estatus)).length;
+  const totalActivas = rcs.filter(r => !['recibida','cancelada'].includes(r.estatus)).length;
+  // OCs en tránsito (ya ordenadas, esperando material)
+  const ocEnTransito = ocs.filter(o => ['en_transito','oc_generada','recepcion_parcial'].includes(o.estatus)).length;
+
+  // Mini-tarjeta compacta de RC para el tablero
+  const miniCard = (r, colColor) => {
+    const prio = PRIORIDADES_RC.find(p => p.codigo === r.prioridad) || PRIORIDADES_RC[0];
+    const nLineas = (r.lineas || []).length;
+    const esUrgente = r.prioridad === 'emergencia' || r.prioridad === 'urgente';
+    return `
+      <div onclick="abrirModal('detalle-rc','${r.id}')" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${colColor};border-radius:9px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:box-shadow 0.15s;" onmouseover="this.style.boxShadow='0 4px 8px rgba(0,0,0,0.08)'" onmouseout="this.style.boxShadow=''">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;">
+          <span class="text-mono" style="font-weight:800;font-size:12px;color:#0f172a;">${r.folio}</span>
+          ${esUrgente ? `<span style="font-size:9px;font-weight:800;padding:1px 6px;border-radius:99px;background:${prio.color}22;color:${prio.color};">${prio.icono} ${prio.nombre.split(' ')[0]}</span>` : ''}
+        </div>
+        <div style="font-size:11px;color:#475569;font-weight:600;">${r.solicitante_nombre || ''}</div>
+        <div style="font-size:10px;color:#94a3b8;margin-top:2px;">${(window.DEPARTAMENTOS||[]).find(d=>d.codigo===r.depto)?.nombre || r.depto || ''} · ${nLineas} insumo${nLineas!==1?'s':''}</div>
+        ${r.oc_folio ? `<div style="font-size:10px;color:#7c3aed;font-weight:700;margin-top:3px;">📑 ${r.oc_folio}</div>` : ''}
+      </div>`;
+  };
+
+  const columna = (titulo, icono, color, items, ayuda) => {
+    const filtrados = items.filter(aplicaFiltro);
+    return `
+      <div style="flex:1;min-width:220px;background:#f8fafc;border-radius:12px;padding:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <div style="font-weight:800;font-size:13px;color:${color};">${icono} ${titulo}</div>
+          <span style="background:${color};color:#fff;font-size:11px;font-weight:800;padding:2px 9px;border-radius:99px;">${filtrados.length}</span>
+        </div>
+        <div style="font-size:10px;color:#94a3b8;margin-bottom:10px;">${ayuda}</div>
+        ${filtrados.length === 0
+          ? `<div style="font-size:11px;color:#cbd5e1;text-align:center;padding:20px 0;">— vacío —</div>`
+          : filtrados.map(r => miniCard(r, color)).join('')}
+      </div>`;
+  };
+
+  return `
+    <div style="max-width:1280px;margin:0 auto;padding:8px 4px 40px;">
+      <!-- Encabezado -->
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <div>
+          <div style="font-size:22px;font-weight:900;color:#0f172a;">🧭 Tablero de Compras</div>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">
+            ${veTodo ? 'Estado de TODO el flujo de compras en un solo lugar' : 'Estado de las compras de tu área'}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${['PLN','PRO','CAL','ALP','CS','COMP','CEO','ADMIN'].includes(u.depto) || u.rol==='admin' ? `<button class="btn-primary" onclick="abrirModal('crear-rc')" style="padding:10px 18px;">${ICONS.plus} Nueva requisición</button>` : ''}
+        </div>
+      </div>
+
+      <!-- KPIs de decisión -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:10px;margin-bottom:16px;">
+        <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #dc2626;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;">🔴 EMERGENCIAS ABIERTAS</div>
+          <div style="font-size:24px;font-weight:900;color:#dc2626;">${emergenciasAbiertas}</div>
+        </div>
+        <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #f59e0b;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;">⏳ POR APROBAR</div>
+          <div style="font-size:24px;font-weight:900;color:#f59e0b;">${colPorAprobar.length}</div>
+        </div>
+        <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #7c3aed;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;">🚚 OC EN CAMINO</div>
+          <div style="font-size:24px;font-weight:900;color:#7c3aed;">${ocEnTransito}</div>
+        </div>
+        <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #3b82f6;">
+          <div style="font-size:10px;font-weight:700;color:#64748b;">📋 TOTAL ACTIVAS</div>
+          <div style="font-size:24px;font-weight:900;color:#3b82f6;">${totalActivas}</div>
+        </div>
+      </div>
+
+      <!-- Buscador -->
+      <div style="margin-bottom:14px;">
+        <input class="input" id="filtro-compras_tablero" style="max-width:400px;width:100%;" placeholder="🔍 Buscar folio, solicitante, área, insumo..." value="${filtro}" autocomplete="off" />
+      </div>
+
+      <!-- TABLERO KANBAN: las 4 etapas del flujo -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;">
+        ${columna('Por aprobar', '⏳', '#f59e0b', colPorAprobar, 'Esperan visto bueno de Compras')}
+        ${columna('Aprobadas', '✅', '#3b82f6', colAprobadas, 'Listas para generar orden de compra')}
+        ${columna('En orden de compra', '📑', '#7c3aed', colEnOC, 'Ya se ordenó al proveedor')}
+        ${columna('Recibidas', '📦', '#16a34a', colRecibidas, 'Material llegó a almacén')}
+      </div>
+
+      <div style="margin-top:14px;font-size:11px;color:#94a3b8;text-align:center;">💡 Toca cualquier tarjeta para ver el seguimiento completo del pedido.</div>
+    </div>
+  `;
+}
+
+// ============================================================
 // VISTA: REQUISICIONES DE COMPRA (RC)
 // ============================================================
 function renderRequisiciones() {
@@ -23977,19 +24094,27 @@ function renderRequisiciones() {
   const esCOMP = u.depto === 'COMP' || esCEO;
   const puedeCrear = ['PLN','PRO','CAL','ALP','CS','COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
   const puedeAprobar = esCEO || esCOMP;
-  
+  // 🔑 Quien VE TODO: Compras, Admin, CEO. El resto ve SOLO sus propias requisiciones.
+  const veTodo = esCOMP; // (esCOMP ya incluye CEO/Admin)
+
   const filtro = (state.filtros.requisiciones || '').toLowerCase();
   const tab = state.tabs.requisiciones || 'activas';
-  
-  // 🗄️ Excluir archivadas
-  let arr = (state.requisiciones_compras || []).filter(r => !r.archivada);
-  
+
+  // 🗄️ Universo base: si no ve todo, solo las de su depto/usuario
+  let universo = (state.requisiciones_compras || []).filter(r => !r.archivada);
+  if (!veTodo) {
+    universo = universo.filter(r => r.solicitante_id === u.id || r.depto === u.depto);
+  }
+
+  let arr = universo.slice();
+
   // Filtrar por tab
   if (tab === 'activas') arr = arr.filter(r => !['recibida','cancelada'].includes(r.estatus));
   else if (tab === 'recibidas') arr = arr.filter(r => r.estatus === 'recibida');
   else if (tab === 'canceladas') arr = arr.filter(r => r.estatus === 'cancelada');
   else if (tab === 'mias') arr = arr.filter(r => r.solicitante_id === u.id);
-  
+  else if (tab === 'aprobar') arr = arr.filter(r => r.estatus === 'pendiente');
+
   if (filtro) arr = arr.filter(r => 
     ((r.folio || '') + ' ' + (r.solicitante_nombre || '') + ' ' + (r.depto || '') + ' ' + 
      (r.lineas || []).map(l => `${l.mp_codigo} ${l.descripcion}`).join(' ')
@@ -24003,16 +24128,49 @@ function renderRequisiciones() {
     return tb - ta;
   });
   
-  // KPIs
-  const todas = state.requisiciones_compras || [];
+  // KPIs (sobre el universo que el usuario puede ver)
+  const todas = universo;
   const pendientesAprobar = todas.filter(r => r.estatus === 'pendiente').length;
   const aprobadas = todas.filter(r => r.estatus === 'aprobada').length;
   const enOC = todas.filter(r => r.estatus === 'oc_generada').length;
   const emergencias = todas.filter(r => r.prioridad === 'emergencia' && !['recibida','cancelada'].includes(r.estatus)).length;
-  
+  const recibidas = todas.filter(r => r.estatus === 'recibida').length;
+  const activas = todas.filter(r => !['recibida','cancelada'].includes(r.estatus)).length;
+
   return `
+    <!-- Encabezado con contexto de rol -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">📋 Requisiciones de Compra</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">
+          ${veTodo
+            ? '👑 Ves TODAS las requisiciones de la empresa'
+            : `👤 Ves las requisiciones de tu área (${(window.DEPARTAMENTOS||[]).find(d=>d.codigo===u.depto)?.nombre || u.depto || 'tu depto'})`}
+        </div>
+      </div>
+      ${puedeCrear ? `<button class="btn-primary" onclick="abrirModal('crear-rc')" style="padding:10px 18px;font-size:14px;">${ICONS.plus} Nueva requisición</button>` : ''}
+    </div>
+
+    <!-- Flujo visual RC → OC → Recepción -->
+    <div style="display:flex;align-items:center;gap:6px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="background:#f59e0b;color:#fff;width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;">1</span>
+        <div><div style="font-weight:800;font-size:12px;color:#0f172a;">Requisición</div><div style="font-size:10px;color:#94a3b8;">alguien pide material</div></div>
+      </div>
+      <span style="color:#cbd5e1;font-size:18px;">→</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="background:#7c3aed;color:#fff;width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;">2</span>
+        <div><div style="font-weight:800;font-size:12px;color:#0f172a;">Orden de Compra</div><div style="font-size:10px;color:#94a3b8;">Compras la aprueba y ordena</div></div>
+      </div>
+      <span style="color:#cbd5e1;font-size:18px;">→</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="background:#16a34a;color:#fff;width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;">3</span>
+        <div><div style="font-weight:800;font-size:12px;color:#0f172a;">Recepción</div><div style="font-size:10px;color:#94a3b8;">llega el material</div></div>
+      </div>
+    </div>
+
     <!-- KPIs -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:10px;margin-bottom:14px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:10px;margin-bottom:14px;">
       <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #f59e0b;">
         <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⏳ PENDIENTE APROBAR</div>
         <div style="font-size:22px;font-weight:800;color:#f59e0b;">${pendientesAprobar}</div>
@@ -24033,19 +24191,17 @@ function renderRequisiciones() {
     
     <!-- TABS -->
     <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
-      <button class="tab-btn ${tab === 'activas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','activas')">📋 Activas (${todas.filter(r => !['recibida','cancelada'].includes(r.estatus)).length})</button>
-      <button class="tab-btn ${tab === 'mias' ? 'active' : ''}" onclick="cambiarTab('requisiciones','mias')">👤 Mis RCs (${todas.filter(r => r.solicitante_id === u.id).length})</button>
-      <button class="tab-btn ${tab === 'recibidas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','recibidas')">📦 Recibidas (${todas.filter(r => r.estatus === 'recibida').length})</button>
-      <button class="tab-btn ${tab === 'canceladas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','canceladas')">❌ Canceladas (${todas.filter(r => r.estatus === 'cancelada').length})</button>
+      <button class="tab-btn ${tab === 'activas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','activas')">📋 Activas (${activas})</button>
+      ${puedeAprobar ? `<button class="tab-btn ${tab === 'aprobar' ? 'active' : ''}" onclick="cambiarTab('requisiciones','aprobar')">⏳ Por aprobar (${pendientesAprobar})</button>` : ''}
+      ${veTodo ? `<button class="tab-btn ${tab === 'mias' ? 'active' : ''}" onclick="cambiarTab('requisiciones','mias')">👤 Mis RCs (${universo.filter(r => r.solicitante_id === u.id).length})</button>` : ''}
+      <button class="tab-btn ${tab === 'recibidas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','recibidas')">📦 Recibidas (${recibidas})</button>
+      <button class="tab-btn ${tab === 'canceladas' ? 'active' : ''}" onclick="cambiarTab('requisiciones','canceladas')">❌ Canceladas (${universo.filter(r => r.estatus === 'cancelada').length})</button>
     </div>
     
     <!-- TOOLBAR -->
     <div class="toolbar" style="flex-wrap:wrap;">
       <input class="input" id="filtro-requisiciones" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, solicitante, código, descripción..." value="${filtro}" autocomplete="off" />
       <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} RC(s)</span>
-      ${puedeCrear ? `
-        <button class="btn-primary" onclick="abrirModal('crear-rc')" style="margin-left:auto;">${ICONS.plus} Nueva RC</button>
-      ` : ''}
     </div>
     
     ${arr.length === 0 ? `
@@ -24086,6 +24242,30 @@ function renderTarjetaRC(rc, puedeAprobar) {
           ${rc.oc_folio ? `<div style="font-size:11px;font-weight:700;color:#7c3aed;margin-top:2px;">📑 ${rc.oc_folio}</div>` : ''}
         </div>
       </div>
+
+      <!-- MINI-FLUJO: dónde va esta requisición -->
+      ${rc.estatus !== 'cancelada' ? (() => {
+        const pasos = [
+          { k: 'solicitada', label: 'Solicitada', done: true },
+          { k: 'aprobada', label: 'Aprobada', done: ['aprobada','oc_generada','recibida'].includes(rc.estatus) },
+          { k: 'oc', label: 'En OC', done: ['oc_generada','recibida'].includes(rc.estatus) },
+          { k: 'recibida', label: 'Recibida', done: rc.estatus === 'recibida' },
+        ];
+        const rechazada = rc.estatus === 'rechazada';
+        if (rechazada) return `<div style="padding:0 18px 10px;"><span style="font-size:11px;font-weight:800;color:#dc2626;">❌ Rechazada</span></div>`;
+        return `
+        <div style="padding:0 18px 12px;display:flex;align-items:center;gap:4px;">
+          ${pasos.map((p, i) => `
+            <div style="display:flex;align-items:center;gap:4px;flex:1;">
+              <div style="display:flex;align-items:center;gap:5px;">
+                <span style="width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;background:${p.done?'#16a34a':'#e2e8f0'};color:${p.done?'#fff':'#94a3b8'};">${p.done?'✓':i+1}</span>
+                <span style="font-size:10px;font-weight:${p.done?'700':'500'};color:${p.done?'#166534':'#94a3b8'};">${p.label}</span>
+              </div>
+              ${i < pasos.length-1 ? `<div style="flex:1;height:2px;background:${pasos[i+1].done?'#16a34a':'#e2e8f0'};min-width:12px;"></div>` : ''}
+            </div>
+          `).join('')}
+        </div>`;
+      })() : ''}
       
       <!-- LÍNEAS -->
       <div style="padding:8px 18px 12px;">
@@ -24708,6 +24888,32 @@ function modalDetalleRC() {
               ${rc.motivo_cancelacion ? `<div style="grid-column:1/-1;"><strong>❌ Motivo cancelación:</strong> ${rc.motivo_cancelacion}</div>` : ''}
             </div>
           </div>
+
+          <!-- 🔍 SEGUIMIENTO DEL PEDIDO (visibilidad del estatus) -->
+          ${rc.estatus !== 'cancelada' && rc.estatus !== 'rechazada' ? (() => {
+            const pasos = [
+              { label: 'Solicitada', icono: '📝', done: true, quien: rc.solicitante_nombre, fecha: rc.fecha_solicitud || (rc.created_at ? fmtFecha(rc.created_at) : ''), desc: 'Requisición creada' },
+              { label: 'Aprobada', icono: '✅', done: ['aprobada','oc_generada','recibida'].includes(rc.estatus), quien: rc.aprobada_por_nombre, fecha: rc.aprobada_at ? fmtFecha(rc.aprobada_at) : '', desc: 'Compras autorizó' },
+              { label: 'Orden de compra', icono: '📑', done: ['oc_generada','recibida'].includes(rc.estatus), quien: rc.proveedor_asignado, fecha: rc.oc_generada_at ? fmtFecha(rc.oc_generada_at) : '', desc: rc.oc_folio ? ('OC '+rc.oc_folio) : 'Se ordenó al proveedor' },
+              { label: 'Recibida', icono: '📦', done: rc.estatus === 'recibida', quien: '', fecha: rc.recibida_at ? fmtFecha(rc.recibida_at) : '', desc: 'Material llegó a almacén' },
+            ];
+            return `
+            <div style="margin-bottom:14px;">
+              <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:10px;">🔍 Seguimiento del pedido</div>
+              <div style="position:relative;padding-left:8px;">
+                ${pasos.map((p, i) => `
+                  <div style="display:flex;gap:12px;padding-bottom:${i<pasos.length-1?'16px':'0'};position:relative;">
+                    ${i < pasos.length-1 ? `<div style="position:absolute;left:13px;top:26px;bottom:0;width:2px;background:${pasos[i+1].done?'#16a34a':'#e2e8f0'};"></div>` : ''}
+                    <div style="width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px;background:${p.done?'#16a34a':'#f1f5f9'};color:${p.done?'#fff':'#94a3b8'};z-index:1;">${p.done?p.icono:'○'}</div>
+                    <div style="flex:1;padding-top:2px;">
+                      <div style="font-weight:800;font-size:13px;color:${p.done?'#0f172a':'#94a3b8'};">${p.label}</div>
+                      <div style="font-size:11px;color:${p.done?'#64748b':'#cbd5e1'};">${p.desc}${p.quien?(' · '+p.quien):''}${p.fecha?(' · '+p.fecha):''}</div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>`;
+          })() : ''}
           
           <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:8px;">📋 Insumos solicitados (${rc.lineas?.length || 0})</div>
           <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
@@ -26153,6 +26359,14 @@ function renderProveedores() {
   const totalCodigos = (state.proveedores || []).reduce((s, p) => s + (p.codigos || []).length, 0);
   
   return `
+    <!-- Encabezado -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">🏭 Proveedores</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Directorio de proveedores y los códigos de material que manejan</div>
+      </div>
+    </div>
+
     <!-- KPIs -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
       <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
@@ -27721,6 +27935,14 @@ function renderOrdenesCompra() {
   }, 0);
   
   return `
+    <!-- Encabezado -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">📑 Órdenes de Compra</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Lo que ya se ordenó a proveedores · sigue cuánto ha llegado</div>
+      </div>
+    </div>
+
     <!-- KPIs -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
       <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #f59e0b;">
@@ -27804,7 +28026,25 @@ function renderTarjetaOC(oc, esCOMP) {
           </div>
         </div>
       </div>
-      
+
+      <!-- BARRA DE PROGRESO DE RECEPCIÓN: qué llegó / qué falta -->
+      ${oc.estatus !== 'cancelada' ? (() => {
+        const totalPedido = lineas.reduce((s,l) => s + (Number(l.cantidad)||0), 0);
+        const totalRecibido = lineas.reduce((s,l) => s + (Number(l.cantidad_recibida)||0), 0);
+        const pct = totalPedido > 0 ? Math.min(100, Math.round(totalRecibido/totalPedido*100)) : 0;
+        const barColor = pct >= 100 ? '#16a34a' : pct > 0 ? '#3b82f6' : '#cbd5e1';
+        return `
+        <div style="padding:0 18px 10px;">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#64748b;margin-bottom:3px;">
+            <span>📥 Recibido: ${fmtNum(totalRecibido)} de ${fmtNum(totalPedido)}</span>
+            <span style="font-weight:800;color:${barColor};">${pct}%${pct>=100?' · COMPLETO':pct>0?' · falta '+fmtNum(totalPedido-totalRecibido):''}</span>
+          </div>
+          <div style="height:7px;background:#e2e8f0;border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:${pct}%;background:${barColor};border-radius:4px;transition:width 0.3s;"></div>
+          </div>
+        </div>`;
+      })() : ''}
+
       <!-- LÍNEAS -->
       <div style="padding:4px 18px 10px;">
         <div style="background:#f8fafc;border-radius:8px;overflow:hidden;">
