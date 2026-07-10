@@ -2923,6 +2923,22 @@ function fmtFechaHora(f) {
   const d = f.toDate ? f.toDate() : new Date(f);
   return d.toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
+// 🔧 HELPER ÚNICO de fecha LOCAL en formato YYYY-MM-DD. Usa la hora local del navegador
+//    (Monterrey), NO UTC. Evita el bug de que en la noche UTC ya sea "mañana" y las fechas
+//    de rutas/embarques no coincidan con el día real del usuario.
+window.hoyLocalISO = (offsetDias = 0) => {
+  const d = new Date();
+  if (offsetDias) d.setDate(d.getDate() + offsetDias);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+// Convierte cualquier fecha (Date/Timestamp/string) a YYYY-MM-DD en hora local
+window.aFechaLocalISO = (f) => {
+  if (!f) return '';
+  if (typeof f === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f)) return f; // ya es YYYY-MM-DD
+  const d = f.toDate ? f.toDate() : new Date(f);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
 function fmtNum(n) {
   return Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
 }
@@ -3494,6 +3510,12 @@ window.forzarRender = () => {
   render();
 };
 
+// Cambiar el CEDIS activo en la vista de rutas (CEO/CS/FAC pueden alternar MTY/MEX)
+window.setCedisRutas = (cedis) => {
+  state.cedisRutasActivo = cedis;
+  window.forzarRender();
+};
+
 // Navegar a una vista específica desde código (ej. botones que redirigen a otro módulo)
 window.irAVista = (vista) => {
   state.vista = vista;
@@ -3775,7 +3797,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-cargaruta</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-cediscedis</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -13801,7 +13823,28 @@ function _rutaMetricas(r) {
 function renderLogisticaRutas() {
   const u = state.user || {};
   const puede = ['CS','KAM','CAL','ALP','FAC','CEDMTY','CEDMEX','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
-  const rutas = (state.rutas_logistica || []).slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  const _esCEO = u.rol === 'admin' || u.depto === 'CEO' || u.depto === 'ADMIN';
+
+  // 🏭 CEDIS del usuario: CEDMTY ve MTY, CEDMEX ve MEX. CEO/Admin/CS/FAC pueden alternar.
+  //    El CEDIS activo se guarda en state.cedisRutasActivo (default: el del usuario, o MTY).
+  let cedisActivo = state.cedisRutasActivo;
+  if (!cedisActivo) {
+    cedisActivo = (u.depto === 'CEDMEX') ? 'CEDIS-MEX' : 'CEDIS-MTY';
+  }
+  // Los usuarios de un CEDIS específico quedan FIJOS en el suyo (no pueden ver el otro)
+  const cedisFijo = (u.depto === 'CEDMTY') ? 'CEDIS-MTY' : (u.depto === 'CEDMEX') ? 'CEDIS-MEX' : null;
+  if (cedisFijo) cedisActivo = cedisFijo;
+  const puedeAlternarCedis = _esCEO || ['CS','KAM','FAC'].includes(u.depto);
+
+  // Normalizar el origen de una ruta a CEDIS-MTY / CEDIS-MEX
+  const _cedisDeRuta = (r) => {
+    const o = (r.origen || 'CEDIS-MTY').toUpperCase();
+    return o.includes('MEX') ? 'CEDIS-MEX' : 'CEDIS-MTY';
+  };
+
+  const rutasTodas = (state.rutas_logistica || []).slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
+  // Filtrar por el CEDIS activo
+  const rutas = rutasTodas.filter(r => _cedisDeRuta(r) === cedisActivo);
   const abiertas = rutas.filter(r => r.estatus === 'programada' || r.estatus === 'en_ruta').length;
   const sub = state.tabs?.logistica || 'tablero';
 
@@ -13810,9 +13853,12 @@ function renderLogisticaRutas() {
   rutas.filter(r => r.estatus !== 'cancelada').forEach(r => {
     (r.paradas || []).forEach(p => { if (p.ov_id) ovsEnRutas.add(p.ov_id); });
   });
-  const ovsPorProgramar = (state.ordenes_venta || []).filter(o =>
-    !o.archivada && o.estatus === 'por_cargar' && !ovsEnRutas.has(o.id)
-  );
+  const ovsPorProgramar = (state.ordenes_venta || []).filter(o => {
+    if (o.archivada || o.estatus !== 'por_cargar' || ovsEnRutas.has(o.id)) return false;
+    // Solo las del CEDIS activo
+    const ovCedis = (o.cedis || 'CEDIS-MTY').toUpperCase().includes('MEX') ? 'CEDIS-MEX' : 'CEDIS-MTY';
+    return ovCedis === cedisActivo;
+  });
 
   const badge = (e) => {
     const s = RUTA_ESTADOS[e] || { label: e, color: '#64748b' };
@@ -13899,28 +13945,59 @@ function renderLogisticaRutas() {
 
   // Agrupar por fecha para el tablero/calendario
   const porFecha = {};
-  rutas.forEach(r => { const f = r.fecha || 'sin-fecha'; if(!porFecha[f]) porFecha[f]=[]; porFecha[f].push(r); });
+  rutas.forEach(r => { const f = window.aFechaLocalISO(r.fecha) || r.fecha || 'sin-fecha'; if(!porFecha[f]) porFecha[f]=[]; porFecha[f].push(r); });
   const fechasOrdenadas = Object.keys(porFecha).sort((a,b) => b.localeCompare(a));
 
   return `
     <div style="max-width:1200px;margin:0 auto;padding:8px 4px 40px;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
         <div>
-          <div style="font-size:22px;font-weight:900;color:#0f172a;">🚛 Logística / Rutas</div>
-          <div style="font-size:12px;color:#64748b;margin-top:2px;">Programa el envío de OVs ya remisionadas · CS agenda, Facturación ajusta, CEDIS despacha</div>
+          <div style="font-size:22px;font-weight:900;color:#0f172a;">🚛 Envíos · ${cedisActivo === 'CEDIS-MEX' ? '🏙️ CEDIS México' : '🏭 CEDIS Monterrey'}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:2px;">Aquí CEDIS carga y despacha los pedidos del día</div>
         </div>
-        <div style="display:flex;gap:8px;">
-          ${abiertas>0?`<span style="background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">🚚 ${abiertas} activas</span>`:''}
-          <span style="background:#0f172a;color:#fff;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">${rutas.length} rutas</span>
+        <div style="display:flex;gap:8px;align-items:center;">
+          ${abiertas>0?`<span style="background:#fef3c7;color:#92400e;padding:8px 14px;border-radius:8px;font-weight:800;font-size:13px;">🚚 ${abiertas} por enviar</span>`:''}
         </div>
       </div>
+
+      ${puedeAlternarCedis ? `
+      <div style="display:flex;gap:6px;background:#f1f5f9;padding:5px;border-radius:12px;margin-bottom:16px;max-width:420px;">
+        <button onclick="window.setCedisRutas('CEDIS-MTY')" style="flex:1;padding:11px;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:13px;background:${cedisActivo==='CEDIS-MTY'?'#fff':'transparent'};color:${cedisActivo==='CEDIS-MTY'?'#16a34a':'#64748b'};box-shadow:${cedisActivo==='CEDIS-MTY'?'0 1px 4px rgba(0,0,0,0.1)':'none'};">🏭 CEDIS Monterrey</button>
+        <button onclick="window.setCedisRutas('CEDIS-MEX')" style="flex:1;padding:11px;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:13px;background:${cedisActivo==='CEDIS-MEX'?'#fff':'transparent'};color:${cedisActivo==='CEDIS-MEX'?'#7c3aed':'#64748b'};box-shadow:${cedisActivo==='CEDIS-MEX'?'0 1px 4px rgba(0,0,0,0.1)':'none'};">🏙️ CEDIS México</button>
+      </div>` : `
+      <div style="background:${cedisActivo==='CEDIS-MEX'?'#f5f3ff':'#f0fdf4'};border:1px solid ${cedisActivo==='CEDIS-MEX'?'#ddd6fe':'#bbf7d0'};border-radius:10px;padding:10px 16px;margin-bottom:16px;font-size:13px;font-weight:700;color:${cedisActivo==='CEDIS-MEX'?'#6d28d9':'#166534'};">
+        ${cedisActivo === 'CEDIS-MEX' ? '🏙️ Estás viendo CEDIS México' : '🏭 Estás viendo CEDIS Monterrey'}
+      </div>`}
+
+      ${puede ? (() => {
+        // Guía rápida de 3 pasos (solo si hay algo que hacer)
+        const hoyG = window.hoyLocalISO();
+        const hayHoy = rutas.some(r => window.aFechaLocalISO(r.fecha) === hoyG && r.estatus === 'programada');
+        const hayPorProgramar = ovsPorProgramar.length > 0;
+        if (!hayHoy && !hayPorProgramar) return '';
+        return `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+          <div style="flex:1;min-width:140px;background:${hayPorProgramar?'#fffbeb':'#f8fafc'};border:1px solid ${hayPorProgramar?'#fde68a':'#e2e8f0'};border-radius:10px;padding:10px 12px;">
+            <div style="font-size:11px;font-weight:900;color:${hayPorProgramar?'#92400e':'#94a3b8'};">1️⃣ PROGRAMAR</div>
+            <div style="font-size:10.5px;color:#64748b;margin-top:2px;">Elige qué día sale cada pedido</div>
+          </div>
+          <div style="flex:1;min-width:140px;background:${hayHoy?'#ecfeff':'#f8fafc'};border:1px solid ${hayHoy?'#a5f3fc':'#e2e8f0'};border-radius:10px;padding:10px 12px;">
+            <div style="font-size:11px;font-weight:900;color:${hayHoy?'#0e7490':'#94a3b8'};">2️⃣ CARGAR</div>
+            <div style="font-size:10.5px;color:#64748b;margin-top:2px;">Marca cada pedido al subirlo al camión</div>
+          </div>
+          <div style="flex:1;min-width:140px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;">
+            <div style="font-size:11px;font-weight:900;color:#16a34a;">3️⃣ ENVIAR</div>
+            <div style="font-size:10.5px;color:#64748b;margin-top:2px;">Cuando todo esté cargado, despacha</div>
+          </div>
+        </div>`;
+      })() : ''}
 
       ${puede ? (() => {
         // 📌 PANEL: OVs remisionadas esperando ruta
         if (ovsPorProgramar.length === 0) {
           return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:10px;">
             <span style="font-size:20px;">✅</span>
-            <div><div style="font-weight:800;color:#166534;font-size:13px;">Todo remisionado ya está programado</div><div style="font-size:11px;color:#15803d;">No hay OVs esperando ruta. Cuando CS genere una remisión nueva, aparecerá aquí.</div></div>
+            <div><div style="font-weight:800;color:#166534;font-size:13px;">Nada pendiente de programar</div><div style="font-size:11px;color:#15803d;">Cuando haya un pedido remisionado listo para enviar, aparecerá aquí.</div></div>
           </div>`;
         }
         // Calcular tarimas/kg de cada OV pendiente
@@ -13933,8 +14010,8 @@ function renderLogisticaRutas() {
         return `
         <div class="panel" style="border:2px solid #f59e0b;border-radius:12px;padding:0;margin-bottom:16px;overflow:hidden;">
           <div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
-            <div style="font-weight:900;color:#92400e;font-size:14px;">📌 Listas para enviar — falta programar día (${ovsPorProgramar.length})</div>
-            <div style="font-size:11px;color:#b45309;">Ya tienen remisión. Pica "Programar" y elige qué día salen.</div>
+            <div style="font-weight:900;color:#92400e;font-size:14px;">1️⃣ Programar envío — elige qué día sale (${ovsPorProgramar.length})</div>
+            <div style="font-size:11px;color:#b45309;">Estos pedidos ya tienen remisión. Pica "Programar" y elige el día.</div>
           </div>
           <div style="padding:8px;max-height:280px;overflow-y:auto;">
             ${ovsPorProgramar.map(o => {
@@ -13955,14 +14032,14 @@ function renderLogisticaRutas() {
 
       ${puede ? (() => {
         // 🚚 EMBARQUES DE HOY: rutas programadas para hoy que CEDIS debe cargar y enviar
-        const hoyISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
-        const rutasHoy = rutas.filter(r => r.fecha === hoyISO && r.estatus === 'programada');
+        const hoyISO = window.hoyLocalISO();
+        const rutasHoy = rutas.filter(r => window.aFechaLocalISO(r.fecha) === hoyISO && r.estatus === 'programada');
         if (rutasHoy.length === 0) return '';
         return `
         <div class="panel" style="border:2px solid #06b6d4;border-radius:12px;padding:0;margin-bottom:16px;overflow:hidden;">
           <div style="background:linear-gradient(135deg,#cffafe,#a5f3fc);padding:12px 18px;">
-            <div style="font-weight:900;color:#0e7490;font-size:15px;">🚚 Embarques de HOY — para cargar y enviar (${rutasHoy.length})</div>
-            <div style="font-size:11px;color:#0891b2;margin-top:2px;">CEDIS: marca cada pedido conforme lo cargas. Cuando toda la ruta esté cargada, envíala.</div>
+            <div style="font-weight:900;color:#0e7490;font-size:15px;">2️⃣ Cargar y 3️⃣ Enviar — lo que sale HOY (${rutasHoy.length})</div>
+            <div style="font-size:11px;color:#0891b2;margin-top:2px;">Marca ✅ cada pedido al subirlo al camión. Cuando todos estén ✅, pica Enviar.</div>
           </div>
           <div style="padding:12px;display:flex;flex-direction:column;gap:12px;">
             ${rutasHoy.map(r => {
@@ -14095,7 +14172,7 @@ function _rutasCalendarioSemanal(rutas, badge) {
 
   // Rutas por día ISO
   const rutasPorDia = {};
-  rutas.forEach(r => { if(!rutasPorDia[r.fecha]) rutasPorDia[r.fecha]=[]; rutasPorDia[r.fecha].push(r); });
+  rutas.forEach(r => { const fk = window.aFechaLocalISO(r.fecha) || r.fecha; if(!rutasPorDia[fk]) rutasPorDia[fk]=[]; rutasPorDia[fk].push(r); });
 
   const rangoTxt = `${lunes.getDate()} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][lunes.getMonth()]} — ${dias[6].fecha.getDate()} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][dias[6].fecha.getMonth()]} ${dias[6].fecha.getFullYear()}`;
 
@@ -37223,7 +37300,7 @@ function modalProgramarOVRuta() {
   if (tarimasOV.length === 0) tarimasOV = (state.tarimas || []).filter(t => t.ov_id === ov.id);
   const kgOV = tarimasOV.reduce((s, t) => s + Number(t.peso_neto_kg || t.peso_neto || 0), 0);
   // Fecha default = hoy
-  const hoy = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+  const hoy = window.hoyLocalISO();
   const externos = (state.transportistas || []).filter(t => t.activo !== false && t.tipo === 'externo');
 
   return `
@@ -37253,7 +37330,7 @@ function modalProgramarOVRuta() {
             <input id="prog-fecha" type="date" value="${hoy}" style="width:100%;padding:12px;border:1.5px solid #cbd5e1;border-radius:9px;font-size:15px;box-sizing:border-box;font-weight:700;" />
             <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
               <button type="button" onclick="document.getElementById('prog-fecha').value='${hoy}'" style="padding:6px 12px;background:#f0fdf4;color:#16a34a;border:1px solid #86efac;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">Hoy</button>
-              <button type="button" onclick="(()=>{const d=new Date();d.setDate(d.getDate()+1);document.getElementById('prog-fecha').value=d.toISOString().split('T')[0];})()" style="padding:6px 12px;background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">Mañana</button>
+              <button type="button" onclick="document.getElementById('prog-fecha').value='${window.hoyLocalISO(1)}'" style="padding:6px 12px;background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">Mañana</button>
             </div>
           </div>
 
