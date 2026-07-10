@@ -3775,7 +3775,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-libbtn</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rutasimple</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -10900,46 +10900,98 @@ window.crearRutaDesdeForm = () => {
 };
 
 // 📌 Programar una OV a una ruta: elige ruta abierta o guía a crear una
-window.programarOVEnRuta = async (ovId) => {
+// 🚚 SIMPLIFICADO: programar una OV a ruta. Abre un modal donde eliges SOLO la fecha de
+//    salida y el transporte. El sistema crea la ruta de ese día (o reutiliza una existente
+//    del mismo día + transporte) y mete la OV automáticamente. Sin formularios aparte.
+window.programarOVEnRuta = (ovId) => {
   const u = state.user || {};
   if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
   const ov = (state.ordenes_venta || []).find(o => o.id === ovId);
   if (!ov) { toast('OV no encontrada.', 'error'); return; }
-  // Rutas abiertas (programadas, no despachadas) a las que se puede agregar
-  const rutasAbiertas = (state.rutas_logistica || []).filter(r => r.estatus === 'programada');
-  if (rutasAbiertas.length === 0) {
-    toast('No hay rutas programadas. Crea una ruta abajo y luego agrega esta OV.', 'info');
-    // Scroll al formulario de nueva ruta
-    setTimeout(() => { const el = document.getElementById('rut-fecha'); if (el) { el.scrollIntoView({behavior:'smooth',block:'center'}); el.focus(); } }, 100);
-    return;
+  state.modalData = ovId;
+  state.modal = 'programar-ov-ruta';
+  window.forzarRender();
+};
+
+// Ejecuta la programación: crea/reutiliza ruta del día y agrega la OV
+window.confirmarProgramarOVRuta = async (ovId, fecha, transporteKey) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ov = (state.ordenes_venta || []).find(o => o.id === ovId);
+  if (!ov) { toast('OV no encontrada.', 'error'); return; }
+  if (!fecha) { toast('Elige la fecha de salida.', 'error'); return; }
+
+  const origen = ov.cedis || 'CEDIS-MTY';
+  // ¿Ya existe una ruta programada ese día, mismo origen y mismo transporte? → reutilizar
+  let ruta = (state.rutas_logistica || []).find(r =>
+    r.estatus === 'programada' && r.fecha === fecha && r.origen === origen && (r.transporte_key || 'interno') === transporteKey
+  );
+
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    // Resolver transporte
+    let tipo_texto = '🏠 NewPack (transporte propio)';
+    let transportista = 'NewPack Logística';
+    let transporte_key = 'interno';
+    if (transporteKey === 'cliente') {
+      tipo_texto = '🙋 Cliente recoge'; transportista = 'Cliente recoge'; transporte_key = 'cliente';
+    } else if (transporteKey && transporteKey.startsWith('ext:')) {
+      const tid = transporteKey.slice(4);
+      const t = (state.transportistas || []).find(x => x.id === tid);
+      tipo_texto = '🚛 ' + (t?.nombre || 'Externo'); transportista = t?.nombre || 'Externo'; transporte_key = transporteKey;
+    }
+
+    // Crear la ruta si no existe
+    if (!ruta) {
+      const folio = await siguienteFolio('ruta');
+      const codigo = `RUT-${new Date().getFullYear()}-${String(folio).padStart(5, '0')}`;
+      const ref = await addDoc(collection(db, 'rutas_logistica'), {
+        codigo,
+        fecha,
+        origen,
+        transportista,
+        transporte_key,
+        tipo_texto,
+        estatus: 'programada',
+        paradas: [],
+        created_at: serverTimestamp(),
+        creado_por_nombre: u.nombre || u.email || '',
+      });
+      ruta = { id: ref.id, codigo, fecha, origen, paradas: [] };
+    }
+
+    // Congelar tarimas/kg de la OV
+    let tarimasOV = (state.tarimas || []).filter(t => (ov.tarimas_ids || []).includes(t.id));
+    if (tarimasOV.length === 0) tarimasOV = (state.tarimas || []).filter(t => t.ov_id === ov.id);
+    const cli = (state.clientes || []).find(c => c.codigo === ov.cliente_codigo);
+    const parada = {
+      id: `P${Date.now()}`,
+      tipo: 'entrega',
+      ov_id: ov.id, ov_folio: ov.folio,
+      remision_folio: ov.remision_folio || '',
+      producto_codigo: ov.producto_codigo || (tarimasOV[0] && tarimasOV[0].producto_codigo) || '',
+      num_tarimas: tarimasOV.length,
+      kg: tarimasOV.reduce((s, t) => s + Number(t.peso_neto_kg || t.peso_neto || 0), 0),
+      cliente_nombre: ov.cliente_nombre || cli?.nombre || ov.cliente_codigo || '',
+      direccion: cli?.direccion || '',
+      orden: (ruta.paradas || []).length + 1,
+      entregada: false, cargada: false,
+    };
+    // Traer paradas actuales (por si la ruta ya existía)
+    const rutaActual = (state.rutas_logistica || []).find(r => r.id === ruta.id) || ruta;
+    await updateDoc(doc(db, 'rutas_logistica', ruta.id), {
+      paradas: [...(rutaActual.paradas || []), parada],
+    });
+    // Marcar la OV con su ruta
+    await updateDoc(doc(db, 'ordenes_venta', ov.id), { ruta_codigo: ruta.codigo });
+
+    state.modal = null; state.modalData = null;
+    toast(`✅ ${ov.folio} programada para ${fmtFecha(fecha)} en ruta ${ruta.codigo}.`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
   }
-  // Elegir ruta
-  let rutaDestino;
-  if (rutasAbiertas.length === 1) {
-    rutaDestino = rutasAbiertas[0];
-    if (!confirm(`Agregar ${ov.folio} a la ruta ${rutaDestino.codigo} (${fmtFecha(rutaDestino.fecha)})?`)) return;
-  } else {
-    const lista = rutasAbiertas.map((r,i) => `${i+1}) ${r.codigo} · ${fmtFecha(r.fecha)} · ${r.transportista||''}`).join('\n');
-    const sel = prompt(`¿A qué ruta agregar ${ov.folio}?\n\n${lista}`, '1');
-    if (sel === null) return;
-    rutaDestino = rutasAbiertas[Number(sel)-1];
-    if (!rutaDestino) { toast('Ruta inválida.', 'error'); return; }
-  }
-  // Congelar tarimas/kg
-  let tarimasOV = (state.tarimas || []).filter(t => (ov.tarimas_ids || []).includes(t.id));
-  if (tarimasOV.length === 0) tarimasOV = (state.tarimas || []).filter(t => t.ov_id === ov.id);
-  const cli = (state.clientes||[]).find(c => c.codigo === ov.cliente_codigo);
-  const parada = {
-    tipo: 'entrega',
-    ov_id: ov.id, ov_folio: ov.folio,
-    remision_folio: ov.remision_folio || '',
-    producto_codigo: ov.producto_codigo || (tarimasOV[0] && tarimasOV[0].producto_codigo) || '',
-    num_tarimas: tarimasOV.length,
-    kg: tarimasOV.reduce((s,t)=>s+Number(t.peso_neto_kg||t.peso_neto||0),0),
-    cliente_nombre: ov.cliente_nombre || cli?.nombre || ov.cliente_codigo || '',
-    direccion: cli?.direccion || '',
-  };
-  await window.agregarParadaRuta(rutaDestino.id, parada);
 };
 
 // Agregar una parada a la ruta (entrega de OV, recolección de RMA, o combinada)
@@ -11234,7 +11286,8 @@ const _COLECCIONES_TRANSACCIONALES = [
   'movimientos_empaque', 'movimientos_mtto', 'movimientos_oficina',
   'lotes_peletizado', 'corridas_peletizado', 'almacen_desecho_venta',
   'lotes_mp', 'requisiciones_compras', 'comentarios_pedidos',
-  'estandarizacion_historial', 'notificaciones'
+  'estandarizacion_historial', 'notificaciones',
+  'rutas_logistica', 'devoluciones'
 ];
 // Colecciones que se CONSERVAN (catálogos) — solo informativo, no se tocan:
 //   productos_pt, materias_primas, clientes, proveedores, maquinas, usuarios,
@@ -11256,6 +11309,7 @@ window.resetearSistemaTotal = async () => {
     `• Órdenes de producción, rollos, capturas de turno\n` +
     `• Tarimas, lotes, packing lists\n` +
     `• Pedidos, órdenes de venta y de compra, remisiones\n` +
+    `• Rutas de logística y devoluciones (RMA)\n` +
     `• Movimientos de inventario, mermas, peletizado\n` +
     `• Notificaciones, solicitudes, historial\n\n` +
     `SE CONSERVA (NO se toca):\n` +
@@ -13865,9 +13919,9 @@ function renderLogisticaRutas() {
         };
         return `
         <div class="panel" style="border:2px solid #f59e0b;border-radius:12px;padding:0;margin-bottom:16px;overflow:hidden;">
-          <div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;">
-            <div style="font-weight:900;color:#92400e;font-size:14px;">📌 OVs remisionadas esperando ruta (${ovsPorProgramar.length})</div>
-            <div style="font-size:11px;color:#b45309;">Ya tienen remisión y factura. Falta programarles el envío.</div>
+          <div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+            <div style="font-weight:900;color:#92400e;font-size:14px;">📌 Listas para enviar — falta programar día (${ovsPorProgramar.length})</div>
+            <div style="font-size:11px;color:#b45309;">Ya tienen remisión. Pica "Programar" y elige qué día salen.</div>
           </div>
           <div style="padding:8px;max-height:280px;overflow-y:auto;">
             ${ovsPorProgramar.map(o => {
@@ -13936,9 +13990,9 @@ function renderLogisticaRutas() {
         const transportistas = (state.transportistas || []).filter(t => t.activo !== false);
         const externos = transportistas.filter(t => t.tipo === 'externo');
         return `
-      <div class="panel" style="margin:16px 0;border-left:5px solid #16a34a;padding:20px;">
-        <div style="font-weight:800;color:#0f172a;margin-bottom:4px;font-size:15px;">➕ Nueva ruta / envío</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:16px;">Programa el envío de OVs ya remisionadas. Define fecha, transporte y luego agrega las OVs.</div>
+      <details class="panel" style="margin:16px 0;border-left:5px solid #cbd5e1;padding:14px 20px;">
+        <summary style="cursor:pointer;font-weight:700;color:#64748b;font-size:13px;list-style:none;">⚙️ Crear ruta vacía manual (avanzado) — normalmente NO necesitas esto</summary>
+        <div style="font-size:11px;color:#94a3b8;margin:10px 0 16px;">Lo normal es programar desde las OVs de arriba (elige el día y se arma sola). Usa esto solo si quieres una ruta vacía para llenarla después.</div>
         <div style="display:flex;flex-direction:column;gap:14px;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
             <div>
@@ -13971,10 +14025,10 @@ function renderLogisticaRutas() {
                 </select>`}
           </div>
           <div style="display:flex;justify-content:flex-end;">
-            <button onclick="window.crearRutaDesdeForm()" style="padding:11px 28px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;box-shadow:0 2px 6px rgba(22,163,74,0.3);">🚛 Crear ruta</button>
+            <button onclick="window.crearRutaDesdeForm()" style="padding:11px 28px;background:#64748b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:14px;">🚛 Crear ruta vacía</button>
           </div>
         </div>
-      </div>`;
+      </details>`;
       })():''}
 
       <!-- Switch de vista + navegación -->
@@ -14816,6 +14870,17 @@ function renderCalidad() {
         <button class="tab-btn ${subTab === 'liberadas' ? 'active' : ''}" onclick="cambiarTab('calidad','liberadas')">✅ Liberadas (${odpsLiberadas.length})</button>
         <button class="tab-btn ${subTab === 'rechazadas' ? 'active' : ''}" onclick="cambiarTab('calidad','rechazadas')">❌ Rechazadas (${odpsRechazadas.length})</button>
       </div>
+      ${(() => {
+        // Banner explicativo según la pestaña activa
+        const banners = {
+          pendientes: { c:'#fffbeb', b:'#fde68a', t:'#92400e', txt:'<strong>🟡 Por liberar:</strong> órdenes que YA TERMINARON toda su producción. Aquí liberas <strong>TODO</strong> el material de una vez.' },
+          disponible: { c:'#eff6ff', b:'#bfdbfe', t:'#1e40af', txt:'<strong>📦 Disponible para jalar:</strong> órdenes que <strong>siguen produciendo</strong>, pero ya hay material listo. Aquí sacas una <strong>PARCIALIDAD</strong> (parte del total) sin detener la orden.' },
+          liberadas: { c:'#f0fdf4', b:'#bbf7d0', t:'#15803d', txt:'<strong>✅ Liberadas:</strong> órdenes ya liberadas (total o por parciales). Aquí reimprimes certificados, etiquetas y packing lists.' },
+          rechazadas: { c:'#fef2f2', b:'#fca5a5', t:'#991b1b', txt:'<strong>❌ Rechazadas:</strong> material que Calidad rechazó.' },
+        };
+        const bn = banners[subTab] || banners.pendientes;
+        return `<div style="margin-top:10px;background:${bn.c};border:1px solid ${bn.b};border-radius:9px;padding:10px 14px;font-size:12px;color:${bn.t};line-height:1.5;">${bn.txt}</div>`;
+      })()}
     </div>
     
     <div class="toolbar">
@@ -15732,6 +15797,7 @@ function renderModal() {
   if (m === 'programar-odp') return modalProgramarODP();
   if (m === 'completar-proceso') return modalCompletarProceso();
   if (m === 'liberar-calidad') return modalLiberarCalidad();
+  if (m === 'programar-ov-ruta') return modalProgramarOVRuta();
   if (m === 'ver-capturas') return modalVerCapturas();
   if (m === 'crear-oti') return modalCrearOTI();
   if (m === 'transportista') return modalTransportista();
@@ -19561,7 +19627,7 @@ function renderTarjetaOV(o, subTab) {
     if (o.ruta_codigo) {
       acciones += `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#8b5cf6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 En ruta ${o.ruta_codigo} — ver en Logística</button>`;
     } else {
-      acciones += `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">📌 Programar envío en Logística/Rutas</button>`;
+      acciones += `<button onclick="window.programarOVEnRuta('${o.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 Programar envío</button>`;
     }
   }
   if (o.estatus === 'enviada' && (esCS || esCEO)) {
@@ -37136,6 +37202,66 @@ window.setModalidadOTI = (m) => {
 // ============================================================
 // MODAL: LIBERACIÓN DE CALIDAD (con regla del 90%)
 // ============================================================
+function modalProgramarOVRuta() {
+  const ov = (state.ordenes_venta || []).find(o => o.id === state.modalData);
+  if (!ov) return '';
+  // Tarimas de la OV para mostrar resumen
+  let tarimasOV = (state.tarimas || []).filter(t => (ov.tarimas_ids || []).includes(t.id));
+  if (tarimasOV.length === 0) tarimasOV = (state.tarimas || []).filter(t => t.ov_id === ov.id);
+  const kgOV = tarimasOV.reduce((s, t) => s + Number(t.peso_neto_kg || t.peso_neto || 0), 0);
+  // Fecha default = hoy
+  const hoy = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+  const externos = (state.transportistas || []).filter(t => t.activo !== false && t.tipo === 'externo');
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalData=null;window.forzarRender();}">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-bottom:2px solid #16a34a;">
+          <h2 style="font-size:17px;font-weight:800;color:#166534;">🚚 Programar envío</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalData=null;window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <!-- Resumen de la OV -->
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:18px;">
+            <div style="font-size:16px;font-weight:900;color:#0f172a;font-family:monospace;">${ov.folio}</div>
+            <div style="font-size:13px;font-weight:700;color:#475569;margin-top:2px;">${ov.cliente_nombre || ov.cliente_codigo || ''}</div>
+            <div style="font-size:12px;color:#64748b;margin-top:4px;">
+              ${ov.remision_folio ? `📄 ${ov.remision_folio} · ` : ''}${tarimasOV.length} tarima(s) · ${fmtNum(Math.round(kgOV))} kg · ${ov.cedis || 'CEDIS-MTY'}
+            </div>
+          </div>
+
+          <div style="font-size:13px;color:#334155;margin-bottom:16px;line-height:1.5;">
+            Elige <strong>qué día sale</strong> y con qué transporte. El sistema arma la ruta de ese día automáticamente. Si ya hay una ruta ese día con el mismo transporte, se agrega ahí.
+          </div>
+
+          <!-- Fecha de salida -->
+          <div style="margin-bottom:16px;">
+            <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">📅 ¿Qué día sale? *</label>
+            <input id="prog-fecha" type="date" value="${hoy}" style="width:100%;padding:12px;border:1.5px solid #cbd5e1;border-radius:9px;font-size:15px;box-sizing:border-box;font-weight:700;" />
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <button type="button" onclick="document.getElementById('prog-fecha').value='${hoy}'" style="padding:6px 12px;background:#f0fdf4;color:#16a34a;border:1px solid #86efac;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">Hoy</button>
+              <button type="button" onclick="(()=>{const d=new Date();d.setDate(d.getDate()+1);document.getElementById('prog-fecha').value=d.toISOString().split('T')[0];})()" style="padding:6px 12px;background:#eff6ff;color:#2563eb;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">Mañana</button>
+            </div>
+          </div>
+
+          <!-- Transporte -->
+          <div style="margin-bottom:8px;">
+            <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🚚 ¿Cómo se envía?</label>
+            <select id="prog-transporte" style="width:100%;padding:12px;border:1.5px solid #cbd5e1;border-radius:9px;font-size:14px;background:#fff;box-sizing:border-box;">
+              <option value="interno">🏠 NewPack (transporte propio)</option>
+              <option value="cliente">🙋 Cliente recoge</option>
+              ${externos.map(t => `<option value="ext:${t.id}">🚛 ${t.nombre}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalData=null;window.forzarRender();">Cancelar</button>
+          <button class="btn-primary" style="background:#16a34a;" onclick="window.confirmarProgramarOVRuta('${ov.id}', document.getElementById('prog-fecha').value, document.getElementById('prog-transporte').value)">🚚 Programar para este día</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function modalLiberarCalidad() {
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return '';
@@ -37228,6 +37354,13 @@ function modalLiberarCalidad() {
     };
   }
   const f = state.modalForm;
+  
+  // 🎞️ ¿Es una orden de ROLLOS? (ruta = solo extrusión y hay rollos disponibles).
+  //    Si lo es, el flujo de empaque por paquetes NO aplica: se usa el flujo de rollos.
+  const _rutaOdp = odp.ruta_procesos || [];
+  const _esSoloEXT = _rutaOdp.length === 1 && _rutaOdp[0] === 'P1-EXT';
+  const _rollosDispModal = (window._rollosDisponiblesODP ? window._rollosDisponiblesODP(odp.id) : []);
+  const esOrdenRollos = _esSoloEXT && _rollosDispModal.length > 0;
   
   // Si cambió num_tarimas, reinicializar lista
   const numT = Number(f.num_tarimas) || 1;
@@ -37476,10 +37609,10 @@ function modalLiberarCalidad() {
             
             <!-- Configuración global de empaque -->
             <div style="padding:14px;background:#eff6ff;border-radius:10px;border:1px solid #bfdbfe;margin-bottom:14px;">
-              <div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:10px;">📦 Configuración de empaque</div>
+              <div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:10px;">${esOrdenRollos ? '📦 ¿En cuántas tarimas van los rollos?' : '📦 Configuración de empaque'}</div>
               
-              <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:8px;align-items:end;">
-                <div>
+              <div style="display:grid;grid-template-columns:${esOrdenRollos ? '1fr 1fr' : '1.5fr 1fr 1fr'};gap:8px;align-items:end;">
+                <div style="display:${esOrdenRollos ? 'none' : 'block'};">
                   <label class="field-label" style="font-size:10px;">Contenido por ${tipoEmpLabel.toLowerCase()} (en ${UM_LABELS[um]})${aplicaEmpaque && cantEmpaqueStd > 0 ? ` <span style="background:#16a34a;color:#fff;padding:1px 5px;border-radius:4px;font-size:9px;margin-left:4px;">Estándar: ${fmtNum(cantEmpaqueStd)}</span>` : ''}</label>
                   <input class="input form-cal" data-field="contenido_por_paquete" type="number" min="0" step="${stepCant}" value="${f.contenido_por_paquete}" placeholder="${aplicaEmpaque && cantEmpaqueStd > 0 ? `Estándar: ${cantEmpaqueStd}` : (um === 'pza' ? 'Ej: 250 ó 2500' : um === 'millar' ? 'Ej: 1 (= 1 millar/paq)' : um === 'kg' ? 'Ej: 25 (= 25 kg/paq)' : '')}" autocomplete="off" />
                   <div style="font-size:9px;color:#94a3b8;margin-top:2px;">${aplicaEmpaque && cantEmpaqueStd > 0 ? `✓ Pre-llenado del catálogo. Puedes ajustarlo si este lote va diferente.` : (um === 'pza' ? 'Cuántas piezas trae cada paquete' : um === 'millar' ? 'Cuántos millares trae cada paquete' : um === 'kg' ? 'Cuántos kg trae cada paquete' : '')}</div>
@@ -37494,7 +37627,7 @@ function modalLiberarCalidad() {
                 </div>
               </div>
               
-              <div id="cal-empaque-info" style="margin-top:10px;">
+              <div id="cal-empaque-info" style="margin-top:10px;display:${esOrdenRollos ? 'none' : 'block'};">
                 <!-- Modo CON paquetes -->
                 <div id="cal-empaque-conpaq" style="display:${contPaq > 0 ? 'block' : 'none'};">
                   <!-- 🪄 BOTÓN PROMINENTE: LLENAR TODO AUTOMÁTICO -->
@@ -37572,10 +37705,22 @@ function modalLiberarCalidad() {
               return `
                 <div style="margin-bottom:14px;padding:14px;background:#eff6ff;border:2px solid #3b82f6;border-radius:12px;">
                   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                    <strong style="font-size:13px;color:#1e3a8a;">🎞️ Rollos producidos en extrusión (${rollosEXT.length} rollos · ${fmtNum(pesoTotalRollos.toFixed(2))} kg total)</strong>
-                    <span style="font-size:10px;color:#1e40af;background:#dbeafe;padding:3px 8px;border-radius:4px;">Modo asignación inteligente</span>
+                    <strong style="font-size:13px;color:#1e3a8a;">🎞️ Rollos producidos en extrusión (${rollosEXT.length} rollos · ${fmtNum(pesoTotalRollos.toFixed(2))} kg)</strong>
+                    <span style="font-size:10px;color:#1e40af;background:#dbeafe;padding:3px 8px;border-radius:4px;">Producto por rollos</span>
                   </div>
-                  
+
+                  <!-- 🪄 BOTÓN MÁGICO UNIFICADO: reparte rollos Y calcula pesos reales -->
+                  <button onclick="window.autoLlenarRollos()" type="button" style="width:100%;padding:16px;background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;border:none;border-radius:12px;cursor:pointer;font-weight:900;font-size:15px;box-shadow:0 4px 12px rgba(37,99,235,0.3);display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px;">
+                    <span style="font-size:24px;">🪄</span>
+                    <div style="text-align:left;">
+                      <div style="font-size:15px;font-weight:900;">REPARTIR ROLLOS AUTOMÁTICO</div>
+                      <div style="font-size:11px;font-weight:500;opacity:0.95;margin-top:2px;">${rollosEXT.length} rollos en ${f.tarimas_data.length} tarima${f.tarimas_data.length>1?'s':''} · pesos reales de báscula</div>
+                    </div>
+                  </button>
+                  <div style="margin-bottom:10px;padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:10.5px;color:#92400e;">
+                    💡 Este botón hace <strong>todo</strong>: reparte los rollos entre las tarimas y calcula el peso real de cada una. Si quieres ajustar manual, usa los botones de abajo.
+                  </div>
+
                   <!-- Resumen -->
                   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;padding:10px;background:#fff;border-radius:8px;">
                     <div style="text-align:center;">
@@ -37592,11 +37737,12 @@ function modalLiberarCalidad() {
                     </div>
                   </div>
                   
-                  <!-- Botones de acción rápida -->
+                  <!-- Botones de ajuste manual -->
                   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
-                    <button onclick="window.asignarRollosTodosT01()" type="button" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📦 Todos los rollos a T01</button>
-                    ${f.tarimas_data.length > 1 ? `<button onclick="window.asignarRollosDistribuir()" type="button" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🔀 Distribuir equitativo entre ${f.tarimas_data.length} tarimas</button>` : ''}
-                    <button onclick="window.asignarRollosLimpiar()" type="button" style="padding:8px 14px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">↺ Limpiar asignación</button>
+                    <span style="font-size:10px;color:#64748b;font-weight:700;align-self:center;">Ajuste manual:</span>
+                    <button onclick="window.asignarRollosTodosT01()" type="button" style="padding:7px 12px;background:#fff;color:#2563eb;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📦 Todos a T01</button>
+                    ${f.tarimas_data.length > 1 ? `<button onclick="window.asignarRollosDistribuir()" type="button" style="padding:7px 12px;background:#fff;color:#16a34a;border:1px solid #86efac;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🔀 Distribuir</button>` : ''}
+                    <button onclick="window.asignarRollosLimpiar()" type="button" style="padding:7px 12px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">↺ Limpiar</button>
                   </div>
                   
                   <!-- Lista de rollos -->
@@ -46542,6 +46688,36 @@ function _recalcularTarimasDesdeRollos() {
     state.modalForm.cantidad_aceptada = Number(totalKgAsignado.toFixed(2));
   }
 }
+
+// 🪄 UNIFICADO para órdenes de ROLLOS: distribuye los rollos disponibles entre las tarimas
+//    Y calcula el peso real de cada tarima a partir de sus rollos. Un solo botón hace todo.
+window.autoLlenarRollos = () => {
+  if (!state.modalForm || !state.modalForm.tarimas_data) {
+    toast('Estado del modal no disponible. Refresca y vuelve a intentar.', 'error');
+    return;
+  }
+  const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
+  if (!odp) return;
+  const rollos = window._rollosDisponiblesODP(odp.id)
+    .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0));
+  if (rollos.length === 0) { toast('No hay rollos disponibles para asignar', 'error'); return; }
+  const numT = state.modalForm.tarimas_data.length;
+  if (numT === 0) { toast('Captura "Núm. tarimas" primero', 'error'); return; }
+  const pesoVacio = Number(state.modalForm.peso_tarima_unit) || 20;
+
+  // Repartir rollos lo más parejo posible (round-robin por número de rollo)
+  state.modalForm.tarimas_data = state.modalForm.tarimas_data.map(() => ({
+    paquetes: 0, sueltos: 0, peso_bruto: 0, peso_tarima_vacia: pesoVacio, rollos_ids: []
+  }));
+  rollos.forEach((r, i) => {
+    const ti = i % numT;
+    state.modalForm.tarimas_data[ti].rollos_ids.push(r.id);
+  });
+  // Calcular peso neto/bruto real de cada tarima a partir de sus rollos
+  _recalcularTarimasDesdeRollos();
+  render();
+  toast(`✅ ${rollos.length} rollos repartidos en ${numT} tarima${numT > 1 ? 's' : ''} · pesos reales calculados`);
+};
 
 window.autoDistribuir = () => {
   if (!state.modalForm || !state.modalForm.tarimas_data) {
