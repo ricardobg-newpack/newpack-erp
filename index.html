@@ -3797,7 +3797,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-cediscedis</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-entrega</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -11078,6 +11078,41 @@ window.toggleParadaCargada = async (rutaId, paradaId) => {
   finally { window.forzarRender(); }
 };
 
+// 📦 Marcar/desmarcar una parada individual como ENTREGADA (mientras la ruta va en_ruta)
+window.toggleParadaEntregada = async (rutaId, paradaId) => {
+  const u = state.user || {};
+  if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
+  const ruta = (state.rutas_logistica || []).find(r => r.id === rutaId); if (!ruta) return;
+  if (ruta.estatus !== 'en_ruta') { toast('Solo se marcan entregas en rutas despachadas (en camino).', 'error'); return; }
+  const parada = (ruta.paradas || []).find(p => p.id === paradaId);
+  if (!parada) return;
+  const nuevoValor = !parada.entregada;
+  const nuevas = (ruta.paradas || []).map(p =>
+    p.id === paradaId ? { ...p, entregada: nuevoValor, entregada_at: nuevoValor ? Date.now() : null } : p
+  );
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    await updateDoc(doc(db, 'rutas_logistica', rutaId), { paradas: nuevas });
+    // Actualizar la OV/RMA de esta parada
+    if (nuevoValor && (parada.tipo === 'entrega' || parada.tipo === 'combinada') && parada.ov_id) {
+      await updateDoc(doc(db, 'ordenes_venta', parada.ov_id), {
+        estatus: 'entregada', entregada_at: serverTimestamp(),
+      }).catch(()=>{});
+      const ovLocal = (state.ordenes_venta||[]).find(o => o.id === parada.ov_id);
+      if (ovLocal) ovLocal.estatus = 'entregada';
+    }
+    // Si TODAS las paradas quedaron entregadas → completar la ruta automáticamente
+    const todasEntregadas = nuevas.length > 0 && nuevas.every(p => p.entregada);
+    if (todasEntregadas) {
+      await updateDoc(doc(db, 'rutas_logistica', rutaId), { estatus: 'completada', completada_at: serverTimestamp() });
+      toast('✅ Todas las entregas listas. Ruta completada.', 'success');
+    } else {
+      toast(nuevoValor ? '📦 Entrega marcada.' : 'Entrega desmarcada.', 'success');
+    }
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
 // Cambiar estado de la ruta: programada → en_ruta → completada
 window.avanzarRuta = async (rutaId, nuevoEstado) => {
   const u = state.user || {};
@@ -11115,6 +11150,8 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
     }
     if (nuevoEstado === 'completada') {
       patch.completada_at = serverTimestamp();
+      // 🔧 Marcar cada parada como entregada/recolectada (para que el progreso muestre 100%)
+      patch.paradas = (ruta.paradas || []).map(p => ({ ...p, entregada: true, entregada_at: Date.now() }));
       // Efectos: OVs entregadas + RMAs recolectadas
       for (const p of (ruta.paradas || [])) {
         if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
@@ -13843,8 +13880,8 @@ function renderLogisticaRutas() {
   };
 
   const rutasTodas = (state.rutas_logistica || []).slice().sort((a,b) => (b.fecha||'').localeCompare(a.fecha||''));
-  // Filtrar por el CEDIS activo
-  const rutas = rutasTodas.filter(r => _cedisDeRuta(r) === cedisActivo);
+  // Filtrar por el CEDIS activo Y ocultar canceladas (ya no aplican)
+  const rutas = rutasTodas.filter(r => _cedisDeRuta(r) === cedisActivo && r.estatus !== 'cancelada');
   const abiertas = rutas.filter(r => r.estatus === 'programada' || r.estatus === 'en_ruta').length;
   const sub = state.tabs?.logistica || 'tablero';
 
@@ -13909,16 +13946,34 @@ function renderLogisticaRutas() {
           paradas.map(p => {
             const esEntrega = p.tipo === 'entrega' || p.tipo === 'combinada';
             const puedeCargarAqui = r.estatus === 'programada' && esEntrega && puede;
+            const puedeEntregarAqui = r.estatus === 'en_ruta' && esEntrega && puede;
+            // Color de fondo según el estado más avanzado
+            const bg = p.entregada ? '#dcfce7' : (p.cargada ? '#f0fdf4' : '#fff');
+            const bd = p.entregada ? '#86efac' : (p.cargada ? '#bbf7d0' : '#e2e8f0');
+            // Ícono + etiqueta de estado
+            let icono = '', etiqueta = '', accion = '';
+            if (r.estatus === 'programada' && esEntrega) {
+              icono = p.cargada ? '✅' : '⬜';
+              etiqueta = p.cargada ? `<span style="font-size:10px;color:#16a34a;font-weight:800;margin-left:6px;">CARGADO</span>` : `<span style="font-size:10px;color:#94a3b8;margin-left:6px;">toca para cargar</span>`;
+              accion = `onclick="window.toggleParadaCargada('${r.id}','${p.id}')"`;
+            } else if (r.estatus === 'en_ruta' && esEntrega) {
+              icono = p.entregada ? '✅' : '📦';
+              etiqueta = p.entregada ? `<span style="font-size:10px;color:#16a34a;font-weight:800;margin-left:6px;">ENTREGADO</span>` : `<span style="font-size:10px;color:#2563eb;font-weight:800;margin-left:6px;">toca al entregar</span>`;
+              accion = `onclick="window.toggleParadaEntregada('${r.id}','${p.id}')"`;
+            } else if (p.entregada) {
+              icono = '✅'; etiqueta = `<span style="font-size:10px;color:#16a34a;font-weight:800;margin-left:6px;">ENTREGADO</span>`;
+            }
+            const clickable = puedeCargarAqui || puedeEntregarAqui;
             return `
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 10px;background:${p.cargada?'#f0fdf4':'#fff'};border:1px solid ${p.cargada?'#bbf7d0':'#e2e8f0'};border-radius:8px;margin-bottom:6px;">
-              <div style="display:flex;align-items:center;gap:8px;flex:1;${puedeCargarAqui?'cursor:pointer;':''}" ${puedeCargarAqui?`onclick="window.toggleParadaCargada('${r.id}','${p.id}')"`:''}>
-                ${esEntrega && r.estatus==='programada' ? `<span style="font-size:18px;">${p.cargada?'✅':'⬜'}</span>` : ''}
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 10px;background:${bg};border:1px solid ${bd};border-radius:8px;margin-bottom:6px;">
+              <div style="display:flex;align-items:center;gap:8px;flex:1;${clickable?'cursor:pointer;':''}" ${clickable?accion:''}>
+                ${icono ? `<span style="font-size:18px;">${icono}</span>` : ''}
                 <div style="font-size:12px;">
                   <span style="font-weight:800;color:#334155;">${p.orden}.</span>
                   ${PARADA_TIPOS[p.tipo]||p.tipo} ·
                   <strong>${p.cliente_nombre||'—'}</strong>
                   ${p.ov_folio?(' · OV '+p.ov_folio):''}${p.rma_codigo?(' · '+p.rma_codigo):''}
-                  ${p.cargada?`<span style="font-size:10px;color:#16a34a;font-weight:800;margin-left:6px;">CARGADO</span>`:(puedeCargarAqui?`<span style="font-size:10px;color:#94a3b8;margin-left:6px;">toca para cargar</span>`:'')}
+                  ${etiqueta}
                 </div>
               </div>
               ${r.estatus==='programada'?`<button onclick="window.quitarParadaRuta('${r.id}','${p.id}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;font-weight:800;">✕</button>`:''}
@@ -13937,7 +13992,12 @@ function renderLogisticaRutas() {
           <button onclick="window.cancelarRutaLogistica('${r.id}')" style="padding:9px 16px;background:#fff;color:#dc2626;border:1px solid #fecaca;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;">Cancelar</button>
           `;
         })():''}
-        ${r.estatus==='en_ruta'&&puede?`<button onclick="window.avanzarRuta('${r.id}','completada')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✅ Marcar completada</button>`:''}
+        ${r.estatus==='en_ruta'&&puede?(() => {
+          const entregas = (r.paradas||[]).filter(p => p.tipo==='entrega'||p.tipo==='combinada');
+          const entregadas = entregas.filter(p => p.entregada).length;
+          const faltan = entregas.length - entregadas;
+          return `<button onclick="window.avanzarRuta('${r.id}','completada')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✅ ${faltan>0?`Marcar TODO entregado (faltan ${faltan})`:'Completar ruta'}</button>`;
+        })():''}
         <button onclick="window.imprimirHojaRuta('${r.id}')" style="padding:9px 16px;background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px;">📄 Hoja de ruta</button>
       </div>
     </div>`;
