@@ -2803,12 +2803,15 @@ window.deduceRequiereProcesoSecundario = (producto) => {
   const codEsBolsaSuelta = /^(LD|HD|AD|MD|LL)BS/.test(cod) || cod4.endsWith('BS');
   const codEsPelicula = cod4.startsWith('TE') || cod4.endsWith('PR') || cod4.endsWith('PE');
   
-  // ───── PELÍCULA PLANA con acabado especial → sí lleva 2º proceso ─────
+  // ───── PELÍCULA PLANA con acabado especial ─────
+  //    🔧 Por defecto la película refilada sale TERMINADA de extrusión (refilado en línea),
+  //    que es lo más común. Solo requiere P6-REF si el producto lo marca EXPLÍCITAMENTE
+  //    (refilacion_modo === 'proceso_aparte'). Antes asumía P6-REF y metía procesos de más.
   if (txt.includes('PELICULA') && (txt.includes('REFILAD') || txt.includes('REFILE'))) {
-    if (producto.refilacion_modo === 'extrusion') {
-      return { requiere: false, proceso: '', origen: 'auto-tipo' }; // refila en extrusión, sale terminada
+    if (producto.refilacion_modo === 'proceso_aparte') {
+      return { requiere: true, proceso: 'P6-REF', origen: 'manual' };
     }
-    return { requiere: true, proceso: 'P6-REF', origen: 'auto-tipo' }; // refila aparte
+    return { requiere: false, proceso: '', origen: 'auto-tipo' }; // refila en extrusión (default)
   }
   // Película plana PUNTEADA / PERFORADA → Bolsa en Rollo (P4-BR), ahí se puntea
   if (txt.includes('PELICULA') && (txt.includes('PUNTEAD') || txt.includes('PERFORAD'))) {
@@ -3797,7 +3800,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-entrega</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rutaedit</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -15269,19 +15272,28 @@ function renderTarjetaCalidad(o, contexto) {
             || (o.estatus === 'en_produccion' && !o.archivada && _completa && _hayPorLiberar);
           if (!_puedeLiberar) return '';
           // 🆕 DETECCIÓN DE ERROR DE FLUJO: ¿esta ODP llegó a Calidad sin hacer un 2º proceso?
-          //    Señales: (a) el producto requiere un proceso que NO está en la ruta, o
-          //             (b) hay rollos de extrusión en intermedio sin consumir (no bolseados).
+          //    🔧 REGLA CLAVE: la VERDAD del flujo es la RUTA de la ODP (ruta_procesos), NO lo
+          //    que el nombre del producto sugiera. Si la ODP se creó con un solo proceso
+          //    (ej. solo P1-EXT), ese ES su flujo real y está completa — aunque el producto
+          //    "en teoría" pudiera llevar otro proceso. Solo es error si un proceso que SÍ
+          //    está en la ruta de la ODP quedó sin ejecutar y hay material sin procesar.
           const prodCal = window.getProductoPT ? window.getProductoPT(o.producto_codigo) : (state.productos_pt||[]).find(p=>p.codigo===o.producto_codigo);
           const flujoReq = window.deduceRequiereProcesoSecundario ? window.deduceRequiereProcesoSecundario(prodCal) : { requiere:false };
           const rutaO = o.ruta_procesos || [];
-          const faltaEnRuta = flujoReq.requiere && flujoReq.proceso && !rutaO.includes(flujoReq.proceso);
-          // Rollos de extrusión de esta ODP que NO fueron consumidos por un 2º proceso
-          const rollosSinProcesar = (state.rollos_extrusion || [])
+          // Solo alertar si el proceso requerido ESTÁ en la ruta de la ODP pero NO se ejecutó
+          const procEnRuta = flujoReq.requiere && flujoReq.proceso && rutaO.includes(flujoReq.proceso);
+          const procEjecutado = procEnRuta && (
+            (o.procesos_completados || []).some(pc => (pc.proceso || pc) === flujoReq.proceso) ||
+            (o.avance_procesos && o.avance_procesos[flujoReq.proceso] && o.avance_procesos[flujoReq.proceso].estatus === 'completado')
+          );
+          // Rollos de extrusión sin consumir SOLO importan si el 2º proceso está en la ruta
+          const rollosSinProcesar = procEnRuta ? (state.rollos_extrusion || [])
             .filter(r => r.odp_id === o.id && !r.anulado && !r.consumido_en_odp_id && !r.consolidado_en_turno)
-            .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0);
-          const hayMaterialSinProcesar = flujoReq.requiere && rollosSinProcesar > 0;
+            .reduce((s, r) => s + (Number(r.peso_kg) || 0), 0) : 0;
+          // Es error solo si: el proceso está en la ruta, NO se ejecutó, y hay material sin procesar
+          const faltaProcesoReal = procEnRuta && !procEjecutado && rollosSinProcesar > 0;
           
-          if (faltaEnRuta || hayMaterialSinProcesar) {
+          if (faltaProcesoReal) {
             const nomProc = getProc(flujoReq.proceso)?.nombre || flujoReq.proceso;
             return `
               <div style="width:100%;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;padding:12px;margin-bottom:8px;">
@@ -15947,6 +15959,7 @@ function renderModal() {
   if (m === 'programar-odp') return modalProgramarODP();
   if (m === 'completar-proceso') return modalCompletarProceso();
   if (m === 'liberar-calidad') return modalLiberarCalidad();
+  if (m === 'editar-ruta-odp') return modalEditarRutaODP();
   if (m === 'programar-ov-ruta') return modalProgramarOVRuta();
   if (m === 'ver-capturas') return modalVerCapturas();
   if (m === 'crear-oti') return modalCrearOTI();
@@ -37352,6 +37365,122 @@ window.setModalidadOTI = (m) => {
 // ============================================================
 // MODAL: LIBERACIÓN DE CALIDAD (con regla del 90%)
 // ============================================================
+// 🛠️ Editar la RUTA de procesos de una ODP (corregir si la adivinanza automática se equivocó)
+window.editarRutaODP = (odpId) => {
+  const u = state.user || {};
+  const puede = ['PLN','PRO','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast('🔒 Solo Planeación/Producción/Admin pueden cambiar la ruta.', 'error'); return; }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) return;
+  const yaProdujo = (odp.procesos_completados || []).length > 0 ||
+    Object.values(odp.avance_procesos || {}).some(a => (Number(a.producido_kg) || 0) > 0);
+  if (yaProdujo) {
+    toast('No se puede cambiar la ruta: la orden ya tiene producción registrada.', 'error');
+    return;
+  }
+  state._rutaEdit = (odp.ruta_procesos || ['P1-EXT']).slice();
+  state.modalData = odpId;
+  state.modal = 'editar-ruta-odp';
+  window.forzarRender();
+};
+
+window.toggleProcesoRutaEdit = (procCod) => {
+  if (!state._rutaEdit) return;
+  const idx = state._rutaEdit.indexOf(procCod);
+  if (idx >= 0) {
+    if (procCod === 'P1-EXT') { toast('Extrusión no se puede quitar (siempre es el primer paso).', 'error'); return; }
+    state._rutaEdit.splice(idx, 1);
+  } else {
+    state._rutaEdit.push(procCod);
+  }
+  window.forzarRender();
+};
+
+window.guardarRutaODP = async () => {
+  const odpId = state.modalData;
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp || !state._rutaEdit) return;
+  const ordenCat = (window.PROCESOS || []).map(p => p.codigo);
+  const nuevaRuta = state._rutaEdit.slice().sort((a, b) => ordenCat.indexOf(a) - ordenCat.indexOf(b));
+  if (!nuevaRuta.includes('P1-EXT')) nuevaRuta.unshift('P1-EXT');
+  const avance = {};
+  nuevaRuta.forEach(cod => {
+    avance[cod] = odp.avance_procesos?.[cod] || { producido_kg: 0, liberado_kg: 0, estatus: 'esperando', completado: false };
+  });
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), {
+      ruta_procesos: nuevaRuta,
+      avance_procesos: avance,
+      proceso_actual_idx: 0,
+      proceso_actual: nuevaRuta[0],
+      ruta_corregida_manual: true,
+      updated_at: serverTimestamp(),
+    });
+    const local = state.ordenes_produccion.find(o => o.id === odpId);
+    if (local) { local.ruta_procesos = nuevaRuta; local.avance_procesos = avance; }
+    state.modal = null; state.modalData = null; state._rutaEdit = null;
+    toast('✅ Ruta actualizada: ' + nuevaRuta.map(c => getProc(c)?.nombre || c).join(' → '), 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+function modalEditarRutaODP() {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === state.modalData);
+  if (!odp) return '';
+  if (!state._rutaEdit) state._rutaEdit = (odp.ruta_procesos || ['P1-EXT']).slice();
+  const rutaActual = state._rutaEdit;
+  const procesos = (window.PROCESOS || []).filter(p => p.codigo !== 'P5-PEL');
+  const ordenCat = procesos.map(p => p.codigo);
+  const rutaOrdenada = rutaActual.slice().sort((a, b) => ordenCat.indexOf(a) - ordenCat.indexOf(b));
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalData=null;state._rutaEdit=null;window.forzarRender();}">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border-bottom:2px solid #2563eb;">
+          <h2 style="font-size:17px;font-weight:800;color:#1e40af;">🛠️ Corregir ruta de procesos</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalData=null;state._rutaEdit=null;window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:16px;">
+            <div style="font-size:15px;font-weight:900;color:#0f172a;font-family:monospace;">${odp.folio}</div>
+            <div style="font-size:12px;color:#64748b;margin-top:2px;">${odp.producto_codigo || ''} · ${odp.descripcion || ''}</div>
+          </div>
+
+          <div style="font-size:13px;color:#334155;margin-bottom:8px;">Marca <strong>qué procesos</strong> lleva este producto. Extrusión siempre va primero.</div>
+
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:9px;padding:10px 12px;margin-bottom:16px;">
+            <div style="font-size:10px;color:#1e40af;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Ruta resultante</div>
+            <div style="font-size:14px;font-weight:800;color:#1e3a8a;">${rutaOrdenada.map(c => `${getProc(c)?.icono||''} ${getProc(c)?.nombre||c}`).join('  →  ')}</div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${procesos.map(p => {
+              const activo = rutaActual.includes(p.codigo);
+              const esExt = p.codigo === 'P1-EXT';
+              return `
+                <div onclick="${esExt ? '' : `window.toggleProcesoRutaEdit('${p.codigo}')`}" style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:10px;cursor:${esExt?'default':'pointer'};background:${activo?'#f0fdf4':'#fff'};border:1.5px solid ${activo?'#86efac':'#e2e8f0'};${esExt?'opacity:0.85;':''}">
+                  <span style="font-size:20px;">${activo?'✅':'⬜'}</span>
+                  <span style="font-size:22px;">${p.icono||''}</span>
+                  <div style="flex:1;">
+                    <div style="font-weight:800;color:#0f172a;font-size:14px;">${p.nombre}</div>
+                    <div style="font-size:10px;color:#94a3b8;">${p.codigo}${esExt?' · siempre incluido':''}</div>
+                  </div>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalData=null;state._rutaEdit=null;window.forzarRender();">Cancelar</button>
+          <button class="btn-primary" onclick="window.guardarRutaODP()">💾 Guardar ruta</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function modalProgramarOVRuta() {
   const ov = (state.ordenes_venta || []).find(o => o.id === state.modalData);
   if (!ov) return '';
@@ -38499,6 +38628,9 @@ function modalDetalleODP() {
                 <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
                   <button onclick="window.repararAvanceODP('${odp.id}')" style="flex:1;min-width:140px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
                     🔧 Reparar avance
+                  </button>
+                  <button onclick="window.editarRutaODP('${odp.id}')" style="flex:1;min-width:140px;background:#fff;color:#2563eb;border:1.5px solid #2563eb;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+                    🛠️ Corregir ruta
                   </button>
                   ${(odp.estatus === 'en_produccion' || odp.proceso_estatus_actual === 'pausado') ? `
                     <button onclick="window.cerrarODPConSaldo('${odp.id}')" style="flex:1;min-width:140px;background:#fff;color:#92400e;border:1.5px solid #f59e0b;padding:9px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
