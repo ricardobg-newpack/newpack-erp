@@ -3775,7 +3775,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-embhoy</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-libfix2</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -14720,23 +14720,30 @@ function renderCalidad() {
   const subTab = state.tabs.calidad || 'pendientes';
 
   // 🔧 Helper: ¿la ODP ya terminó TODA su producción? (produjo su meta, no queda por producir)
-  //    Si sí, aunque siga en_produccion, debe tratarse como TERMINADA → "Por liberar".
   const _produccionCompleta = (o) => {
     const meta = Number(o.cantidad_kg_produccion) || 0;
     if (meta <= 0) return false;
     const disp = window.kgDisponibleParaJalar(o);
     const yaLiberado = Number(o.kg_liberado_parcial) || 0;
     const registradoTotal = (Number(disp.registradoKg) || 0) + yaLiberado;
-    // Terminada si lo registrado (disponible + ya liberado) alcanza el 98% de la meta
     return registradoTotal >= meta * 0.98;
   };
 
-  const odpsPendientes = (state.ordenes_produccion || []).filter(o =>
-    o.estatus === 'pendiente_calidad' ||
-    // 🆕 Órdenes que ya produjeron su meta completa (aunque sigan 'en_produccion' por no
-    //    haberse marcado "terminar" manualmente) van a Por liberar, NO a parcial.
-    (o.estatus === 'en_produccion' && !o.archivada && _produccionCompleta(o))
-  );
+  // 🔧 Helper: ¿queda material SIN liberar? (lo disponible para jalar/liberar > 0)
+  const _tieneMaterialPorLiberar = (o) => {
+    const disp = window.kgDisponibleParaJalar(o);
+    return (Number(disp.disponibleKg) || 0) > 0.5; // margen de redondeo
+  };
+
+  const odpsPendientes = (state.ordenes_produccion || []).filter(o => {
+    // Órdenes marcadas explícitamente terminadas por producción
+    if (o.estatus === 'pendiente_calidad') return true;
+    // Órdenes en_produccion que YA produjeron su meta completa Y todavía tienen material
+    // sin liberar (si ya se liberó todo en parciales, NO deben aparecer aquí).
+    if (o.estatus === 'en_produccion' && !o.archivada
+        && _produccionCompleta(o) && _tieneMaterialPorLiberar(o)) return true;
+    return false;
+  });
 
   // 🆕 ODP en producción con material disponible PERO que AÚN NO termina su meta (parcial real)
   const odpsConMaterial = (state.ordenes_produccion || [])
