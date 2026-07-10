@@ -3769,7 +3769,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-estadofix</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0709-rollospar</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -37426,7 +37426,8 @@ function modalLiberarCalidad() {
             
             <!-- 🎞️ MODO ROLLOS: si la ODP tiene rollos capturados en EXT, mostrar panel de asignación -->
             ${(() => {
-              const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
+              // 🔧 FIX PARCIALIDAD: solo rollos AÚN NO liberados (excluye parcialidades previas)
+              const rollosEXT = window._rollosDisponiblesODP(odp.id);
               const ruta = odp.ruta_procesos || [];
               const esSoloEXT = ruta.length === 1 && ruta[0] === 'P1-EXT';
               if (rollosEXT.length === 0 || !esSoloEXT) return '';
@@ -46303,11 +46304,25 @@ window.asignarRolloATarima = (rolloId, tarimaIdxStr) => {
 };
 
 // Asignar TODOS los rollos a la tarima 01
+// 🔧 Helper único: rollos de la ODP que AÚN NO fueron liberados (excluye los ya asignados
+//    a tarimas de parcialidades previas). Fuente de verdad para todo el modo rollos.
+window._rollosDisponiblesODP = (odpId) => {
+  const rollosYaLiberados = new Set();
+  (state.tarimas || []).forEach(t => {
+    if (t.odp_id === odpId && Array.isArray(t.rollos_ids)) {
+      t.rollos_ids.forEach(id => rollosYaLiberados.add(id));
+    }
+  });
+  return (state.rollos_extrusion || []).filter(r =>
+    r.odp_id === odpId && !r.anulado && !rollosYaLiberados.has(r.id)
+  );
+};
+
 window.asignarRollosTodosT01 = () => {
   if (!state.modalForm || !state.modalForm.tarimas_data) return;
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return;
-  const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
+  const rollosEXT = window._rollosDisponiblesODP(odp.id);
   
   // Limpiar todas las tarimas
   state.modalForm.tarimas_data.forEach(t => { t.rollos_ids = []; });
@@ -46326,7 +46341,7 @@ window.asignarRollosDistribuir = () => {
   if (!state.modalForm || !state.modalForm.tarimas_data) return;
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return;
-  const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado)
+  const rollosEXT = window._rollosDisponiblesODP(odp.id)
     .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0));
   const numT = state.modalForm.tarimas_data.length;
   
@@ -46358,7 +46373,7 @@ function _recalcularTarimasDesdeRollos() {
   if (!state.modalForm || !state.modalForm.tarimas_data) return;
   const odp = state.ordenes_produccion.find(o => o.id === state.modalData);
   if (!odp) return;
-  const rollosEXT = (state.rollos_extrusion || []).filter(r => r.odp_id === odp.id && !r.anulado);
+  const rollosEXT = window._rollosDisponiblesODP(odp.id);
   const mapaRollos = {};
   rollosEXT.forEach(r => { mapaRollos[r.id] = r; });
   
