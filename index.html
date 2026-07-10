@@ -3619,7 +3619,11 @@ window.renderSoloModal = () => {
     if (nuevo) {
       try {
         nuevo.focus();
-        if (posSel != null && typeof nuevo.setSelectionRange === 'function') {
+        // ⚠️ setSelectionRange NO es válido en type=number/email/etc. (lanza excepción y
+        //    deja el cursor al inicio → efecto de "escribir al revés"). Solo aplicarlo a
+        //    tipos que sí lo soportan.
+        const tipoSel = (nuevo.tagName === 'TEXTAREA') || ['text','search','tel','url','password'].includes((nuevo.type||'').toLowerCase());
+        if (posSel != null && tipoSel && typeof nuevo.setSelectionRange === 'function') {
           nuevo.setSelectionRange(posSel, posSel);
         }
       } catch (e) {}
@@ -3800,7 +3804,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-comprasfull</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-menucompras</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3881,25 +3885,21 @@ function renderApp() {
         ` : ''}
         
         ${(esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS) ? `
-          <div class="sidebar-section">Requisiciones de Compra</div>
-          <button class="nav-item ${state.vista === 'compras_tablero' ? 'active' : ''}" data-vista="compras_tablero">🧭 Tablero de Compras</button>
-          <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Requisiciones (RC)</button>
-        ` : ''}
-        
-        ${(esCOMP || esCEO || esADMIN) ? `
           <div class="sidebar-section">Compras</div>
-          <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes Compra (OC)</button>
-          <button class="nav-item ${state.vista === 'proveedores' ? 'active' : ''}" data-vista="proveedores">🏭 Proveedores</button>
+          <button class="nav-item ${state.vista === 'compras_tablero' ? 'active' : ''}" data-vista="compras_tablero">🧭 Seguimiento de pedidos</button>
+          <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Solicitar material (RC)</button>
+          ${(esCOMP || esCEO || esADMIN) ? `
+            <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes de Compra</button>
+            <button class="nav-item ${state.vista === 'proveedores' ? 'active' : ''}" data-vista="proveedores">🏭 Proveedores</button>
+          ` : ''}
+          ${(esALP || esCEDMTY || esCEDMEX || esADMIN || esCOMP || esCEO) ? `
+            <button class="nav-item ${state.vista === 'recepciones_mp' ? 'active' : ''}" data-vista="recepciones_mp">📥 Recibir material</button>
+          ` : ''}
         ` : ''}
         
         ${(esALP || esCEO || esPLN || esCOMP) ? `
           <div class="sidebar-section">Materias Primas</div>
           <button class="nav-item ${state.vista === 'almacen_mp' ? 'active' : ''}" data-vista="almacen_mp">📦 Almacén MP</button>
-        ` : ''}
-        
-        ${(esALP || esCEDMTY || esCEDMEX || esADMIN || esCOMP || esCEO) ? `
-          <div class="sidebar-section">Recepciones</div>
-          <button class="nav-item ${state.vista === 'recepciones_mp' ? 'active' : ''}" data-vista="recepciones_mp">📥 Recepción de OCs</button>
         ` : ''}
         
         ${esVerMTTO ? `
@@ -24037,9 +24037,9 @@ function renderComprasTablero() {
       <!-- Encabezado -->
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
         <div>
-          <div style="font-size:22px;font-weight:900;color:#0f172a;">🧭 Tablero de Compras</div>
+          <div style="font-size:22px;font-weight:900;color:#0f172a;">🧭 Seguimiento de pedidos</div>
           <div style="font-size:12px;color:#64748b;margin-top:2px;">
-            ${veTodo ? 'Estado de TODO el flujo de compras en un solo lugar' : 'Estado de las compras de tu área'}
+            ${veTodo ? 'Estado de TODO el flujo de compras en un solo lugar' : 'Sigue aquí en qué va cada material que pediste'}
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -24141,11 +24141,11 @@ function renderRequisiciones() {
     <!-- Encabezado con contexto de rol -->
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
       <div>
-        <div style="font-size:20px;font-weight:900;color:#0f172a;">📋 Requisiciones de Compra</div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">📋 Solicitar material</div>
         <div style="font-size:12px;color:#64748b;margin-top:2px;">
           ${veTodo
             ? '👑 Ves TODAS las requisiciones de la empresa'
-            : `👤 Ves las requisiciones de tu área (${(window.DEPARTAMENTOS||[]).find(d=>d.codigo===u.depto)?.nombre || u.depto || 'tu depto'})`}
+            : `👤 Aquí pides lo que necesitas · ves lo de tu área (${(window.DEPARTAMENTOS||[]).find(d=>d.codigo===u.depto)?.nombre || u.depto || 'tu depto'})`}
         </div>
       </div>
       ${puedeCrear ? `<button class="btn-primary" onclick="abrirModal('crear-rc')" style="padding:10px 18px;font-size:14px;">${ICONS.plus} Nueva requisición</button>` : ''}
@@ -24439,8 +24439,10 @@ function modalRC(esEdicion) {
           <!-- AGREGAR LÍNEA -->
           <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:12px;">
             <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Agregar insumo</div>
+            <!-- 🔍 Buscador rápido: escribe y filtra las opciones del selector -->
+            <input class="input" id="rc-prod-buscar" type="text" placeholder="🔍 Escribe para buscar (código o nombre)..." autocomplete="off" oninput="window.filtrarProductosRC(this.value)" style="margin-bottom:8px;border-color:#16a34a;" />
             <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:8px;">
-              <select class="input" id="rc-prod-select">
+              <select class="input" id="rc-prod-select" size="1">
                 <option value="">— Selecciona producto —</option>
                 ${mps.length > 0 ? `
                   <optgroup label="🧪 Materias Primas / Aditivos / Pigmentos">
@@ -24484,7 +24486,7 @@ function modalRC(esEdicion) {
                   </optgroup>
                 ` : ''}
               </select>
-              <input class="input" id="rc-cant" type="number" min="0" step="0.01" placeholder="Cantidad" />
+              <input class="input" id="rc-cant" type="text" inputmode="decimal" placeholder="Cantidad" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'')" />
               <button onclick="agregarLineaRC()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Agregar</button>
             </div>
             ${mps.length === 0 && productosMTTO.length === 0 && productosEmpaque.length === 0 && productosOficina.length === 0 && productosCOM.length === 0 ? `
@@ -24557,6 +24559,40 @@ function modalRC(esEdicion) {
     </div>
   `;
 }
+
+// 🔍 Filtra las opciones del selector de producto según el texto escrito.
+//    Oculta las que no coinciden y selecciona la primera visible, para encontrar rápido.
+window.filtrarProductosRC = (texto) => {
+  const sel = document.getElementById('rc-prod-select');
+  if (!sel) return;
+  const q = (texto || '').toLowerCase().trim();
+  let primeraVisible = null;
+  let visibles = 0;
+  // Recorrer optgroups y options
+  Array.from(sel.querySelectorAll('optgroup')).forEach(og => {
+    let algunoVisible = false;
+    Array.from(og.querySelectorAll('option')).forEach(opt => {
+      const txt = (opt.textContent || '').toLowerCase();
+      const match = !q || txt.includes(q);
+      opt.hidden = !match;
+      opt.style.display = match ? '' : 'none';
+      if (match) { algunoVisible = true; visibles++; if (!primeraVisible) primeraVisible = opt; }
+    });
+    // Ocultar el grupo entero si no tiene coincidencias
+    og.hidden = !algunoVisible;
+    og.style.display = algunoVisible ? '' : 'none';
+  });
+  // Opciones sueltas (sin optgroup), como el placeholder
+  Array.from(sel.children).forEach(ch => {
+    if (ch.tagName === 'OPTION' && ch.value === '') { ch.hidden = false; }
+  });
+  // Autoseleccionar la primera coincidencia si el usuario escribió algo
+  if (q && primeraVisible) {
+    sel.value = primeraVisible.value;
+  } else if (!q) {
+    sel.value = '';
+  }
+};
 
 window.agregarLineaRC = () => {
   // El select ahora se llama 'rc-prod-select' y trae valores tipo "MP|codigo" o "MTTO|codigo"
@@ -25067,7 +25103,7 @@ function modalGenerarOC() {
             ${f.moneda === 'USD' ? `
               <div class="field" style="margin-top:10px;margin-bottom:0;">
                 <label class="field-label">Tipo de cambio referencia (MXN/USD)</label>
-                <input class="input" id="oc-tc" type="number" min="0" step="0.01" value="${f.tipo_cambio || ''}" placeholder="Ej: 18.50" oninput="window.modalFormSetSilent('tipo_cambio', this.value)" style="max-width:200px;" />
+                <input class="input" id="oc-tc" type="text" inputmode="decimal" value="${f.tipo_cambio || ''}" placeholder="Ej: 18.50" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.modalFormSetSilent('tipo_cambio', this.value)" autocomplete="off" style="max-width:200px;" />
               </div>
             ` : ''}
           </div>
@@ -25101,7 +25137,7 @@ function modalGenerarOC() {
                         <td style="padding:6px 10px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
                         <td style="padding:6px 10px;font-size:11px;color:#64748b;">${l.um}</td>
                         <td style="padding:6px 10px;text-align:right;">
-                          <input class="input" id="oc-costo-${idx}" type="number" min="0" step="0.01" value="${l.costo_unitario || ''}" placeholder="0.00" oninput="window.actualizarLineaOC(${idx},'costo_unitario',this.value)" style="font-size:11px;padding:4px 6px;width:90px;text-align:right;" />
+                          <input class="input" id="oc-costo-${idx}" type="text" inputmode="decimal" value="${l.costo_unitario || ''}" placeholder="0.00" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.actualizarLineaOC(${idx},'costo_unitario',this.value)" autocomplete="off" style="font-size:11px;padding:4px 6px;width:90px;text-align:right;" />
                         </td>
                         <td style="padding:6px 10px;text-align:right;font-weight:700;color:${subtotal > 0 ? '#16a34a' : '#94a3b8'};">$${fmtNum(subtotal.toFixed(2))}</td>
                       </tr>
@@ -28219,14 +28255,15 @@ function renderRecepcionesMP() {
   
   return `
     <div style="padding:14px;background:#eff6ff;border:1px solid #3b82f6;border-radius:10px;margin-bottom:14px;">
-      <div style="font-weight:800;color:#1e40af;font-size:13px;">📥 Recepción de Órdenes de Compra</div>
+      <div style="font-weight:800;color:#1e40af;font-size:15px;">📥 Recibir material — entrada al almacén</div>
       <div style="font-size:11px;color:#475569;margin-top:4px;">
+        Aquí registras el material que LLEGA de los proveedores (contra su orden de compra).
         ${esALL 
-          ? 'Vista supervisora: ves todas las OCs del sistema. Cada depto recibe solo lo que le corresponde físicamente.'
-          : u.depto === 'ALP' ? 'Tu depto recibe Materias Primas (MP) y Productos de Mantenimiento (MTTO).'
-          : u.depto === 'CEDMTY' ? 'Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMTY.'
-          : u.depto === 'CEDMEX' ? 'Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMEX.'
-          : 'Tu depto no recibe OCs físicamente. Contacta a Compras o Admin.'}
+          ? ' Vista supervisora: ves todas las OCs. Cada depto recibe solo lo que le corresponde físicamente.'
+          : u.depto === 'ALP' ? ' Tu depto recibe Materias Primas (MP) y Productos de Mantenimiento (MTTO).'
+          : u.depto === 'CEDMTY' ? ' Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMTY.'
+          : u.depto === 'CEDMEX' ? ' Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMEX.'
+          : ' Tu depto no recibe OCs físicamente. Contacta a Compras o Admin.'}
       </div>
     </div>
     
