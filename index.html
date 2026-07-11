@@ -3810,7 +3810,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-fallas</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-rcrecibido</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -25187,7 +25187,18 @@ function modalDetalleRC() {
   if (!rc) return '';
   const estat = ESTATUS_RC.find(e => e.codigo === rc.estatus) || ESTATUS_RC[0];
   const prio = PRIORIDADES_RC.find(p => p.codigo === rc.prioridad) || PRIORIDADES_RC[0];
-  
+
+  // 🔗 Buscar la OC ligada: la recepción actualiza las líneas de la OC (no de la RC),
+  //    así que la cantidad recibida real y el destino viven en la OC.
+  const ocLigada = (state.ordenes_compra || []).find(o => o.folio === rc.oc_folio || o.rc_id === rc.id || o.rc_folio === rc.folio);
+  const NOMBRE_ALM = { 'ALMACEN-PLANTA-MTY': '🏭 Almacén Planta MTY', 'CEDIS-MTY': '🏢 CEDIS Monterrey', 'CEDIS-MEX': '🏙️ CEDIS México' };
+  // Recibido por código de MP (desde las líneas de la OC)
+  const recibidoPorCodigo = {};
+  if (ocLigada) (ocLigada.lineas || []).forEach(l => {
+    const cod = l.mp_codigo || l.producto_codigo;
+    if (cod) recibidoPorCodigo[cod] = (recibidoPorCodigo[cod] || 0) + (Number(l.cantidad_recibida) || 0);
+  });
+
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:720px;max-height:90vh;display:flex;flex-direction:column;">
@@ -25209,6 +25220,7 @@ function modalDetalleRC() {
               ${rc.aprobada_por_nombre ? `<div><strong>✅ Aprobada por:</strong> ${rc.aprobada_por_nombre}</div>` : ''}
               ${rc.proveedor_asignado ? `<div><strong>🏭 Proveedor:</strong> ${rc.proveedor_asignado}</div>` : ''}
               ${rc.oc_folio ? `<div><strong>📑 OC:</strong> <span class="text-mono">${rc.oc_folio}</span></div>` : ''}
+              ${ocLigada && ocLigada.destino_recepcion ? `<div><strong>📍 Recibido en:</strong> ${NOMBRE_ALM[ocLigada.destino_recepcion] || ocLigada.destino_recepcion}</div>` : ''}
               ${rc.motivo_cancelacion ? `<div style="grid-column:1/-1;"><strong>❌ Motivo cancelación:</strong> ${rc.motivo_cancelacion}</div>` : ''}
             </div>
           </div>
@@ -25219,7 +25231,7 @@ function modalDetalleRC() {
               { label: 'Solicitada', icono: '📝', done: true, quien: rc.solicitante_nombre, fecha: rc.fecha_solicitud || (rc.created_at ? fmtFecha(rc.created_at) : ''), desc: 'Requisición creada' },
               { label: 'Aprobada', icono: '✅', done: ['aprobada','oc_generada','recibida'].includes(rc.estatus), quien: rc.aprobada_por_nombre, fecha: rc.aprobada_at ? fmtFecha(rc.aprobada_at) : '', desc: 'Compras autorizó' },
               { label: 'Orden de compra', icono: '📑', done: ['oc_generada','recibida'].includes(rc.estatus), quien: rc.proveedor_asignado, fecha: rc.oc_generada_at ? fmtFecha(rc.oc_generada_at) : '', desc: rc.oc_folio ? ('OC '+rc.oc_folio) : 'Se ordenó al proveedor' },
-              { label: 'Recibida', icono: '📦', done: rc.estatus === 'recibida', quien: '', fecha: rc.recibida_at ? fmtFecha(rc.recibida_at) : '', desc: 'Material llegó a almacén' },
+              { label: 'Recibida', icono: '📦', done: rc.estatus === 'recibida', quien: '', fecha: rc.recibida_at ? fmtFecha(rc.recibida_at) : '', desc: ocLigada && ocLigada.destino_recepcion ? ('Material llegó a ' + (NOMBRE_ALM[ocLigada.destino_recepcion] || ocLigada.destino_recepcion)) : 'Material llegó a almacén' },
             ];
             return `
             <div style="margin-bottom:14px;">
@@ -25251,15 +25263,18 @@ function modalDetalleRC() {
               </tr>
             </thead>
             <tbody>
-              ${(rc.lineas || []).map(l => `
+              ${(rc.lineas || []).map(l => {
+                const cod = l.mp_codigo || l.producto_codigo;
+                const recibido = recibidoPorCodigo[cod] || 0;
+                return `
                 <tr style="border-bottom:1px solid #f1f5f9;">
                   <td style="padding:6px 10px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
                   <td style="padding:6px 10px;">${l.descripcion}</td>
                   <td style="padding:6px 10px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
-                  <td style="padding:6px 10px;text-align:right;font-weight:700;color:${(l.cantidad_recibida||0) >= l.cantidad ? '#16a34a' : '#f59e0b'};">${fmtNum(l.cantidad_recibida || 0)}</td>
+                  <td style="padding:6px 10px;text-align:right;font-weight:700;color:${recibido >= l.cantidad ? '#16a34a' : recibido > 0 ? '#3b82f6' : '#f59e0b'};">${fmtNum(recibido)}</td>
                   <td style="padding:6px 10px;font-size:11px;color:#64748b;">${l.um || 'Kg'}</td>
                 </tr>
-              `).join('')}
+              `;}).join('')}
             </tbody>
           </table>
           
