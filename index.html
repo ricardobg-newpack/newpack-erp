@@ -214,6 +214,7 @@ const state = {
   ordenes_compra: [],
   lotes_mp: [],
   fallas_mantenimiento: [],
+  ordenes_trabajo_mtto: [],
   movimientos_mp: [],
   proveedores: [],
   estandarizacion_historial: [],
@@ -3393,6 +3394,11 @@ async function cargarTodo() {
         state.fallas_mantenimiento = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
+      // 🛠️ ÓRDENES DE TRABAJO DE MANTENIMIENTO (preventivo/correctivo)
+      onSnapshot(collection(db, 'ordenes_trabajo_mtto'), (snap) => {
+        state.ordenes_trabajo_mtto = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       // 📦 EMPAQUE
       onSnapshot(collection(db, 'productos_empaque'), (snap) => {
         state.productos_empaque = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -3810,7 +3816,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-rctarjeta</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-ot</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3911,6 +3917,7 @@ function renderApp() {
         ${esVerMTTO ? `
           <div class="sidebar-section">Mantenimiento</div>
           <button class="nav-item ${state.vista === 'fallas_mtto' ? 'active' : ''}" data-vista="fallas_mtto">🔧 Reporte de Fallas</button>
+          <button class="nav-item ${state.vista === 'ot_mtto' ? 'active' : ''}" data-vista="ot_mtto">🛠️ Órdenes de Trabajo</button>
           <button class="nav-item ${state.vista === 'productos_mtto' ? 'active' : ''}" data-vista="productos_mtto">🔩 Productos MTTO</button>
           <button class="nav-item ${state.vista === 'inventario_mtto' ? 'active' : ''}" data-vista="inventario_mtto">📊 Inventario MTTO</button>
         ` : `
@@ -4140,6 +4147,7 @@ function renderVista() {
   if (v === 'productos_mtto') return renderProductosMTTO();
   if (v === 'inventario_mtto') return renderInventarioMTTO();
   if (v === 'fallas_mtto') return renderFallasMTTO();
+  if (v === 'ot_mtto') return renderOrdenesTrabajoMTTO();
   if (v === 'productos_empaque') return renderProductosEmpaque();
   if (v === 'inventario_empaque') return renderInventarioEmpaque();
   if (v === 'productos_oficina') return renderProductosOficina();
@@ -5284,9 +5292,313 @@ function renderTarjetaFalla(f, esMTTO) {
           ${f.estatus==='reportada'?`<button onclick="window.avanzarFalla('${f.id}','recibida')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🟡 Marcar recibida</button>`:''}
           ${f.estatus==='recibida'?`<button onclick="window.avanzarFalla('${f.id}','en_atencion')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🔵 Empezar atención</button>`:''}
           ${f.estatus==='en_atencion'?`<button onclick="window.abrirResolverFalla('${f.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🟢 Marcar resuelta</button>`:''}
+          ${['recibida','en_atencion'].includes(f.estatus)?`<button onclick="window.abrirCrearOT('${f.id}')" style="padding:8px 14px;background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">🛠️ Generar orden de trabajo</button>`:''}
         </div>
       ` : ''}
       ${f.estatus==='resuelta' && f.solucion ? `<div style="background:#f0fdf4;border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:#166534;"><strong>✅ Solución:</strong> ${f.solucion}</div>` : ''}
+    </div>`;
+}
+
+// ============================================================
+// 🛠️ ÓRDENES DE TRABAJO DE MANTENIMIENTO (preventivo / correctivo)
+//    Flujo: abierta → en_proceso (marca inicio) → terminada (marca fin) → duración auto
+//    Registra: técnico, refacciones usadas (descuentan de inventario), resultado.
+// ============================================================
+
+const OT_ESTADOS = {
+  abierta:    { label: 'Abierta',    color: '#f59e0b', icono: '📋', desc: 'Pendiente de iniciar' },
+  en_proceso: { label: 'En proceso', color: '#3b82f6', icono: '🔧', desc: 'Trabajo en curso' },
+  terminada:  { label: 'Terminada',  color: '#16a34a', icono: '✅', desc: 'Trabajo completado' },
+  cancelada:  { label: 'Cancelada',  color: '#94a3b8', icono: '⚪', desc: 'Cancelada' },
+};
+const OT_TIPOS = {
+  correctivo: { label: 'Correctivo', color: '#dc2626', icono: '🔴', desc: 'Reparar algo que falló' },
+  preventivo: { label: 'Preventivo', color: '#16a34a', icono: '🟢', desc: 'Mantenimiento programado' },
+};
+
+// Abrir modal para crear OT (opcionalmente desde una falla)
+window.abrirCrearOT = (fallaId) => {
+  const falla = fallaId ? (state.fallas_mantenimiento || []).find(f => f.id === fallaId) : null;
+  state.modalForm = {
+    tipo: falla ? 'correctivo' : 'preventivo',
+    maquina: falla ? falla.maquina_codigo : '',
+    falla_id: fallaId || '',
+    falla_folio: falla ? falla.folio : '',
+    titulo: falla ? `Reparación: ${falla.descripcion?.slice(0,60) || ''}` : '',
+    descripcion: '',
+    tecnico_nombre: '',
+    refacciones: [], // {codigo, descripcion, cantidad}
+  };
+  state.modal = 'crear-ot';
+  window.forzarRender();
+};
+
+window.confirmarCrearOT = async () => {
+  const f = state.modalForm || {};
+  const u = state.user || {};
+  if (!f.maquina) { toast('Indica la máquina/equipo', 'error'); return; }
+  if (!(f.titulo || '').trim()) { toast('Ponle un título a la orden', 'error'); return; }
+
+  const maq = (state.maquinas || []).find(m => m.codigo === f.maquina);
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const num = await siguienteFolio('ot');
+    const folio = `OT-${new Date().getFullYear()}-${String(num).padStart(4, '0')}`;
+    await addDoc(collection(db, 'ordenes_trabajo_mtto'), {
+      folio,
+      tipo: f.tipo || 'preventivo',
+      maquina_codigo: f.maquina,
+      maquina_nombre: maq?.nombre || f.maquina,
+      proceso: maq?.proceso || '',
+      titulo: (f.titulo || '').trim(),
+      descripcion: (f.descripcion || '').trim(),
+      tecnico_nombre: (f.tecnico_nombre || '').trim(),
+      refacciones: f.refacciones || [],
+      falla_id: f.falla_id || '',
+      falla_folio: f.falla_folio || '',
+      estatus: 'abierta',
+      // Trazabilidad de tiempo
+      creada_at: serverTimestamp(),
+      creada_por_nombre: u.nombre || u.email || 'Usuario',
+      inicio_at: null, fin_at: null,
+      resultado: '',
+      created_at: serverTimestamp(),
+    });
+    state.modal = null; state.modalForm = {};
+    toast(`✅ Orden de trabajo ${folio} creada`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// Iniciar OT (marca el momento de arranque)
+window.iniciarOT = async (otId) => {
+  const u = state.user || {};
+  const esMTTO = u.depto === 'MTTO' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+  if (!esMTTO) { toast('🔒 Solo Mantenimiento.', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'ordenes_trabajo_mtto', otId), {
+      estatus: 'en_proceso',
+      inicio_at: serverTimestamp(),
+      inicio_por_nombre: u.nombre || u.email || 'MTTO',
+      updated_at: serverTimestamp(),
+    });
+    toast('🔧 Orden iniciada', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// Abrir modal para terminar OT (captura resultado)
+window.abrirTerminarOT = (otId) => {
+  state.modalData = otId;
+  state.modalForm = { resultado: '' };
+  state.modal = 'terminar-ot';
+  window.forzarRender();
+};
+
+window.confirmarTerminarOT = async () => {
+  const f = state.modalForm || {};
+  const u = state.user || {};
+  const otId = state.modalData;
+  if (!(f.resultado || '').trim()) { toast('Documenta el resultado del trabajo', 'error'); return; }
+  const ot = (state.ordenes_trabajo_mtto || []).find(o => o.id === otId);
+  if (!ot) return;
+
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const batch = writeBatch(db);
+    // Cerrar la OT
+    batch.update(doc(db, 'ordenes_trabajo_mtto', otId), {
+      estatus: 'terminada',
+      fin_at: serverTimestamp(),
+      fin_por_nombre: u.nombre || u.email || 'MTTO',
+      resultado: (f.resultado || '').trim(),
+      updated_at: serverTimestamp(),
+    });
+    // Descontar refacciones del inventario MTTO + registrar consumo ligado a máquina
+    for (const r of (ot.refacciones || [])) {
+      const prod = (state.productos_mtto || []).find(p => p.codigo === r.codigo);
+      if (!prod) continue;
+      const cant = Number(r.cantidad) || 0;
+      if (cant <= 0) continue;
+      const stockActual = Number(prod.stock_actual) || 0;
+      batch.update(doc(db, 'productos_mtto', prod.id), {
+        stock_actual: stockActual - cant,
+        updated_at: serverTimestamp(),
+      });
+      // Movimiento de salida ligado a la máquina y a la OT (trazabilidad)
+      batch.set(doc(collection(db, 'movimientos_mtto')), {
+        tipo: 'salida',
+        producto_codigo: prod.codigo,
+        producto_descripcion: prod.descripcion || '',
+        cantidad: cant,
+        um: prod.um || 'pza',
+        maquina: ot.maquina_nombre,
+        maquina_codigo: ot.maquina_codigo,
+        ot_folio: ot.folio,
+        motivo: `OT ${ot.folio} · ${ot.titulo}`,
+        stock_anterior: stockActual,
+        stock_resultante: stockActual - cant,
+        costo_unitario: Number(prod.costo_promedio) || 0,
+        origen: 'orden_trabajo',
+        created_at: serverTimestamp(),
+        created_by_nombre: u.nombre || u.email || 'MTTO',
+      });
+    }
+    // Si la OT vino de una falla, marcar la falla como resuelta
+    if (ot.falla_id) {
+      const falla = (state.fallas_mantenimiento || []).find(x => x.id === ot.falla_id);
+      if (falla && falla.estatus !== 'resuelta') {
+        batch.update(doc(db, 'fallas_mantenimiento', ot.falla_id), {
+          estatus: 'resuelta',
+          resuelta_at: serverTimestamp(),
+          resuelta_por_nombre: u.nombre || u.email || 'MTTO',
+          solucion: `Resuelto vía OT ${ot.folio}: ${(f.resultado||'').trim()}`,
+          updated_at: serverTimestamp(),
+        });
+      }
+    }
+    await batch.commit();
+    state.modal = null; state.modalForm = {};
+    toast('✅ Orden de trabajo terminada', 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// Agregar/quitar refacción en el form de OT
+window.agregarRefaccionOT = () => {
+  const cod = document.getElementById('ot-refa-select')?.value;
+  const cant = Number(document.getElementById('ot-refa-cant')?.value);
+  if (!cod) { toast('Selecciona la refacción', 'error'); return; }
+  if (!cant || cant <= 0) { toast('Cantidad inválida', 'error'); return; }
+  const prod = (state.productos_mtto || []).find(p => p.codigo === cod);
+  if (!prod) return;
+  if (!state.modalForm.refacciones) state.modalForm.refacciones = [];
+  const existe = state.modalForm.refacciones.find(r => r.codigo === cod);
+  if (existe) existe.cantidad = Number(existe.cantidad) + cant;
+  else state.modalForm.refacciones.push({ codigo: cod, descripcion: prod.descripcion || '', cantidad: cant, um: prod.um || 'pza' });
+  window.forzarRender();
+};
+window.quitarRefaccionOT = (cod) => {
+  state.modalForm.refacciones = (state.modalForm.refacciones || []).filter(r => r.codigo !== cod);
+  window.forzarRender();
+};
+
+function renderOrdenesTrabajoMTTO() {
+  const u = state.user || {};
+  const esMTTO = u.depto === 'MTTO' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+  const ots = (state.ordenes_trabajo_mtto || []).slice()
+    .sort((a,b) => (b.creada_at?.seconds || 0) - (a.creada_at?.seconds || 0));
+
+  const filtro = (state.filtros.ot || '').toLowerCase();
+  const tab = state.tabs.ot || 'activas';
+  let arr = ots;
+  if (tab === 'activas') arr = arr.filter(o => !['terminada','cancelada'].includes(o.estatus));
+  else if (tab === 'terminadas') arr = arr.filter(o => o.estatus === 'terminada');
+  if (filtro) arr = arr.filter(o => ((o.folio||'')+' '+(o.maquina_nombre||'')+' '+(o.titulo||'')+' '+(o.tecnico_nombre||'')).toLowerCase().includes(filtro));
+
+  const abiertas = ots.filter(o => o.estatus === 'abierta').length;
+  const enProceso = ots.filter(o => o.estatus === 'en_proceso').length;
+  const terminadas = ots.filter(o => o.estatus === 'terminada').length;
+  const preventivas = ots.filter(o => o.tipo === 'preventivo' && !['terminada','cancelada'].includes(o.estatus)).length;
+
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">🛠️ Órdenes de Trabajo</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Trabajos de mantenimiento preventivo y correctivo · con tiempo y refacciones</div>
+      </div>
+      ${esMTTO ? `<button onclick="window.abrirCrearOT()" style="padding:10px 18px;background:#7c3aed;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:14px;">➕ Nueva orden</button>` : ''}
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:10px;margin-bottom:16px;">
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #f59e0b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">📋 ABIERTAS</div>
+        <div style="font-size:24px;font-weight:900;color:#f59e0b;">${abiertas}</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🔧 EN PROCESO</div>
+        <div style="font-size:24px;font-weight:900;color:#3b82f6;">${enProceso}</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🟢 PREVENTIVAS ABIERTAS</div>
+        <div style="font-size:24px;font-weight:900;color:#16a34a;">${preventivas}</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #64748b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">✅ TERMINADAS</div>
+        <div style="font-size:24px;font-weight:900;color:#64748b;">${terminadas}</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
+      <button class="tab-btn ${tab==='activas'?'active':''}" onclick="cambiarTab('ot','activas')">🔧 Activas (${ots.filter(o=>!['terminada','cancelada'].includes(o.estatus)).length})</button>
+      <button class="tab-btn ${tab==='terminadas'?'active':''}" onclick="cambiarTab('ot','terminadas')">✅ Terminadas (${terminadas})</button>
+      <button class="tab-btn ${tab==='todas'?'active':''}" onclick="cambiarTab('ot','todas')">📋 Todas (${ots.length})</button>
+    </div>
+
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-ot" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, máquina, título, técnico..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} orden(es)</span>
+    </div>
+
+    ${arr.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:12px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;margin-bottom:10px;">🛠️</div>
+        <div style="font-weight:700;color:#475569;">${tab==='activas'?'Sin órdenes activas':'Sin órdenes en este filtro'}</div>
+      </div>
+    ` : `<div style="display:flex;flex-direction:column;gap:12px;">${arr.map(o => renderTarjetaOT(o, esMTTO)).join('')}</div>`}
+  `;
+}
+
+function renderTarjetaOT(o, esMTTO) {
+  const est = OT_ESTADOS[o.estatus] || OT_ESTADOS.abierta;
+  const tipo = OT_TIPOS[o.tipo] || OT_TIPOS.preventivo;
+  const duracion = _tiempoEntre(o.inicio_at, o.fin_at);
+  const refas = o.refacciones || [];
+
+  return `
+    <div class="panel" style="border-left:4px solid ${est.color};padding:14px 18px;">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start;margin-bottom:10px;">
+        <div style="flex:1;min-width:220px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+            <span class="text-mono" style="font-weight:800;font-size:13px;">${o.folio||'—'}</span>
+            <span style="background:${est.color}22;color:${est.color};padding:3px 10px;border-radius:99px;font-weight:800;font-size:11px;">${est.icono} ${est.label}</span>
+            <span style="background:${tipo.color}18;color:${tipo.color};padding:3px 8px;border-radius:5px;font-weight:700;font-size:10px;">${tipo.icono} ${tipo.label}</span>
+            ${o.falla_folio ? `<span style="background:#fef2f2;color:#dc2626;padding:3px 8px;border-radius:5px;font-weight:700;font-size:10px;">🔧 desde ${o.falla_folio}</span>` : ''}
+          </div>
+          <div style="font-size:15px;font-weight:800;color:#0f172a;">${o.titulo || '—'}</div>
+          <div style="font-size:12px;color:#475569;margin-top:2px;">🏭 ${o.maquina_nombre || '—'}</div>
+          ${o.descripcion ? `<div style="font-size:11px;color:#64748b;margin-top:3px;">${o.descripcion}</div>` : ''}
+          ${o.tecnico_nombre ? `<div style="font-size:11px;color:#94a3b8;margin-top:3px;">👷 Técnico: ${o.tecnico_nombre}</div>` : ''}
+        </div>
+        <div style="text-align:right;font-size:10px;color:#64748b;">
+          ${o.inicio_at ? `<div>▶️ Inició: ${fmtFechaHora(o.inicio_at)}</div>` : ''}
+          ${o.fin_at ? `<div>⏹️ Terminó: ${fmtFechaHora(o.fin_at)}</div>` : ''}
+          ${duracion ? `<div style="font-weight:800;color:#16a34a;margin-top:2px;">⏱️ Duración: ${duracion}</div>` : ''}
+        </div>
+      </div>
+
+      ${refas.length ? `
+        <div style="background:#f8fafc;border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+          <div style="font-size:10px;font-weight:800;color:#475569;margin-bottom:4px;">🔩 Refacciones usadas:</div>
+          ${refas.map(r => `<div style="font-size:11px;color:#475569;">• ${r.descripcion || r.codigo} — ${fmtNum(r.cantidad)} ${r.um||'pza'}</div>`).join('')}
+        </div>
+      ` : ''}
+
+      ${o.estatus === 'terminada' && o.resultado ? `
+        <div style="background:#f0fdf4;border-radius:8px;padding:10px;margin-bottom:${esMTTO?'10px':'0'};font-size:11px;color:#166534;"><strong>✅ Resultado:</strong> ${o.resultado}</div>
+      ` : ''}
+
+      ${esMTTO && !['terminada','cancelada'].includes(o.estatus) ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${o.estatus==='abierta'?`<button onclick="window.iniciarOT('${o.id}')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">▶️ Iniciar trabajo</button>`:''}
+          ${o.estatus==='en_proceso'?`<button onclick="window.abrirTerminarOT('${o.id}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">✅ Terminar</button>`:''}
+        </div>
+      ` : ''}
     </div>`;
 }
 
@@ -16249,6 +16561,8 @@ function renderModal() {
   if (m === 'detalle-oc') return modalDetalleOC();
   if (m === 'reportar-falla') return modalReportarFalla();
   if (m === 'resolver-falla') return modalResolverFalla();
+  if (m === 'crear-ot') return modalCrearOT();
+  if (m === 'terminar-ot') return modalTerminarOT();
   if (m === 'ajuste-mp') return modalAjusteMP();
   if (m === 'programar-ov-ruta') return modalProgramarOVRuta();
   if (m === 'ver-capturas') return modalVerCapturas();
@@ -28942,6 +29256,105 @@ window.confirmarAjusteMP = async () => {
     state.loadingAccion = false; window.forzarRender();
   }
 };
+
+function modalCrearOT() {
+  const f = state.modalForm || {};
+  const maquinas = (state.maquinas || []).filter(m => m.activa !== false).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+  const refaccionesDisp = (state.productos_mtto || []).filter(p => p.activo !== false).sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||''));
+  const refas = f.refacciones || [];
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalForm={};window.forzarRender();}">
+      <div class="modal" style="max-width:600px;max-height:92vh;display:flex;flex-direction:column;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f5f3ff,#ede9fe);border-bottom:2px solid #7c3aed;">
+          <h2 style="font-size:17px;font-weight:800;color:#6d28d9;">🛠️ Nueva orden de trabajo</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalForm={};window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;overflow-y:auto;">
+          ${f.falla_folio ? `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:11px;color:#991b1b;">🔧 Esta orden nace de la falla <strong>${f.falla_folio}</strong>. Al terminarla, la falla se marcará como resuelta.</div>` : ''}
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Tipo de mantenimiento</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+            ${Object.entries(OT_TIPOS).map(([k,t]) => `
+              <button type="button" onclick="state.modalForm.tipo='${k}';window.forzarRender();" style="padding:11px;border-radius:9px;cursor:pointer;font-weight:700;font-size:12px;border:2px solid ${f.tipo===k?t.color:'#e2e8f0'};background:${f.tipo===k?t.color+'15':'#fff'};color:${f.tipo===k?t.color:'#64748b'};text-align:left;">${t.icono} ${t.label}<div style="font-size:9px;font-weight:400;color:#94a3b8;">${t.desc}</div></button>
+            `).join('')}
+          </div>
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🏭 Máquina/equipo *</label>
+          <select class="input" onchange="state.modalForm.maquina=this.value;" style="margin-bottom:14px;">
+            <option value="">— Selecciona máquina —</option>
+            ${maquinas.map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${m.nombre}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+          </select>
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Título del trabajo *</label>
+          <input class="input" type="text" value="${f.titulo||''}" placeholder="Ej: Cambio de aceite y filtros, Reparación de motor..." oninput="state.modalForm.titulo=this.value;" style="margin-bottom:14px;" autocomplete="off" />
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Descripción (opcional)</label>
+          <textarea class="input" oninput="state.modalForm.descripcion=this.value;" placeholder="Detalle del trabajo a realizar..." style="min-height:60px;resize:vertical;margin-bottom:14px;">${f.descripcion||''}</textarea>
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">👷 Técnico asignado (opcional)</label>
+          <input class="input" type="text" value="${f.tecnico_nombre||''}" placeholder="Nombre del técnico" oninput="state.modalForm.tecnico_nombre=this.value;" style="margin-bottom:14px;" autocomplete="off" />
+
+          <!-- Refacciones -->
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🔩 Refacciones a usar (opcional)</label>
+          <div style="display:grid;grid-template-columns:3fr 1fr auto;gap:6px;margin-bottom:8px;">
+            <select class="input" id="ot-refa-select" style="font-size:12px;">
+              <option value="">— Refacción —</option>
+              ${refaccionesDisp.map(p => `<option value="${p.codigo}">${p.codigo} — ${p.descripcion} (stock: ${fmtNum(Number(p.stock_actual)||0)})</option>`).join('')}
+            </select>
+            <input class="input" id="ot-refa-cant" type="text" inputmode="decimal" placeholder="Cant." oninput="this.value=this.value.replace(/[^0-9.]/g,'')" style="font-size:12px;" />
+            <button type="button" onclick="window.agregarRefaccionOT()" style="padding:8px 12px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">+ Agregar</button>
+          </div>
+          ${refas.length ? `
+            <div style="background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px;">
+              ${refas.map(r => `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:11px;">
+                  <span>🔩 ${r.descripcion || r.codigo} — <strong>${fmtNum(r.cantidad)} ${r.um||'pza'}</strong></span>
+                  <button onclick="window.quitarRefaccionOT('${r.codigo}')" style="background:none;border:none;color:#dc2626;cursor:pointer;font-weight:700;">✕</button>
+                </div>
+              `).join('')}
+            </div>
+            <div style="font-size:10px;color:#94a3b8;margin-bottom:8px;">💡 Las refacciones se descontarán del inventario al terminar la orden.</div>
+          ` : ''}
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalForm={};window.forzarRender();">Cancelar</button>
+          <button onclick="window.confirmarCrearOT()" style="padding:10px 18px;background:#7c3aed;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">🛠️ Crear orden</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function modalTerminarOT() {
+  const f = state.modalForm || {};
+  const ot = (state.ordenes_trabajo_mtto || []).find(o => o.id === state.modalData);
+  if (!ot) return '';
+  const duracion = _tiempoEntre(ot.inicio_at, { seconds: Date.now()/1000 });
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalForm={};window.forzarRender();}">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-bottom:2px solid #16a34a;">
+          <h2 style="font-size:17px;font-weight:800;color:#166534;">✅ Terminar orden de trabajo</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalForm={};window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <div style="background:#f8fafc;border-radius:9px;padding:12px;margin-bottom:14px;">
+            <div style="font-size:13px;font-weight:800;">${ot.folio} · ${ot.titulo}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">🏭 ${ot.maquina_nombre}</div>
+            ${duracion ? `<div style="font-size:11px;color:#16a34a;font-weight:700;margin-top:4px;">⏱️ Tiempo transcurrido: ${duracion}</div>` : ''}
+          </div>
+          ${(ot.refacciones||[]).length ? `<div style="font-size:11px;color:#7c3aed;margin-bottom:12px;">🔩 Se descontarán ${ot.refacciones.length} refacción(es) del inventario.</div>` : ''}
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">¿Qué se hizo? (resultado) *</label>
+          <textarea class="input" oninput="state.modalForm.resultado=this.value;" placeholder="Documenta el trabajo realizado, hallazgos, recomendaciones..." style="min-height:100px;resize:vertical;">${f.resultado||''}</textarea>
+          <div style="font-size:10px;color:#94a3b8;margin-top:6px;">💡 Esto queda en el historial del equipo.</div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalForm={};window.forzarRender();">Cancelar</button>
+          <button onclick="window.confirmarTerminarOT()" style="padding:10px 18px;background:#16a34a;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">✅ Terminar</button>
+        </div>
+      </div>
+    </div>`;
+}
 
 function modalReportarFalla() {
   const f = state.modalForm || {};
