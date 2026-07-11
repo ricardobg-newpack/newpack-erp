@@ -3804,7 +3804,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-scrollkeep</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-stockmp</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -15962,6 +15962,9 @@ function renderModal() {
   if (m === 'completar-proceso') return modalCompletarProceso();
   if (m === 'liberar-calidad') return modalLiberarCalidad();
   if (m === 'editar-ruta-odp') return modalEditarRutaODP();
+  if (m === 'salida-mp') return modalSalidaMP();
+  if (m === 'detalle-oc') return modalDetalleOC();
+  if (m === 'ajuste-mp') return modalAjusteMP();
   if (m === 'programar-ov-ruta') return modalProgramarOVRuta();
   if (m === 'ver-capturas') return modalVerCapturas();
   if (m === 'crear-oti') return modalCrearOTI();
@@ -25004,6 +25007,7 @@ function modalGenerarOC() {
       proveedor: '',
       codigo_proveedor: '',
       fecha_promesa: '',
+      destino_recepcion: 'ALMACEN-PLANTA-MTY', // a dónde llegará el material físicamente
       moneda: 'MXN',
       tipo_cambio: '',
       con_iva: true, // default IVA 16% (MXN típico)
@@ -25079,6 +25083,22 @@ function modalGenerarOC() {
                 ✓ Proveedor seleccionado: <strong>${f.proveedor}</strong>
               </div>
             ` : ''}
+
+            <!-- 📍 DESTINO: a qué almacén físico llegará el material -->
+            <div class="field" style="margin-top:12px;">
+              <label class="field-label">📍 ¿A qué almacén llegará el material? *</label>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                ${[
+                  { k: 'ALMACEN-PLANTA-MTY', label: '🏭 Almacén Planta MTY' },
+                  { k: 'CEDIS-MTY', label: '🏢 CEDIS Monterrey' },
+                  { k: 'CEDIS-MEX', label: '🏙️ CEDIS México' },
+                ].map(d => `
+                  <button type="button" onclick="window.modalFormSet('destino_recepcion','${d.k}')" style="flex:1;min-width:150px;padding:11px;border:2px solid ${f.destino_recepcion===d.k?'#7c3aed':'#cbd5e1'};background:${f.destino_recepcion===d.k?'#7c3aed':'#fff'};color:${f.destino_recepcion===d.k?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${d.label}</button>
+                `).join('')}
+              </div>
+              <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Solo el personal de ese almacén verá esta recepción cuando llegue el material.</div>
+            </div>
+            
           </div>
           
           <!-- MONEDA Y TIPO DE CAMBIO -->
@@ -25350,7 +25370,8 @@ window.confirmarGenerarOC = async (rcId) => {
       rc_folio: rc.folio,
       proveedor_id: proveedorId,
       proveedor: proveedor,
-      fecha_oc: new Date().toISOString().split('T')[0],
+      destino_recepcion: f.destino_recepcion || 'ALMACEN-PLANTA-MTY',
+      fecha_oc: window.hoyLocalISO(),
       fecha_promesa: fechaPromesa,
       moneda: f.moneda || 'MXN',
       tipo_cambio: Number(f.tipo_cambio) || 0,
@@ -25746,10 +25767,14 @@ function modalRecibirOC() {
   if (!oc) return '';
   
   if (!state.modalForm) {
+    const u = state.user || {};
+    // Destino por defecto según el depto del usuario
+    const destinoDefault = u.depto === 'CEDMEX' ? 'CEDIS-MEX' : u.depto === 'CEDMTY' ? 'CEDIS-MTY' : 'ALMACEN-PLANTA-MTY';
     state.modalForm = {
       tipo_documento: 'factura', // 'factura' o 'remision'
       numero_documento: '',
-      fecha_recepcion: new Date().toISOString().split('T')[0],
+      fecha_recepcion: window.hoyLocalISO(),
+      destino_recepcion: destinoDefault,
       notas: '',
       lineas: (oc.lineas || []).map(l => ({
         ...l,
@@ -25788,6 +25813,20 @@ function modalRecibirOC() {
             <div class="field" style="margin-bottom:10px;">
               <label class="field-label">📅 Fecha de recepción *</label>
               <input class="input" id="rec-fecha" type="date" value="${f.fecha_recepcion}" onchange="window.modalFormSetSilent('fecha_recepcion', this.value)" style="max-width:200px;" />
+            </div>
+
+            <div class="field" style="margin-bottom:10px;">
+              <label class="field-label">📍 ¿Dónde se recibe el material? *</label>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                ${[
+                  { k: 'ALMACEN-PLANTA-MTY', label: '🏭 Almacén Planta MTY' },
+                  { k: 'CEDIS-MTY', label: '🏢 CEDIS Monterrey' },
+                  { k: 'CEDIS-MEX', label: '🏙️ CEDIS México' },
+                ].map(d => `
+                  <button type="button" onclick="window.modalFormSet('destino_recepcion','${d.k}')" style="flex:1;min-width:150px;padding:11px;border:2px solid ${f.destino_recepcion===d.k?'#16a34a':'#cbd5e1'};background:${f.destino_recepcion===d.k?'#16a34a':'#fff'};color:${f.destino_recepcion===d.k?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${d.label}</button>
+                `).join('')}
+              </div>
+              <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Indica el almacén físico al que entra este material.</div>
             </div>
             
             <div class="field" style="margin-bottom:10px;">
@@ -26211,6 +26250,7 @@ window.confirmarRecepcionOC = async (ocId) => {
         costo_total: cantRecibida * costoUnit,
         // Recepción
         fecha_recepcion: fechaRec,
+        destino_recepcion: f.destino_recepcion || 'ALMACEN-PLANTA-MTY',
         notas: notas,
         recibido_por_id: state.user.id || '',
         recibido_por_nombre: state.user.nombre || state.user.email || 'Usuario',
@@ -26239,6 +26279,7 @@ window.confirmarRecepcionOC = async (ocId) => {
           costo_unitario: costoUnit,
           origen: 'recepcion_oc',
           oc_folio: oc.folio || '',
+          destino_recepcion: f.destino_recepcion || 'ALMACEN-PLANTA-MTY',
           proveedor: oc.proveedor || '',
           tipo_documento: tipoDoc,
           numero_documento: numeroDoc,
@@ -28209,31 +28250,37 @@ function renderRecepcionesMP() {
   const ocsFiltradas = todasOCs.filter(oc => {
     const tipo = _tipoOC(oc);
     if (!tiposPermitidos.includes(tipo)) return false;
-    if (esALL) return true; // supervisor ve todo
-    
+    if (esALL) return true; // supervisor (Compras/CEO/Admin) ve todo
+
+    // 🆕 CRITERIO PRINCIPAL: el destino_recepcion definido al generar la OC.
+    //    Cada usuario ve SOLO las OCs cuyo destino corresponde a su almacén físico.
+    const dest = oc.destino_recepcion;
+    if (dest) {
+      if (u.depto === 'ALP') return dest === 'ALMACEN-PLANTA-MTY';
+      if (u.depto === 'CEDMTY') return dest === 'CEDIS-MTY';
+      if (u.depto === 'CEDMEX') return dest === 'CEDIS-MEX';
+      return false;
+    }
+
+    // ⬇️ RESPALDO para OCs viejas SIN destino_recepcion: usar la lógica anterior por tipo/almacén
     const alm = _almacenOC(oc);
-    
-    // 📦 Para EMP: cada depto solo ve las de su almacén destino
     if (tipo === 'EMP') {
-      if (u.depto === 'ALP') return alm === 'ALP' || !alm; // ALP recibe EMP→ALP (o sin almacén legacy)
+      if (u.depto === 'ALP') return alm === 'ALP' || !alm;
       if (u.depto === 'CEDMTY') return alm === 'CEDMTY';
       if (u.depto === 'CEDMEX') return alm === 'CEDMEX';
       return false;
     }
-    // 🛒 Para COM: solo CEDIS (cada uno el suyo)
     if (tipo === 'COM') {
       if (u.depto === 'CEDMTY') return alm === 'CEDMTY';
       if (u.depto === 'CEDMEX') return alm === 'CEDMEX';
-      return false; // ALP no recibe COM
+      return false;
     }
-    // 🖇️ Para OFI: filtrar por sub-almacén según ubicación física del depto
     if (tipo === 'OFI') {
-      if (u.depto === 'ALP') return alm === 'OFI-ALP' || alm === 'OFI' || !alm; // ALP recibe oficinas planta (+ legacy)
+      if (u.depto === 'ALP') return alm === 'OFI-ALP' || alm === 'OFI' || !alm;
       if (u.depto === 'CEDMTY') return alm === 'OFI-CEDMTY';
       if (u.depto === 'CEDMEX') return alm === 'OFI-CEDMEX';
       return false;
     }
-    // MP y MTTO siempre van a ALP
     if (tipo === 'MP' || tipo === 'MTTO') {
       return u.depto === 'ALP';
     }
@@ -28259,10 +28306,10 @@ function renderRecepcionesMP() {
       <div style="font-size:11px;color:#475569;margin-top:4px;">
         Aquí registras el material que LLEGA de los proveedores (contra su orden de compra).
         ${esALL 
-          ? ' Vista supervisora: ves todas las OCs. Cada depto recibe solo lo que le corresponde físicamente.'
-          : u.depto === 'ALP' ? ' Tu depto recibe Materias Primas (MP) y Productos de Mantenimiento (MTTO).'
-          : u.depto === 'CEDMTY' ? ' Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMTY.'
-          : u.depto === 'CEDMEX' ? ' Tu CEDIS recibe Productos de Empaque y Comercializados destinados a CEDMEX.'
+          ? ' Vista supervisora: ves las recepciones de TODOS los almacenes.'
+          : u.depto === 'ALP' ? ' Ves solo el material que llega al <strong>Almacén Planta MTY</strong>.'
+          : u.depto === 'CEDMTY' ? ' Ves solo el material que llega a <strong>CEDIS Monterrey</strong>.'
+          : u.depto === 'CEDMEX' ? ' Ves solo el material que llega a <strong>CEDIS México</strong>.'
           : ' Tu depto no recibe OCs físicamente. Contacta a Compras o Admin.'}
       </div>
     </div>
@@ -28316,6 +28363,7 @@ function renderRecepcionesMP() {
                   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
                     <span class="text-mono" style="font-weight:800;font-size:15px;">${oc.folio}</span>
                     ${_badgeTipoOC(tipo, alm)}
+                    ${esALL && oc.destino_recepcion ? `<span style="padding:2px 8px;background:#f1f5f9;color:#475569;border-radius:5px;font-weight:700;font-size:10.5px;">📍 ${({'ALMACEN-PLANTA-MTY':'Planta MTY','CEDIS-MTY':'CEDIS MTY','CEDIS-MEX':'CEDIS MEX'})[oc.destino_recepcion] || oc.destino_recepcion}</span>` : ''}
                     ${yaRecibida ? `<span style="padding:2px 8px;background:#dcfce7;color:#16a34a;border-radius:5px;font-weight:700;font-size:10.5px;">✅ RECIBIDA</span>` : ''}
                     ${parcial ? `<span style="padding:2px 8px;background:#dbeafe;color:#1e40af;border-radius:5px;font-weight:700;font-size:10.5px;">📦 PARCIAL ${pctRecibido.toFixed(0)}%</span>` : ''}
                   </div>
@@ -28346,37 +28394,536 @@ function renderRecepcionesMP() {
   `;
 }
 
+// ============================================================
+// SALIDA Y AJUSTE DE MATERIA PRIMA (registro manual desde Almacén MP)
+// ============================================================
+
+// Stock total disponible de un MP (suma de lotes activos)
+window._stockMP = (mpCodigo) => {
+  return (state.lotes_mp || [])
+    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado')
+    .reduce((s, l) => s + (Number(l.stock_actual) || 0), 0);
+};
+
+window.abrirSalidaMP = () => {
+  const u = state.user || {};
+  const puede = ['ALP','COMP','PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast('🔒 Sin permiso para registrar salidas.', 'error'); return; }
+  state.modalForm = { tipo_salida: 'planta', mp_codigo: '', cantidad: '', destino_proceso: '', destino_almacen: '', proveedor: '', motivo: '', notas: '' };
+  state.modal = 'salida-mp';
+  window.forzarRender();
+};
+
+window.abrirAjusteMP = () => {
+  const u = state.user || {};
+  const puede = ['ALP','COMP','PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  if (!puede) { toast('🔒 Sin permiso para ajustes.', 'error'); return; }
+  state.modalForm = { mp_codigo: '', conteo_fisico: '', motivo: '' };
+  state.modal = 'ajuste-mp';
+  window.forzarRender();
+};
+
+// Descuenta cantidad de los lotes de un MP en orden FIFO (lote más antiguo primero)
+async function _descontarLotesMP(batch, mpCodigo, cantidad) {
+  let restante = cantidad;
+  const lotes = (state.lotes_mp || [])
+    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado' && (Number(l.stock_actual)||0) > 0)
+    .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0)); // FIFO
+  const afectados = [];
+  for (const lote of lotes) {
+    if (restante <= 0) break;
+    const disp = Number(lote.stock_actual) || 0;
+    const usar = Math.min(disp, restante);
+    const nuevoStock = disp - usar;
+    batch.update(doc(db, 'lotes_mp', lote.id), {
+      stock_actual: nuevoStock,
+      estatus: nuevoStock <= 0.001 ? 'agotado' : 'activo',
+      updated_at: serverTimestamp()
+    });
+    afectados.push({ lote_folio: lote.lote_folio, usado: usar, costo: Number(lote.costo_unitario)||0 });
+    restante -= usar;
+  }
+  return { afectados, faltante: restante };
+}
+
+window.confirmarSalidaMP = async () => {
+  const f = state.modalForm || {};
+  const cant = Number(f.cantidad);
+  if (!f.mp_codigo) { toast('Selecciona el insumo', 'error'); return; }
+  if (!cant || cant <= 0) { toast('Cantidad inválida', 'error'); return; }
+
+  const mp = (state.materias_primas || []).find(m => m.codigo === f.mp_codigo);
+  const stockDisp = window._stockMP(f.mp_codigo);
+
+  // Validar destino según tipo
+  let destinoTxt = '', destinoData = {};
+  if (f.tipo_salida === 'planta') {
+    if (!f.destino_proceso) { toast('Indica a qué proceso va el material', 'error'); return; }
+    const proc = PROCESOS.find(p => p.codigo === f.destino_proceso);
+    destinoTxt = `Planta · ${proc?.nombre || f.destino_proceso}`;
+    destinoData = { destino_proceso: f.destino_proceso, destino_proceso_nombre: proc?.nombre || f.destino_proceso };
+  } else if (f.tipo_salida === 'traspaso') {
+    if (!f.destino_almacen) { toast('Indica a qué almacén/CEDIS se traspasa', 'error'); return; }
+    destinoTxt = `Traspaso · ${f.destino_almacen}`;
+    destinoData = { destino_almacen: f.destino_almacen };
+  } else if (f.tipo_salida === 'devolucion') {
+    if (!(f.proveedor || '').trim()) { toast('Indica el proveedor', 'error'); return; }
+    destinoTxt = `Devolución a proveedor · ${f.proveedor}`;
+    destinoData = { proveedor: f.proveedor.trim() };
+  } else if (f.tipo_salida === 'merma') {
+    destinoTxt = 'Merma / desperdicio';
+  }
+
+  if (cant > stockDisp) {
+    if (!confirm(`⚠ Stock insuficiente.\n\nDisponible: ${fmtNum(stockDisp)} ${mp?.um||'kg'}\nQuieres sacar: ${fmtNum(cant)}\n\n¿Continuar de todos modos? (quedará en negativo)`)) return;
+  }
+
+  const TIPO_LABEL = { planta: 'salida_planta', traspaso: 'traspaso', devolucion: 'devolucion_proveedor', merma: 'merma' };
+
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const batch = writeBatch(db);
+    // Descontar de lotes FIFO
+    const { afectados } = await _descontarLotesMP(batch, f.mp_codigo, Math.min(cant, stockDisp));
+    const costoProm = afectados.length ? (afectados.reduce((s,a)=>s+a.costo*a.usado,0) / afectados.reduce((s,a)=>s+a.usado,0)) : 0;
+
+    // Movimiento de salida en kardex
+    const movRef = doc(collection(db, 'movimientos_mp'));
+    const movData = {
+      tipo: 'salida',
+      subtipo: TIPO_LABEL[f.tipo_salida] || 'salida',
+      mp_codigo: f.mp_codigo,
+      mp_descripcion: mp?.descripcion || '',
+      cantidad: cant,
+      um: mp?.um || 'kg',
+      costo_unitario: Number(costoProm.toFixed(4)),
+      destino: destinoTxt,
+      ...destinoData,
+      lotes_afectados: afectados.map(a => `${a.lote_folio}:${a.usado}`).join(', '),
+      motivo: (f.motivo || '').trim(),
+      notas: (f.notas || '').trim(),
+      origen: 'salida_manual',
+      fecha: window.hoyLocalISO(),
+      usuario_id: state.user.id || '',
+      usuario_nombre: state.user.nombre || state.user.email || 'Usuario',
+      created_at: serverTimestamp()
+    };
+    Object.keys(movData).forEach(k => { if (movData[k] === undefined) movData[k] = ''; });
+    batch.set(movRef, movData);
+
+    await batch.commit();
+    state.modal = null; state.modalForm = {};
+    toast(`✅ Salida registrada: ${fmtNum(cant)} ${mp?.um||'kg'} · ${destinoTxt}`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+window.confirmarAjusteMP = async () => {
+  const f = state.modalForm || {};
+  if (!f.mp_codigo) { toast('Selecciona el insumo', 'error'); return; }
+  const conteo = Number(f.conteo_fisico);
+  if (isNaN(conteo) || conteo < 0) { toast('Captura el conteo físico real', 'error'); return; }
+  if (!(f.motivo || '').trim()) { toast('Explica el motivo del ajuste', 'error'); return; }
+
+  const mp = (state.materias_primas || []).find(m => m.codigo === f.mp_codigo);
+  const stockSistema = window._stockMP(f.mp_codigo);
+  const diferencia = conteo - stockSistema; // + sobra, - falta
+
+  if (Math.abs(diferencia) < 0.001) { toast('El conteo coincide con el sistema. No hay ajuste que hacer.', 'info'); return; }
+
+  if (!confirm(`⚖️ Ajuste de inventario\n\nSistema dice: ${fmtNum(stockSistema)} ${mp?.um||'kg'}\nConteo real: ${fmtNum(conteo)}\nDiferencia: ${diferencia>0?'+':''}${fmtNum(diferencia)}\n\n¿Confirmar el ajuste?`)) return;
+
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const batch = writeBatch(db);
+    if (diferencia < 0) {
+      // Falta material → descontar de lotes FIFO
+      await _descontarLotesMP(batch, f.mp_codigo, Math.abs(diferencia));
+    } else {
+      // Sobra material → crear un lote de ajuste
+      const loteRef = doc(collection(db, 'lotes_mp'));
+      const folioAjuste = `AJU-${window.hoyLocalISO().replace(/-/g,'')}-${f.mp_codigo}`;
+      batch.set(loteRef, {
+        lote_folio: folioAjuste,
+        mp_codigo: f.mp_codigo,
+        mp_descripcion: mp?.descripcion || '',
+        cantidad_inicial: diferencia,
+        stock_actual: diferencia,
+        um: mp?.um || 'kg',
+        costo_unitario: 0,
+        origen: 'ajuste_inventario',
+        estatus: 'activo',
+        fecha_recepcion: window.hoyLocalISO(),
+        notas: 'Ajuste por conteo físico: ' + (f.motivo||''),
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+    }
+    // Movimiento de ajuste en kardex
+    const movRef = doc(collection(db, 'movimientos_mp'));
+    batch.set(movRef, {
+      tipo: 'ajuste',
+      subtipo: diferencia > 0 ? 'ajuste_positivo' : 'ajuste_negativo',
+      mp_codigo: f.mp_codigo,
+      mp_descripcion: mp?.descripcion || '',
+      cantidad: diferencia, // con signo
+      um: mp?.um || 'kg',
+      stock_sistema_antes: stockSistema,
+      conteo_fisico: conteo,
+      diferencia: diferencia,
+      motivo: (f.motivo || '').trim(),
+      origen: 'ajuste_manual',
+      fecha: window.hoyLocalISO(),
+      usuario_id: state.user.id || '',
+      usuario_nombre: state.user.nombre || state.user.email || 'Usuario',
+      created_at: serverTimestamp()
+    });
+    await batch.commit();
+    state.modal = null; state.modalForm = {};
+    toast(`✅ Ajuste aplicado: ${diferencia>0?'+':''}${fmtNum(diferencia)} ${mp?.um||'kg'}`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+function modalDetalleOC() {
+  const oc = (state.ordenes_compra || []).find(o => o.id === state.modalData);
+  if (!oc) return '';
+  const lineas = oc.lineas || [];
+  const moneda = oc.moneda || 'MXN';
+  const conIVA = oc.con_iva;
+  const subtotal = lineas.reduce((s,l) => s + (Number(l.cantidad)||0) * (Number(l.costo_unitario)||0), 0);
+  const iva = conIVA ? subtotal * 0.16 : 0;
+  const total = subtotal + iva;
+  const totalRecibido = lineas.reduce((s,l) => s + (Number(l.cantidad_recibida)||0), 0);
+  const totalPedido = lineas.reduce((s,l) => s + (Number(l.cantidad)||0), 0);
+  const pctRecibido = totalPedido > 0 ? Math.round(totalRecibido/totalPedido*100) : 0;
+
+  const ESTADOS_OC = {
+    oc_generada: { label: 'En tránsito', color: '#f59e0b' },
+    en_transito: { label: 'En tránsito', color: '#f59e0b' },
+    recepcion_parcial: { label: 'Recepción parcial', color: '#3b82f6' },
+    recibida: { label: 'Recibida', color: '#16a34a' },
+    cancelada: { label: 'Cancelada', color: '#dc2626' },
+  };
+  const est = ESTADOS_OC[oc.estatus] || { label: oc.estatus, color: '#64748b' };
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){cerrarModal();}">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f5f3ff,#ede9fe);border-bottom:2px solid #7c3aed;">
+          <div>
+            <h2 style="font-size:17px;font-weight:800;color:#6d28d9;font-family:monospace;">${oc.folio}</h2>
+            <div style="font-size:11px;color:#7c3aed;margin-top:2px;">Orden de Compra${oc.rc_folio?` · desde RC ${oc.rc_folio}`:''}</div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <!-- Estado + progreso -->
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+            <span style="background:${est.color}22;color:${est.color};padding:5px 14px;border-radius:99px;font-weight:800;font-size:12px;">${est.label}</span>
+            <span style="font-size:12px;color:#64748b;font-weight:700;">📥 Recibido: ${fmtNum(totalRecibido)} de ${fmtNum(totalPedido)} (${pctRecibido}%)</span>
+          </div>
+          <div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;margin-bottom:16px;">
+            <div style="height:100%;width:${pctRecibido}%;background:${pctRecibido>=100?'#16a34a':'#3b82f6'};border-radius:4px;"></div>
+          </div>
+
+          <!-- Datos generales -->
+          <div style="background:#f8fafc;border-radius:10px;padding:14px;margin-bottom:16px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;color:#475569;">
+              <div><strong>🏭 Proveedor:</strong> ${oc.proveedor || '—'}</div>
+              <div><strong>🎯 Promesa entrega:</strong> ${oc.fecha_promesa || '—'}</div>
+              <div><strong>💱 Moneda:</strong> ${moneda}${oc.tipo_cambio?` · TC ${oc.tipo_cambio}`:''}</div>
+              <div><strong>🧾 IVA:</strong> ${conIVA?'Con IVA 16%':'Sin IVA'}</div>
+              ${oc.generada_por_nombre?`<div><strong>👤 Generó:</strong> ${oc.generada_por_nombre}</div>`:''}
+              ${oc.destino_recepcion?`<div><strong>📍 Destino:</strong> ${oc.destino_recepcion}</div>`:''}
+            </div>
+          </div>
+
+          <!-- Líneas -->
+          <div style="font-weight:800;font-size:13px;color:#475569;margin-bottom:8px;">📋 Materiales (${lineas.length})</div>
+          <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:16px;">
+            <table style="width:100%;border-collapse:collapse;font-size:11px;">
+              <thead>
+                <tr style="background:#f8fafc;">
+                  <th style="padding:8px;text-align:left;font-weight:700;color:#475569;">Código</th>
+                  <th style="padding:8px;text-align:left;font-weight:700;color:#475569;">Descripción</th>
+                  <th style="padding:8px;text-align:right;font-weight:700;color:#475569;">Pedido</th>
+                  <th style="padding:8px;text-align:right;font-weight:700;color:#475569;">Recibido</th>
+                  <th style="padding:8px;text-align:right;font-weight:700;color:#475569;">Costo U.</th>
+                  <th style="padding:8px;text-align:right;font-weight:700;color:#475569;">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${lineas.map(l => {
+                  const cant = Number(l.cantidad)||0;
+                  const rec = Number(l.cantidad_recibida)||0;
+                  const cu = Number(l.costo_unitario)||0;
+                  const completa = rec >= cant;
+                  return `
+                  <tr style="border-top:1px solid #f1f5f9;">
+                    <td style="padding:8px;font-family:monospace;font-weight:700;">${l.mp_codigo||''}</td>
+                    <td style="padding:8px;color:#475569;">${l.descripcion||''}</td>
+                    <td style="padding:8px;text-align:right;">${fmtNum(cant)} ${l.um||''}</td>
+                    <td style="padding:8px;text-align:right;color:${completa?'#16a34a':rec>0?'#3b82f6':'#94a3b8'};font-weight:700;">${fmtNum(rec)}</td>
+                    <td style="padding:8px;text-align:right;">$${fmtNum(cu)}</td>
+                    <td style="padding:8px;text-align:right;font-weight:700;">$${fmtNum(cant*cu)}</td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Totales -->
+          <div style="background:#f5f3ff;border-radius:10px;padding:14px;">
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:#475569;margin-bottom:4px;"><span>Subtotal:</span><span style="font-weight:700;">$${fmtNum(subtotal.toFixed(2))} ${moneda}</span></div>
+            ${conIVA?`<div style="display:flex;justify-content:space-between;font-size:12px;color:#f59e0b;margin-bottom:4px;"><span>IVA 16%:</span><span style="font-weight:700;">$${fmtNum(iva.toFixed(2))} ${moneda}</span></div>`:''}
+            <div style="display:flex;justify-content:space-between;font-size:15px;color:#6d28d9;font-weight:900;border-top:1px solid #ddd6fe;padding-top:6px;margin-top:4px;"><span>TOTAL:</span><span>$${fmtNum(total.toFixed(2))} ${moneda}</span></div>
+          </div>
+
+          ${oc.observaciones?`<div style="margin-top:14px;font-size:12px;color:#475569;"><strong>📝 Observaciones:</strong> ${oc.observaciones}</div>`:''}
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function modalSalidaMP() {
+  const f = state.modalForm || {};
+  const mpsConStock = (state.materias_primas || [])
+    .filter(mp => mp.activo !== false)
+    .map(mp => ({ ...mp, stock: window._stockMP(mp.codigo) }))
+    .sort((a,b) => a.codigo.localeCompare(b.codigo));
+  const mpSel = mpsConStock.find(m => m.codigo === f.mp_codigo);
+  const stockSel = mpSel ? mpSel.stock : 0;
+
+  const TIPOS = [
+    { k: 'planta', label: '🏭 A planta (producción)', color: '#16a34a' },
+    { k: 'traspaso', label: '🚚 Traspaso a otro almacén', color: '#3b82f6' },
+    { k: 'devolucion', label: '↩️ Devolución a proveedor', color: '#f59e0b' },
+    { k: 'merma', label: '🗑️ Merma / desperdicio', color: '#dc2626' },
+  ];
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalForm={};window.forzarRender();}">
+      <div class="modal" style="max-width:540px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#fef2f2,#fee2e2);border-bottom:2px solid #dc2626;">
+          <h2 style="font-size:17px;font-weight:800;color:#991b1b;">➖ Registrar salida de material</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalForm={};window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <!-- Tipo de salida -->
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">¿Qué tipo de salida es?</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">
+            ${TIPOS.map(t => `
+              <button onclick="state.modalForm.tipo_salida='${t.k}';window.forzarRender();" style="padding:11px;border-radius:9px;cursor:pointer;font-weight:700;font-size:12px;border:2px solid ${f.tipo_salida===t.k?t.color:'#e2e8f0'};background:${f.tipo_salida===t.k?t.color+'15':'#fff'};color:${f.tipo_salida===t.k?t.color:'#64748b'};text-align:left;">${t.label}</button>
+            `).join('')}
+          </div>
+
+          <!-- Insumo -->
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Insumo</label>
+          <select class="input" onchange="state.modalForm.mp_codigo=this.value;window.forzarRender();" style="margin-bottom:6px;">
+            <option value="">— Selecciona insumo —</option>
+            ${mpsConStock.map(mp => `<option value="${mp.codigo}" ${f.mp_codigo===mp.codigo?'selected':''}>${mp.codigo} — ${mp.descripcion} (${fmtNum(mp.stock)} ${mp.um||'kg'})</option>`).join('')}
+          </select>
+          ${mpSel ? `<div style="font-size:11px;color:${stockSel>0?'#16a34a':'#dc2626'};font-weight:700;margin-bottom:12px;">📦 Disponible: ${fmtNum(stockSel)} ${mpSel.um||'kg'}</div>` : '<div style="margin-bottom:12px;"></div>'}
+
+          <!-- Cantidad -->
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Cantidad a sacar</label>
+          <input class="input" type="text" inputmode="decimal" value="${f.cantidad||''}" placeholder="0" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'');state.modalForm.cantidad=this.value;" style="margin-bottom:16px;" />
+
+          <!-- Destino según tipo -->
+          ${f.tipo_salida === 'planta' ? `
+            <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">¿A qué proceso va?</label>
+            <select class="input" onchange="state.modalForm.destino_proceso=this.value;" style="margin-bottom:16px;">
+              <option value="">— Selecciona proceso —</option>
+              ${PROCESOS.filter(p=>p.codigo!=='P5-PEL'||true).map(p => `<option value="${p.codigo}" ${f.destino_proceso===p.codigo?'selected':''}>${p.icono} ${p.nombre}</option>`).join('')}
+            </select>
+          ` : ''}
+          ${f.tipo_salida === 'traspaso' ? `
+            <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">¿A qué almacén/CEDIS?</label>
+            <select class="input" onchange="state.modalForm.destino_almacen=this.value;" style="margin-bottom:16px;">
+              <option value="">— Selecciona destino —</option>
+              <option value="CEDIS-MTY" ${f.destino_almacen==='CEDIS-MTY'?'selected':''}>🏭 CEDIS Monterrey</option>
+              <option value="CEDIS-MEX" ${f.destino_almacen==='CEDIS-MEX'?'selected':''}>🏙️ CEDIS México</option>
+              <option value="Planta" ${f.destino_almacen==='Planta'?'selected':''}>🏭 Planta</option>
+            </select>
+          ` : ''}
+          ${f.tipo_salida === 'devolucion' ? `
+            <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Proveedor al que se devuelve</label>
+            <select class="input" onchange="state.modalForm.proveedor=this.value;" style="margin-bottom:16px;">
+              <option value="">— Selecciona proveedor —</option>
+              ${(state.proveedores||[]).filter(p=>p.activo!==false).map(p => `<option value="${p.nombre}" ${f.proveedor===p.nombre?'selected':''}>${p.nombre}</option>`).join('')}
+            </select>
+          ` : ''}
+
+          <!-- Motivo -->
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Motivo / observaciones</label>
+          <textarea class="input" oninput="state.modalForm.motivo=this.value;" placeholder="Ej: para ODP-00120, lote defectuoso, etc." style="min-height:60px;resize:vertical;">${f.motivo||''}</textarea>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalForm={};window.forzarRender();">Cancelar</button>
+          <button onclick="window.confirmarSalidaMP()" style="padding:10px 18px;background:#dc2626;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">➖ Registrar salida</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function modalAjusteMP() {
+  const f = state.modalForm || {};
+  const mps = (state.materias_primas || [])
+    .filter(mp => mp.activo !== false)
+    .map(mp => ({ ...mp, stock: window._stockMP(mp.codigo) }))
+    .sort((a,b) => a.codigo.localeCompare(b.codigo));
+  const mpSel = mps.find(m => m.codigo === f.mp_codigo);
+  const stockSist = mpSel ? mpSel.stock : 0;
+  const conteo = Number(f.conteo_fisico);
+  const dif = (!isNaN(conteo) && f.mp_codigo) ? conteo - stockSist : null;
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalForm={};window.forzarRender();}">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f5f3ff,#ede9fe);border-bottom:2px solid #7c3aed;">
+          <h2 style="font-size:17px;font-weight:800;color:#6d28d9;">⚖️ Ajuste por conteo físico</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalForm={};window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <div style="font-size:12px;color:#64748b;margin-bottom:16px;">Cuenta físicamente el material y captura la cantidad real. El sistema calculará y aplicará la diferencia.</div>
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Insumo</label>
+          <select class="input" onchange="state.modalForm.mp_codigo=this.value;window.forzarRender();" style="margin-bottom:14px;">
+            <option value="">— Selecciona insumo —</option>
+            ${mps.map(mp => `<option value="${mp.codigo}" ${f.mp_codigo===mp.codigo?'selected':''}>${mp.codigo} — ${mp.descripcion}</option>`).join('')}
+          </select>
+
+          ${mpSel ? `
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+            <div style="background:#f8fafc;border-radius:9px;padding:12px;text-align:center;">
+              <div style="font-size:10px;color:#64748b;font-weight:700;">SISTEMA DICE</div>
+              <div style="font-size:20px;font-weight:900;color:#0f172a;">${fmtNum(stockSist)}</div>
+              <div style="font-size:10px;color:#94a3b8;">${mpSel.um||'kg'}</div>
+            </div>
+            <div style="background:#f5f3ff;border-radius:9px;padding:12px;text-align:center;">
+              <div style="font-size:10px;color:#6d28d9;font-weight:700;">CONTEO REAL</div>
+              <input class="input" type="text" inputmode="decimal" value="${f.conteo_fisico||''}" placeholder="0" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'');state.modalForm.conteo_fisico=this.value;window.forzarRender();" style="text-align:center;font-size:18px;font-weight:800;padding:4px;" />
+              <div style="font-size:10px;color:#94a3b8;">${mpSel.um||'kg'}</div>
+            </div>
+          </div>
+          ${dif !== null && Math.abs(dif) >= 0.001 ? `
+            <div style="background:${dif>0?'#f0fdf4':'#fef2f2'};border:1px solid ${dif>0?'#86efac':'#fecaca'};border-radius:9px;padding:10px;text-align:center;margin-bottom:14px;">
+              <span style="font-weight:800;color:${dif>0?'#16a34a':'#dc2626'};font-size:14px;">${dif>0?'▲ Sobran':'▼ Faltan'} ${fmtNum(Math.abs(dif))} ${mpSel.um||'kg'}</span>
+            </div>` : ''}
+          ` : ''}
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Motivo del ajuste</label>
+          <textarea class="input" oninput="state.modalForm.motivo=this.value;" placeholder="Ej: conteo mensual, merma no registrada, error de captura..." style="min-height:60px;resize:vertical;">${f.motivo||''}</textarea>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalForm={};window.forzarRender();">Cancelar</button>
+          <button onclick="window.confirmarAjusteMP()" style="padding:10px 18px;background:#7c3aed;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">⚖️ Aplicar ajuste</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderAlmacenMP() {
   // Si hay un kardex seleccionado, mostrar vista detallada
   if (state.kardex_mp_codigo) {
     return renderKardexMP(state.kardex_mp_codigo);
   }
-  
-  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+
+  const u = state.user || {};
+  const puedeMoverMP = ['ALP','COMP','PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const veValor = u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin'; // $ solo CEO/Admin
+
+  // 🏭 Almacén activo (Planta MTY / CEDIS MTY / CEDIS MEX). Usuarios de CEDIS quedan fijos.
+  let almacenActivo = state.almacenMPActivo;
+  const almacenFijo = u.depto === 'CEDMTY' ? 'CEDIS-MTY' : u.depto === 'CEDMEX' ? 'CEDIS-MEX' : null;
+  if (almacenFijo) almacenActivo = almacenFijo;
+  else if (!almacenActivo) almacenActivo = 'ALMACEN-PLANTA-MTY';
+  const puedeAlternarAlmacen = !almacenFijo;
+
+  // Normaliza el destino de un lote (respaldo para lotes viejos sin destino → Planta)
+  const _almacenDeLote = (l) => l.destino_recepcion || 'ALMACEN-PLANTA-MTY';
+
   const filtro = (state.filtros.almacen_mp || '').toLowerCase();
-  let arr = mps;
-  if (filtro) arr = arr.filter(mp => ((mp.codigo||'')+' '+(mp.descripcion||'')).toLowerCase().includes(filtro));
-  
-  // Calcular stock total por MP sumando lotes activos
+  const soloBajoMin = state.filtros.almacen_mp_bajomin === true;
+
+  const mps = (state.materias_primas || []).filter(mp => mp.activo !== false);
+
+  // Stock por MP EN EL ALMACÉN ACTIVO (suma de lotes de ese almacén)
   const stockPorMP = {};
   (state.lotes_mp || []).forEach(l => {
-    if (l.estatus !== 'agotado' && (l.stock_actual || 0) > 0) {
-      if (!stockPorMP[l.mp_codigo]) stockPorMP[l.mp_codigo] = { total: 0, lotes: 0 };
-      stockPorMP[l.mp_codigo].total += Number(l.stock_actual) || 0;
-      stockPorMP[l.mp_codigo].lotes++;
-    }
+    if (l.estatus === 'agotado' || (Number(l.stock_actual)||0) <= 0) return;
+    if (_almacenDeLote(l) !== almacenActivo) return; // solo del almacén activo
+    if (!stockPorMP[l.mp_codigo]) stockPorMP[l.mp_codigo] = { total: 0, lotes: 0, valor: 0 };
+    const cant = Number(l.stock_actual) || 0;
+    stockPorMP[l.mp_codigo].total += cant;
+    stockPorMP[l.mp_codigo].lotes++;
+    stockPorMP[l.mp_codigo].valor += cant * (Number(l.costo_unitario) || 0);
   });
-  
+
   const totalKgEnAlmacen = Object.values(stockPorMP).reduce((s, v) => s + v.total, 0);
+  const valorTotal = Object.values(stockPorMP).reduce((s, v) => s + v.valor, 0);
   const insumosConStock = Object.keys(stockPorMP).length;
-  const conAlerta = arr.filter(mp => {
+  const conAlerta = mps.filter(mp => {
     const stock = stockPorMP[mp.codigo]?.total || 0;
     return mp.stock_minimo > 0 && stock < mp.stock_minimo;
   }).length;
-  
+
+  // Aplicar filtros de texto y bajo-mínimo
+  let arr = mps;
+  if (filtro) arr = arr.filter(mp => ((mp.codigo||'')+' '+(mp.descripcion||'')).toLowerCase().includes(filtro));
+  if (soloBajoMin) arr = arr.filter(mp => {
+    const stock = stockPorMP[mp.codigo]?.total || 0;
+    return mp.stock_minimo > 0 && stock < mp.stock_minimo;
+  });
+
+  // Nombre bonito del almacén
+  const NOMBRE_ALM = { 'ALMACEN-PLANTA-MTY': '🏭 Almacén Planta MTY', 'CEDIS-MTY': '🏢 CEDIS Monterrey', 'CEDIS-MEX': '🏙️ CEDIS México' };
+
+  // Agrupar insumos filtrados por TIPO
+  const porTipo = {};
+  arr.forEach(mp => {
+    const t = mp.tipo || 'otro';
+    if (!porTipo[t]) porTipo[t] = [];
+    porTipo[t].push(mp);
+  });
+
   return `
+    <!-- Encabezado -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">📦 Almacén de Materias Primas</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Existencias en ${NOMBRE_ALM[almacenActivo] || almacenActivo}</div>
+      </div>
+      ${puedeMoverMP ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="window.abrirSalidaMP()" style="padding:10px 16px;background:#dc2626;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:13px;">➖ Registrar salida</button>
+        <button onclick="window.abrirAjusteMP()" style="padding:10px 16px;background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;border-radius:9px;cursor:pointer;font-weight:800;font-size:13px;">⚖️ Ajuste por conteo</button>
+      </div>` : ''}
+    </div>
+
+    <!-- Switch de almacén -->
+    ${puedeAlternarAlmacen ? `
+    <div style="display:flex;gap:6px;background:#f1f5f9;padding:5px;border-radius:12px;margin-bottom:14px;flex-wrap:wrap;">
+      ${[['ALMACEN-PLANTA-MTY','🏭 Planta MTY'],['CEDIS-MTY','🏢 CEDIS MTY'],['CEDIS-MEX','🏙️ CEDIS MEX']].map(([k,label]) => `
+        <button onclick="window.setAlmacenMP('${k}')" style="flex:1;min-width:120px;padding:10px;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;background:${almacenActivo===k?'#fff':'transparent'};color:${almacenActivo===k?'#16a34a':'#64748b'};box-shadow:${almacenActivo===k?'0 1px 4px rgba(0,0,0,0.1)':'none'};">${label}</button>
+      `).join('')}
+    </div>` : `
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;font-weight:700;color:#166534;">
+      ${NOMBRE_ALM[almacenActivo]}
+    </div>`}
+
     <!-- KPIs -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:14px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));gap:10px;margin-bottom:14px;">
       <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #16a34a;">
         <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📦 STOCK TOTAL</div>
         <div style="font-size:22px;font-weight:800;color:#16a34a;">${fmtNum(totalKgEnAlmacen)} kg</div>
@@ -28385,66 +28932,89 @@ function renderAlmacenMP() {
         <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">🧪 INSUMOS CON STOCK</div>
         <div style="font-size:22px;font-weight:800;color:#3b82f6;">${insumosConStock}</div>
       </div>
-      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #dc2626;">
-        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⚠ STOCK BAJO MÍNIMO</div>
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #dc2626;cursor:pointer;" onclick="window.toggleBajoMinMP()">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">⚠ BAJO MÍNIMO ${soloBajoMin?'· (filtrando)':''}</div>
         <div style="font-size:22px;font-weight:800;color:#dc2626;">${conAlerta}</div>
       </div>
+      ${veValor ? `
+      <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">💰 VALOR INVENTARIO</div>
+        <div style="font-size:20px;font-weight:800;color:#7c3aed;">$${fmtNum(valorTotal.toFixed(0))}</div>
+      </div>` : `
       <div style="background:#fff;padding:12px;border-radius:10px;border-left:4px solid #7c3aed;">
         <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:0.05em;">📜 LOTES ACTIVOS</div>
-        <div style="font-size:22px;font-weight:800;color:#7c3aed;">${(state.lotes_mp || []).filter(l => l.estatus !== 'agotado').length}</div>
-      </div>
+        <div style="font-size:22px;font-weight:800;color:#7c3aed;">${Object.values(stockPorMP).reduce((s,v)=>s+v.lotes,0)}</div>
+      </div>`}
     </div>
-    
+
+    <!-- Toolbar -->
     <div class="toolbar" style="flex-wrap:wrap;">
-      <input class="input" id="filtro-almacen-mp" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar insumo..." value="${filtro}" autocomplete="off" />
+      <input class="input" id="filtro-almacen-mp" style="max-width:300px;flex:1;min-width:180px;" placeholder="🔍 Buscar insumo..." value="${filtro}" autocomplete="off" />
+      <button onclick="window.toggleBajoMinMP()" style="padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;border:1.5px solid ${soloBajoMin?'#dc2626':'#cbd5e1'};background:${soloBajoMin?'#dc2626':'#fff'};color:${soloBajoMin?'#fff':'#64748b'};">${soloBajoMin?'✓ ':''}⚠ Solo bajo mínimo</button>
       <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} insumo(s)</span>
     </div>
-    
-    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
-      <table style="width:100%;border-collapse:collapse;font-size:12px;">
-        <thead>
-          <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
-            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
-            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
-            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Tipo</th>
-            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock actual</th>
-            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock mín</th>
-            <th style="padding:10px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Lotes</th>
-            <th style="padding:10px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">UM</th>
-            <th style="padding:10px 12px;text-align:center;font-weight:700;color:#475569;font-size:11px;">Kardex</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${arr.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => {
-            const datos = stockPorMP[mp.codigo] || { total: 0, lotes: 0 };
-            const stock = datos.total;
-            const lotes = datos.lotes;
-            const alerta = mp.stock_minimo > 0 && stock < mp.stock_minimo;
-            const tipoInfo = TIPOS_MP.find(t => t.codigo === mp.tipo) || TIPOS_MP[0];
-            return `
-              <tr style="border-bottom:1px solid #f1f5f9;${alerta?'background:#fef2f2;':''}cursor:pointer;" onclick="abrirKardexMP('${mp.codigo}')" onmouseover="this.style.background='#f1f5f9';" onmouseout="this.style.background='${alerta?'#fef2f2':'transparent'}';">
-                <td style="padding:8px 12px;" class="text-mono"><strong style="color:#3b82f6;">${mp.codigo}</strong></td>
-                <td style="padding:8px 12px;">${mp.descripcion}</td>
-                <td style="padding:8px 12px;"><span style="background:${tipoInfo.color}22;color:${tipoInfo.color};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;">${tipoInfo.icono} ${tipoInfo.nombre}</span></td>
-                <td style="padding:8px 12px;text-align:right;font-weight:800;color:${alerta ? '#dc2626' : (stock > 0 ? '#16a34a' : '#94a3b8')};">${fmtNum(stock)}</td>
-                <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${mp.stock_minimo ? fmtNum(mp.stock_minimo) : '—'}</td>
-                <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${lotes}</td>
-                <td style="padding:8px 12px;font-size:11px;color:#64748b;">${mp.um || 'Kg'}</td>
-                <td style="padding:8px 12px;text-align:center;">
-                  <button onclick="event.stopPropagation();abrirKardexMP('${mp.codigo}')" style="padding:4px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">📜 Ver</button>
-                </td>
-              </tr>
-            `;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>
-    
-    <div style="margin-top:14px;padding:12px;background:#eff6ff;border-radius:8px;font-size:11px;color:#475569;">
-      💡 <strong>Tip:</strong> Click en cualquier insumo para ver su kardex completo (entradas, salidas, saldos) y los lotes activos con su trazabilidad.
+
+    ${arr.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:12px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;margin-bottom:10px;">📦</div>
+        <div style="font-weight:700;color:#475569;">${soloBajoMin?'Nada bajo mínimo aquí 👍':'Sin insumos con stock en este almacén'}</div>
+      </div>
+    ` : TIPOS_MP.filter(t => porTipo[t.codigo]?.length).map(t => {
+      const items = porTipo[t.codigo].sort((a,b) => a.codigo.localeCompare(b.codigo));
+      const kgTipo = items.reduce((s,mp) => s + (stockPorMP[mp.codigo]?.total || 0), 0);
+      return `
+        <div style="margin-bottom:16px;">
+          <!-- Cabecera del grupo -->
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;background:${t.color}12;border-radius:9px;">
+            <span style="font-size:18px;">${t.icono}</span>
+            <span style="font-weight:900;color:${t.color};font-size:14px;">${t.nombre}s</span>
+            <span style="font-size:11px;color:#64748b;">· ${items.length} insumo(s) · ${fmtNum(kgTipo)} kg</span>
+          </div>
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead>
+                <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                  <th style="padding:8px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Código</th>
+                  <th style="padding:8px 12px;text-align:left;font-weight:700;color:#475569;font-size:11px;">Descripción</th>
+                  <th style="padding:8px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Stock</th>
+                  <th style="padding:8px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Mín</th>
+                  <th style="padding:8px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Lotes</th>
+                  ${veValor ? `<th style="padding:8px 12px;text-align:right;font-weight:700;color:#475569;font-size:11px;">Valor</th>` : ''}
+                  <th style="padding:8px 12px;text-align:center;font-weight:700;color:#475569;font-size:11px;">Kardex</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${items.map(mp => {
+                  const datos = stockPorMP[mp.codigo] || { total: 0, lotes: 0, valor: 0 };
+                  const stock = datos.total;
+                  const alerta = mp.stock_minimo > 0 && stock < mp.stock_minimo;
+                  return `
+                    <tr style="border-bottom:1px solid #f1f5f9;${alerta?'background:#fef2f2;':''}cursor:pointer;" onclick="abrirKardexMP('${mp.codigo}')" onmouseover="this.style.background='#f1f5f9';" onmouseout="this.style.background='${alerta?'#fef2f2':'transparent'}';">
+                      <td style="padding:8px 12px;" class="text-mono"><strong style="color:#3b82f6;">${mp.codigo}</strong></td>
+                      <td style="padding:8px 12px;">${mp.descripcion}</td>
+                      <td style="padding:8px 12px;text-align:right;font-weight:800;color:${alerta ? '#dc2626' : (stock > 0 ? '#16a34a' : '#94a3b8')};">${fmtNum(stock)} <span style="font-size:9px;color:#94a3b8;font-weight:400;">${mp.um||'kg'}</span>${alerta?' ⚠':''}</td>
+                      <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${mp.stock_minimo ? fmtNum(mp.stock_minimo) : '—'}</td>
+                      <td style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;">${datos.lotes}</td>
+                      ${veValor ? `<td style="padding:8px 12px;text-align:right;font-size:11px;color:#7c3aed;font-weight:700;">$${fmtNum(datos.valor.toFixed(0))}</td>` : ''}
+                      <td style="padding:8px 12px;text-align:center;">
+                        <button onclick="event.stopPropagation();abrirKardexMP('${mp.codigo}')" style="padding:4px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">📜 Ver</button>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }).join('')}
+
+    <div style="margin-top:8px;padding:12px;background:#eff6ff;border-radius:8px;font-size:11px;color:#475569;">
+      💡 <strong>Tip:</strong> Click en cualquier insumo para ver su kardex completo (entradas, salidas, saldos) y lotes activos. El stock mostrado es el de <strong>${NOMBRE_ALM[almacenActivo]}</strong>.
     </div>
   `;
 }
+window.setAlmacenMP = (alm) => { state.almacenMPActivo = alm; window.forzarRender(); };
+window.toggleBajoMinMP = () => { state.filtros.almacen_mp_bajomin = !state.filtros.almacen_mp_bajomin; window.forzarRender(); };
 
 // ============================================================
 // VISTA: Kardex detallado de un insumo
