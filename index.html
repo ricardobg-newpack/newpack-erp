@@ -3810,7 +3810,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-rcrecibido</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-rctarjeta</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -24510,7 +24510,18 @@ function renderTarjetaRC(rc, puedeAprobar) {
   const prio = PRIORIDADES_RC.find(p => p.codigo === rc.prioridad) || PRIORIDADES_RC[0];
   const lineas = rc.lineas || [];
   const totalLineas = lineas.length;
-  
+
+  // 🔗 OC ligada: la cantidad recibida y el destino viven en la OC (no en la RC)
+  const ocLigada = (state.ordenes_compra || []).find(o => o.folio === rc.oc_folio || o.rc_id === rc.id || o.rc_folio === rc.folio);
+  const NOMBRE_ALM = { 'ALMACEN-PLANTA-MTY': '🏭 Almacén Planta MTY', 'CEDIS-MTY': '🏢 CEDIS Monterrey', 'CEDIS-MEX': '🏙️ CEDIS México' };
+  const recibidoPorCodigo = {};
+  if (ocLigada) (ocLigada.lineas || []).forEach(l => {
+    const cod = l.mp_codigo || l.producto_codigo;
+    if (cod) recibidoPorCodigo[cod] = (recibidoPorCodigo[cod] || 0) + (Number(l.cantidad_recibida) || 0);
+  });
+  // Buscar el movimiento/lote de recepción para saber quién y cuándo recibió
+  const loteRecep = ocLigada ? (state.lotes_mp || []).find(l => l.oc_folio === ocLigada.folio) : null;
+
   return `
     <div class="panel" style="border-left:4px solid ${estat.color};">
       <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
@@ -24569,15 +24580,18 @@ function renderTarjetaRC(rc, puedeAprobar) {
               </tr>
             </thead>
             <tbody>
-              ${lineas.map(l => `
+              ${lineas.map(l => {
+                const cod = l.mp_codigo || l.producto_codigo;
+                const recibido = recibidoPorCodigo[cod] || 0;
+                return `
                 <tr style="border-bottom:1px solid #f1f5f9;">
                   <td style="padding:5px 8px;" class="text-mono"><strong>${l.mp_codigo}</strong></td>
                   <td style="padding:5px 8px;">${l.descripcion}</td>
                   <td style="padding:5px 8px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
                   <td style="padding:5px 8px;font-size:10px;color:#64748b;">${l.um || 'Kg'}</td>
-                  ${rc.estatus === 'recibida' ? `<td style="padding:5px 8px;text-align:right;color:${l.cantidad_recibida >= l.cantidad ? '#16a34a' : '#f59e0b'};font-weight:700;">${fmtNum(l.cantidad_recibida || 0)}</td>` : ''}
+                  ${rc.estatus === 'recibida' ? `<td style="padding:5px 8px;text-align:right;color:${recibido >= l.cantidad ? '#16a34a' : recibido > 0 ? '#3b82f6' : '#f59e0b'};font-weight:700;">${fmtNum(recibido)}</td>` : ''}
                 </tr>
-              `).join('')}
+              `;}).join('')}
             </tbody>
           </table>
         </div>
@@ -24585,6 +24599,19 @@ function renderTarjetaRC(rc, puedeAprobar) {
       
       ${rc.observaciones ? `<div style="padding:0 18px 8px;font-size:11px;color:#64748b;font-style:italic;">📝 ${rc.observaciones}</div>` : ''}
       ${rc.proveedor_asignado ? `<div style="padding:0 18px 8px;font-size:11px;color:#475569;">🏭 Proveedor: <strong>${rc.proveedor_asignado}</strong></div>` : ''}
+
+      <!-- 📦 RESUMEN DE RECEPCIÓN: qué llegó, dónde y quién lo recibió -->
+      ${rc.estatus === 'recibida' && ocLigada ? `
+        <div style="margin:0 18px 10px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:9px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#166534;">
+            <span style="font-weight:800;">📦 Recibido</span>
+            ${ocLigada.destino_recepcion ? `<span>· 📍 en <strong>${NOMBRE_ALM[ocLigada.destino_recepcion] || ocLigada.destino_recepcion}</strong></span>` : ''}
+            ${loteRecep && loteRecep.recibido_por_nombre ? `<span>· 👤 por <strong>${loteRecep.recibido_por_nombre}</strong></span>` : ''}
+            ${loteRecep && loteRecep.fecha_recepcion ? `<span>· 📅 ${loteRecep.fecha_recepcion}</span>` : ''}
+            ${loteRecep && loteRecep.tipo_documento && loteRecep.numero_documento ? `<span>· 📄 ${loteRecep.tipo_documento === 'factura' ? 'Factura' : 'Remisión'} ${loteRecep.numero_documento}</span>` : ''}
+          </div>
+        </div>
+      ` : ''}
       
       <!-- BOTONES -->
       <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-wrap:wrap;">
