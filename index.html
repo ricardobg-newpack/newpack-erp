@@ -215,6 +215,7 @@ const state = {
   lotes_mp: [],
   fallas_mantenimiento: [],
   ordenes_trabajo_mtto: [],
+  plan_preventivo: [],
   movimientos_mp: [],
   proveedores: [],
   estandarizacion_historial: [],
@@ -3399,6 +3400,11 @@ async function cargarTodo() {
         state.ordenes_trabajo_mtto = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
+      // 📅 PROGRAMA DE MANTENIMIENTO PREVENTIVO (tareas por máquina)
+      onSnapshot(collection(db, 'plan_preventivo'), (snap) => {
+        state.plan_preventivo = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       // 📦 EMPAQUE
       onSnapshot(collection(db, 'productos_empaque'), (snap) => {
         state.productos_empaque = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -3816,7 +3822,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0710-ot</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-preventivo</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3918,6 +3924,7 @@ function renderApp() {
           <div class="sidebar-section">Mantenimiento</div>
           <button class="nav-item ${state.vista === 'fallas_mtto' ? 'active' : ''}" data-vista="fallas_mtto">🔧 Reporte de Fallas</button>
           <button class="nav-item ${state.vista === 'ot_mtto' ? 'active' : ''}" data-vista="ot_mtto">🛠️ Órdenes de Trabajo</button>
+          <button class="nav-item ${state.vista === 'preventivo_mtto' ? 'active' : ''}" data-vista="preventivo_mtto">📅 Programa Preventivo</button>
           <button class="nav-item ${state.vista === 'productos_mtto' ? 'active' : ''}" data-vista="productos_mtto">🔩 Productos MTTO</button>
           <button class="nav-item ${state.vista === 'inventario_mtto' ? 'active' : ''}" data-vista="inventario_mtto">📊 Inventario MTTO</button>
         ` : `
@@ -4148,6 +4155,7 @@ function renderVista() {
   if (v === 'inventario_mtto') return renderInventarioMTTO();
   if (v === 'fallas_mtto') return renderFallasMTTO();
   if (v === 'ot_mtto') return renderOrdenesTrabajoMTTO();
+  if (v === 'preventivo_mtto') return renderPreventivoMTTO();
   if (v === 'productos_empaque') return renderProductosEmpaque();
   if (v === 'inventario_empaque') return renderInventarioEmpaque();
   if (v === 'productos_oficina') return renderProductosOficina();
@@ -5356,6 +5364,7 @@ window.confirmarCrearOT = async () => {
       refacciones: f.refacciones || [],
       falla_id: f.falla_id || '',
       falla_folio: f.falla_folio || '',
+      preventivo_id: f.preventivo_id || '',
       estatus: 'abierta',
       // Trazabilidad de tiempo
       creada_at: serverTimestamp(),
@@ -5457,6 +5466,25 @@ window.confirmarTerminarOT = async () => {
           solucion: `Resuelto vía OT ${ot.folio}: ${(f.resultado||'').trim()}`,
           updated_at: serverTimestamp(),
         });
+      }
+    }
+    // Si la OT vino de un preventivo, REPROGRAMAR la siguiente fecha/horas
+    if (ot.preventivo_id) {
+      const tarea = (state.plan_preventivo || []).find(x => x.id === ot.preventivo_id);
+      if (tarea) {
+        const val = Number(tarea.frecuencia_valor) || 0;
+        const patch = { ultima_ejecucion: window.hoyLocalISO(), ultima_ot: ot.folio, updated_at: serverTimestamp() };
+        if (tarea.frecuencia_tipo === 'horas') {
+          const maq = (state.maquinas || []).find(m => m.codigo === tarea.maquina_codigo);
+          const horasActuales = Number(maq?.horas_uso) || 0;
+          patch.proximo_horas = horasActuales + val; // siguiente objetivo desde las horas actuales
+        } else {
+          // Sumar la frecuencia en días a partir de hoy
+          const base = new Date(window.hoyLocalISO() + 'T00:00:00');
+          base.setDate(base.getDate() + val);
+          patch.proxima_fecha = base.toISOString().split('T')[0];
+        }
+        batch.update(doc(db, 'plan_preventivo', ot.preventivo_id), patch);
       }
     }
     await batch.commit();
@@ -5600,6 +5628,250 @@ function renderTarjetaOT(o, esMTTO) {
         </div>
       ` : ''}
     </div>`;
+}
+
+// ============================================================
+// 📅 PROGRAMA DE MANTENIMIENTO PREVENTIVO
+//    Tareas por máquina (checklist), cada una con frecuencia por TIEMPO (días)
+//    o por HORAS de uso. Semáforo de vencimiento + generar OT al instante.
+// ============================================================
+
+const PREV_FRECUENCIA = {
+  tiempo: { label: 'Por tiempo', icono: '📆', unidad: 'días' },
+  horas:  { label: 'Por horas de uso', icono: '⏱️', unidad: 'h' },
+};
+
+// Calcula el estado de vencimiento de una tarea preventiva
+function _estadoPreventivo(t) {
+  if (t.frecuencia_tipo === 'horas') {
+    // Por horas: comparar horas acumuladas de la máquina vs próximo objetivo
+    const maq = (state.maquinas || []).find(m => m.codigo === t.maquina_codigo);
+    const horasActuales = Number(maq?.horas_uso) || 0;
+    const objetivo = Number(t.proximo_horas) || 0;
+    const faltan = objetivo - horasActuales;
+    if (faltan <= 0) return { estado: 'vencido', color: '#dc2626', label: `Vencido (${fmtNum(Math.abs(faltan))} h de más)`, orden: 0 };
+    if (faltan <= (Number(t.frecuencia_valor) * 0.15)) return { estado: 'por_vencer', color: '#f59e0b', label: `Por vencer (faltan ${fmtNum(faltan)} h)`, orden: 1 };
+    return { estado: 'al_dia', color: '#16a34a', label: `Al día (faltan ${fmtNum(faltan)} h)`, orden: 2 };
+  } else {
+    // Por tiempo: comparar fecha de hoy vs próxima fecha
+    const hoy = window.hoyLocalISO();
+    const prox = t.proxima_fecha || '';
+    if (!prox) return { estado: 'sin_fecha', color: '#94a3b8', label: 'Sin programar', orden: 3 };
+    const diasRest = Math.round((new Date(prox + 'T00:00:00') - new Date(hoy + 'T00:00:00')) / 86400000);
+    if (diasRest < 0) return { estado: 'vencido', color: '#dc2626', label: `Vencido (${Math.abs(diasRest)} días)`, orden: 0 };
+    if (diasRest === 0) return { estado: 'hoy', color: '#dc2626', label: 'Toca HOY', orden: 0 };
+    if (diasRest <= 7) return { estado: 'por_vencer', color: '#f59e0b', label: `En ${diasRest} día(s)`, orden: 1 };
+    return { estado: 'al_dia', color: '#16a34a', label: `En ${diasRest} días`, orden: 2 };
+  }
+}
+
+window.abrirCrearPreventivo = (maquinaCod) => {
+  state.modalForm = {
+    maquina: maquinaCod || '',
+    tarea: '',
+    frecuencia_tipo: 'tiempo',
+    frecuencia_valor: '',
+    proxima_fecha: window.hoyLocalISO(),
+    proximo_horas: '',
+    responsable: '',
+  };
+  state.modal = 'crear-preventivo';
+  window.forzarRender();
+};
+
+window.confirmarCrearPreventivo = async () => {
+  const f = state.modalForm || {};
+  const u = state.user || {};
+  if (!f.maquina) { toast('Selecciona la máquina', 'error'); return; }
+  if (!(f.tarea || '').trim()) { toast('Describe la tarea preventiva', 'error'); return; }
+  const val = Number(f.frecuencia_valor);
+  if (!val || val <= 0) { toast('Indica cada cuánto se hace', 'error'); return; }
+
+  const maq = (state.maquinas || []).find(m => m.codigo === f.maquina);
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const data = {
+      maquina_codigo: f.maquina,
+      maquina_nombre: maq?.nombre || f.maquina,
+      proceso: maq?.proceso || '',
+      tarea: (f.tarea || '').trim(),
+      frecuencia_tipo: f.frecuencia_tipo || 'tiempo',
+      frecuencia_valor: val,
+      responsable: (f.responsable || '').trim(),
+      activa: true,
+      creada_at: serverTimestamp(),
+      creada_por_nombre: u.nombre || u.email || 'Usuario',
+    };
+    if (f.frecuencia_tipo === 'horas') {
+      const maqHoras = Number(maq?.horas_uso) || 0;
+      data.proximo_horas = maqHoras + val;
+      data.proxima_fecha = '';
+    } else {
+      data.proxima_fecha = f.proxima_fecha || window.hoyLocalISO();
+      data.proximo_horas = 0;
+    }
+    if (state.modalForm.editId) {
+      await updateDoc(doc(db, 'plan_preventivo', state.modalForm.editId), data);
+      toast('✅ Tarea preventiva actualizada', 'success');
+    } else {
+      await addDoc(collection(db, 'plan_preventivo'), data);
+      toast('✅ Tarea preventiva programada', 'success');
+    }
+    state.modal = null; state.modalForm = {};
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; window.forzarRender();
+  }
+};
+
+// Generar una OT desde una tarea preventiva (al instante)
+window.generarOTPreventivo = (tareaId) => {
+  const t = (state.plan_preventivo || []).find(x => x.id === tareaId);
+  if (!t) return;
+  state.modalForm = {
+    tipo: 'preventivo',
+    maquina: t.maquina_codigo,
+    falla_id: '',
+    falla_folio: '',
+    preventivo_id: t.id, // para reprogramar al terminar
+    titulo: t.tarea,
+    descripcion: `Mantenimiento preventivo programado: ${t.tarea}`,
+    tecnico_nombre: t.responsable || '',
+    refacciones: [],
+  };
+  state.modal = 'crear-ot';
+  window.forzarRender();
+};
+
+window.toggleActivaPreventivo = async (tareaId, activa) => {
+  try {
+    await updateDoc(doc(db, 'plan_preventivo', tareaId), { activa: !activa });
+    toast(activa ? 'Tarea pausada' : 'Tarea reactivada', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.editarPreventivo = (tareaId) => {
+  const t = (state.plan_preventivo || []).find(x => x.id === tareaId);
+  if (!t) return;
+  state.modalForm = {
+    editId: t.id,
+    maquina: t.maquina_codigo,
+    tarea: t.tarea,
+    frecuencia_tipo: t.frecuencia_tipo || 'tiempo',
+    frecuencia_valor: t.frecuencia_valor,
+    proxima_fecha: t.proxima_fecha || window.hoyLocalISO(),
+    proximo_horas: t.proximo_horas || '',
+    responsable: t.responsable || '',
+  };
+  state.modal = 'crear-preventivo';
+  window.forzarRender();
+};
+
+function renderPreventivoMTTO() {
+  const u = state.user || {};
+  const esMTTO = u.depto === 'MTTO' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+  const tareas = (state.plan_preventivo || []).filter(t => t.activa !== false);
+
+  // Calcular estado de cada tarea y ordenar por urgencia
+  const conEstado = tareas.map(t => ({ ...t, _est: _estadoPreventivo(t) }))
+    .sort((a,b) => a._est.orden - b._est.orden);
+
+  const filtro = (state.filtros.preventivo || '').toLowerCase();
+  let arr = conEstado;
+  if (filtro) arr = arr.filter(t => ((t.maquina_nombre||'')+' '+(t.tarea||'')+' '+(t.responsable||'')).toLowerCase().includes(filtro));
+
+  const vencidos = conEstado.filter(t => t._est.estado === 'vencido' || t._est.estado === 'hoy').length;
+  const porVencer = conEstado.filter(t => t._est.estado === 'por_vencer').length;
+  const alDia = conEstado.filter(t => t._est.estado === 'al_dia').length;
+
+  // Agrupar por máquina
+  const porMaquina = {};
+  arr.forEach(t => {
+    if (!porMaquina[t.maquina_codigo]) porMaquina[t.maquina_codigo] = { nombre: t.maquina_nombre, tareas: [] };
+    porMaquina[t.maquina_codigo].tareas.push(t);
+  });
+
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">📅 Programa Preventivo</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Qué mantenimiento toca a cada equipo y cuándo · genera la orden al instante</div>
+      </div>
+      ${esMTTO ? `<button onclick="window.abrirCrearPreventivo()" style="padding:10px 18px;background:#16a34a;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:14px;">➕ Nueva tarea</button>` : ''}
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:10px;margin-bottom:16px;">
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #dc2626;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🔴 VENCIDOS / HOY</div>
+        <div style="font-size:24px;font-weight:900;color:#dc2626;">${vencidos}</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #f59e0b;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🟡 POR VENCER</div>
+        <div style="font-size:24px;font-weight:900;color:#f59e0b;">${porVencer}</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🟢 AL DÍA</div>
+        <div style="font-size:24px;font-weight:900;color:#16a34a;">${alDia}</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">📋 TAREAS ACTIVAS</div>
+        <div style="font-size:24px;font-weight:900;color:#3b82f6;">${tareas.length}</div>
+      </div>
+    </div>
+
+    <div class="toolbar" style="flex-wrap:wrap;">
+      <input class="input" id="filtro-preventivo" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar máquina, tarea, responsable..." value="${filtro}" autocomplete="off" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} tarea(s)</span>
+    </div>
+
+    ${arr.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:12px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;margin-bottom:10px;">📅</div>
+        <div style="font-weight:700;color:#475569;">Sin tareas preventivas programadas</div>
+        ${esMTTO?`<div style="font-size:12px;margin-top:6px;">Crea la primera con "➕ Nueva tarea"</div>`:''}
+      </div>
+    ` : Object.entries(porMaquina).map(([cod, grupo]) => `
+      <div style="margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 12px;background:#f1f5f9;border-radius:9px;">
+          <span style="font-size:16px;">🏭</span>
+          <span style="font-weight:900;color:#0f172a;font-size:14px;">${grupo.nombre}</span>
+          <span style="font-size:11px;color:#64748b;">· ${grupo.tareas.length} tarea(s)</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${grupo.tareas.map(t => {
+            const e = t._est;
+            const frec = PREV_FRECUENCIA[t.frecuencia_tipo] || PREV_FRECUENCIA.tiempo;
+            const urgente = ['vencido','hoy','por_vencer'].includes(e.estado);
+            return `
+              <div class="panel" style="border-left:4px solid ${e.color};padding:12px 16px;${urgente?'background:'+e.color+'08;':''}">
+                <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:center;">
+                  <div style="flex:1;min-width:200px;">
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                      <span style="font-weight:800;color:#0f172a;font-size:14px;">${t.tarea}</span>
+                      <span style="background:${e.color}22;color:${e.color};padding:2px 10px;border-radius:99px;font-weight:800;font-size:11px;">${e.label}</span>
+                    </div>
+                    <div style="font-size:11px;color:#64748b;margin-top:3px;">
+                      ${frec.icono} Cada ${fmtNum(t.frecuencia_valor)} ${frec.unidad}
+                      ${t.frecuencia_tipo==='tiempo' && t.proxima_fecha ? ` · Próximo: ${t.proxima_fecha}` : ''}
+                      ${t.frecuencia_tipo==='horas' && t.proximo_horas ? ` · A las ${fmtNum(t.proximo_horas)} h` : ''}
+                      ${t.responsable ? ` · 👷 ${t.responsable}` : ''}
+                    </div>
+                  </div>
+                  ${esMTTO ? `
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                    ${urgente ? `<button onclick="window.generarOTPreventivo('${t.id}')" style="padding:7px 12px;background:${e.color};color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:700;font-size:11px;">🛠️ Generar OT</button>` : `<button onclick="window.generarOTPreventivo('${t.id}')" style="padding:7px 12px;background:#fff;color:#7c3aed;border:1px solid #7c3aed;border-radius:7px;cursor:pointer;font-weight:700;font-size:11px;">🛠️ Generar OT</button>`}
+                    <button onclick="window.editarPreventivo('${t.id}')" style="padding:7px 10px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:7px;cursor:pointer;font-size:11px;">✏️</button>
+                    <button onclick="window.toggleActivaPreventivo('${t.id}', true)" style="padding:7px 10px;background:#fff;color:#94a3b8;border:1px solid #cbd5e1;border-radius:7px;cursor:pointer;font-size:11px;" title="Pausar">⏸️</button>
+                  </div>
+                  ` : ''}
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>
+    `).join('')}
+  `;
 }
 
 function renderProductosMTTO() {
@@ -16563,6 +16835,7 @@ function renderModal() {
   if (m === 'resolver-falla') return modalResolverFalla();
   if (m === 'crear-ot') return modalCrearOT();
   if (m === 'terminar-ot') return modalTerminarOT();
+  if (m === 'crear-preventivo') return modalCrearPreventivo();
   if (m === 'ajuste-mp') return modalAjusteMP();
   if (m === 'programar-ov-ruta') return modalProgramarOVRuta();
   if (m === 'ver-capturas') return modalVerCapturas();
@@ -29256,6 +29529,62 @@ window.confirmarAjusteMP = async () => {
     state.loadingAccion = false; window.forzarRender();
   }
 };
+
+function modalCrearPreventivo() {
+  const f = state.modalForm || {};
+  const maquinas = (state.maquinas || []).filter(m => m.activa !== false).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+  const esHoras = f.frecuencia_tipo === 'horas';
+  return `
+    <div class="modal-bg" onclick="if(event.target===this){state.modal=null;state.modalForm={};window.forzarRender();}">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-bottom:2px solid #16a34a;">
+          <h2 style="font-size:17px;font-weight:800;color:#166534;">📅 ${f.editId?'Editar':'Nueva'} tarea preventiva</h2>
+          <button class="icon-btn" onclick="state.modal=null;state.modalForm={};window.forzarRender();">✕</button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🏭 Máquina/equipo *</label>
+          <select class="input" onchange="state.modalForm.maquina=this.value;window.forzarRender();" style="margin-bottom:14px;">
+            <option value="">— Selecciona máquina —</option>
+            ${maquinas.map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${m.nombre}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+          </select>
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Tarea a realizar *</label>
+          <input class="input" type="text" value="${f.tarea||''}" placeholder="Ej: Cambio de aceite, Lubricación de rodamientos, Revisión de bandas..." oninput="state.modalForm.tarea=this.value;" style="margin-bottom:14px;" autocomplete="off" />
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">¿Cada cuándo se hace?</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+            ${Object.entries(PREV_FRECUENCIA).map(([k,fr]) => `
+              <button type="button" onclick="state.modalForm.frecuencia_tipo='${k}';window.forzarRender();" style="padding:11px;border-radius:9px;cursor:pointer;font-weight:700;font-size:12px;border:2px solid ${f.frecuencia_tipo===k?'#16a34a':'#e2e8f0'};background:${f.frecuencia_tipo===k?'#16a34a15':'#fff'};color:${f.frecuencia_tipo===k?'#166534':'#64748b'};text-align:left;">${fr.icono} ${fr.label}</button>
+            `).join('')}
+          </div>
+
+          <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px;">
+            <div style="flex:1;">
+              <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Cada ${esHoras?'(horas)':'(días)'}</label>
+              <input class="input" type="text" inputmode="decimal" value="${f.frecuencia_valor||''}" placeholder="${esHoras?'Ej: 500':'Ej: 30'}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');state.modalForm.frecuencia_valor=this.value;" autocomplete="off" />
+            </div>
+            <div style="flex:1;">
+              ${esHoras ? `
+                <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Próximo a las (horas)</label>
+                <input class="input" type="text" inputmode="decimal" value="${f.proximo_horas||''}" placeholder="Horas objetivo" oninput="this.value=this.value.replace(/[^0-9.]/g,'');state.modalForm.proximo_horas=this.value;" autocomplete="off" />
+              ` : `
+                <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Próxima fecha</label>
+                <input class="input" type="date" value="${f.proxima_fecha||''}" onchange="state.modalForm.proxima_fecha=this.value;" />
+              `}
+            </div>
+          </div>
+          ${esHoras ? `<div style="font-size:10px;color:#94a3b8;margin-bottom:14px;">💡 Se comparará con las horas de uso de la máquina. Si dejas vacío el objetivo, se calcula sumando la frecuencia a las horas actuales.</div>` : ''}
+
+          <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">👷 Responsable (opcional)</label>
+          <input class="input" type="text" value="${f.responsable||''}" placeholder="Nombre del responsable" oninput="state.modalForm.responsable=this.value;" autocomplete="off" />
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid #e2e8f0;">
+          <button class="btn-secondary" onclick="state.modal=null;state.modalForm={};window.forzarRender();">Cancelar</button>
+          <button onclick="window.confirmarCrearPreventivo()" style="padding:10px 18px;background:#16a34a;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">📅 ${f.editId?'Guardar':'Programar'}</button>
+        </div>
+      </div>
+    </div>`;
+}
 
 function modalCrearOT() {
   const f = state.modalForm || {};
