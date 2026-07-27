@@ -216,6 +216,7 @@ const state = {
   fallas_mantenimiento: [],
   ordenes_trabajo_mtto: [],
   plan_preventivo: [],
+  historial_maquina_cod: null,
   movimientos_mp: [],
   proveedores: [],
   estandarizacion_historial: [],
@@ -3822,7 +3823,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-preventivo</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-histmaq</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3925,6 +3926,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'fallas_mtto' ? 'active' : ''}" data-vista="fallas_mtto">🔧 Reporte de Fallas</button>
           <button class="nav-item ${state.vista === 'ot_mtto' ? 'active' : ''}" data-vista="ot_mtto">🛠️ Órdenes de Trabajo</button>
           <button class="nav-item ${state.vista === 'preventivo_mtto' ? 'active' : ''}" data-vista="preventivo_mtto">📅 Programa Preventivo</button>
+          <button class="nav-item ${state.vista === 'historial_maquina' ? 'active' : ''}" data-vista="historial_maquina">📖 Historial por Máquina</button>
           <button class="nav-item ${state.vista === 'productos_mtto' ? 'active' : ''}" data-vista="productos_mtto">🔩 Productos MTTO</button>
           <button class="nav-item ${state.vista === 'inventario_mtto' ? 'active' : ''}" data-vista="inventario_mtto">📊 Inventario MTTO</button>
         ` : `
@@ -4156,6 +4158,7 @@ function renderVista() {
   if (v === 'fallas_mtto') return renderFallasMTTO();
   if (v === 'ot_mtto') return renderOrdenesTrabajoMTTO();
   if (v === 'preventivo_mtto') return renderPreventivoMTTO();
+  if (v === 'historial_maquina') return renderHistorialMaquina();
   if (v === 'productos_empaque') return renderProductosEmpaque();
   if (v === 'inventario_empaque') return renderInventarioEmpaque();
   if (v === 'productos_oficina') return renderProductosOficina();
@@ -5871,6 +5874,170 @@ function renderPreventivoMTTO() {
         </div>
       </div>
     `).join('')}
+  `;
+}
+
+// ============================================================
+// 📖 FASE 4 — HISTORIAL POR MÁQUINA
+//    Une en una sola línea de tiempo: fallas + OT + consumos de refacciones
+//    de un equipo. Todo se cruza por maquina_codigo. No captura nada nuevo.
+// ============================================================
+
+window.abrirHistorialMaquina = (maquinaCod) => {
+  state.historial_maquina_cod = maquinaCod;
+  state.vista = 'historial_maquina';
+  window.forzarRender();
+};
+
+function renderHistorialMaquina() {
+  const cod = state.historial_maquina_cod;
+  const maq = (state.maquinas || []).find(m => m.codigo === cod);
+
+  // Si no hay máquina seleccionada, mostrar selector
+  if (!maq) {
+    const maquinas = (state.maquinas || []).filter(m => m.activa !== false).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+    return `
+      <div style="margin-bottom:14px;">
+        <div style="font-size:20px;font-weight:900;color:#0f172a;">📖 Historial por Máquina</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px;">Elige un equipo para ver todo lo que se le ha hecho</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:12px;">
+        ${maquinas.map(m => {
+          const nFallas = (state.fallas_mantenimiento||[]).filter(x => x.maquina_codigo === m.codigo).length;
+          const nOT = (state.ordenes_trabajo_mtto||[]).filter(x => x.maquina_codigo === m.codigo).length;
+          return `
+            <div onclick="window.abrirHistorialMaquina('${m.codigo}')" style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;cursor:pointer;transition:box-shadow 0.15s;" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'" onmouseout="this.style.boxShadow=''">
+              <div style="font-size:15px;font-weight:800;color:#0f172a;">🏭 ${m.nombre}</div>
+              <div style="font-size:11px;color:#64748b;margin-top:3px;">${m.proceso || ''} ${m.codigo}</div>
+              <div style="display:flex;gap:12px;margin-top:10px;font-size:11px;">
+                <span style="color:#dc2626;font-weight:700;">🔧 ${nFallas} falla(s)</span>
+                <span style="color:#7c3aed;font-weight:700;">🛠️ ${nOT} OT</span>
+              </div>
+            </div>`;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  // Recolectar TODO lo de esta máquina y unificar en eventos de línea de tiempo
+  const fallas = (state.fallas_mantenimiento||[]).filter(x => x.maquina_codigo === cod);
+  const ots = (state.ordenes_trabajo_mtto||[]).filter(x => x.maquina_codigo === cod);
+  const consumos = (state.movimientos_mtto||[]).filter(x => x.maquina_codigo === cod && x.tipo === 'salida');
+  const preventivos = (state.plan_preventivo||[]).filter(x => x.maquina_codigo === cod && x.activa !== false);
+
+  const eventos = [];
+  fallas.forEach(f => eventos.push({
+    tipo: 'falla', ts: f.reportada_at?.seconds || 0, color: '#dc2626', icono: '🔧',
+    titulo: `Falla reportada · ${f.folio||''}`,
+    desc: f.descripcion || '',
+    meta: `Por ${f.reportada_por_nombre||'—'} · ${FALLA_ESTADOS[f.estatus]?.label||f.estatus}`,
+    fecha: f.reportada_at,
+    extra: f.estatus === 'resuelta' && f.solucion ? `✅ ${f.solucion}` : '',
+  }));
+  ots.forEach(o => eventos.push({
+    tipo: 'ot', ts: o.creada_at?.seconds || 0, color: o.tipo==='correctivo'?'#dc2626':'#16a34a', icono: '🛠️',
+    titulo: `${OT_TIPOS[o.tipo]?.label||'OT'} · ${o.folio||''}`,
+    desc: o.titulo || '',
+    meta: `${OT_ESTADOS[o.estatus]?.label||o.estatus}${o.tecnico_nombre?` · 👷 ${o.tecnico_nombre}`:''}${_tiempoEntre(o.inicio_at,o.fin_at)?` · ⏱️ ${_tiempoEntre(o.inicio_at,o.fin_at)}`:''}`,
+    fecha: o.creada_at,
+    extra: o.estatus === 'terminada' && o.resultado ? `✅ ${o.resultado}` : '',
+    refas: o.refacciones || [],
+  }));
+  consumos.forEach(c => eventos.push({
+    tipo: 'consumo', ts: c.created_at?.seconds || 0, color: '#7c3aed', icono: '🔩',
+    titulo: `Consumo de refacción`,
+    desc: `${c.producto_descripcion||c.producto_codigo} — ${fmtNum(c.cantidad)} ${c.um||'pza'}`,
+    meta: c.ot_folio ? `Vía ${c.ot_folio}` : (c.motivo||''),
+    fecha: c.created_at,
+  }));
+
+  eventos.sort((a,b) => b.ts - a.ts); // más reciente primero
+
+  // Métricas del equipo
+  const fallasResueltas = fallas.filter(f => f.estatus === 'resuelta').length;
+  const otTerminadas = ots.filter(o => o.estatus === 'terminada').length;
+  const costoRefas = consumos.reduce((s,c) => s + (Number(c.cantidad)||0)*(Number(c.costo_unitario)||0), 0);
+  const u = state.user || {};
+  const veValor = u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+
+  return `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <button onclick="state.historial_maquina_cod=null;window.forzarRender();" style="padding:6px 12px;background:#f1f5f9;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;color:#475569;">← Equipos</button>
+    </div>
+    <div style="margin-bottom:14px;">
+      <div style="font-size:22px;font-weight:900;color:#0f172a;">🏭 ${maq.nombre}</div>
+      <div style="font-size:12px;color:#64748b;margin-top:2px;">${maq.proceso||''} · ${maq.codigo} · Historial completo del equipo</div>
+    </div>
+
+    <!-- Métricas del equipo -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:10px;margin-bottom:16px;">
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #dc2626;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🔧 FALLAS TOTALES</div>
+        <div style="font-size:24px;font-weight:900;color:#dc2626;">${fallas.length}</div>
+        <div style="font-size:10px;color:#94a3b8;">${fallasResueltas} resueltas</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🛠️ ÓRDENES DE TRABAJO</div>
+        <div style="font-size:24px;font-weight:900;color:#7c3aed;">${ots.length}</div>
+        <div style="font-size:10px;color:#94a3b8;">${otTerminadas} terminadas</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #3b82f6;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🔩 CONSUMOS</div>
+        <div style="font-size:24px;font-weight:900;color:#3b82f6;">${consumos.length}</div>
+      </div>
+      ${veValor ? `
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">💰 COSTO EN REFACCIONES</div>
+        <div style="font-size:20px;font-weight:900;color:#16a34a;">$${fmtNum(costoRefas.toFixed(0))}</div>
+      </div>` : `
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #16a34a;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">📅 PREVENTIVOS</div>
+        <div style="font-size:24px;font-weight:900;color:#16a34a;">${preventivos.length}</div>
+      </div>`}
+    </div>
+
+    <!-- Programa preventivo del equipo -->
+    ${preventivos.length ? `
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px;margin-bottom:16px;">
+        <div style="font-weight:800;color:#166534;font-size:13px;margin-bottom:8px;">📅 Programa preventivo de este equipo</div>
+        ${preventivos.map(t => {
+          const e = _estadoPreventivo(t);
+          const frec = PREV_FRECUENCIA[t.frecuencia_tipo] || PREV_FRECUENCIA.tiempo;
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:11px;border-bottom:1px solid #dcfce7;">
+            <span>${frec.icono} <strong>${t.tarea}</strong> · cada ${fmtNum(t.frecuencia_valor)} ${frec.unidad}</span>
+            <span style="background:${e.color}22;color:${e.color};padding:2px 8px;border-radius:99px;font-weight:800;">${e.label}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    ` : ''}
+
+    <!-- Línea de tiempo unificada -->
+    <div style="font-weight:800;font-size:14px;color:#0f172a;margin-bottom:10px;">🕐 Línea de tiempo (${eventos.length} eventos)</div>
+    ${eventos.length === 0 ? `
+      <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:12px;border:1px solid #e2e8f0;">
+        <div style="font-size:36px;margin-bottom:8px;">📖</div>
+        <div style="font-weight:700;color:#475569;">Este equipo aún no tiene historial registrado</div>
+      </div>
+    ` : `
+      <div style="position:relative;padding-left:24px;">
+        <div style="position:absolute;left:9px;top:6px;bottom:6px;width:2px;background:#e2e8f0;"></div>
+        ${eventos.map(ev => `
+          <div style="position:relative;margin-bottom:14px;">
+            <div style="position:absolute;left:-24px;top:2px;width:20px;height:20px;border-radius:50%;background:${ev.color};display:flex;align-items:center;justify-content:center;font-size:10px;">${ev.icono}</div>
+            <div class="panel" style="padding:12px 16px;border-left:3px solid ${ev.color};">
+              <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+                <span style="font-weight:800;font-size:13px;color:#0f172a;">${ev.titulo}</span>
+                <span style="font-size:10px;color:#94a3b8;">${ev.fecha ? fmtFechaHora(ev.fecha) : ''}</span>
+              </div>
+              ${ev.desc?`<div style="font-size:12px;color:#475569;margin-top:3px;">${ev.desc}</div>`:''}
+              ${ev.meta?`<div style="font-size:10px;color:#94a3b8;margin-top:3px;">${ev.meta}</div>`:''}
+              ${ev.refas && ev.refas.length?`<div style="font-size:10px;color:#7c3aed;margin-top:4px;">🔩 ${ev.refas.map(r=>`${r.descripcion||r.codigo} (${fmtNum(r.cantidad)})`).join(', ')}</div>`:''}
+              ${ev.extra?`<div style="background:#f0fdf4;border-radius:6px;padding:6px 8px;margin-top:6px;font-size:11px;color:#166534;">${ev.extra}</div>`:''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `}
   `;
 }
 
@@ -43398,6 +43565,8 @@ function attachAppEvents() {
       state.vista = btn.dataset.vista;
       state.filtros = {};
       state.kardex_mp_codigo = null; // limpiar vista kardex
+      // Al entrar a Historial desde el menú, siempre empezar en el selector de equipos
+      if (btn.dataset.vista === 'historial_maquina') state.historial_maquina_cod = null;
       render();
       // Restaurar la posición de scroll donde estaba el usuario (inmediato + tras el frame,
       // porque el render reconstruye el DOM y el navegador puede resetear el scroll).
