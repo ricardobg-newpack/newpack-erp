@@ -672,7 +672,7 @@ window.cantidadLiberadaODP = (odp) => {
       case 'entregada': k = 'entregada'; break;
       case 'embarcada': k = 'embarcado'; break;
       case 'en_cedis_mty': case 'en_cedis_mex': k = 'cedis'; break;
-      case 'en_transito_cedis': k = 'transito'; break;
+      case 'en_transito_cedis': case 'en_transito_cedis_mty': case 'en_transito_cedis_mex': k = 'transito'; break;
       default: k = 'planta'; // liberada_empaque, pendiente_almacen, en_almacen_planta, etc.
     }
     cubo[k] += _kg(t); cuboPza[k] += _pz(t);
@@ -3823,7 +3823,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-histmaq</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-auditintegridad</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -12139,6 +12139,20 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
       }).catch(()=>{});
       const ovLocal = (state.ordenes_venta||[]).find(o => o.id === parada.ov_id);
       if (ovLocal) ovLocal.estatus = 'entregada';
+      // 🔧 FIX TRAZABILIDAD: marcar las TARIMAS de esta OV como 'entregada' para que el
+      //    seguimiento (En planta/CEDIS/Entregado) refleje que ya salieron. Antes solo se
+      //    actualizaba la OV y las tarimas quedaban en su estatus previo → "en planta" falso.
+      const ovObj = (state.ordenes_venta||[]).find(o => o.id === parada.ov_id);
+      const tarimasIds = (ovObj?.tarimas_ids || parada.tarimas_ids || []);
+      if (tarimasIds.length) {
+        const bt = writeBatch(db);
+        tarimasIds.forEach(tid => {
+          bt.update(doc(db, 'tarimas', tid), { estatus: 'entregada', entregada_at: serverTimestamp() });
+          const tl = (state.tarimas||[]).find(t => t.id === tid);
+          if (tl) tl.estatus = 'entregada';
+        });
+        await bt.commit().catch(()=>{});
+      }
     }
     // Si TODAS las paradas quedaron entregadas → completar la ruta automáticamente
     const todasEntregadas = nuevas.length > 0 && nuevas.every(p => p.entregada);
@@ -12192,6 +12206,8 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
       // 🔧 Marcar cada parada como entregada/recolectada (para que el progreso muestre 100%)
       patch.paradas = (ruta.paradas || []).map(p => ({ ...p, entregada: true, entregada_at: Date.now() }));
       // Efectos: OVs entregadas + RMAs recolectadas
+      const _btTar = writeBatch(db);
+      let _hayTar = false;
       for (const p of (ruta.paradas || [])) {
         if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
           await updateDoc(doc(db, 'ordenes_venta', p.ov_id), {
@@ -12199,6 +12215,14 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
           }).catch(()=>{});
           const ovLocal = (state.ordenes_venta||[]).find(o => o.id === p.ov_id);
           if (ovLocal) ovLocal.estatus = 'entregada';
+          // 🔧 FIX TRAZABILIDAD: marcar las tarimas de esta OV como 'entregada'
+          const tarimasIds = (ovLocal?.tarimas_ids || p.tarimas_ids || []);
+          tarimasIds.forEach(tid => {
+            _btTar.update(doc(db, 'tarimas', tid), { estatus: 'entregada', entregada_at: serverTimestamp() });
+            const tl = (state.tarimas||[]).find(t => t.id === tid);
+            if (tl) tl.estatus = 'entregada';
+            _hayTar = true;
+          });
         }
         if ((p.tipo === 'recoleccion' || p.tipo === 'combinada') && p.rma_id) {
           const dev = (state.devoluciones || []).find(d => d.id === p.rma_id);
@@ -12209,6 +12233,7 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
           }
         }
       }
+      if (_hayTar) await _btTar.commit().catch(()=>{});
     }
     await updateDoc(doc(db, 'rutas_logistica', rutaId), patch);
     toast(nuevoEstado === 'completada' ? '✅ Ruta completada. OVs entregadas.' : nuevoEstado === 'en_ruta' ? '🚚 Ruta despachada. OVs marcadas como enviadas.' : 'Ruta actualizada.', 'success');
@@ -39742,9 +39767,15 @@ function modalLiberarCalidad() {
   const _prodRealUM = Number(_prodFinal.um) || 0;
   const _rutaLib = odp.ruta_procesos || [];
   const _prodFinal_procCod = _rutaLib.length > 0 ? _rutaLib[_rutaLib.length - 1] : (odp.proceso_codigo || 'P1-EXT');
+  // 🔧 FIX PROBLEMA "libera todo": si ya hubo liberaciones parciales, lo PENDIENTE por liberar
+  //    es (producido − ya_liberado), no el total producido. Convertimos el kg ya liberado a UM.
+  const _yaLiberadoKg = Number(odp.kg_liberado_parcial) || 0;
+  const _factorUMxKg = (_prodFinal.kg > 0 && _prodRealUM > 0) ? (_prodRealUM / _prodFinal.kg) : 1;
+  const _yaLiberadoUM = Math.round(_yaLiberadoKg * _factorUMxKg);
+  const _pendienteUM = Math.max(0, (_prodRealUM || Number(odp.cantidad_producida_final) || 0) - _yaLiberadoUM);
   const cantidadProducida = esParcialLib
     ? (Number(state.liberacionParcial.umAmount) || 0)
-    : (_prodRealUM || Number(odp.cantidad_producida_final) || 0);
+    : (_yaLiberadoKg > 0 ? _pendienteUM : (_prodRealUM || Number(odp.cantidad_producida_final) || 0));
   const cantidadOriginal = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : (Number(odp.cantidad) || 0);
   const procesosCompletados = odp.procesos_completados || [];
   const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
