@@ -3912,7 +3912,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-libparcialfix</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-libparcialfix3</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -43920,8 +43920,13 @@ function attachAppEvents() {
     if (!odp) return;
     
     const um = (odp.um || 'kg').toLowerCase();
-    const cantidadProducida = Number(odp.cantidad_producida_final) || 0;
-    const cantidadOriginal = Number(odp.cantidad) || 0;
+    // 🔧 FIX: respetar modo PARCIAL también en el recálculo dinámico. Antes usaba siempre
+    //    odp.cantidad (meta total) → en un parcial marcaba "faltante 80%" falso. En parcial,
+    //    la base de comparación es lo pendiente (state.liberacionParcial.umAmount).
+    const _esParcialLibDin = !!(state.liberacionParcial && state.liberacionParcial.odpId === odp.id);
+    const _parcialUMDin = _esParcialLibDin ? (Number(state.liberacionParcial.umAmount) || 0) : 0;
+    const cantidadProducida = _esParcialLibDin ? _parcialUMDin : (Number(odp.cantidad_producida_final) || 0);
+    const cantidadOriginal = _esParcialLibDin ? _parcialUMDin : (Number(odp.cantidad) || 0);
     const cantAceptada = Number(state.modalForm.cantidad_aceptada) || 0;
     const cantRechazada = Math.max(0, cantidadProducida - cantAceptada);
     const pctCalidadVsOriginal = cantidadOriginal > 0 ? (cantAceptada / cantidadOriginal * 100) : 0;
@@ -47170,14 +47175,20 @@ window.kgDisponibleParaJalar = (odp) => {
   const registradoKg = window.kgProducidoProceso(odp, procFinal);
   // 🆕 Lo que ya salió en salidas parciales (modelo nuevo: la ODP no se parte)
   const liberadoParcial = Number(odp.kg_liberado_parcial) || 0;
+  // 🔧 ROBUSTEZ: peso NETO de TODAS las tarimas ya liberadas de esta ODP (sin importar
+  //    su estatus físico). Cubre el caso en que kg_liberado_parcial no se guardó bien en
+  //    una liberación vieja: las tarimas reales son la verdad de lo que ya salió a calidad.
+  const kgTarimasLiberadas = (state.tarimas || [])
+    .filter(t => (t.odp_id === odp.id || t.odp_folio === odp.folio) && t.activo !== false && t.estatus !== 'rechazada')
+    .reduce((s, t) => s + (Number(t.peso_neto_kg) || Number(t.peso_neto) || 0), 0);
   // Tarimas embarcadas/entregadas (por si ya hubo embarque directo)
   const yaEmbarcado = (state.tarimas || [])
     .filter(t => t.odp_folio === odp.folio && ['embarcada','entregada','en_transito_cedis'].includes(t.estatus))
     .reduce((s, t) => s + (Number(t.peso_neto_kg) || 0), 0);
-  // Lo que ya salió = lo mayor entre liberado parcial y embarcado (no doble contar)
-  const yaSalioKg = Math.max(liberadoParcial, yaEmbarcado);
+  // Lo que ya salió = el MAYOR entre las tres evidencias (no doble contar)
+  const yaSalioKg = Math.max(liberadoParcial, kgTarimasLiberadas, yaEmbarcado);
   const disponibleKg = Math.max(0, registradoKg - yaSalioKg);
-  return { registradoKg, yaSalioKg, disponibleKg, proceso: procFinal, liberadoParcial };
+  return { registradoKg, yaSalioKg, disponibleKg, proceso: procFinal, liberadoParcial, kgTarimasLiberadas };
 };
 
 // Calidad jala material disponible de una ODP (con o sin solicitud urgente).
@@ -49280,7 +49291,13 @@ window._rollosDisponiblesODP = (odpId) => {
     .filter(r => r.odp_id === odpId && !r.anulado && !rollosYaLiberados.has(r.id))
     .sort((a, b) => (a.numero_rollo || 0) - (b.numero_rollo || 0));
   // Fallback por kg: cuánto se liberó que NO quedó cubierto por rollos_ids
-  const kgLiberadoParcial = Number(odp.kg_liberado_parcial) || 0;
+  // 🔧 ROBUSTEZ: usar la MEJOR evidencia de lo ya liberado — el mayor entre el campo
+  //    kg_liberado_parcial y el peso NETO real de las tarimas ya liberadas de esta ODP.
+  //    Cubre órdenes viejas donde kg_liberado_parcial no se guardó bien.
+  const kgTarimasLib = (state.tarimas || [])
+    .filter(t => (t.odp_id === odpId || t.odp_folio === odp.folio) && t.activo !== false && t.estatus !== 'rechazada')
+    .reduce((s, t) => s + (Number(t.peso_neto_kg) || Number(t.peso_neto) || 0), 0);
+  const kgLiberadoParcial = Math.max(Number(odp.kg_liberado_parcial) || 0, kgTarimasLib);
   let kgPendienteDescontar = kgLiberadoParcial - kgCubiertoPorIds;
   if (kgPendienteDescontar > 1) {
     // Quitar los rollos más antiguos hasta cubrir los kg ya liberados
