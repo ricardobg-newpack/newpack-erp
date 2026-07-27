@@ -1041,6 +1041,95 @@ window.sincronizarTodasLasODPs = async () => {
   }
 };
 
+// 🔄 RECONCILIACIÓN DE TARIMAS HISTÓRICAS
+//    Corrige tarimas viejas cuyo estatus quedó desfasado respecto al estado real de su OV.
+//    Regla: si la OV está entregada → sus tarimas deben estar 'entregada'; si está en CEDIS
+//    → 'en_cedis_*'; si embarcada → 'embarcada'. Solo AVANZA (nunca retrocede) el estatus.
+window.reconciliarTarimasHistoricas = async () => {
+  const u = state.user || {};
+  if (!['CEO','ADMIN'].includes(u.depto) && u.rol !== 'admin') {
+    toast('🔒 Solo CEO/ADMIN puede reconciliar', 'error'); return;
+  }
+
+  // Orden de avance de estatus (índice mayor = más avanzado). Solo avanzamos, nunca retrocedemos.
+  const RANK = {
+    'liberada_empaque': 1, 'pendiente_almacen': 1, 'en_almacen_planta': 1,
+    'en_transito_cedis': 2, 'en_transito_cedis_mty': 2, 'en_transito_cedis_mex': 2,
+    'en_cedis_mty': 3, 'en_cedis_mex': 3,
+    'embarcada': 4,
+    'entregada': 5,
+  };
+  const rank = (e) => RANK[e] || 0;
+
+  // Determinar el estatus destino de una tarima según el estatus de su OV
+  const estatusDeOV = (ov) => {
+    switch (ov.estatus) {
+      case 'entregada': return 'entregada';
+      case 'embarcada': case 'enviada': return 'embarcada';
+      case 'en_cedis_mty': return 'en_cedis_mty';
+      case 'en_cedis_mex': return 'en_cedis_mex';
+      default: return null; // OV aún en planta o sin avance → no tocar
+    }
+  };
+
+  // Construir mapa tarima_id → OV (una tarima pertenece a la OV que la incluye en tarimas_ids)
+  const ovsRelevantes = (state.ordenes_venta || []).filter(o => estatusDeOV(o));
+  if (ovsRelevantes.length === 0) {
+    toast('No hay órdenes de venta avanzadas para reconciliar', 'info'); return;
+  }
+
+  // Previsualizar cuántas tarimas cambiarían
+  const cambios = []; // {tid, de, a}
+  ovsRelevantes.forEach(ov => {
+    const destino = estatusDeOV(ov);
+    const tarimasIds = ov.tarimas_ids || [];
+    tarimasIds.forEach(tid => {
+      const t = (state.tarimas || []).find(x => x.id === tid);
+      if (!t) return;
+      if (t.estatus === 'rechazada' || t.activo === false) return;
+      // Solo avanzar si el destino es MÁS avanzado que el estatus actual
+      if (rank(destino) > rank(t.estatus)) {
+        cambios.push({ tid, de: t.estatus, a: destino, ov: ov.folio });
+      }
+    });
+  });
+
+  if (cambios.length === 0) {
+    toast('✅ Todas las tarimas ya están alineadas con sus entregas. Nada que corregir.', 'success');
+    return;
+  }
+
+  // Resumen para confirmar
+  const resumen = {};
+  cambios.forEach(c => { const k = `${c.de} → ${c.a}`; resumen[k] = (resumen[k]||0)+1; });
+  const detalle = Object.entries(resumen).map(([k,n]) => `  • ${n} tarima(s): ${k}`).join('\n');
+  if (!confirm(`🔄 RECONCILIACIÓN DE TARIMAS HISTÓRICAS\n\nSe corregirán ${cambios.length} tarima(s) para que su ubicación refleje el estado real de su entrega:\n\n${detalle}\n\nEsto solo AVANZA el estatus (nunca retrocede). ¿Continuar?`)) return;
+
+  state.loadingAccion = true; render();
+  try {
+    // Aplicar en lotes de máximo 400 (límite de writeBatch = 500)
+    let aplicados = 0;
+    for (let i = 0; i < cambios.length; i += 400) {
+      const grupo = cambios.slice(i, i + 400);
+      const batch = writeBatch(db);
+      grupo.forEach(c => {
+        const patch = { estatus: c.a };
+        if (c.a === 'entregada') patch.entregada_at = serverTimestamp();
+        batch.update(doc(db, 'tarimas', c.tid), patch);
+        const tl = (state.tarimas || []).find(t => t.id === c.tid);
+        if (tl) tl.estatus = c.a;
+        aplicados++;
+      });
+      await batch.commit();
+    }
+    toast(`✅ ${aplicados} tarima(s) reconciliadas. El seguimiento ya refleja la ubicación real.`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
 // Renderiza modal de seguimiento de un pedido completo (todas sus líneas)
 window.abrirWaterfallPedido = (pedidoId) => {
   state.waterfallPedidoId = pedidoId;
@@ -3823,7 +3912,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-auditintegridad</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-reconcilia</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4660,9 +4749,15 @@ function renderDashboard() {
       
       <!-- DIAGNÓSTICO TARIMAS -->
       <div class="panel" style="margin-bottom:18px;">
-        <div style="padding:12px 18px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+        <div style="padding:12px 18px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <strong>🔍 Diagnóstico de tarimas (${state.tarimas.length} total)</strong>
-          <button onclick="diagnosticoTarimasConsola()" style="font-size:11px;padding:4px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;">📊 Ver detalle en consola</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button onclick="window.reconciliarTarimasHistoricas()" style="font-size:12px;padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;">🔄 Reconciliar ubicación de tarimas</button>
+            <button onclick="diagnosticoTarimasConsola()" style="font-size:11px;padding:4px 10px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;">📊 Ver detalle en consola</button>
+          </div>
+        </div>
+        <div style="padding:8px 18px;background:#f0fdf4;border-bottom:1px solid #e2e8f0;font-size:11px;color:#166534;">
+          💡 <strong>Reconciliar</strong> corrige tarimas viejas cuya ubicación quedó desfasada: si su orden de venta ya está entregada/en CEDIS, ajusta la tarima para que el seguimiento sea correcto. Solo avanza el estatus, nunca retrocede. <strong>Ejecútalo una vez antes de operar.</strong>
         </div>
         <div style="padding:14px 18px;display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:8px;font-size:11px;">
           ${(() => {
