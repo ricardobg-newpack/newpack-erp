@@ -3912,7 +3912,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-reconcilia</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-libparcialfix</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -16459,10 +16459,10 @@ function renderTarjetaCalidad(o, contexto) {
                 </div>
                 <button onclick="window.regresarAProduccionParaProceso('${o.id}')" style="padding:9px 16px;background:#dc2626;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:12px;">↩ Regresar a producción (falta ${nomProc})</button>
               </div>
-              <button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad de todos modos</button>
+              <button class="btn-primary" onclick="window.abrirLiberacionCalidad('${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad de todos modos</button>
             `;
           }
-          return `<button class="btn-primary" onclick="abrirModal('liberar-calidad','${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>`;
+          return `<button class="btn-primary" onclick="window.abrirLiberacionCalidad('${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Liberar calidad</button>`;
         })()}
         ${(o.estatus === 'liberada_empaque' || o.packing_list || o.tiene_liberaciones_parciales) && o.estatus !== 'rechazada' ? (() => {
           // Agrupar tarimas de la ODP por PKL (cada parcial liberado = un PKL)
@@ -39862,15 +39862,9 @@ function modalLiberarCalidad() {
   const _prodRealUM = Number(_prodFinal.um) || 0;
   const _rutaLib = odp.ruta_procesos || [];
   const _prodFinal_procCod = _rutaLib.length > 0 ? _rutaLib[_rutaLib.length - 1] : (odp.proceso_codigo || 'P1-EXT');
-  // 🔧 FIX PROBLEMA "libera todo": si ya hubo liberaciones parciales, lo PENDIENTE por liberar
-  //    es (producido − ya_liberado), no el total producido. Convertimos el kg ya liberado a UM.
-  const _yaLiberadoKg = Number(odp.kg_liberado_parcial) || 0;
-  const _factorUMxKg = (_prodFinal.kg > 0 && _prodRealUM > 0) ? (_prodRealUM / _prodFinal.kg) : 1;
-  const _yaLiberadoUM = Math.round(_yaLiberadoKg * _factorUMxKg);
-  const _pendienteUM = Math.max(0, (_prodRealUM || Number(odp.cantidad_producida_final) || 0) - _yaLiberadoUM);
   const cantidadProducida = esParcialLib
     ? (Number(state.liberacionParcial.umAmount) || 0)
-    : (_yaLiberadoKg > 0 ? _pendienteUM : (_prodRealUM || Number(odp.cantidad_producida_final) || 0));
+    : (_prodRealUM || Number(odp.cantidad_producida_final) || 0);
   const cantidadOriginal = esParcialLib ? (Number(state.liberacionParcial.umAmount) || 0) : (Number(odp.cantidad) || 0);
   const procesosCompletados = odp.procesos_completados || [];
   const totalMermas = procesosCompletados.reduce((s, p) => s + (Number(p.mermas) || 0), 0);
@@ -46435,8 +46429,15 @@ window.confirmarCompletarProceso = async (odpId) => {
   
   // 🆕 DETECTAR CIERRE PARCIAL: ¿este proceso produjo menos que su meta?
   //    Si sí, NO lo marcamos completado a la fuerza — preguntamos al operador.
-  const metaProcesoKg = Number(odp.cantidad_kg_produccion) || 
-                        window.convertirAKg(odp.cantidad, um, producto) || 0;
+  // 🔧 FIX CRÍTICO (falso "10% pendiente"): la meta de un proceso SECUNDARIO (bolseo, etc.)
+  //    NO es la meta total de la orden, sino lo que el PROCESO ANTERIOR realmente le entregó
+  //    (entradaKg). Ej: si extrusión produjo 90% y bolseo procesó ese 90% completo, NO debe
+  //    marcarse como parcial faltando 10% — bolseó todo lo que había. Solo el PRIMER proceso
+  //    (extrusión) se compara contra la meta total de la orden.
+  const esPrimerProceso = idx === 0 || !procesoAnterior;
+  const metaProcesoKg = esPrimerProceso
+    ? (Number(odp.cantidad_kg_produccion) || window.convertirAKg(odp.cantidad, um, producto) || 0)
+    : (entradaKg || 0); // proceso secundario: la meta es lo que le entregó el proceso anterior
   const esCierreParcial = metaProcesoKg > 0 && prodKg < metaProcesoKg * 0.98;
   let marcarCompletado = true;
   
@@ -47211,6 +47212,43 @@ window.jalarMaterialCalidad = async (odpId) => {
 
 // 🆕 JALAR PARCIAL → crea una UNIDAD DE LIBERACIÓN propia (hija) por el material disponible.
 //    Esa unidad entra a "Por liberar" y pasa por el MISMO sistema (Liberar calidad → tarimas → cadena).
+// 🎯 Abre el modal de Liberar Calidad decidiendo el modo correcto:
+//    - Si la orden YA tuvo liberaciones parciales (kg_liberado_parcial > 0), abre en modo
+//      PARCIAL con SOLO lo pendiente (producido − ya liberado), usando el mecanismo probado.
+//    - Si es la primera liberación, abre normal (todo lo producido).
+//    Esto evita el bug de "marca liberar todo / cantidad equivocada" en el resto pendiente.
+window.abrirLiberacionCalidad = (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  const yaLiberadoKg = Number(odp.kg_liberado_parcial) || 0;
+
+  if (yaLiberadoKg > 0) {
+    // Ya hubo parciales → liberar SOLO lo pendiente con el mecanismo de parcial (mismo que "jalar")
+    const disp = window.kgDisponibleParaJalar ? window.kgDisponibleParaJalar(odp) : null;
+    const pendienteKg = disp ? Math.round(disp.disponibleKg || 0) : 0;
+    if (pendienteKg <= 0) {
+      toast('✅ Esta orden ya no tiene material pendiente por liberar.', 'info');
+      return;
+    }
+    // Cantidad en UM del producto (piezas reales pendientes = producidas − ya liberadas)
+    const um = (odp.um || 'kg').toLowerCase();
+    let prodUM = pendienteKg;
+    if (um !== 'kg') {
+      const prodPT = window.getProductoPT?.(odp.producto_codigo);
+      const proc = disp?.proceso || (odp.ruta_procesos || []).slice(-1)[0] || 'P1-EXT';
+      const realUM = window.umRealProducidoProceso(odp.id, proc, um);
+      const yaLibUM = (state.tarimas || [])
+        .filter(t => t.odp_id === odp.id)
+        .reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+      prodUM = realUM > 0 ? Math.max(0, realUM - yaLibUM) : (window.kgAUM(pendienteKg, um, prodPT) || pendienteKg);
+    }
+    state.liberacionParcial = { odpId, kg: pendienteKg, umAmount: prodUM };
+  } else {
+    state.liberacionParcial = null;
+  }
+  window.abrirModal('liberar-calidad', odpId);
+};
+
 //    La ODP MADRE sigue viva produciendo el resto. Se pueden jalar varios parciales.
 window.jalarParcialALiberar = async (odpId) => {
   const u = state.user || {};
