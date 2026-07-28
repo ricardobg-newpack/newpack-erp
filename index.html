@@ -3070,10 +3070,21 @@ window.stockLibreProducto = (productoCodigo) => {
     // Debe estar físicamente disponible (no embarcada/entregada/en empaque)
     const enStock = ['en_cedis_mty', 'en_cedis_mex', 'en_almacen_planta'].includes(t.estatus);
     if (!enStock) return false;
-    // LIBRE = sin pedido ni OV asignados (es stock, no de un cliente específico)
-    const sinPedido = !t.pedido_id && !t.pedido_folio;
+    // LIBRE = no comprometida a un cliente (sin OV asignada)
     const sinOV = !t.ov_id && !t.ov_folio;
-    return sinPedido && sinOV;
+    if (!sinOV) return false;
+    // 🔧 FIX STOCK: es STOCK INTERNO (pool NewPack), no earmark de un cliente.
+    //    Antes se exigía "sin pedido", pero un PI de "Producción para Stock" estampa
+    //    pedido_folio en la tarima (cliente_codigo='STOCK') → quedaba invisible como stock.
+    //    Criterio alineado con modalAsignarTarimasOV (L39038): cliente STOCK o sin cliente.
+    if (t.cliente_codigo === 'STOCK' || !t.cliente_codigo) return true;
+    // Respaldo por datos viejos: revisar el origen de la ODP.
+    //   (exige id/folio truthy para no hacer match falso con undefined===undefined)
+    const odp = (t.odp_id || t.odp_folio)
+      ? (state.ordenes_produccion || []).find(o => (t.odp_id && o.id === t.odp_id) || (t.odp_folio && o.folio === t.odp_folio))
+      : null;
+    if (odp && (odp.tipo_origen === 'stock_interno' || odp.tipo === 'stock_interno' || odp.es_sobrante_automatico)) return true;
+    return false;
   }).reduce((s, t) => s + (Number(t.cantidad_actual ?? t.cantidad) || 0), 0);
 };
 
@@ -3912,7 +3923,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B1-odpov-jefecostos</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B1c-stocklibre</span></div>
         </div>
         
         ${supervisorRestringido ? `
