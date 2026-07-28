@@ -3923,7 +3923,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2b-tomaparcial</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2c-saldoparcial</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -12278,6 +12278,12 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
         });
         await bt.commit().catch(()=>{});
       }
+      // 🆕 SALDO AUTOMÁTICO: si esta entrega por RUTA fue parcial, generar la OV de saldo
+      //    (antes esto solo pasaba al entregar por Embarques → el pedido quedaba cerrado con faltante).
+      if (ovObj) {
+        const folSaldo = await window.generarSaldoOVEntrega(ovObj);
+        if (folSaldo) toast(`🔁 ${folSaldo}: OV de saldo generada por lo pendiente de ${ovObj.folio}`, 'info');
+      }
     }
     // Si TODAS las paradas quedaron entregadas → completar la ruta automáticamente
     const todasEntregadas = nuevas.length > 0 && nuevas.every(p => p.entregada);
@@ -12363,6 +12369,15 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
         }
       }
       if (_hayTar) await _btTar.commit().catch(()=>{});
+      // 🆕 SALDO AUTOMÁTICO: por cada OV entregada parcial en esta ruta, generar OV de saldo
+      let _saldosGen = 0;
+      for (const p of (ruta.paradas || [])) {
+        if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
+          const ovL = (state.ordenes_venta || []).find(o => o.id === p.ov_id);
+          if (ovL) { const fol = await window.generarSaldoOVEntrega(ovL); if (fol) _saldosGen++; }
+        }
+      }
+      if (_saldosGen > 0) toast(`🔁 ${_saldosGen} OV(s) de saldo generada(s) por entregas parciales`, 'info');
     }
     await updateDoc(doc(db, 'rutas_logistica', rutaId), patch);
     toast(nuevoEstado === 'completada' ? '✅ Ruta completada. OVs entregadas.' : nuevoEstado === 'en_ruta' ? '🚚 Ruta despachada. OVs marcadas como enviadas.' : 'Ruta actualizada.', 'success');
@@ -21071,8 +21086,17 @@ window.setCedisEmbarques = (cedis) => {
 //    Una fila por material · columnas Planta / CEDIS-MTY / CEDIS-MEX / Total · Libre vs Comprometido.
 function renderStockPTConsolidado() {
   const filtro = (state.filtros.stock_pt || '').toLowerCase();
+  const _u = state.user || {};
+  const puedeGenerarOV = _u.rol === 'admin' || ['CS', 'KAM', 'CEDMTY', 'CEDMEX', 'ALP', 'CEO', 'ADMIN'].includes(_u.depto);
   const ESTATUS_STOCK = ['en_almacen_planta', 'en_cedis_mty', 'en_cedis_mex'];
   const tarimas = (state.tarimas || []).filter(t => t.activo !== false && ESTATUS_STOCK.includes(t.estatus));
+
+  // Set de "cliente|producto" que YA tienen una OV abierta (asignable) → ese material no está atorado
+  const ESTADOS_OV_ABIERTA = ['esperando_produccion', 'pendiente_asignar', 'preparando', 'lista_embarcar', 'por_cargar'];
+  const OV_ABIERTA = new Set();
+  (state.ordenes_venta || []).forEach(o => {
+    if (ESTADOS_OV_ABIERTA.includes(o.estatus)) OV_ABIERTA.add((o.cliente_codigo || '') + '|' + (o.producto_codigo || ''));
+  });
 
   const g = {};
   tarimas.forEach(t => {
@@ -21080,16 +21104,27 @@ function renderStockPTConsolidado() {
     if (!g[key]) g[key] = {
       producto_codigo: key, descripcion: t.descripcion || '', um: t.um || 'kg',
       planta: 0, mty: 0, mex: 0, totalCant: 0, totalKg: 0,
-      libreCant: 0, libreKg: 0, tarimas: 0
+      libreCant: 0, libreKg: 0, enOVCant: 0, porAsignarCant: 0, atoradoCant: 0, tarimas: 0
     };
     const c = Number(t.cantidad) || 0;
     const kg = Number(t.peso_neto_kg || t.peso_neto) || 0;
     const bucket = t.estatus === 'en_almacen_planta' ? 'planta' : (t.estatus === 'en_cedis_mty' ? 'mty' : 'mex');
     g[key][bucket] += c;
     g[key].totalCant += c; g[key].totalKg += kg; g[key].tarimas++;
-    // Libre = stock interno (cliente STOCK o sin cliente) y sin OV asignada
-    const libre = !t.ov_id && !t.ov_folio && (t.cliente_codigo === 'STOCK' || !t.cliente_codigo);
-    if (libre) { g[key].libreCant += c; g[key].libreKg += kg; }
+    const esStockLibre = (t.cliente_codigo === 'STOCK' || !t.cliente_codigo);
+    const tieneOV = !!(t.ov_id || t.ov_folio);
+    if (tieneOV) {
+      g[key].enOVCant += c;                          // ya asignada a una OV
+    } else if (esStockLibre) {
+      g[key].libreCant += c; g[key].libreKg += kg;   // stock interno vendible
+    } else {
+      // Material de CLIENTE sin OV asignada → pendiente de asignar
+      g[key].porAsignarCant += c;
+      // ¿Está atorado? = no hay ninguna OV abierta para ese cliente+producto
+      if (!OV_ABIERTA.has((t.cliente_codigo || '') + '|' + (t.producto_codigo || ''))) {
+        g[key].atoradoCant += c;
+      }
+    }
   });
 
   let filas = Object.values(g);
@@ -21100,6 +21135,7 @@ function renderStockPTConsolidado() {
   const totKg = filas.reduce((s, p) => s + p.totalKg, 0);
   const totLibreKg = filas.reduce((s, p) => s + p.libreKg, 0);
   const totTarimas = filas.reduce((s, p) => s + p.tarimas, 0);
+  const totAtorado = filas.reduce((s, p) => s + (p.atoradoCant || 0), 0);
 
   const celda = (cant, um) => cant > 0
     ? `<span style="font-weight:700;">${fmtNum(cant)}</span> <span style="font-size:10px;color:#94a3b8;">${UM_LABELS[(um||'kg').toLowerCase()] || um}</span>`
@@ -21111,8 +21147,11 @@ function renderStockPTConsolidado() {
         <span style="font-size:20px;">🔍</span>
         <input class="input" id="filtro-stock-pt" style="flex:1;padding:10px;font-size:14px;font-weight:600;" placeholder="Buscar producto por código o descripción..." value="${filtro}" autocomplete="off" />
       </div>
-      <div style="font-size:11.5px;color:#64748b;margin-top:8px;">
-        💡 <strong>Libre</strong> = stock interno de NewPack disponible para vender. <strong>Comprometido</strong> = ya asignado a una OV de cliente.
+      <div style="font-size:11.5px;color:#64748b;margin-top:8px;line-height:1.6;">
+        💡 <strong style="color:#166534;">🟢 Libre</strong> = stock interno vendible ·
+        <strong style="color:#1e40af;">🔵 En OV</strong> = ya asignado a una OV ·
+        <strong style="color:#b45309;">⏳ Por asignar</strong> = material de cliente sin OV (producido en parcialidad).
+        ${totAtorado > 0 ? `<br>⚠️ Hay material de cliente <strong>sin OV abierta</strong>; usa <strong>"➕ Generar OV"</strong> para poder asignarlo y enviarlo.` : ''}
       </div>
     </div>
 
@@ -21139,7 +21178,7 @@ function renderStockPTConsolidado() {
               <th style="padding:10px 12px;text-align:right;">📦 CEDIS-MTY</th>
               <th style="padding:10px 12px;text-align:right;">🇲🇽 CEDIS-MEX</th>
               <th style="padding:10px 12px;text-align:right;">Total</th>
-              <th style="padding:10px 12px;text-align:right;">🟢 Libre</th>
+              <th style="padding:10px 12px;text-align:left;">Estado</th>
               <th style="padding:10px 12px;text-align:right;">Kg</th>
             </tr>
           </thead>
@@ -21154,10 +21193,13 @@ function renderStockPTConsolidado() {
                 <td style="padding:10px 12px;text-align:right;">${celda(p.mty, p.um)}</td>
                 <td style="padding:10px 12px;text-align:right;">${celda(p.mex, p.um)}</td>
                 <td style="padding:10px 12px;text-align:right;background:#f8fafc;">${celda(p.totalCant, p.um)}</td>
-                <td style="padding:10px 12px;text-align:right;">
-                  ${p.libreCant > 0
-                    ? `<span style="font-weight:800;color:#166534;background:#dcfce7;padding:2px 8px;border-radius:6px;">${fmtNum(p.libreCant)}</span>`
-                    : `<span style="font-size:10px;color:#dc2626;">comprometido</span>`}
+                <td style="padding:10px 12px;">
+                  <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+                    ${p.libreCant > 0 ? `<span style="font-size:10.5px;font-weight:800;color:#166534;background:#dcfce7;padding:2px 8px;border-radius:6px;">🟢 ${fmtNum(p.libreCant)} libre</span>` : ''}
+                    ${p.enOVCant > 0 ? `<span style="font-size:10.5px;font-weight:700;color:#1e40af;background:#dbeafe;padding:2px 8px;border-radius:6px;">🔵 ${fmtNum(p.enOVCant)} en OV</span>` : ''}
+                    ${p.porAsignarCant > 0 ? `<span style="font-size:10.5px;font-weight:700;color:#b45309;background:#fef3c7;padding:2px 8px;border-radius:6px;">⏳ ${fmtNum(p.porAsignarCant)} por asignar</span>` : ''}
+                    ${p.atoradoCant > 0 && puedeGenerarOV ? `<button onclick="generarOVsPendientesProducto('${p.producto_codigo}')" style="font-size:10px;font-weight:800;color:#fff;background:#b45309;border:none;padding:4px 9px;border-radius:6px;cursor:pointer;">➕ Generar OV</button>` : ''}
+                  </div>
                 </td>
                 <td style="padding:10px 12px;text-align:right;font-size:11px;color:#64748b;">${fmtNum(Math.round(p.totalKg))}</td>
               </tr>
@@ -21168,6 +21210,67 @@ function renderStockPTConsolidado() {
     `}
   `;
 }
+
+// 🆕 Genera OV(s) de saldo (pendiente_asignar) para material de cliente que quedó SIN OV abierta
+//    (típico tras entregar una parcialidad y seguir produciendo). Agrupa por PI+cliente.
+window.generarOVsPendientesProducto = async (prodCod) => {
+  const ESTATUS_STOCK = ['en_almacen_planta', 'en_cedis_mty', 'en_cedis_mex'];
+  const ESTADOS_OV_ABIERTA = ['esperando_produccion', 'pendiente_asignar', 'preparando', 'lista_embarcar', 'por_cargar'];
+  const OV_ABIERTA = new Set();
+  (state.ordenes_venta || []).forEach(o => {
+    if (ESTADOS_OV_ABIERTA.includes(o.estatus)) OV_ABIERTA.add((o.cliente_codigo || '') + '|' + (o.producto_codigo || ''));
+  });
+  const cand = (state.tarimas || []).filter(t =>
+    t.activo !== false && ESTATUS_STOCK.includes(t.estatus) &&
+    t.producto_codigo === prodCod && !t.ov_id && !t.ov_folio &&
+    t.cliente_codigo && t.cliente_codigo !== 'STOCK' &&
+    !OV_ABIERTA.has((t.cliente_codigo || '') + '|' + (t.producto_codigo || ''))
+  );
+  if (!cand.length) { toast('No hay material de cliente pendiente sin OV para este producto', 'info'); return; }
+  // Agrupar por (pedido, cliente)
+  const groups = {};
+  cand.forEach(t => {
+    const k = (t.pedido_folio || '') + '|' + (t.cliente_codigo || '');
+    if (!groups[k]) groups[k] = { t0: t, tarimas: [] };
+    groups[k].tarimas.push(t);
+  });
+  const arr = Object.values(groups);
+  const resumen = arr.map(gr => {
+    const cant = gr.tarimas.reduce((s, x) => s + (Number(x.cantidad) || 0), 0);
+    return `• ${gr.t0.cliente_nombre} · ${gr.t0.pedido_folio || 's/PI'} · ${fmtCantidadUM(cant, gr.t0.um)}`;
+  }).join('\n');
+  if (!confirm(`Se crearán ${arr.length} OV(s) en "Por asignar tarimas" para poder asignar y enviar este material:\n\n${resumen}\n\nLuego ve a Embarques para asignar las tarimas.\n\n¿Continuar?`)) return;
+  state.loadingAccion = true; render();
+  try {
+    let creadas = 0;
+    for (const gr of arr) {
+      const t0 = gr.t0;
+      const cant = gr.tarimas.reduce((s, x) => s + (Number(x.cantidad) || 0), 0);
+      const num = await siguienteFolio('ov');
+      const folio = 'OV-' + String(num).padStart(5, '0');
+      await addDoc(collection(db, 'ordenes_venta'), {
+        folio,
+        pedido_id: t0.pedido_id || '', pedido_folio: t0.pedido_folio || '',
+        cliente_codigo: t0.cliente_codigo, cliente_nombre: t0.cliente_nombre,
+        cedis: t0.cedis_destino || (t0.estatus === 'en_cedis_mex' ? 'CEDIS-MEX' : 'CEDIS-MTY'),
+        producto_codigo: t0.producto_codigo, descripcion: t0.descripcion,
+        cantidad_solicitada: cant, cantidad_enviada: 0, cantidad: cant, um: t0.um || 'kg',
+        tipo_origen: 'producir',
+        es_ov_saldo: true, generada_desde_stock: true,
+        odp_folio: t0.odp_folio || '', odp_id: t0.odp_id || '',
+        estatus: 'pendiente_asignar', tarimas_ids: [],
+        observaciones: `OV generada desde Stock para asignar material pendiente de ${t0.pedido_folio || '—'}`,
+        created_at: serverTimestamp(), updated_at: serverTimestamp()
+      });
+      creadas++;
+    }
+    toast(`✅ ${creadas} OV(s) creadas en "Por asignar tarimas". Ve a Embarques para asignar el material.`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
 
 function renderStockProducto() {
   const filtro = (state.filtros.stock_producto || '').toLowerCase();
@@ -38492,10 +38595,53 @@ window.confirmarCargaOV = async (ovId) => {
   }
 };
 
+// 🆕 HELPER: genera una OV de SALDO si la entrega de `ov` fue parcial (y no existe ya).
+//    Se usa en TODAS las rutas de entrega (Embarques y Logística/Rutas) para que el
+//    pedido nunca quede "cerrado" con material faltante por producir/entregar.
+window.generarSaldoOVEntrega = async (ov) => {
+  if (!ov) return null;
+  const cantSol = Number(ov.cantidad_solicitada) || 0;
+  const cantEnv = Number(ov.cantidad_enviada) || 0;
+  const saldo = Math.round((cantSol - cantEnv) * 100) / 100;
+  const esParcial = cantSol > 0 && saldo > cantSol * 0.02;   // tolerancia 2%
+  if (!esParcial) return null;
+  // No duplicar: si ya hay una OV de saldo de esta OV, no crear otra
+  if ((state.ordenes_venta || []).some(o => o.es_ov_saldo && o.ov_origen_id === ov.id)) return null;
+  try {
+    const numOVs = await siguienteFolio('ov');
+    const folioOVSaldo = 'OV-' + String(numOVs).padStart(5, '0');
+    await addDoc(collection(db, 'ordenes_venta'), {
+      folio: folioOVSaldo,
+      pedido_id: ov.pedido_id || '', pedido_folio: ov.pedido_folio || '',
+      pedido_linea_id: ov.pedido_linea_id || '',
+      cliente_codigo: ov.cliente_codigo, cliente_nombre: ov.cliente_nombre,
+      cedis: ov.cedis || 'CEDIS-MTY',
+      producto_codigo: ov.producto_codigo, descripcion: ov.descripcion,
+      cantidad_solicitada: saldo, cantidad_enviada: 0, cantidad: saldo, um: ov.um,
+      tipo_origen: ov.tipo_origen || 'producir',
+      es_ov_saldo: true, ov_origen_folio: ov.folio, ov_origen_id: ov.id,
+      odp_folio: ov.odp_folio || '', odp_id: ov.odp_id || '',
+      estatus: 'pendiente_asignar', tarimas_ids: [],
+      fecha_entrega_solicitada: ov.fecha_entrega_solicitada || null,
+      observaciones: `⚠ OV de SALDO por entrega parcial de ${ov.folio} (entregado ${fmtCantidadUM(cantEnv, ov.um)} de ${fmtCantidadUM(cantSol, ov.um)})`,
+      created_at: serverTimestamp(), updated_at: serverTimestamp()
+    });
+    const deptoCedisS = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
+    for (const d of ['CS', 'KAM', deptoCedisS]) {
+      await addDoc(collection(db, 'notificaciones'), {
+        titulo: `🔁 OV de SALDO generada ${folioOVSaldo}`,
+        mensaje: `${ov.cliente_nombre} · ${ov.producto_codigo} · ${fmtCantidadUM(saldo, ov.um)} pendientes de ${ov.folio}`,
+        depto_destino: d, tipo: 'warning', folio_ref: folioOVSaldo, created_at: serverTimestamp()
+      });
+    }
+    return folioOVSaldo;
+  } catch (e) { console.error('generarSaldoOVEntrega:', e); return null; }
+};
+
 window.marcarOVEntregada = async (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
   if (!ov) return;
-  
+
   // 🆕 EMBARQUE PARCIAL — detectar saldo pendiente
   const cantSol = Number(ov.cantidad_solicitada) || 0;
   const cantEnv = Number(ov.cantidad_enviada) || 0;
