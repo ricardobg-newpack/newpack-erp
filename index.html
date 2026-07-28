@@ -3923,7 +3923,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2a-stockview</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2b-tomaparcial</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -38033,7 +38033,7 @@ window.migrarOVsLegacy = async () => {
 window.abrirAsignarTarimasOV = (ovId) => {
   state.modal = 'asignar-tarimas-ov';
   state.modalData = ovId;
-  state.formAsignarOV = { tarimas_seleccionadas: [] };
+  state.formAsignarOV = { tarimas_seleccionadas: [], cantidades: {} }; // 🆕 cantidades = toma parcial por tarima
   render();
 };
 
@@ -38055,17 +38055,39 @@ window.confirmarAsignarTarimasOV = async () => {
     return;
   }
   
-  const totalAsignado = tarimasSel.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+  // 🆕 TOMA PARCIAL: cuánto se toma de cada tarima (default = tarima completa)
+  const cantidades = f.cantidades || {};
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const tomas = tarimasSel.map(t => {
+    const full = Number(t.cantidad) || 0;
+    const raw = Number(cantidades[t.id]);
+    const take = (raw > 0) ? raw : full;
+    return { t, full, take: round2(take) };
+  });
+  // Validaciones de la toma
+  for (const x of tomas) {
+    if (!(x.take > 0)) { toast(`La cantidad a tomar de ${x.t.codigo} debe ser mayor a 0`, 'error'); return; }
+    if (x.take > x.full + 0.001) {
+      toast(`No puedes tomar ${fmtCantidadUM(x.take, x.t.um)} de ${x.t.codigo}: solo tiene ${fmtCantidadUM(x.full, x.t.um)}`, 'error'); return;
+    }
+    const umLow = (x.t.um || 'kg').toLowerCase();
+    if (UM_ENTEROS.includes(umLow) && !Number.isInteger(x.take)) {
+      toast(`La tarima ${x.t.codigo} se mide en ${UM_LABELS[umLow]}: usa cantidades enteras`, 'error'); return;
+    }
+  }
+
+  const totalAsignado = round2(tomas.reduce((s, x) => s + x.take, 0));
   const cantSol = Number(ov.cantidad_solicitada) || 0;
-  
+  const numSplits = tomas.filter(x => x.take < x.full - 0.001).length;
+
   if (totalAsignado > cantSol * 1.05) {
     if (!confirm(`Estás asignando ${fmtCantidadUM(totalAsignado, ov.um)} pero el cliente solicitó ${fmtCantidadUM(cantSol, ov.um)}.\n\n¿Continuar de todos modos?`)) return;
   }
-  
+
   // 🆕 Aviso de EMBARQUE PARCIAL (asignando menos del 98% de lo solicitado)
   const esParcialAsig = cantSol > 0 && totalAsignado < cantSol * 0.98;
   if (esParcialAsig) {
-    const saldo = cantSol - totalAsignado;
+    const saldo = round2(cantSol - totalAsignado);
     if (!confirm(
       `⚠ EMBARQUE PARCIAL\n\n` +
       `Solicitado: ${fmtCantidadUM(cantSol, ov.um)}\n` +
@@ -38074,41 +38096,95 @@ window.confirmarAsignarTarimasOV = async () => {
       `Al marcar esta OV como entregada, el sistema te ofrecerá generar una OV de saldo por lo pendiente.\n\n¿Continuar con el parcial?`
     )) return;
   }
-  
+  if (numSplits > 0) {
+    if (!confirm(`✂️ ${numSplits} tarima(s) se van a PARTIR (tomas una parte y el resto queda en stock como tarima remanente del mismo lote).\n\n¿Continuar?`)) return;
+  }
+
   state.loadingAccion = true; render();
   try {
     const batch = writeBatch(db);
-    // 1. Update OV
+    const tarimasIdsFinal = [];
+    for (const { t, full, take } of tomas) {
+      const esParcial = take < full - 0.001;
+      if (!esParcial) {
+        // Asignación de tarima COMPLETA
+        batch.update(doc(db, 'tarimas', t.id), {
+          ov_id: ov.id, ov_folio: ov.folio,
+          asignada_ov_at: serverTimestamp(), updated_at: serverTimestamp()
+        });
+        tarimasIdsFinal.push(t.id);
+      } else {
+        // SPLIT: la original queda con lo tomado (asignada) + se crea remanente en stock
+        const prop = full > 0 ? take / full : 1;
+        const pNeto = Number(t.peso_neto_kg || t.peso_neto) || 0;
+        const pBruto = Number(t.peso_bruto) || 0;
+        const pVacia = Number(t.peso_tarima_vacia) || 0;
+        const cont = Number(t.contenido_por_paquete) || 0;
+        const paqOrig = Number(t.paquetes) || 0;
+        const takeNeto = round2(pNeto * prop);
+        const takeBruto = round2(pBruto * prop);
+        const takeVacia = round2(pVacia * prop);
+        const takePaq = cont > 0 ? Math.round(take / cont) : Math.round(paqOrig * prop);
+        const remCant = round2(full - take);
+        const remNeto = round2(pNeto - takeNeto);
+        const remBruto = round2(pBruto - takeBruto);
+        const remVacia = round2(pVacia - takeVacia);
+        const remPaq = Math.max(0, paqOrig - takePaq);
+        const remCodigo = `${t.codigo}-R${String(Date.now()).slice(-4)}`;
+        const qrRem = JSON.stringify({ tarima: remCodigo, lote: t.lote_codigo, odp: t.odp_folio, pkl: t.packing_list, producto: t.producto_codigo, cliente: t.cliente_codigo, cantidad: remCant, um: t.um, peso_neto: remNeto, parcial: true });
+        const qrOrig = JSON.stringify({ tarima: t.codigo, lote: t.lote_codigo, odp: t.odp_folio, pkl: t.packing_list, producto: t.producto_codigo, cliente: t.cliente_codigo, cantidad: take, um: t.um, peso_neto: takeNeto, parcial: true });
+        // Tarima REMANENTE (nueva, queda libre en stock — mismo lote/certificado)
+        const remRef = doc(collection(db, 'tarimas'));
+        const { id: _omitId, ...tClon } = t;
+        batch.set(remRef, {
+          ...tClon,
+          codigo: remCodigo,
+          cantidad: remCant, cantidad_disponible: remCant,
+          peso_neto: remNeto, peso_neto_kg: remNeto,
+          peso_bruto: remBruto, peso_tarima_vacia: remVacia,
+          paquetes: remPaq,
+          qr_data: qrRem,
+          ov_id: '', ov_folio: '',
+          es_remanente_split: true, split_de: t.codigo, split_at: serverTimestamp(),
+          created_at: serverTimestamp(), updated_at: serverTimestamp()
+        });
+        // Tarima ORIGINAL = porción tomada, asignada a la OV
+        batch.update(doc(db, 'tarimas', t.id), {
+          cantidad: take, cantidad_disponible: take,
+          peso_neto: takeNeto, peso_neto_kg: takeNeto,
+          peso_bruto: takeBruto, peso_tarima_vacia: takeVacia,
+          paquetes: takePaq,
+          qr_data: qrOrig,
+          ov_id: ov.id, ov_folio: ov.folio,
+          es_split_parcial: true, split_remanente_codigo: remCodigo,
+          asignada_ov_at: serverTimestamp(), updated_at: serverTimestamp()
+        });
+        tarimasIdsFinal.push(t.id);
+      }
+    }
+    // Update OV
     batch.update(doc(db, 'ordenes_venta', ov.id), {
       estatus: 'preparando',
-      tarimas_ids: f.tarimas_seleccionadas,
+      tarimas_ids: tarimasIdsFinal,
       cantidad_enviada: totalAsignado,
       asignada_at: serverTimestamp(),
       asignada_por: state.user.id,
       asignada_por_nombre: state.user.nombre,
       updated_at: serverTimestamp()
     });
-    // 2. Update tarimas
-    tarimasSel.forEach(t => {
-      batch.update(doc(db, 'tarimas', t.id), {
-        ov_id: ov.id, ov_folio: ov.folio,
-        asignada_ov_at: serverTimestamp(),
-        updated_at: serverTimestamp()
-      });
-    });
-    // 3. Notificar a CEDIS
+    // Notificar a CEDIS
     const deptoCedis = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
     batch.set(doc(collection(db, 'notificaciones')), {
       titulo: `📋 Tarimas asignadas a ${ov.folio}`,
-      mensaje: `${tarimasSel.length} tarima(s) · ${fmtCantidadUM(totalAsignado, ov.um)} · ${ov.cliente_nombre} · Preparar para embarque`,
+      mensaje: `${tarimasIdsFinal.length} tarima(s) · ${fmtCantidadUM(totalAsignado, ov.um)} · ${ov.cliente_nombre} · Preparar para embarque`,
       depto_destino: deptoCedis, tipo: 'info', folio_ref: ov.folio,
       created_at: serverTimestamp()
     });
     await batch.commit();
-    
+
     state.formAsignarOV = null;
     state.modal = null;
-    toast(`✅ ${ov.folio}: ${tarimasSel.length} tarima(s) asignadas. CEDIS notificado.`);
+    toast(`✅ ${ov.folio}: ${tarimasIdsFinal.length} tarima(s) asignadas${numSplits > 0 ? ` · ${numSplits} partida(s), remanente a stock` : ''}. CEDIS notificado.`);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
@@ -38117,11 +38193,53 @@ window.confirmarAsignarTarimasOV = async () => {
 };
 
 window.asignarOVToggleTarima = (id) => {
-  if (!state.formAsignarOV) state.formAsignarOV = { tarimas_seleccionadas: [] };
-  const idx = state.formAsignarOV.tarimas_seleccionadas.indexOf(id);
-  if (idx >= 0) state.formAsignarOV.tarimas_seleccionadas.splice(idx, 1);
-  else state.formAsignarOV.tarimas_seleccionadas.push(id);
+  if (!state.formAsignarOV) state.formAsignarOV = { tarimas_seleccionadas: [], cantidades: {} };
+  if (!state.formAsignarOV.cantidades) state.formAsignarOV.cantidades = {};
+  const f = state.formAsignarOV;
+  const idx = f.tarimas_seleccionadas.indexOf(id);
+  if (idx >= 0) {
+    f.tarimas_seleccionadas.splice(idx, 1);
+    delete f.cantidades[id];
+  } else {
+    f.tarimas_seleccionadas.push(id);
+    // 🆕 Sugerir cantidad = lo que falta de la OV (tope = lo que hay en la tarima)
+    const ov = state.ordenes_venta.find(x => x.id === state.modalData);
+    const t = (state.tarimas || []).find(x => x.id === id);
+    if (ov && t) {
+      const cantSol = Number(ov.cantidad_solicitada) || 0;
+      const yaTomado = f.tarimas_seleccionadas
+        .filter(tid => tid !== id)
+        .reduce((s, tid) => {
+          const tt = (state.tarimas || []).find(x => x.id === tid);
+          const c = Number(f.cantidades[tid]); const full = Number(tt?.cantidad) || 0;
+          return s + (c > 0 ? Math.min(c, full) : full);
+        }, 0);
+      const falta = Math.max(0, cantSol - yaTomado);
+      const full = Number(t.cantidad) || 0;
+      const sugerido = falta > 0 ? Math.min(falta, full) : full;
+      f.cantidades[id] = sugerido;
+    }
+  }
   render();
+};
+
+// 🆕 Capturar cantidad parcial a tomar de una tarima (respeta UM: enteros para pza/rollo)
+window.asignarOVSetCantidad = (id, valor) => {
+  if (!state.formAsignarOV) return;
+  if (!state.formAsignarOV.cantidades) state.formAsignarOV.cantidades = {};
+  const t = (state.tarimas || []).find(x => x.id === id);
+  const umLow = (t?.um || 'kg').toLowerCase();
+  // Filtrado como el resto del sistema: enteros no aceptan punto decimal
+  let limpio = String(valor).replace(/[^0-9.]/g, '');
+  if (UM_ENTEROS.includes(umLow)) limpio = limpio.replace(/\./g, '');
+  // un solo punto decimal
+  const parts = limpio.split('.');
+  if (parts.length > 2) limpio = parts[0] + '.' + parts.slice(1).join('');
+  state.formAsignarOV.cantidades[id] = limpio;
+  // Re-render suave para actualizar totales sin perder foco del input
+  render();
+  const inp = document.getElementById(`asig-cant-${id}`);
+  if (inp) { inp.focus(); const p = inp.value.length; inp.setSelectionRange(p, p); }
 };
 
 window.marcarOVLista = async (ovId) => {
@@ -39161,8 +39279,18 @@ function modalAsignarTarimasOV() {
   });
   
   const seleccionadas = disponibles.filter(t => f.tarimas_seleccionadas.includes(t.id));
-  const totalAsignado = seleccionadas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
-  const totalKg = seleccionadas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+  // 🆕 Toma parcial: cantidad a tomar de cada tarima (default = tarima completa)
+  const tomaDe = (t) => {
+    const full = Number(t.cantidad) || 0;
+    const c = Number((f.cantidades || {})[t.id]);
+    return (c > 0) ? Math.min(c, full) : full;
+  };
+  const totalAsignado = seleccionadas.reduce((s, t) => s + tomaDe(t), 0);
+  const totalKg = seleccionadas.reduce((s, t) => {
+    const full = Number(t.cantidad) || 0;
+    const p = full > 0 ? tomaDe(t) / full : 1;
+    return s + (Number(t.peso_neto_kg || t.peso_neto) || 0) * p;
+  }, 0);
   const cantSol = Number(ov.cantidad_solicitada) || 0;
   const pendiente = Math.max(0, cantSol - totalAsignado);
   
@@ -39243,17 +39371,53 @@ function modalAsignarTarimasOV() {
                   </tr>
                 </thead>
                 <tbody>
-                  ${tarimas.map(t => `
-                    <tr style="border-top:1px solid #f1f5f9;${f.tarimas_seleccionadas.includes(t.id) ? 'background:#dcfce7;' : ''}">
-                      <td style="padding:8px;text-align:center;"><input type="checkbox" ${f.tarimas_seleccionadas.includes(t.id) ? 'checked' : ''} onchange="asignarOVToggleTarima('${t.id}')" style="width:16px;height:16px;cursor:pointer;" /></td>
+                  ${tarimas.map(t => {
+                    const sel = f.tarimas_seleccionadas.includes(t.id);
+                    const full = Number(t.cantidad) || 0;
+                    const umLow = (t.um || 'kg').toLowerCase();
+                    const cantAct = sel ? tomaDe(t) : full;
+                    const rawVal = (f.cantidades || {})[t.id];
+                    const inputVal = (rawVal !== undefined && rawVal !== null) ? rawVal : cantAct;
+                    const cont = Number(t.contenido_por_paquete) || 0;
+                    const pNeto = Number(t.peso_neto_kg || t.peso_neto) || 0;
+                    const prop = full > 0 ? cantAct / full : 1;
+                    const kgToma = pNeto * prop;
+                    const remanente = Math.max(0, full - cantAct);
+                    const esParcial = sel && remanente > 0.001;
+                    return `
+                    <tr style="border-top:1px solid #f1f5f9;${sel ? 'background:#dcfce7;' : ''}">
+                      <td style="padding:8px;text-align:center;"><input type="checkbox" ${sel ? 'checked' : ''} onchange="asignarOVToggleTarima('${t.id}')" style="width:16px;height:16px;cursor:pointer;" /></td>
                       <td style="padding:8px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</td>
                       <td style="padding:8px;" class="text-mono"><strong style="color:#3b82f6;">${t.pedido_folio || '—'}</strong></td>
                       <td style="padding:8px;" class="text-mono">${t.lote_codigo}</td>
                       <td style="padding:8px;" class="text-mono">${t.odp_folio || '—'}</td>
-                      <td style="padding:8px;text-align:right;font-weight:600;color:#1e40af;">${fmtCantidadUM(t.cantidad, t.um)}</td>
-                      <td style="padding:8px;text-align:right;">${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg</td>
+                      <td style="padding:8px;text-align:right;font-weight:600;color:#1e40af;">${fmtCantidadUM(full, t.um)}</td>
+                      <td style="padding:8px;text-align:right;">${fmtNum(pNeto)} kg</td>
                     </tr>
-                  `).join('')}
+                    ${sel ? `
+                    <tr style="background:#f0fdf4;">
+                      <td></td>
+                      <td colspan="6" style="padding:6px 8px 12px 8px;">
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                          <span style="font-size:11px;font-weight:700;color:#166534;">📦 Tomar de esta tarima:</span>
+                          <input id="asig-cant-${t.id}" type="text" inputmode="decimal" value="${inputVal}"
+                            oninput="asignarOVSetCantidad('${t.id}', this.value)"
+                            style="width:110px;padding:6px 8px;border:2px solid #16a34a;border-radius:6px;font-weight:700;text-align:right;font-size:13px;" />
+                          <span style="font-size:11px;color:#475569;font-weight:600;">${UM_LABELS[umLow] || t.um}</span>
+                          <span style="font-size:10.5px;color:#64748b;">${umLow !== 'kg' ? `≈ ${fmtNum(Math.round(kgToma))} kg` : ''}</span>
+                          <button type="button" onclick="asignarOVSetCantidad('${t.id}', '${full}')" style="font-size:10px;padding:4px 8px;background:#e2e8f0;border:none;border-radius:5px;cursor:pointer;font-weight:700;color:#475569;">Toda (${fmtNum(full)})</button>
+                        </div>
+                        ${esParcial ? `
+                          <div style="font-size:11px;color:#92400e;background:#fef3c7;border-radius:6px;padding:5px 9px;margin-top:6px;display:inline-block;">
+                            ✂️ Toma parcial: quedan <strong>${fmtCantidadUM(remanente, t.um)}</strong> en stock como tarima remanente (mismo lote ${t.lote_codigo}).
+                          </div>
+                        ` : ''}
+                        ${cantAct > full + 0.001 ? `<div style="font-size:11px;color:#dc2626;font-weight:700;margin-top:6px;">⚠ No puedes tomar más de ${fmtCantidadUM(full, t.um)} (lo que tiene la tarima).</div>` : ''}
+                      </td>
+                    </tr>
+                    ` : ''}
+                    `;
+                  }).join('')}
                 </tbody>
               </table>
             </div>
