@@ -3912,7 +3912,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0711-libparcialfix3</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B1-odpov-jefecostos</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4272,6 +4272,15 @@ window.esJefeODireccion = () => {
 window.esDireccion = () => {
   const u = state.user || {};
   return u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin';
+};
+// 💰 POLÍTICA ÚNICA DE COSTOS ($): CEO/ADMIN/COMP + el JEFE de Planeación (para planear).
+//    Planeación NO-jefe ve cantidades pero NO costos. Fuente de verdad única (A3).
+window.puedeVerCostosInv = (u) => {
+  u = u || state.user || {};
+  if (u.rol === 'admin') return true;
+  if (['CEO', 'ADMIN', 'COMP'].includes(u.depto)) return true;
+  if (u.depto === 'PLN' && u.es_jefe === true) return true;  // solo el jefe de planeación
+  return false;
 };
 
 // KPIs de PRODUCCIÓN (depto PRO) — análisis profundo
@@ -6283,8 +6292,8 @@ function renderInventarioMTTO() {
     return min > 0 && stock <= min;
   }).length;
   const sinStock = productos.filter(p => (Number(p.stock_actual) || 0) <= 0).length;
-  // Valor de inventario (solo PLN/COMP/CEO/ADMIN ven costos)
-  const puedeVerCostos = ['PLN','COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  // Valor de inventario — política única (CEO/ADMIN/COMP + jefe de PLN)
+  const puedeVerCostos = window.puedeVerCostosInv(u);
   const valorInventario = productos.reduce((s, p) => {
     return s + ((Number(p.stock_actual) || 0) * (Number(p.costo_promedio) || 0));
   }, 0);
@@ -6759,7 +6768,7 @@ function renderInventarioGenerico(config) {
   const esCEO = u.depto === 'CEO' || u.rol === 'admin' || u.depto === 'ADMIN';
   const puedeSalida = config.deptos_salida.includes(u.depto) || esCEO;
   const puedeAjuste = esCEO;
-  const puedeVerCostos = ['PLN','COMP','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
+  const puedeVerCostos = window.puedeVerCostosInv(u);
 
   // Tab actual: almacén o 'movs'
   const tabKey = `inventario_${config.state_key}`;
@@ -12238,7 +12247,12 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
       //    seguimiento (En planta/CEDIS/Entregado) refleje que ya salieron. Antes solo se
       //    actualizaba la OV y las tarimas quedaban en su estatus previo → "en planta" falso.
       const ovObj = (state.ordenes_venta||[]).find(o => o.id === parada.ov_id);
-      const tarimasIds = (ovObj?.tarimas_ids || parada.tarimas_ids || []);
+      let tarimasIds = (ovObj?.tarimas_ids || parada.tarimas_ids || []);
+      // 🔧 FIX TRAZABILIDAD A1: si la OV no tiene tarimas_ids, cae al vínculo tarima.ov_id
+      //    (mismo fallback que usa la programación). Antes quedaban en "en planta" falso.
+      if (!tarimasIds.length && parada.ov_id) {
+        tarimasIds = (state.tarimas||[]).filter(t => t.ov_id === parada.ov_id).map(t => t.id);
+      }
       if (tarimasIds.length) {
         const bt = writeBatch(db);
         tarimasIds.forEach(tid => {
@@ -12311,7 +12325,11 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
           const ovLocal = (state.ordenes_venta||[]).find(o => o.id === p.ov_id);
           if (ovLocal) ovLocal.estatus = 'entregada';
           // 🔧 FIX TRAZABILIDAD: marcar las tarimas de esta OV como 'entregada'
-          const tarimasIds = (ovLocal?.tarimas_ids || p.tarimas_ids || []);
+          let tarimasIds = (ovLocal?.tarimas_ids || p.tarimas_ids || []);
+          // 🔧 FIX TRAZABILIDAD A1: fallback a tarima.ov_id si la OV no lista tarimas_ids
+          if (!tarimasIds.length && p.ov_id) {
+            tarimasIds = (state.tarimas||[]).filter(t => t.ov_id === p.ov_id).map(t => t.id);
+          }
           tarimasIds.forEach(tid => {
             _btTar.update(doc(db, 'tarimas', tid), { estatus: 'entregada', entregada_at: serverTimestamp() });
             const tl = (state.tarimas||[]).find(t => t.id === tid);
@@ -23819,6 +23837,7 @@ function modalUsuario(esEdicion) {
       depto: usr.depto || '',
       ubicacion: usr.ubicacion || '',
       rol: usr.rol || 'usuario',
+      es_jefe: usr.es_jefe === true,
       proceso_asignado: usr.proceso_asignado || '',
       grupo_turno: usr.grupo_turno || '',
       // 🆕 Si el email termina en @newpack.local es un operador (login con código)
@@ -23832,6 +23851,7 @@ function modalUsuario(esEdicion) {
       depto: '',
       ubicacion: '',
       rol: 'usuario',
+      es_jefe: false,
       proceso_asignado: '',
       grupo_turno: '',
       // 🆕 Campos para operadores sin correo
@@ -23982,7 +24002,27 @@ function modalUsuario(esEdicion) {
               </button>
             </div>
           </div>
-          
+
+          <!-- 🆕 Jefe de área: habilita dashboard de jefe y, en Planeación, ver costos ($) para planear -->
+          <div class="field">
+            <label class="field-label">¿Es jefe de área?</label>
+            <div style="display:flex;gap:8px;">
+              <button type="button" onclick="window.modalFormSet('es_jefe', false)" style="flex:1;padding:12px;border:2px solid ${!f.es_jefe ? '#64748b' : '#cbd5e1'};background:${!f.es_jefe ? '#64748b' : '#fff'};color:${!f.es_jefe ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:13px;cursor:pointer;">
+                No
+              </button>
+              <button type="button" onclick="window.modalFormSet('es_jefe', true)" style="flex:1;padding:12px;border:2px solid ${f.es_jefe ? '#0891b2' : '#cbd5e1'};background:${f.es_jefe ? '#0891b2' : '#fff'};color:${f.es_jefe ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:13px;cursor:pointer;">
+                👔 Sí, es jefe
+              </button>
+            </div>
+            <div style="font-size:10.5px;color:#64748b;margin-top:5px;">
+              ${f.es_jefe
+                ? (f.depto === 'PLN'
+                    ? '👔 Jefe de Planeación: verá el dashboard de jefe y los <strong>costos ($)</strong> para planear.'
+                    : '👔 Verá el dashboard de jefe de su área. Los costos ($) siguen restringidos a CEO/ADMIN/COMP.')
+                : 'Un usuario normal ve solo el panel operativo de su depto (sin costos, salvo COMP/CEO/ADMIN).'}
+            </div>
+          </div>
+
         </div>
         <div style="padding:16px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
           <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
@@ -24463,6 +24503,7 @@ window.crearUsuarioNuevo = async () => {
         depto: depto,
         ubicacion: ubicacion,
         rol: rol,
+        es_jefe: state.modalForm?.es_jefe === true,   // 🆕 jefe de área (dashboard + costos si PLN)
         proceso_asignado: procesoAsignado,
         grupo_turno: grupoTurno,
         // 🆕 Marca de operador sin correo (para diferenciar en UI)
@@ -24556,6 +24597,7 @@ window.actualizarUsuario = async (id) => {
   try {
     await updateDoc(doc(db, 'usuarios', id), {
       nombre, telefono, depto, ubicacion, rol,
+      es_jefe: state.modalForm?.es_jefe === true,   // 🆕 jefe de área
       proceso_asignado: procesoAsignado,
       grupo_turno: grupoTurno,
       updated_at: serverTimestamp()
@@ -30489,7 +30531,8 @@ window.cerrarKardexMP = () => {
 
 function renderKardexMP(mpCodigo) {
   const u = state.user || {};
-  const puedeVerCostos = ['PLN', 'COMP', 'CEO', 'ADMIN'].includes(u.depto) || u.rol === 'admin';
+  // 🔒 FIX POLÍTICA A3: costos vía helper único (CEO/ADMIN/COMP + jefe de PLN).
+  const puedeVerCostos = window.puedeVerCostosInv(u);
   
   const mp = (state.materias_primas || []).find(m => m.codigo === mpCodigo);
   if (!mp) {
@@ -45847,7 +45890,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
         if (!esStockInterno) {
           const numOV = await siguienteFolio('ov');
           const folioOVprod = 'OV-' + String(numOV).padStart(5, '0');
-          await addDoc(collection(db, 'ordenes_venta'), {
+          const ovRefProd = await addDoc(collection(db, 'ordenes_venta'), {
             folio: folioOVprod, pedido_id: pedidoId, pedido_folio: pedido.folio,
             cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
             cedis: pedido.cedis_asignado || 'CEDIS-MTY',
@@ -45858,6 +45901,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
             um: l.um,
             tipo_origen: 'producir',
             odp_folio: folioODP1,
+            odp_id: ref1.id,              // 🔗 FIX TRAZABILIDAD C1 — vínculo OV→ODP por id
             pedido_linea_id: l.id || '',  // 🆕 F1 — Vínculo a línea
             estatus: 'esperando_produccion',
             tarimas_ids: [],
@@ -45867,6 +45911,8 @@ window.aprobarPedido = async (pedidoId, folio) => {
             updated_at: serverTimestamp()
           });
           ovs.push(folioOVprod);
+          // 🔗 FIX TRAZABILIDAD C1 — back-ref ODP→OV (antes la ODP nunca guardaba ov_id/ov_folio)
+          await updateDoc(ref1, { ov_id: ovRefProd.id, ov_folio: folioOVprod });
         }
       }
     }
@@ -47165,6 +47211,25 @@ window.diagnosticarModeloFlujo = () => {
 //    Calidad las ve como alerta y jala el material DISPONIBLE (lo registrado).
 // ============================================================
 
+// 🔗 FIX TRAZABILIDAD C1: resolver la OV de una ODP de forma robusta.
+//   La OV siempre guarda odp_folio; la ODP (nueva) guarda ov_id/ov_folio.
+//   Para datos viejos / ODP de faltante, se resuelve por pedido_linea_id.
+//   Devuelve el objeto OV o null. NUNCA regresa una OV de stock interno.
+window.ovDeODP = (odp) => {
+  if (!odp) return null;
+  const ovs = state.ordenes_venta || [];
+  if (odp.ov_id) { const x = ovs.find(o => o.id === odp.ov_id); if (x) return x; }
+  if (odp.ov_folio) { const x = ovs.find(o => o.folio === odp.ov_folio); if (x) return x; }
+  // La OV de "producir" guarda odp_folio apuntando a esta ODP
+  let x = ovs.find(o => o.odp_folio && o.odp_folio === odp.folio); if (x) return x;
+  // ODP de faltante / datos viejos: misma línea de pedido, OV de producir
+  if (odp.pedido_linea_id) {
+    x = ovs.find(o => o.pedido_linea_id === odp.pedido_linea_id && o.tipo_origen === 'producir');
+    if (x) return x;
+  }
+  return null;
+};
+
 // Helper: kg REGISTRADOS y disponibles para jalar de una ODP en su proceso final.
 //   Disponible = lo registrado − lo que ya salió (parciales/tarimas previas).
 window.kgDisponibleParaJalar = (odp) => {
@@ -47436,11 +47501,13 @@ window.crearSolicitudUrgente = async (odpId) => {
   
   state.loadingAccion = true; render();
   try {
+    const _ovSU = window.ovDeODP(odp);   // 🔗 FIX TRAZABILIDAD C1
     await addDoc(collection(db, 'solicitudes_urgentes'), {
       odp_id: odpId,
       odp_folio: odp.folio,
       pedido_id: odp.pedido_id || '',
-      ov_id: odp.ov_id || '',
+      ov_id: odp.ov_id || (_ovSU && _ovSU.id) || '',
+      ov_folio: odp.ov_folio || (_ovSU && _ovSU.folio) || '',
       cliente_codigo: odp.cliente_codigo || '',
       cliente_nombre: odp.cliente_nombre || '',
       producto_codigo: odp.producto_codigo || '',
@@ -47568,11 +47635,13 @@ window.enviarParcial = async (odpId, modo = 'seguir') => {
   try {
     // 1) Registrar la salida parcial (historial visible para comercial)
     const numSalida = (Number(odp.num_salidas_parciales) || 0) + 1;
+    const _ovSP = window.ovDeODP(odp);   // 🔗 FIX TRAZABILIDAD C1
     await addDoc(collection(db, 'salidas_parciales'), {
       odp_id: odpId,
       odp_folio: odp.folio,
       pedido_id: odp.pedido_id || '',
-      ov_id: odp.ov_id || '',
+      ov_id: odp.ov_id || (_ovSP && _ovSP.id) || '',
+      ov_folio: odp.ov_folio || (_ovSP && _ovSP.folio) || '',
       cliente_codigo: odp.cliente_codigo || '',
       cliente_nombre: odp.cliente_nombre || '',
       producto_codigo: odp.producto_codigo || '',
