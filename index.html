@@ -387,15 +387,19 @@ function calcularEstadoRealPedido(pedido, odps) {
     return 'cancelado'; // todas canceladas/rechazadas
   }
 
-  // 🔧 FIX BUG A (defensa en profundidad): una ODP cuyas tarimas YA están todas entregadas
-  //    cuenta como entregada aunque su campo `estatus` se haya quedado atrás (datos viejos).
+  // 🔧 FIX BUG A (defensa en profundidad): el estatus EFECTIVO de una ODP es el más
+  //    avanzado entre su campo guardado y lo que digan sus tarimas reales (nunca retrocede).
+  //    Ej: campo dice "liberada_empaque" pero las tarimas están en CEDIS/entregadas →
+  //    clasifica En CEDIS / Entregado, no "Logística planta".
+  const _RANK_EFF = { liberada_empaque: 0, pendiente_almacen: 0, en_almacen_planta: 1, en_transito_cedis: 1.5, en_transito_cedis_mty: 2, en_cedis_mty: 3, en_transito_cedis_mex: 4, en_cedis_mex: 5, embarcada: 6, entregada: 7, completada: 7, liberada: 7 };
   const _estatusEfectivo = (o) => {
-    if (ODP_ESTATUS.TERMINAL_OK.includes(o.estatus)) return o.estatus;
+    let est = o.estatus;
     try {
       const porTarimas = window.calcularEstatusODPPorTarimas(o.id);
-      if (porTarimas === 'entregada') return 'entregada';
+      // Solo promover si el estatus guardado ya es post-calidad (está en el mapa de rangos)
+      if (porTarimas && (_RANK_EFF[porTarimas] ?? -1) > (_RANK_EFF[est] ?? 99)) est = porTarimas;
     } catch (e) { /* sin datos de tarimas: se queda con el estatus guardado */ }
-    return o.estatus;
+    return est;
   };
 
   // Contar por categoría (usando el estatus EFECTIVO)
@@ -3986,7 +3990,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B11-seguimientofix</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0729-B12-fifoalmacen</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -5625,14 +5629,19 @@ window.confirmarTerminarOT = async () => {
       updated_at: serverTimestamp(),
     });
     // Descontar refacciones del inventario MTTO + registrar consumo ligado a máquina
+    // 🔧 FIX A4: (a) avisar si la refacción no está en inventario (antes se perdía en
+    //    silencio: la OT la listaba pero sin movimiento ni descuento); (b) el stock
+    //    nunca baja de 0 y se avisa cuando el consumo excede lo disponible.
+    const _refacSinInv = [], _refacNeg = [];
     for (const r of (ot.refacciones || [])) {
       const prod = (state.productos_mtto || []).find(p => p.codigo === r.codigo);
-      if (!prod) continue;
+      if (!prod) { _refacSinInv.push(r.codigo || r.descripcion || '?'); continue; }
       const cant = Number(r.cantidad) || 0;
       if (cant <= 0) continue;
       const stockActual = Number(prod.stock_actual) || 0;
+      if (cant > stockActual) _refacNeg.push(`${prod.codigo} (stock ${fmtNum(stockActual)}, usado ${fmtNum(cant)})`);
       batch.update(doc(db, 'productos_mtto', prod.id), {
-        stock_actual: stockActual - cant,
+        stock_actual: Math.max(0, stockActual - cant),
         updated_at: serverTimestamp(),
       });
       // Movimiento de salida ligado a la máquina y a la OT (trazabilidad)
@@ -5647,7 +5656,7 @@ window.confirmarTerminarOT = async () => {
         ot_folio: ot.folio,
         motivo: `OT ${ot.folio} · ${ot.titulo}`,
         stock_anterior: stockActual,
-        stock_resultante: stockActual - cant,
+        stock_resultante: Math.max(0, stockActual - cant),
         costo_unitario: Number(prod.costo_promedio) || 0,
         origen: 'orden_trabajo',
         created_at: serverTimestamp(),
@@ -5689,6 +5698,9 @@ window.confirmarTerminarOT = async () => {
     await batch.commit();
     state.modal = null; state.modalForm = {};
     toast('✅ Orden de trabajo terminada', 'success');
+    // 🔧 FIX A4: avisos de inconsistencias en refacciones (antes pasaban en silencio)
+    if (_refacSinInv.length) toast(`⚠ ${_refacSinInv.length} refacción(es) NO están en inventario y no se descontaron: ${_refacSinInv.join(', ')}. Dalas de alta en Productos MTTO.`, 'error');
+    if (_refacNeg.length) toast(`⚠ Consumo mayor al stock (quedó en 0): ${_refacNeg.join(' · ')}. Revisa el inventario MTTO.`, 'error');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
@@ -13101,14 +13113,19 @@ function _renderTimelineODP(odp) {
     'en_transito_cedis_mty', 'en_cedis_mty', 'en_cedis_mex', 'embarcada', 
     'entregada', 'completada', 'liberada'].includes(estatus);
   
-  // 🔧 FIX SEGUIMIENTO: si TODAS las tarimas ya están entregadas, la ODP está entregada
-  //    aunque su campo `estatus` se haya quedado atrás (datos viejos / entrega por otro camino).
-  let _entregadaPorTarimas = false;
-  try { _entregadaPorTarimas = window.calcularEstatusODPPorTarimas(odp.id) === 'entregada'; } catch (e) {}
-  const odpEntregada = ['entregada', 'completada'].includes(estatus) || _entregadaPorTarimas;
-  const odpEnLogistica = !odpEntregada && ['liberada_empaque', 'pendiente_almacen',
-    'en_almacen_planta', 'en_transito_cedis', 'en_transito_cedis_mty',
-    'en_cedis_mty', 'en_cedis_mex', 'embarcada'].includes(estatus);
+  // 🔧 FIX SEGUIMIENTO: usar el estatus EFECTIVO según las tarimas reales (el más avanzado,
+  //    nunca retrocede). Con 850 kg entregados y 160 kg en CEDIS, el badge debe decir
+  //    "En CEDIS", no "En logística/por entregar" (que sonaba a que seguía en planta).
+  const _RANK_TL = { liberada_empaque: 0, pendiente_almacen: 0, en_almacen_planta: 1, en_transito_cedis: 1.5, en_transito_cedis_mty: 2, en_cedis_mty: 3, en_transito_cedis_mex: 4, en_cedis_mex: 5, embarcada: 6, entregada: 7, completada: 7, liberada: 7 };
+  let estatusEff = estatus;
+  try {
+    const _pt = window.calcularEstatusODPPorTarimas(odp.id);
+    if (_pt && (_RANK_TL[_pt] ?? -1) > (_RANK_TL[estatusEff] ?? 99)) estatusEff = _pt;
+  } catch (e) {}
+  const odpEntregada = ['entregada', 'completada'].includes(estatusEff);
+  const odpEnCedis = !odpEntregada && ['en_cedis_mty', 'en_transito_cedis_mex', 'en_cedis_mex', 'embarcada'].includes(estatusEff);
+  const odpEnLogistica = !odpEntregada && !odpEnCedis && ['liberada_empaque', 'pendiente_almacen',
+    'en_almacen_planta', 'en_transito_cedis', 'en_transito_cedis_mty'].includes(estatusEff);
   const odpEnCalidad = estatus === 'pendiente_calidad';
   
   // Estado global de la ODP (badge superior)
@@ -13119,7 +13136,8 @@ function _renderTimelineODP(odp) {
     colorGlobal = '#dc2626'; 
   }
   else if (odpEntregada) { estadoGlobal = '✅ Entregada al cliente'; colorGlobal = '#15803d'; }
-  else if (odpEnLogistica) { estadoGlobal = '🚚 En logística / por entregar'; colorGlobal = '#0891b2'; }
+  else if (odpEnCedis) { estadoGlobal = '📦 En CEDIS · por entregar'; colorGlobal = '#7c3aed'; }
+  else if (odpEnLogistica) { estadoGlobal = '🚚 En logística planta'; colorGlobal = '#0891b2'; }
   else if (odpEnCalidad) { estadoGlobal = '🟡 Producida · esperando liberación de calidad'; colorGlobal = '#a16207'; }
   else if (procEst === 'en_proceso') {
     const procActual = getProc(ruta[procIdx]);
@@ -13288,6 +13306,8 @@ function _renderTimelineODP(odp) {
           let lblFinal, bgFinal, colFinal, icoFinal;
           if (odpEntregada) {
             lblFinal = 'Entregada'; icoFinal = '✅'; bgFinal = '#dcfce7'; colFinal = '#15803d';
+          } else if (odpEnCedis) {
+            lblFinal = 'En CEDIS'; icoFinal = '📦'; bgFinal = '#f3e8ff'; colFinal = '#7c3aed';
           } else if (odpEnLogistica) {
             lblFinal = 'En logística'; icoFinal = '🚚'; bgFinal = '#cffafe'; colFinal = '#0891b2';
           } else if (odpEnCalidad) {
@@ -13301,7 +13321,7 @@ function _renderTimelineODP(odp) {
               <div style="font-size:18px;">${icoFinal}</div>
               <div style="font-size:10px;font-weight:800;color:${colFinal};margin-top:2px;">${lblFinal}</div>
               <div style="font-size:9px;color:${colFinal};margin-top:2px;font-weight:600;">
-                ${odpEntregada ? '✅ Entregada' : (odpEnLogistica ? '🚚 En camino' : (odpEnCalidad ? '🟡 Pendiente' : '⚪ Por hacer'))}
+                ${odpEntregada ? '✅ Entregada' : (odpEnCedis ? '📦 En CEDIS' : (odpEnLogistica ? '🚚 En camino' : (odpEnCalidad ? '🟡 Pendiente' : '⚪ Por hacer')))}
               </div>
             </div>
           `;
@@ -26401,6 +26421,10 @@ function renderTarjetaRC(rc, puedeAprobar) {
   });
   // Buscar el movimiento/lote de recepción para saber quién y cuándo recibió
   const loteRecep = ocLigada ? (state.lotes_mp || []).find(l => l.oc_folio === ocLigada.folio) : null;
+  // 🔧 FIX C3: la RC ya no queda "ciega" en recepciones PARCIALES — muestra lo recibido
+  //    en cuanto llegue algo, no solo cuando la OC está 100% completa.
+  const hayRecibido = Object.values(recibidoPorCodigo).some(v => v > 0);
+  const recepParcial = hayRecibido && rc.estatus !== 'recibida';
 
   return `
     <div class="panel" style="border-left:4px solid ${estat.color};">
@@ -26456,7 +26480,7 @@ function renderTarjetaRC(rc, puedeAprobar) {
                 <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">Descripción</th>
                 <th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Cant.</th>
                 <th style="padding:5px 8px;text-align:left;font-weight:700;color:#475569;">UM</th>
-                ${rc.estatus === 'recibida' ? `<th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Recibido</th>` : ''}
+                ${(rc.estatus === 'recibida' || hayRecibido) ? `<th style="padding:5px 8px;text-align:right;font-weight:700;color:#475569;">Recibido</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -26469,7 +26493,7 @@ function renderTarjetaRC(rc, puedeAprobar) {
                   <td style="padding:5px 8px;">${l.descripcion}</td>
                   <td style="padding:5px 8px;text-align:right;font-weight:700;">${fmtNum(l.cantidad)}</td>
                   <td style="padding:5px 8px;font-size:10px;color:#64748b;">${l.um || 'Kg'}</td>
-                  ${rc.estatus === 'recibida' ? `<td style="padding:5px 8px;text-align:right;color:${recibido >= l.cantidad ? '#16a34a' : recibido > 0 ? '#3b82f6' : '#f59e0b'};font-weight:700;">${fmtNum(recibido)}</td>` : ''}
+                  ${(rc.estatus === 'recibida' || hayRecibido) ? `<td style="padding:5px 8px;text-align:right;color:${recibido >= l.cantidad ? '#16a34a' : recibido > 0 ? '#3b82f6' : '#f59e0b'};font-weight:700;">${fmtNum(recibido)}</td>` : ''}
                 </tr>
               `;}).join('')}
             </tbody>
@@ -26481,11 +26505,11 @@ function renderTarjetaRC(rc, puedeAprobar) {
       ${rc.proveedor_asignado ? `<div style="padding:0 18px 8px;font-size:11px;color:#475569;">🏭 Proveedor: <strong>${rc.proveedor_asignado}</strong></div>` : ''}
 
       <!-- 📦 RESUMEN DE RECEPCIÓN: qué llegó, dónde y quién lo recibió -->
-      ${rc.estatus === 'recibida' && ocLigada ? `
-        <div style="margin:0 18px 10px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:9px;">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#166534;">
-            <span style="font-weight:800;">📦 Recibido</span>
-            ${ocLigada.destino_recepcion ? `<span>· 📍 en <strong>${NOMBRE_ALM[ocLigada.destino_recepcion] || ocLigada.destino_recepcion}</strong></span>` : ''}
+      ${(rc.estatus === 'recibida' || hayRecibido) && ocLigada ? `
+        <div style="margin:0 18px 10px;padding:10px 12px;background:${recepParcial ? '#eff6ff' : '#f0fdf4'};border:1px solid ${recepParcial ? '#bfdbfe' : '#bbf7d0'};border-radius:9px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:${recepParcial ? '#1e40af' : '#166534'};">
+            <span style="font-weight:800;">${recepParcial ? '📦 Recepción PARCIAL (falta material por llegar)' : '📦 Recibido'}</span>
+            ${(loteRecep?.destino_recepcion || ocLigada.destino_recepcion) ? `<span>· 📍 en <strong>${NOMBRE_ALM[loteRecep?.destino_recepcion || ocLigada.destino_recepcion] || (loteRecep?.destino_recepcion || ocLigada.destino_recepcion)}</strong></span>` : ''}
             ${loteRecep && loteRecep.recibido_por_nombre ? `<span>· 👤 por <strong>${loteRecep.recibido_por_nombre}</strong></span>` : ''}
             ${loteRecep && loteRecep.fecha_recepcion ? `<span>· 📅 ${loteRecep.fecha_recepcion}</span>` : ''}
             ${loteRecep && loteRecep.tipo_documento && loteRecep.numero_documento ? `<span>· 📄 ${loteRecep.tipo_documento === 'factura' ? 'Factura' : 'Remisión'} ${loteRecep.numero_documento}</span>` : ''}
@@ -27975,8 +27999,11 @@ function modalRecibirOC() {
   
   if (!state.modalForm) {
     const u = state.user || {};
-    // Destino por defecto según el depto del usuario
-    const destinoDefault = u.depto === 'CEDMEX' ? 'CEDIS-MEX' : u.depto === 'CEDMTY' ? 'CEDIS-MTY' : 'ALMACEN-PLANTA-MTY';
+    // 🔧 FIX C3: el destino se PRECARGA de la OC (lo que Compras definió al generarla).
+    //    Antes el default era el depto del receptor → la RC decía un almacén y el stock
+    //    quedaba en otro. El depto del usuario es solo respaldo para OCs viejas sin destino.
+    const destinoDefault = oc.destino_recepcion
+      || (u.depto === 'CEDMEX' ? 'CEDIS-MEX' : u.depto === 'CEDMTY' ? 'CEDIS-MTY' : 'ALMACEN-PLANTA-MTY');
     state.modalForm = {
       tipo_documento: 'factura', // 'factura' o 'remision'
       numero_documento: '',
@@ -28033,7 +28060,11 @@ function modalRecibirOC() {
                   <button type="button" onclick="window.modalFormSet('destino_recepcion','${d.k}')" style="flex:1;min-width:150px;padding:11px;border:2px solid ${f.destino_recepcion===d.k?'#16a34a':'#cbd5e1'};background:${f.destino_recepcion===d.k?'#16a34a':'#fff'};color:${f.destino_recepcion===d.k?'#fff':'#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${d.label}</button>
                 `).join('')}
               </div>
-              <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Indica el almacén físico al que entra este material.</div>
+              ${oc.destino_recepcion && f.destino_recepcion !== oc.destino_recepcion ? `
+                <div style="font-size:11px;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 10px;margin-top:6px;">
+                  ⚠ La OC se planeó para <strong>${({'ALMACEN-PLANTA-MTY':'Almacén Planta MTY','CEDIS-MTY':'CEDIS Monterrey','CEDIS-MEX':'CEDIS México'})[oc.destino_recepcion] || oc.destino_recepcion}</strong> y estás recibiendo en otro almacén. El stock quedará donde recibas — verifica que sea correcto.
+                </div>
+              ` : `<div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Precargado con el destino planeado en la OC. Cámbialo solo si el material llegó físicamente a otro almacén.</div>`}
             </div>
             
             <div class="field" style="margin-bottom:10px;">
@@ -29690,7 +29721,7 @@ window.guardarSalidaMTTO = async () => {
   if (!prod) { toast('Producto no encontrado', 'error'); return; }
   const stockActual = Number(prod.stock_actual) || 0;
   if (cant > stockActual) {
-    if (!confirm(`⚠ Stock insuficiente (actual: ${fmtNum(stockActual)}, pides: ${fmtNum(cant)}). ¿Registrar salida igualmente? (quedará en negativo)`)) return;
+    if (!confirm(`⚠ Stock insuficiente (actual: ${fmtNum(stockActual)}, pides: ${fmtNum(cant)}). ¿Registrar salida igualmente? (el stock quedará en 0 — ajusta el inventario si hay diferencia física)`)) return;
   }
 
   state.loadingAccion = true; render();
@@ -29711,7 +29742,7 @@ window.guardarSalidaMTTO = async () => {
       motivo: (f.motivo || '').trim(),
       notas: (f.notas || '').trim(),
       stock_anterior: stockActual,
-      stock_resultante: stockActual - cant,
+      stock_resultante: Math.max(0, stockActual - cant),   // 🔧 FIX A4: sin negativos
       costo_unitario: Number(prod.costo_promedio) || 0,
       created_at: serverTimestamp(),
       created_by: u.id || '',
@@ -29719,16 +29750,16 @@ window.guardarSalidaMTTO = async () => {
     };
     await addDoc(collection(db, 'movimientos_mtto'), movData);
 
-    // 2) Actualizar stock del producto
+    // 2) Actualizar stock del producto — 🔧 FIX A4: el stock nunca baja de 0
     await updateDoc(doc(db, 'productos_mtto', prod.id), {
-      stock_actual: stockActual - cant,
+      stock_actual: Math.max(0, stockActual - cant),
       ultimo_consumo_at: serverTimestamp(),
       updated_at: serverTimestamp(),
     });
 
     // 3) Si quedó bajo mínimo, notificar a MTTO y COMP
     const minimo = Number(prod.stock_minimo) || 0;
-    const nuevoStock = stockActual - cant;
+    const nuevoStock = Math.max(0, stockActual - cant);
     if (minimo > 0 && nuevoStock <= minimo) {
       try {
         const batchNotif = writeBatch(db);
@@ -30606,9 +30637,24 @@ function renderRecepcionesMP() {
 // ============================================================
 
 // Stock total disponible de un MP (suma de lotes activos)
-window._stockMP = (mpCodigo) => {
+// 🔧 FIX C2 — Almacén físico de un lote MP (lotes viejos sin destino → Planta)
+window._almacenDeLoteMP = (l) => l.destino_recepcion || 'ALMACEN-PLANTA-MTY';
+
+// 🔧 FIX C2 — Almacén MP activo del usuario (mismo criterio que la vista Almacén MP):
+//    CEDIS quedan fijos en el suyo; el resto usa el almacén seleccionado (default Planta).
+window._almacenMPActivo = () => {
+  const u = state.user || {};
+  if (u.depto === 'CEDMTY') return 'CEDIS-MTY';
+  if (u.depto === 'CEDMEX') return 'CEDIS-MEX';
+  return state.almacenMPActivo || 'ALMACEN-PLANTA-MTY';
+};
+
+// Stock de un MP. Con `almacen` cuenta SOLO los lotes de ese almacén físico
+// (sin él suma todos — para reportes globales, no para validar salidas).
+window._stockMP = (mpCodigo, almacen) => {
   return (state.lotes_mp || [])
-    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado')
+    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado'
+      && (!almacen || window._almacenDeLoteMP(l) === almacen))
     .reduce((s, l) => s + (Number(l.stock_actual) || 0), 0);
 };
 
@@ -30655,12 +30701,22 @@ window.abrirAjusteMP = () => {
   window.forzarRender();
 };
 
-// Descuenta cantidad de los lotes de un MP en orden FIFO (lote más antiguo primero)
-async function _descontarLotesMP(batch, mpCodigo, cantidad) {
+// Descuenta cantidad de los lotes de un MP en orden FIFO (lote más antiguo primero).
+// 🔧 FIX C2: recibe el ALMACÉN de consumo — solo descuenta lotes físicamente ahí.
+//    Antes descontaba de cualquier almacén (una salida en Planta podía comerse un lote
+//    de CEDIS-MEX y el stock segregado por almacén quedaba ficticio).
+//    Orden FIFO unificado: fecha de recepción real, respaldo created_at.
+window._fifoLoteOrden = (a, b) => {
+  const fa = a.fecha_recepcion || '', fb = b.fecha_recepcion || '';
+  if (fa && fb && fa !== fb) return fa.localeCompare(fb);
+  return (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0);
+};
+async function _descontarLotesMP(batch, mpCodigo, cantidad, almacen) {
   let restante = cantidad;
   const lotes = (state.lotes_mp || [])
-    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado' && (Number(l.stock_actual)||0) > 0)
-    .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0)); // FIFO
+    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado' && (Number(l.stock_actual)||0) > 0
+      && (!almacen || window._almacenDeLoteMP(l) === almacen))
+    .sort(window._fifoLoteOrden); // FIFO
   const afectados = [];
   for (const lote of lotes) {
     if (restante <= 0) break;
@@ -30685,7 +30741,9 @@ window.confirmarSalidaMP = async () => {
   if (!cant || cant <= 0) { toast('Cantidad inválida', 'error'); return; }
 
   const mp = (state.materias_primas || []).find(m => m.codigo === f.mp_codigo);
-  const stockDisp = window._stockMP(f.mp_codigo);
+  // 🔧 FIX C2: la salida se valida y descuenta CONTRA EL ALMACÉN ACTIVO, no el global
+  const almacenSalida = window._almacenMPActivo();
+  const stockDisp = window._stockMP(f.mp_codigo, almacenSalida);
 
   // Validar destino según tipo
   let destinoTxt = '', destinoData = {};
@@ -30707,7 +30765,7 @@ window.confirmarSalidaMP = async () => {
   }
 
   if (cant > stockDisp) {
-    if (!confirm(`⚠ Stock insuficiente.\n\nDisponible: ${fmtNum(stockDisp)} ${mp?.um||'kg'}\nQuieres sacar: ${fmtNum(cant)}\n\n¿Continuar de todos modos? (quedará en negativo)`)) return;
+    if (!confirm(`⚠ Stock insuficiente en ${({'ALMACEN-PLANTA-MTY':'Almacén Planta MTY','CEDIS-MTY':'CEDIS Monterrey','CEDIS-MEX':'CEDIS México'})[almacenSalida] || almacenSalida}.\n\nDisponible aquí: ${fmtNum(stockDisp)} ${mp?.um||'kg'}\nQuieres sacar: ${fmtNum(cant)}\n\n¿Continuar de todos modos? (solo se descontará lo disponible en este almacén)`)) return;
   }
 
   const TIPO_LABEL = { planta: 'salida_planta', traspaso: 'traspaso', devolucion: 'devolucion_proveedor', merma: 'merma' };
@@ -30715,9 +30773,12 @@ window.confirmarSalidaMP = async () => {
   state.loadingAccion = true; window.forzarRender();
   try {
     const batch = writeBatch(db);
-    // Descontar de lotes FIFO
-    const { afectados } = await _descontarLotesMP(batch, f.mp_codigo, Math.min(cant, stockDisp));
+    // Descontar de lotes FIFO — 🔧 FIX C2: solo del almacén activo
+    const { afectados } = await _descontarLotesMP(batch, f.mp_codigo, Math.min(cant, stockDisp), almacenSalida);
     const costoProm = afectados.length ? (afectados.reduce((s,a)=>s+a.costo*a.usado,0) / afectados.reduce((s,a)=>s+a.usado,0)) : 0;
+    // 🔧 FIX kardex: registrar lo realmente descontado (antes grababa la cantidad pedida
+    //    completa aunque el stock no alcanzara → kardex divergía de la suma de lotes)
+    const cantReal = afectados.reduce((s, a) => s + a.usado, 0);
 
     // Movimiento de salida en kardex
     const movRef = doc(collection(db, 'movimientos_mp'));
@@ -30726,7 +30787,9 @@ window.confirmarSalidaMP = async () => {
       subtipo: TIPO_LABEL[f.tipo_salida] || 'salida',
       mp_codigo: f.mp_codigo,
       mp_descripcion: mp?.descripcion || '',
-      cantidad: cant,
+      cantidad: cantReal,
+      cantidad_solicitada: cant,
+      almacen: almacenSalida,   // 🔧 FIX C2: de qué almacén salió
       um: mp?.um || 'kg',
       costo_unitario: Number(costoProm.toFixed(4)),
       destino: destinoTxt,
@@ -30761,7 +30824,9 @@ window.confirmarAjusteMP = async () => {
   if (!(f.motivo || '').trim()) { toast('Explica el motivo del ajuste', 'error'); return; }
 
   const mp = (state.materias_primas || []).find(m => m.codigo === f.mp_codigo);
-  const stockSistema = window._stockMP(f.mp_codigo);
+  // 🔧 FIX C2: el conteo físico es DEL ALMACÉN ACTIVO — comparar y ajustar solo ahí
+  const almacenAjuste = window._almacenMPActivo();
+  const stockSistema = window._stockMP(f.mp_codigo, almacenAjuste);
   const diferencia = conteo - stockSistema; // + sobra, - falta
 
   if (Math.abs(diferencia) < 0.001) { toast('El conteo coincide con el sistema. No hay ajuste que hacer.', 'info'); return; }
@@ -30772,8 +30837,8 @@ window.confirmarAjusteMP = async () => {
   try {
     const batch = writeBatch(db);
     if (diferencia < 0) {
-      // Falta material → descontar de lotes FIFO
-      await _descontarLotesMP(batch, f.mp_codigo, Math.abs(diferencia));
+      // Falta material → descontar de lotes FIFO (solo del almacén ajustado)
+      await _descontarLotesMP(batch, f.mp_codigo, Math.abs(diferencia), almacenAjuste);
     } else {
       // Sobra material → crear un lote de ajuste
       const loteRef = doc(collection(db, 'lotes_mp'));
@@ -30786,6 +30851,7 @@ window.confirmarAjusteMP = async () => {
         stock_actual: diferencia,
         um: mp?.um || 'kg',
         costo_unitario: 0,
+        destino_recepcion: almacenAjuste,   // 🔧 FIX C2: el lote de ajuste nace en el almacén contado
         origen: 'ajuste_inventario',
         estatus: 'activo',
         fecha_recepcion: window.hoyLocalISO(),
@@ -30802,6 +30868,7 @@ window.confirmarAjusteMP = async () => {
       mp_codigo: f.mp_codigo,
       mp_descripcion: mp?.descripcion || '',
       cantidad: diferencia, // con signo
+      almacen: almacenAjuste,   // 🔧 FIX C2
       um: mp?.um || 'kg',
       stock_sistema_antes: stockSistema,
       conteo_fisico: conteo,
@@ -37273,6 +37340,22 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
       ? new Date(odp.liberacion_calidad.liberado_at).toLocaleDateString('es-MX')
       : new Date().toLocaleDateString('es-MX');
 
+    // 🔧 FIX A2: el certificado refleja la UBICACIÓN REAL del material (antes sumaba
+    //    todo por odp_id sin decir dónde estaba cada tarima: planta/CEDIS/entregado).
+    const _UBIC_LBL = {
+      pendiente_empaque: 'En empaque', liberada_empaque: 'En planta', pendiente_almacen: 'En planta',
+      en_almacen_planta: 'En planta', en_transito_cedis: 'En tránsito a CEDIS', en_transito_cedis_mty: 'En tránsito a CEDIS-MTY',
+      en_cedis_mty: 'CEDIS Monterrey', en_transito_cedis_mex: 'En tránsito a CEDIS-MEX', en_cedis_mex: 'CEDIS México',
+      embarcada: 'Embarcada al cliente', entregada: 'Entregada al cliente'
+    };
+    const _ubicMap = {};
+    tarimas.forEach(t => {
+      const lbl = _UBIC_LBL[t.estatus] || 'En planta';
+      _ubicMap[lbl] = (_ubicMap[lbl] || 0) + (Number(t.peso_neto_kg || t.peso_neto) || 0);
+    });
+    const ubicacionTxt = Object.entries(_ubicMap)
+      .map(([l, kg]) => `${l}: ${fmtNum(Math.round(kg))} kg`).join('  ·  ') || '—';
+
     const { jsPDF } = window.jspdf;
     const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
 
@@ -37304,6 +37387,7 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
         ['Fecha de fabricación:', fechaFab],
         ['# de paquetes:', String(totalPaquetes)],
         [labelTotal, textoTotal],
+        ['Ubicación del material:', ubicacionTxt],
       ],
       theme: 'grid',
       styles: { fontSize: 8.5, cellPadding: 2, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
@@ -48060,8 +48144,9 @@ window.confirmarCompletarProceso = async (odpId) => {
         // Calcular consumos FIFO por MP
         for (const desc of Object.values(necesariosPorMP)) {
           const lotesActivos = (state.lotes_mp || [])
-            .filter(l => l.mp_codigo === desc.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0)
-            .sort((a, b) => (a.fecha_recepcion || '').localeCompare(b.fecha_recepcion || ''));
+            .filter(l => l.mp_codigo === desc.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
+              && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+            .sort(window._fifoLoteOrden);
           
           let restante = desc.kg_necesarios;
           const consumosLote = [];
@@ -49745,8 +49830,9 @@ window.aplicarConsumoMPYCerrarProceso = async () => {
     // Si cambió de MP, hay que buscar lotes del nuevo MP
     if (c.es_sustitucion) {
       const lotesActivos = (state.lotes_mp || [])
-        .filter(l => l.mp_codigo === c.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0)
-        .sort((a, b) => (a.fecha_recepcion || '').localeCompare(b.fecha_recepcion || ''));
+        .filter(l => l.mp_codigo === c.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
+          && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+        .sort(window._fifoLoteOrden);
       
       let restante = Number(c.kg_ajustados);
       const lotesConsumidos = [];
@@ -49793,8 +49879,9 @@ window.aplicarConsumoMPYCerrarProceso = async () => {
       } else {
         // Recalcular lotes FIFO con el nuevo kg
         const lotesActivos = (state.lotes_mp || [])
-          .filter(l => l.mp_codigo === c.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0)
-          .sort((a, b) => (a.fecha_recepcion || '').localeCompare(b.fecha_recepcion || ''));
+          .filter(l => l.mp_codigo === c.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
+            && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+          .sort(window._fifoLoteOrden);
         
         let restante = kgAj;
         const lotesConsumidos = [];
@@ -49833,8 +49920,9 @@ window.aplicarConsumoMPYCerrarProceso = async () => {
   // Agregar MP extras
   for (const e of (f.consumosAgregados || [])) {
     const lotesActivos = (state.lotes_mp || [])
-      .filter(l => l.mp_codigo === e.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0)
-      .sort((a, b) => (a.fecha_recepcion || '').localeCompare(b.fecha_recepcion || ''));
+      .filter(l => l.mp_codigo === e.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
+        && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+      .sort(window._fifoLoteOrden);
     
     let restante = Number(e.kg);
     const lotesConsumidos = [];
