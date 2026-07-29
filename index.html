@@ -3923,7 +3923,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B5b-confirmaentrega</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B6b-ocultarentregados</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -3988,21 +3988,21 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'recepcion_cedis' ? 'active' : ''}" data-vista="recepcion_cedis">📥 Recibir OTIs (desde Planta)</button>
           <button class="nav-item ${state.vista === 'cedis_mty' ? 'active' : ''}" data-vista="cedis_mty">📦 Stock CEDIS-MTY</button>
           <button class="nav-item ${state.vista === 'inv_mty' ? 'active' : ''}" data-vista="inv_mty">📊 Inventario CEDIS-MTY</button>
-          <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Salidas del día</button>
+          <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Embarques del día</button>
           <button class="nav-item ${state.vista === 'embarques_mty' ? 'active' : ''}" data-vista="embarques_mty">🚚 Embarques MTY (al cliente)</button>
         ` : ''}
         ${esCEDMEX ? `
           <div class="sidebar-section">🏙️ CEDIS México</div>
           <button class="nav-item ${state.vista === 'cedis_mex' ? 'active' : ''}" data-vista="cedis_mex">📥 Recibir desde MTY + Stock</button>
           <button class="nav-item ${state.vista === 'inv_mex' ? 'active' : ''}" data-vista="inv_mex">📊 Inventario CEDIS-MEX</button>
-          <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Salidas del día</button>
+          <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Embarques del día</button>
           <button class="nav-item ${state.vista === 'embarques_mex' ? 'active' : ''}" data-vista="embarques_mex">🚚 Embarques MEX (al cliente)</button>
         ` : ''}
         ${(esCEO || esADMIN || esCS || esKAM || esPLN || esCOMP) && !esALP && !esCEDMTY && !esCEDMEX ? `
           <div class="sidebar-section">📊 Inventarios (Producto Terminado)</div>
           <button class="nav-item ${state.vista === 'inv_mty' ? 'active' : ''}" data-vista="inv_mty">📦 Inventario CEDIS-MTY</button>
           <button class="nav-item ${state.vista === 'inv_mex' ? 'active' : ''}" data-vista="inv_mex">🇲🇽 Inventario CEDIS-MEX</button>
-          <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Salidas del día</button>
+          <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Embarques del día</button>
         ` : ''}
         ${(esCS || esKAM) && !esALP && !esCEDMTY && !esCEDMEX ? `
           <div class="sidebar-section">📦 Almacenes (visión completa)</div>
@@ -4199,7 +4199,7 @@ function tituloVista() {
     stock_producto: '📊 Inventario General CEDIS',
     inv_mty: '📦 Inventario CEDIS Monterrey',
     inv_mex: '🇲🇽 Inventario CEDIS México',
-    salidas_dia: '📤 Salidas del día — Programación de Embarques',
+    salidas_dia: '📤 Embarques del día',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -15121,6 +15121,17 @@ function renderLogisticaRutas() {
     return `<span style="background:${s.color}22;color:${s.color};padding:3px 10px;border-radius:6px;font-size:11px;font-weight:800;">${s.label}</span>`;
   };
 
+  // Etiqueta de fecha en lenguaje claro (HOY / MAÑANA / ATRASADO + la fecha)
+  const _relFecha = (iso) => {
+    if (!iso || iso === 'sin-fecha') return { txt: '🕓 Sin fecha asignada', color: '#b45309' };
+    const hoy = window.hoyLocalISO(), man = window.hoyLocalISO(1);
+    const fx = fmtFecha(iso);
+    if (iso < hoy) return { txt: `⚠️ ATRASADO · ${fx}`, color: '#dc2626' };
+    if (iso === hoy) return { txt: `📅 HOY · ${fx}`, color: '#16a34a' };
+    if (iso === man) return { txt: `🗓️ MAÑANA · ${fx}`, color: '#1e40af' };
+    return { txt: `📆 ${fx}`, color: '#334155' };
+  };
+
   // Tarjeta de una ruta
   const cardRuta = (r) => {
     const s = RUTA_ESTADOS[r.estatus] || {color:'#64748b'};
@@ -15134,7 +15145,7 @@ function renderLogisticaRutas() {
             ${badge(r.estatus)}
             <span style="font-size:11px;color:#64748b;">${r.tipo_texto||''}</span>
           </div>
-          <div style="font-size:12.5px;color:#0f172a;font-weight:700;margin-top:6px;">📅 ${fmtFecha(r.fecha)} · ${r.origen||''}</div>
+          ${(() => { const e = _relFecha(window.aFechaLocalISO(r.fecha) || r.fecha); return `<div style="font-size:13px;font-weight:800;color:${e.color};margin-top:6px;">${e.txt} · ${r.origen||''}</div>`; })()}
         </div>
         <div style="text-align:right;font-size:10.5px;color:#94a3b8;white-space:nowrap;">
           <div style="font-weight:700;color:#334155;">${r.transportista||'—'}</div>
@@ -15146,12 +15157,8 @@ function renderLogisticaRutas() {
         const m = _rutaMetricas(r);
         const pct = m.totalParadas ? Math.round((m.entregadas/m.totalParadas)*100) : 0;
         return `
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px 18px;padding:10px 18px;background:#f8fafc;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;margin-top:12px;">
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Paradas</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.totalParadas}</div></div>
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Entregas</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.entregas}</div></div>
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Recolecc.</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.recolecciones}</div></div>
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Tarimas</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${m.tarimas}</div></div>
-        <div><div style="font-size:9px;text-transform:uppercase;color:#94a3b8;font-weight:700;">Peso</div><div style="font-size:15px;color:#0f172a;font-weight:800;">${fmtNum(Math.round(m.kg))} kg</div></div>
+      <div style="padding:8px 18px;background:#f8fafc;border-top:1px solid #f1f5f9;border-bottom:1px solid #f1f5f9;margin-top:12px;font-size:12px;color:#334155;font-weight:600;">
+        🚚 ${m.entregas} entrega(s)${m.recolecciones>0?` · 🔄 ${m.recolecciones} recolección(es)`:''} · 📦 ${m.tarimas} tarima(s) · ⚖️ ${fmtNum(Math.round(m.kg))} kg
       </div>
       ${r.estatus==='en_ruta'||r.estatus==='completada'?`
       <div style="padding:8px 18px 0;">
@@ -15222,9 +15229,14 @@ function renderLogisticaRutas() {
     </div>`;
   };
 
-  // Agrupar por fecha para el tablero/calendario
+  // 🫥 Los viajes COMPLETADOS no se acumulan en la lista: van a una sección colapsada
+  const rutasActivas = rutas.filter(r => r.estatus !== 'completada');
+  const rutasCompletadas = rutas.filter(r => r.estatus === 'completada')
+    .sort((a, b) => (b.completada_at?.seconds || 0) - (a.completada_at?.seconds || 0));
+
+  // Agrupar por fecha (solo activas)
   const porFecha = {};
-  rutas.forEach(r => { const f = window.aFechaLocalISO(r.fecha) || r.fecha || 'sin-fecha'; if(!porFecha[f]) porFecha[f]=[]; porFecha[f].push(r); });
+  rutasActivas.forEach(r => { const f = window.aFechaLocalISO(r.fecha) || r.fecha || 'sin-fecha'; if(!porFecha[f]) porFecha[f]=[]; porFecha[f].push(r); });
   const fechasOrdenadas = Object.keys(porFecha).sort((a,b) => b.localeCompare(a));
 
   return `
@@ -15286,16 +15298,25 @@ function renderLogisticaRutas() {
         </div>`;
       })() : ''}
 
-      <!-- Lista de viajes agrupada por día (única vista, sin calendario) -->
+      <!-- Lista de viajes activos agrupada por día -->
       <div style="font-weight:800;color:#0f172a;margin:16px 0 8px;font-size:14px;">🗓️ Viajes por día</div>
-      ${rutas.length===0?`<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">Aún no hay viajes programados. Programa un pedido desde el panel de arriba.</div>`:
+      ${rutasActivas.length===0?`<div class="panel" style="text-align:center;color:#94a3b8;padding:30px;">No hay viajes activos. Programa un pedido desde el panel de arriba.</div>`:
         fechasOrdenadas.map(f => `
           <div style="margin-bottom:20px;">
-            <div style="font-size:13px;font-weight:800;color:#334155;background:#eff6ff;padding:8px 14px;border-radius:8px;margin-bottom:10px;display:inline-block;">📅 ${f==='sin-fecha'?'Sin fecha':fmtFecha(f)} · ${porFecha[f].length} viaje(s)</div>
+            ${(() => { const e = _relFecha(f); return `<div style="font-size:13px;font-weight:800;color:#fff;background:${e.color};padding:6px 14px;border-radius:8px;margin-bottom:10px;display:inline-block;">${e.txt} · ${porFecha[f].length} viaje(s)</div>`; })()}
             <div style="display:flex;flex-direction:column;gap:14px;">
               ${porFecha[f].map(cardRuta).join('')}
             </div>
           </div>`).join('')}
+
+      ${rutasCompletadas.length>0?`
+        <details style="margin-top:16px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;">
+          <summary style="cursor:pointer;padding:12px 15px;font-weight:800;font-size:13px;color:#166534;list-style:none;">✅ Viajes completados (${rutasCompletadas.length}) <span style="font-weight:500;color:#94a3b8;font-size:11px;">— clic para ver</span></summary>
+          <div style="padding:0 12px 12px;display:flex;flex-direction:column;gap:12px;">
+            ${rutasCompletadas.slice(0,50).map(cardRuta).join('')}
+          </div>
+        </details>
+      `:''}
     </div>
   `;
 }
@@ -21212,11 +21233,16 @@ function renderSalidasDia() {
   };
   const tarimasDe = o => (state.tarimas || []).filter(t => (o.tarimas_ids || []).includes(t.id));
 
-  const estados = ['lista_embarcar', 'por_cargar', 'enviada'];
-  const ovs = (state.ordenes_venta || []).filter(o => estados.includes(o.estatus) && _norm(o.cedis) === cedis);
-
+  const _ms = ts => ts && ts.seconds ? ts.seconds * 1000 : (ts && ts.toDate ? ts.toDate().getTime() : (ts ? new Date(ts).getTime() : 0));
   const hoy = window.hoyLocalISO();
   const manana = window.hoyLocalISO(1);
+
+  // Activos (accionables) — NO incluye entregados (esos van colapsados)
+  const estadosAct = ['lista_embarcar', 'por_cargar', 'enviada'];
+  const ovs = (state.ordenes_venta || []).filter(o => !o.archivada && estadosAct.includes(o.estatus) && _norm(o.cedis) === cedis);
+  // Entregados HOY (colapsados, no acumulan)
+  const entregadosHoy = (state.ordenes_venta || []).filter(o => o.estatus === 'entregada' && _norm(o.cedis) === cedis && o.entregada_at && (() => { const d = new Date(_ms(o.entregada_at)); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') === hoy; })());
+
   const buckets = { atrasado: [], hoy: [], manana: [], proximos: [], sinfecha: [] };
   ovs.forEach(o => {
     const d = diaDe(o);
@@ -21227,46 +21253,53 @@ function renderSalidasDia() {
     else buckets.proximos.push(o);
   });
 
-  // KPIs de HOY (lo que hay que cargar hoy: hoy + atrasado)
-  const cargarHoy = [...buckets.atrasado, ...buckets.hoy];
-  const tarimasHoy = cargarHoy.reduce((s, o) => s + tarimasDe(o).length, 0);
-  const kgHoy = cargarHoy.reduce((s, o) => s + tarimasDe(o).reduce((a, t) => a + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0), 0);
-  const enRutaHoy = cargarHoy.filter(o => o.ruta_codigo).length;
+  // KPIs
+  const porDespachar = ovs.filter(o => o.estatus === 'lista_embarcar' || (o.estatus === 'por_cargar' && !o.ruta_codigo)).length;
+  const enCamino = ovs.filter(o => o.estatus === 'enviada').length;
 
-  const chipEstado = (o) => {
-    if (o.estatus === 'enviada') return `<span style="font-size:10px;font-weight:800;color:#0891b2;background:rgba(8,145,178,.12);padding:2px 8px;border-radius:6px;">🛣️ EN CAMINO</span>`;
-    if (o.ruta_codigo) return `<span style="font-size:10px;font-weight:800;color:#1e40af;background:rgba(30,64,175,.12);padding:2px 8px;border-radius:6px;">🚚 EN RUTA ${o.ruta_codigo}</span>`;
-    if (o.estatus === 'lista_embarcar') return `<span style="font-size:10px;font-weight:800;color:#16a34a;background:rgba(22,163,74,.14);padding:2px 8px;border-radius:6px;">🟢 LISTA</span>`;
-    return `<span style="font-size:10px;font-weight:800;color:#b45309;background:rgba(180,83,9,.14);padding:2px 8px;border-radius:6px;">📦 POR DESPACHAR</span>`;
-  };
-
-  const fila = (o) => {
+  // Resuelve estado visual + acción de cada pedido (una acción clara SIEMPRE que aplique)
+  const cardOV = (o) => {
     const ts = tarimasDe(o);
     const kg = ts.reduce((a, t) => a + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
-    const puedeDespachar = o.estatus === 'lista_embarcar' || (o.estatus === 'por_cargar' && !o.ruta_codigo);
     const modoTxt = o.modo_envio ? ({ propio: '🚚 Propio', tercero: '🏢 Tercero', cliente: '🙋 Cliente recoge' }[o.modo_envio] || '') : '';
+    const enRuta = !!o.ruta_codigo;
+    let color, chip, accion = '', verRuta = '';
+    if (enRuta) verRuta = `<a onclick="state.vista='logistica_rutas';render();" style="font-size:10.5px;color:#1e40af;font-weight:700;cursor:pointer;">🚚 ${o.ruta_codigo} →</a>`;
+    if (o.estatus === 'enviada' && enRuta) {
+      color = '#1e40af'; chip = `<span style="font-size:10px;font-weight:800;color:#1e40af;background:rgba(30,64,175,.12);padding:3px 9px;border-radius:99px;">🚚 EN RUTA</span>`;
+      if (puedeConfirmarEntrega(o)) accion = `<button onclick="confirmarEntregaSalida('${o.id}')" style="border:none;background:#16a34a;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">✓ Marcar entregado</button>`;
+    } else if (o.estatus === 'enviada') {
+      color = '#0891b2'; chip = `<span style="font-size:10px;font-weight:800;color:#0891b2;background:rgba(8,145,178,.12);padding:3px 9px;border-radius:99px;">🛣️ EN CAMINO</span>`;
+      if (puedeConfirmarEntrega(o)) accion = `<button onclick="confirmarEntregaSalida('${o.id}')" style="border:none;background:#0891b2;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">✓ Confirmar entrega</button>`;
+    } else if (enRuta) {
+      color = '#1e40af'; chip = `<span style="font-size:10px;font-weight:800;color:#1e40af;background:rgba(30,64,175,.12);padding:3px 9px;border-radius:99px;">🚚 PROGRAMADO EN RUTA</span>`;
+    } else {
+      color = '#16a34a';
+      chip = o.estatus === 'lista_embarcar'
+        ? `<span style="font-size:10px;font-weight:800;color:#16a34a;background:rgba(22,163,74,.14);padding:3px 9px;border-radius:99px;">🟢 LISTA</span>`
+        : `<span style="font-size:10px;font-weight:800;color:#b45309;background:rgba(180,83,9,.14);padding:3px 9px;border-radius:99px;">📦 POR DESPACHAR</span>`;
+      accion = `<button onclick="abrirDespacho('${o.id}')" style="border:none;background:#16a34a;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">🚚 Despachar</button>`;
+    }
     return `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid #f1f5f9;flex-wrap:wrap;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 15px;background:#fff;border:1px solid #e2e8f0;border-left:5px solid ${color};border-radius:12px;margin-bottom:10px;flex-wrap:wrap;">
         <div style="min-width:230px;flex:1;">
-          <div style="font-weight:800;font-size:13px;">${o.cliente_nombre || o.cliente_codigo || '—'}</div>
-          <div style="font-size:11px;color:#64748b;"><span class="text-mono">${o.folio}</span> · ${o.producto_codigo || ''} · ${fmtCantidadUM(Number(o.cantidad_enviada || o.cantidad_solicitada) || 0, o.um)}</div>
+          <div style="font-weight:800;font-size:14px;">${o.cliente_nombre || o.cliente_codigo || '—'} ${verRuta}</div>
+          <div style="font-size:11.5px;color:#64748b;margin-top:1px;"><span class="text-mono">${o.folio}</span> · ${o.producto_codigo || ''} · ${fmtCantidadUM(Number(o.cantidad_enviada || o.cantidad_solicitada) || 0, o.um)}</div>
           <div style="font-size:10.5px;color:#94a3b8;">📦 ${ts.length} tarima(s) · ${fmtNum(Math.round(kg))} kg${o.remision ? ` · 📄 ${o.remision}` : ''}${modoTxt ? ` · ${modoTxt}` : ''}</div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          ${chipEstado(o)}
-          ${puedeDespachar ? `<button onclick="abrirDespacho('${o.id}')" style="border:none;background:#16a34a;color:#fff;border-radius:8px;padding:8px 14px;font-weight:800;font-size:12px;cursor:pointer;">🚚 Despachar</button>` : ''}
-          ${o.estatus === 'enviada' && !o.ruta_codigo && puedeConfirmarEntrega(o) ? `<button onclick="confirmarEntregaSalida('${o.id}')" style="border:none;background:#0891b2;color:#fff;border-radius:8px;padding:8px 14px;font-weight:800;font-size:12px;cursor:pointer;">✓ Confirmar entrega</button>` : ''}
-        </div>
+        <div style="display:flex;align-items:center;gap:8px;">${chip}${accion}</div>
       </div>`;
   };
 
   const seccion = (titulo, arr, color, destacar) => arr.length === 0 ? '' : `
-    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:12px;${destacar ? 'border:2px solid ' + color + ';' : ''}">
-      <div style="padding:9px 14px;background:${destacar ? color + '14' : '#f8fafc'};font-weight:800;font-size:12.5px;color:${color};display:flex;justify-content:space-between;">
-        <span>${titulo}</span><span style="font-weight:600;color:#64748b;">${arr.length} pedido(s)</span>
+    <div style="margin-bottom:16px;">
+      <div style="display:inline-block;padding:5px 12px;border-radius:8px;font-weight:800;font-size:12.5px;color:#fff;background:${color};margin-bottom:10px;">
+        ${titulo} · ${arr.length}
       </div>
-      ${arr.map(fila).join('')}
+      ${arr.map(cardOV).join('')}
     </div>`;
+
+  const hayActivos = ovs.length > 0;
 
   return `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
@@ -21277,26 +21310,38 @@ function renderSalidasDia() {
       ` : `<span style="font-size:11px;color:#94a3b8;">🔒 Vista fija de tu CEDIS</span>`}
     </div>
 
-    <div class="grid-stats" style="margin-bottom:14px;">
-      <div class="stat-card"><div class="stat-icon">📤</div><div class="stat-value">${cargarHoy.length}</div><div class="stat-label">Pedidos a cargar hoy</div></div>
-      <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-value">${tarimasHoy}</div><div class="stat-label">Tarimas a cargar hoy</div></div>
-      <div class="stat-card"><div class="stat-icon">⚖️</div><div class="stat-value">${fmtNum(Math.round(kgHoy))}</div><div class="stat-label">Kg a cargar hoy</div></div>
-      <div class="stat-card"><div class="stat-icon">🚚</div><div class="stat-value">${enRutaHoy}</div><div class="stat-label">Ya en ruta</div></div>
+    <div class="grid-stats" style="margin-bottom:16px;">
+      <div class="stat-card"><div class="stat-icon">🟢</div><div class="stat-value">${porDespachar}</div><div class="stat-label">Por despachar</div></div>
+      <div class="stat-card"><div class="stat-icon">🛣️</div><div class="stat-value">${enCamino}</div><div class="stat-label">En camino</div></div>
+      <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-value">${entregadosHoy.length}</div><div class="stat-label">Entregados hoy</div></div>
     </div>
 
-    ${ovs.length === 0 ? `
+    ${!hayActivos ? `
       <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
         <div style="font-size:40px;">📭</div>
-        <div style="font-weight:700;color:#475569;margin-top:8px;">No hay nada por salir en este CEDIS</div>
-        <div style="font-size:12px;margin-top:6px;">Aquí aparecerán los pedidos listos para embarcar.</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">Todo despachado — nada pendiente por salir</div>
+        <div style="font-size:12px;margin-top:6px;">Aquí aparecen los pedidos listos para embarcar y en camino.</div>
       </div>
     ` : `
-      ${seccion('⚠️ ATRASADOS (debieron salir antes)', buckets.atrasado, '#dc2626', true)}
+      ${seccion('⚠️ ATRASADOS', buckets.atrasado, '#dc2626', true)}
       ${seccion('📅 HOY', buckets.hoy, '#16a34a', true)}
       ${seccion('🗓️ MAÑANA', buckets.manana, '#1e40af', false)}
       ${seccion('📆 PRÓXIMOS DÍAS', buckets.proximos, '#64748b', false)}
-      ${seccion('🕓 LISTOS SIN DÍA ASIGNADO', buckets.sinfecha, '#b45309', false)}
+      ${seccion('🕓 LISTOS SIN DÍA', buckets.sinfecha, '#b45309', false)}
     `}
+
+    ${entregadosHoy.length > 0 ? `
+      <details style="margin-top:8px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:0;">
+        <summary style="cursor:pointer;padding:12px 15px;font-weight:800;font-size:13px;color:#166534;list-style:none;">✅ Entregados hoy (${entregadosHoy.length}) <span style="font-weight:500;color:#94a3b8;font-size:11px;">— clic para ver</span></summary>
+        <div style="padding:0 12px 12px;">
+          ${entregadosHoy.map(o => `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-top:1px solid #f1f5f9;font-size:12px;opacity:.85;">
+              <div><strong>${o.cliente_nombre || o.cliente_codigo || '—'}</strong> · <span class="text-mono" style="font-size:11px;">${o.folio}</span> · ${fmtCantidadUM(Number(o.cantidad_enviada || o.cantidad_solicitada) || 0, o.um)}${o.modo_envio ? ` · ${({propio:'🚚 Propio',tercero:'🏢 Tercero',cliente:'🙋 Cliente'}[o.modo_envio]||'')}` : ''}</div>
+              <span style="font-size:10px;font-weight:800;color:#166534;">✅ ${o.entregada_at ? fmtFechaHora(o.entregada_at) : ''}</span>
+            </div>`).join('')}
+        </div>
+      </details>
+    ` : ''}
   `;
 }
 
@@ -21494,6 +21539,18 @@ window.confirmarEntregaSalida = async (ovId) => {
     });
     const ovL = (state.ordenes_venta || []).find(o => o.id === ov.id); if (ovL) ovL.estatus = 'entregada';
     await batch.commit();
+    // 🔗 Si el pedido va en ruta, sincroniza la parada (y completa la ruta si fue la última entrega)
+    if (ov.ruta_codigo) {
+      const ruta = (state.rutas_logistica || []).find(r => r.codigo === ov.ruta_codigo);
+      if (ruta) {
+        const nuevasParadas = (ruta.paradas || []).map(p => (p.ov_id === ov.id) ? { ...p, entregada: true, entregada_at: Date.now() } : p);
+        const entregas = nuevasParadas.filter(p => p.tipo === 'entrega' || p.tipo === 'combinada');
+        const todas = entregas.length > 0 && entregas.every(p => p.entregada);
+        const patchRuta = { paradas: nuevasParadas };
+        if (todas) { patchRuta.estatus = 'completada'; patchRuta.completada_at = serverTimestamp(); }
+        await updateDoc(doc(db, 'rutas_logistica', ruta.id), patchRuta).catch(() => {});
+      }
+    }
     const fol = await window.generarSaldoOVEntrega(ov);   // saldo si fue parcial (camino único)
     toast(fol ? `✅ ${ov.folio} entregado · 🔁 saldo ${fol} generado por lo pendiente` : `✅ ${ov.folio} entregado`, 'success');
   } catch (e) {
