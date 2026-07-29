@@ -343,36 +343,72 @@ window.odpEstaActiva = odpEstaActiva;
 // Helper: calcular estado real del pedido basado en sus ODPs (no en pedido.estatus)
 // Retorna: 'pendiente_aprobacion', 'aprobado', 'en_proceso', 'pendiente_calidad', 
 //          'en_logistica', 'completado', 'cancelado'
+// 🆕 ¿Este PI se surte 100% de STOCK (o comercializado)? Entonces NUNCA tendrá ODP:
+//    no debe contarse como "esperando producción" ni como "Sin ODPs".
+window.esPedidoSoloStock = (pedido) => {
+  if (!pedido) return false;
+  if (pedido.tipo_pi === 'comercializado') return true;
+  if (pedido.tipo_pi === 'stock_interno') return false;   // stock interno SÍ se produce
+  const lineas = (state.pedido_lineas || []).filter(l => l.pedido_id === pedido.id);
+  if (!lineas.length) return false;
+  return lineas.every(l => l.es_comercializado === true || l.tipo_origen === 'stock');
+};
+
+// 🆕 Estado REAL de un PI que se surte de stock: se sigue por sus OVs, no por ODPs.
+window.estadoRealPedidoStock = (pedido) => {
+  const ovs = (state.ordenes_venta || []).filter(o =>
+    (o.pedido_id === pedido.id || o.pedido_folio === pedido.folio) && o.estatus !== 'cancelada');
+  if (!ovs.length) return 'aprobado';
+  if (ovs.every(o => ['entregada', 'completada'].includes(o.estatus))) return 'completado';
+  if (ovs.some(o => o.estatus === 'enviada')) return 'en_cedis';
+  return 'en_cedis';   // material ya existe en CEDIS/almacén: el seguimiento vive en Embarques
+};
+
 function calcularEstadoRealPedido(pedido, odps) {
   if (!pedido) return 'desconocido';
   if (pedido.estatus === 'cancelado') return 'cancelado';
   if (pedido.estatus === 'pendiente_aprobacion') return 'pendiente_aprobacion';
-  
+  // 🔧 FIX SEGUIMIENTO: un PI ya cerrado está completado, sin importar el estatus de sus ODPs
+  if (pedido.estatus === 'completado') return 'completado';
+
   const odpsValidas = (odps || []).filter(o => !o.archivada);
-  
-  // Sin ODPs aún (recién creado y aprobado)
+
+  // Sin ODPs aún
   if (odpsValidas.length === 0) {
+    // 🔧 FIX BUG B: si se surte de STOCK nunca habrá ODP → seguirlo por sus OVs
+    if (window.esPedidoSoloStock(pedido)) return window.estadoRealPedidoStock(pedido);
     return pedido.estatus === 'aprobado' ? 'aprobado' : (pedido.estatus || 'pendiente_aprobacion');
   }
-  
+
   // ODPs no canceladas
   const odpsActivas = odpsValidas.filter(o => !ODP_ESTATUS.TERMINAL_NEGATIVO.includes(o.estatus));
-  
+
   if (odpsActivas.length === 0) {
     return 'cancelado'; // todas canceladas/rechazadas
   }
-  
-  // Contar por categoría
-  const enProd = odpsActivas.filter(o => 
-    ODP_ESTATUS.PRE_PRODUCCION.includes(o.estatus) || 
+
+  // 🔧 FIX BUG A (defensa en profundidad): una ODP cuyas tarimas YA están todas entregadas
+  //    cuenta como entregada aunque su campo `estatus` se haya quedado atrás (datos viejos).
+  const _estatusEfectivo = (o) => {
+    if (ODP_ESTATUS.TERMINAL_OK.includes(o.estatus)) return o.estatus;
+    try {
+      const porTarimas = window.calcularEstatusODPPorTarimas(o.id);
+      if (porTarimas === 'entregada') return 'entregada';
+    } catch (e) { /* sin datos de tarimas: se queda con el estatus guardado */ }
+    return o.estatus;
+  };
+
+  // Contar por categoría (usando el estatus EFECTIVO)
+  const enProd = odpsActivas.filter(o =>
+    ODP_ESTATUS.PRE_PRODUCCION.includes(o.estatus) ||
     ODP_ESTATUS.EN_PRODUCCION.includes(o.estatus)
   );
   const enCalidad = odpsActivas.filter(o => ODP_ESTATUS.EN_CALIDAD.includes(o.estatus));
   // 🆕 Separar: post-calidad PERO antes de CEDIS  vs  ya en CEDIS o más allá
-  const enLogisticaPlanta = odpsActivas.filter(o => ODP_ESTATUS.EN_LOGISTICA_PLANTA.includes(o.estatus));
-  const enCedisOdespues = odpsActivas.filter(o => ODP_ESTATUS.EN_CEDIS_O_DESPUES.includes(o.estatus));
-  const terminalOk = odpsActivas.filter(o => ODP_ESTATUS.TERMINAL_OK.includes(o.estatus));
-  
+  const enLogisticaPlanta = odpsActivas.filter(o => ODP_ESTATUS.EN_LOGISTICA_PLANTA.includes(_estatusEfectivo(o)));
+  const enCedisOdespues = odpsActivas.filter(o => ODP_ESTATUS.EN_CEDIS_O_DESPUES.includes(_estatusEfectivo(o)));
+  const terminalOk = odpsActivas.filter(o => ODP_ESTATUS.TERMINAL_OK.includes(_estatusEfectivo(o)));
+
   // TODAS las ODPs activas están entregadas/completadas → completado
   if (terminalOk.length === odpsActivas.length) return 'completado';
   
@@ -3950,7 +3986,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B9-lugaresentrega</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B11-seguimientofix</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4551,8 +4587,10 @@ function renderDashboardComercial() {
     <div style="margin-top:14px;background:#f8fafc;border-radius:10px;padding:12px;">
       <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">📊 Embudo del mes (dónde se atoran los pedidos)</div>
       ${[['Captados', k.embudo.captados, '#8b5cf6'],['Aprobados', k.embudo.aprobados, '#3b82f6'],['En producción', k.embudo.enProd, '#f59e0b'],['Entregados', k.embudo.entregados, '#16a34a']].map(([lbl, val, col]) => {
-        const max = Math.max(k.embudo.captados, 1);
-        const pct = (val / max * 100);
+        // 🔧 FIX UI: el máximo es el mayor valor del embudo (entregados puede superar a captados
+        //    del mes) + clamp a 100 para que la barra nunca se salga del contenedor.
+        const max = Math.max(k.embudo.captados, k.embudo.aprobados, k.embudo.enProd, k.embudo.entregados, 1);
+        const pct = Math.min(100, (val / max * 100));
         return `<div style="margin-bottom:6px;">
           <div style="display:flex;justify-content:space-between;font-size:11px;"><span>${lbl}</span><span style="font-weight:700;">${val}</span></div>
           <div style="background:#e2e8f0;border-radius:99px;height:8px;margin-top:2px;"><div style="background:${col};height:100%;border-radius:99px;width:${pct}%;"></div></div>
@@ -5141,7 +5179,7 @@ function renderProductosPT() {
                 : (p.ficha_tecnica_completa === true);
               return `<tr ${(!empOK || !tecnicaOK) ? 'style="background:#fffbeb;"' : ''}>
                 <td class="text-mono" style="font-size:11px;font-weight:700;">${p.codigo}</td>
-                <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion}</td>
+                <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion || ''}</td>
                 <td style="font-size:11px;">${p.material || '—'}</td>
                 <td style="font-size:11px;">${p.tipo || '—'}</td>
                 <td style="font-size:11px;">${medida}</td>
@@ -8128,14 +8166,14 @@ function renderListaOVs(ovs) {
                 <span class="text-mono" style="font-size:11px;color:#64748b;">${o.pedido_folio}</span>
                 <span class="dept-tag" style="background:#dbeafe;color:#1e40af;">${o.cedis}</span>
               </div>
-              <div style="font-size:13px;font-weight:600;margin-top:4px;">${o.cliente_nombre}</div>
+              <div style="font-size:13px;font-weight:600;margin-top:4px;">${o.cliente_nombre || '—'}</div>
             </div>
             <div style="text-align:right;">
               <div style="font-size:18px;font-weight:800;">${fmtCantidadUM(o.cantidad, o.um)}</div>
             </div>
           </div>
           <div style="padding:14px 18px;font-size:12px;">
-            <strong class="text-mono">${o.producto_codigo}</strong>: ${o.descripcion}
+            <strong class="text-mono">${o.producto_codigo}</strong>: ${o.descripcion || ''}
           </div>
           <div style="padding:12px 18px;background:#f8fafc;display:flex;justify-content:flex-end;">
             <button class="btn-primary" onclick="prepararOVAccion('${o.id}','${o.folio}')">${ICONS.check} Marcar preparada</button>
@@ -8167,7 +8205,7 @@ function renderListaODPs(odps) {
                   <span class="text-mono" style="font-size:11px;color:#64748b;">${o.pedido_folio}</span>
                   <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:${colorEst}22;color:${colorEst};">${lblEst}</span>
                 </div>
-                <div style="font-size:13px;font-weight:600;margin-top:4px;">${o.cliente_nombre}</div>
+                <div style="font-size:13px;font-weight:600;margin-top:4px;">${o.cliente_nombre || '—'}</div>
               </div>
               <div style="text-align:right;">
                 <div style="font-size:18px;font-weight:800;">${fmtCantidadUM(o.cantidad, o.um)}</div>
@@ -8175,7 +8213,7 @@ function renderListaODPs(odps) {
               </div>
             </div>
             <div style="padding:14px 18px;font-size:12px;">
-              <strong class="text-mono">${o.producto_codigo}</strong>: ${o.descripcion}
+              <strong class="text-mono">${o.producto_codigo}</strong>: ${o.descripcion || ''}
               ${o.maquina_asignada ? `<div style="margin-top:4px;">🏭 Máquina: <strong>${o.maquina_asignada}</strong></div>` : ''}
             </div>
             ${o.estatus === 'pendiente_planeacion' && puedeProgramar ? `
@@ -9740,10 +9778,12 @@ window.archivarPIsSinODP = async () => {
   }
   
   // Encontrar PIs activos sin ODPs
-  const pisSinODP = (state.pedidos || []).filter(p => 
-    !p.archivada && 
+  // 🔧 FIX BUG B: NUNCA archivar PIs que se surten de STOCK — no tienen ODP porque no la necesitan
+  const pisSinODP = (state.pedidos || []).filter(p =>
+    !p.archivada &&
     p.estatus !== 'cancelado' && p.estatus !== 'completado' && p.estatus !== 'entregado' &&
-    !(state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada)
+    !(state.ordenes_produccion || []).some(o => o.pedido_id === p.id && !o.archivada) &&
+    !window.esPedidoSoloStock(p)
   );
   
   if (pisSinODP.length === 0) {
@@ -12352,6 +12392,8 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
       if (ovObj) {
         const folSaldo = await window.generarSaldoOVEntrega(ovObj);
         if (folSaldo) toast(`🔁 ${folSaldo}: OV de saldo generada por lo pendiente de ${ovObj.folio}`, 'info');
+        // 🔧 FIX SEGUIMIENTO: sincronizar odp.estatus + cerrar PI si ya no falta nada
+        await window.postEntregaSync(ovObj, tarimasIds, !!folSaldo);
       }
     }
     // Si TODAS las paradas quedaron entregadas → completar la ruta automáticamente
@@ -12443,7 +12485,11 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
       for (const p of (ruta.paradas || [])) {
         if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
           const ovL = (state.ordenes_venta || []).find(o => o.id === p.ov_id);
-          if (ovL) { const fol = await window.generarSaldoOVEntrega(ovL); if (fol) _saldosGen++; }
+          if (ovL) {
+            const fol = await window.generarSaldoOVEntrega(ovL); if (fol) _saldosGen++;
+            // 🔧 FIX SEGUIMIENTO: sincronizar odp.estatus + cerrar PI si ya no falta nada
+            await window.postEntregaSync(ovL, null, !!fol);
+          }
         }
       }
       if (_saldosGen > 0) toast(`🔁 ${_saldosGen} OV(s) de saldo generada(s) por entregas parciales`, 'info');
@@ -12778,7 +12824,8 @@ function renderSeguimientoPedidos() {
   } else if (filtroEstado === 'sin_odp') {
     pedidos = pedidos.filter(p => {
       const odps = odpsPorPedido[p.id] || [];
-      return odps.filter(o => !o.archivada).length === 0;
+      // 🔧 FIX BUG B: los PIs surtidos de stock nunca tendrán ODP → no son "Sin ODPs"
+      return odps.filter(o => !o.archivada).length === 0 && !window.esPedidoSoloStock(p);
     });
   } else if (filtroEstado === 'todos') {
     // Sin filtro adicional, PERO excluir los que ya están en CEDIS o completados
@@ -12795,9 +12842,11 @@ function renderSeguimientoPedidos() {
   pedidos.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
   
   // PIs sin ODPs (para botón de limpieza masiva)
-  const pisSinODP = pedidosBase.filter(p => 
+  // 🔧 FIX BUG B: excluir los que se surten de STOCK — nunca tendrán ODP y NO deben archivarse
+  const pisSinODP = pedidosBase.filter(p =>
     p.estatus !== 'cancelado' && estadoRealMap[p.id] !== 'completado' &&
-    (odpsPorPedido[p.id] || []).filter(o => !o.archivada).length === 0
+    (odpsPorPedido[p.id] || []).filter(o => !o.archivada).length === 0 &&
+    !window.esPedidoSoloStock(p)
   );
   
   // 🆕 KPIs basados en estados reales
@@ -12961,7 +13010,9 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
               <span class="text-mono" style="font-weight:800;font-size:16px;color:#0f172a;">${pedido.folio}</span>
               <span style="padding:3px 10px;background:${colorEst};color:#fff;border-radius:99px;font-size:11px;font-weight:800;">${lblEst}</span>
-              ${odps.length === 0 && pedido.estatus === 'aprobado' ? `<span style="padding:3px 10px;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:99px;font-size:10.5px;font-weight:800;">⚠ Sin ODPs</span>` : ''}
+              ${odps.length === 0 && pedido.estatus === 'aprobado' ? (window.esPedidoSoloStock(pedido)
+                ? `<span style="padding:3px 10px;background:#dbeafe;color:#1e40af;border:1px solid #3b82f6;border-radius:99px;font-size:10.5px;font-weight:800;">📦 Surtido de stock</span>`
+                : `<span style="padding:3px 10px;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:99px;font-size:10.5px;font-weight:800;">⚠ Sin ODPs</span>`) : ''}
               ${inconsistencia ? `<span title="${inconsistencia}" style="padding:3px 10px;background:#fee2e2;color:#991b1b;border:1px solid #dc2626;border-radius:99px;font-size:10.5px;font-weight:800;cursor:help;">⚠ Estatus inconsistente</span>` : ''}
             </div>
             <div style="font-size:13px;font-weight:700;color:#475569;margin-top:4px;">${pedido.cliente_nombre || '—'}</div>
@@ -12991,7 +13042,9 @@ function _renderTimelinePedido(pedido, puedeCancelar) {
       <!-- ODPs del pedido -->
       ${odps.length === 0 ? `
         <div style="padding:24px;text-align:center;color:#94a3b8;font-size:12px;">
-          ${pedido.estatus === 'pendiente_aprobacion' ? '⏳ Aún sin ODPs (esperando aprobación)' : 'Sin ODPs asignadas a este pedido'}
+          ${pedido.estatus === 'pendiente_aprobacion' ? '⏳ Aún sin ODPs (esperando aprobación)'
+            : window.esPedidoSoloStock(pedido) ? '📦 Este pedido se surte de STOCK — no requiere producción. Su avance se ve en <strong>Embarques</strong>.'
+            : 'Sin ODPs asignadas a este pedido'}
         </div>
       ` : `
         <div style="padding:14px 18px;display:flex;flex-direction:column;gap:14px;">
@@ -13048,9 +13101,13 @@ function _renderTimelineODP(odp) {
     'en_transito_cedis_mty', 'en_cedis_mty', 'en_cedis_mex', 'embarcada', 
     'entregada', 'completada', 'liberada'].includes(estatus);
   
-  const odpEntregada = ['entregada', 'completada'].includes(estatus);
-  const odpEnLogistica = ['liberada_empaque', 'pendiente_almacen', 
-    'en_almacen_planta', 'en_transito_cedis', 'en_transito_cedis_mty', 
+  // 🔧 FIX SEGUIMIENTO: si TODAS las tarimas ya están entregadas, la ODP está entregada
+  //    aunque su campo `estatus` se haya quedado atrás (datos viejos / entrega por otro camino).
+  let _entregadaPorTarimas = false;
+  try { _entregadaPorTarimas = window.calcularEstatusODPPorTarimas(odp.id) === 'entregada'; } catch (e) {}
+  const odpEntregada = ['entregada', 'completada'].includes(estatus) || _entregadaPorTarimas;
+  const odpEnLogistica = !odpEntregada && ['liberada_empaque', 'pendiente_almacen',
+    'en_almacen_planta', 'en_transito_cedis', 'en_transito_cedis_mty',
     'en_cedis_mty', 'en_cedis_mex', 'embarcada'].includes(estatus);
   const odpEnCalidad = estatus === 'pendiente_calidad';
   
@@ -15207,9 +15264,9 @@ function renderLogisticaRutas() {
           </div>
           ${(() => { const e = _relFecha(window.aFechaLocalISO(r.fecha) || r.fecha); return `<div style="font-size:13px;font-weight:800;color:${e.color};margin-top:6px;">${e.txt} · ${r.origen||''}</div>`; })()}
         </div>
-        <div style="text-align:right;font-size:10.5px;color:#94a3b8;white-space:nowrap;">
-          <div style="font-weight:700;color:#334155;">${r.transportista||'—'}</div>
-          <div>${r.notas||''}</div>
+        <div style="text-align:right;font-size:10.5px;color:#94a3b8;max-width:230px;">
+          <div style="font-weight:700;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.transportista||'—'}</div>
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.notas||''}</div>
         </div>
       </div>
 
@@ -17804,7 +17861,7 @@ function modalCapturarTurno() {
               <div>
                 <div style="font-size:18px;font-weight:800;color:${procActual.color};">${procActual.icono} ${procActual.nombre}</div>
                 <div class="text-mono" style="font-size:13px;font-weight:700;margin-top:2px;">${odp.folio}</div>
-                <div style="font-size:12px;color:#475569;margin-top:2px;">${odp.cliente_nombre} · ${odp.producto_codigo}</div>
+                <div style="font-size:12px;color:#475569;margin-top:2px;">${odp.cliente_nombre || 'STOCK'} · ${odp.producto_codigo}</div>
               </div>
               <div style="text-align:right;">
                 <div style="font-size:10px;color:#64748b;font-weight:700;">MÁQUINA</div>
@@ -19409,7 +19466,7 @@ function modalCompletarProceso() {
             <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:10px;">
               <div>
                 <div class="text-mono" style="font-size:15px;font-weight:800;">${odp.folio}</div>
-                <div style="font-size:13px;font-weight:600;margin-top:2px;">${odp.cliente_nombre} · ${odp.producto_codigo}</div>
+                <div style="font-size:13px;font-weight:600;margin-top:2px;">${odp.cliente_nombre || 'STOCK'} · ${odp.producto_codigo}</div>
                 <div style="font-size:11px;color:#475569;margin-top:2px;">Entrada al proceso: <strong>${fmtNum(entradaKg)} kg</strong></div>
               </div>
               <div style="text-align:right;">
@@ -21753,6 +21810,9 @@ window.confirmarEntregaSalida = async (ovId) => {
       }
     }
     const fol = await window.generarSaldoOVEntrega(ov);   // saldo si fue parcial (camino único)
+    // 🔧 FIX SEGUIMIENTO: sincroniza odp.estatus con las tarimas y cierra el PI si ya no falta nada
+    //    (sin esto el pedido se quedaba atorado en "En logística" aunque ya estaba entregado)
+    await window.postEntregaSync(ov, tids, !!fol);
     toast(fol ? `✅ ${ov.folio} entregado · 🔁 saldo ${fol} generado por lo pendiente` : `✅ ${ov.folio} entregado`, 'success');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
@@ -30501,7 +30561,7 @@ function renderRecepcionesMP() {
           const numLineas = (oc.lineas || []).length;
           const totalCantidad = (oc.lineas || []).reduce((s,l) => s + (Number(l.cantidad) || 0), 0);
           const totalRecibido = (oc.lineas || []).reduce((s,l) => s + (Number(l.cantidad_recibida) || 0), 0);
-          const pctRecibido = totalCantidad > 0 ? (totalRecibido / totalCantidad * 100) : 0;
+          const pctRecibido = totalCantidad > 0 ? Math.min(100, (totalRecibido / totalCantidad * 100)) : 0;
           
           return `
             <div class="panel" style="border-left:4px solid ${borderColor};padding:14px 18px;">
@@ -30998,7 +31058,7 @@ function modalDetalleOC() {
   const total = subtotal + iva;
   const totalRecibido = lineas.reduce((s,l) => s + (Number(l.cantidad_recibida)||0), 0);
   const totalPedido = lineas.reduce((s,l) => s + (Number(l.cantidad)||0), 0);
-  const pctRecibido = totalPedido > 0 ? Math.round(totalRecibido/totalPedido*100) : 0;
+  const pctRecibido = totalPedido > 0 ? Math.min(100, Math.round(totalRecibido/totalPedido*100)) : 0;
 
   const ESTADOS_OC = {
     oc_generada: { label: 'En tránsito', color: '#f59e0b' },
@@ -31566,7 +31626,7 @@ function renderLotesKardex(lotes, mp, agotados, rechazados, puedeVerCostos) {
     <div style="display:flex;flex-direction:column;gap:12px;">
       ${ordenados.map((l, idx) => {
         const consumido = (Number(l.cantidad_inicial) || 0) - (Number(l.stock_actual) || 0);
-        const pctConsumido = l.cantidad_inicial > 0 ? (consumido / l.cantidad_inicial) * 100 : 0;
+        const pctConsumido = l.cantidad_inicial > 0 ? Math.min(100, Math.max(0, (consumido / l.cantidad_inicial) * 100)) : 0;
         const rechazadoLote = l.estatus === 'rechazado_calidad';
         const colorPrincipal = rechazadoLote ? '#dc2626' : agotados ? '#94a3b8' : '#16a34a';
         const colorBg = rechazadoLote ? '#fef2f2' : agotados ? '#f8fafc' : '#f0fdf4';
@@ -31823,8 +31883,12 @@ function _pdfHeaderEmpresa(doc, tituloDoc, folioDoc) {
   doc.setFontSize(7);
   doc.text(tituloDoc.toUpperCase(), 177, 16, { align: 'center' });
   
-  doc.setFontSize(15);
-  doc.text(folioDoc, 177, 26, { align: 'center' });
+  // 🔧 FIX DOC: folio siempre string (undefined tronaba TODOS los PDFs) + auto-encoger si no cabe
+  const _folioStr = String(folioDoc || '—');
+  let _fzFolio = 15;
+  doc.setFontSize(_fzFolio);
+  while (_fzFolio > 8 && doc.getTextWidth(_folioStr) > 46) { _fzFolio -= 1; doc.setFontSize(_fzFolio); }
+  doc.text(_folioStr, 177, 26, { align: 'center' });
   
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
@@ -32103,7 +32167,7 @@ window.imprimirRemisionPDF = (ovId) => {
       (t.um || '').toUpperCase(),
       fmtNum(t.peso_neto_kg || t.peso_neto || 0)
     ]),
-    foot: [['', '', '', '', { content: 'TOTALES', styles: { halign: 'right' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg)]],
+    foot: [['', '', '', '', { content: 'TOTALES', styles: { halign: 'right' } }, (new Set(tarimas.map(t=>t.um)).size === 1 ? fmtNum(totalCant) : '—'), (new Set(tarimas.map(t=>t.um)).size === 1 ? (tarimas[0]?.um || '').toUpperCase() : 'MIXTO'), fmtNum(totalKg)]],
     theme: 'striped',
     headStyles: { 
       fillColor: _COL_AZUL, 
@@ -32138,7 +32202,10 @@ window.imprimirRemisionPDF = (ovId) => {
   });
   
   y = docPDF.lastAutoTable.finalY + 8;
-  
+
+  // 🔧 FIX DOC: con muchas tarimas las secciones se salían de la hoja / encimaban el pie
+  if (y > 283 - 32) { docPDF.addPage(); y = 24; }
+
   // === SECCIÓN 3: TRANSPORTE ===
   y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE TRANSPORTE', _COL_AZUL);
   
@@ -32175,7 +32242,10 @@ window.imprimirRemisionPDF = (ovId) => {
   }
   
   y += 30;
-  
+
+  // 🔧 FIX DOC: salto de página si las firmas no caben completas
+  if (y > 283 - 42) { docPDF.addPage(); y = 24; }
+
   // === SECCIÓN 4: FIRMAS ===
   y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS DE CONFORMIDAD', _COL_AZUL);
   
@@ -32311,10 +32381,10 @@ window.imprimirListaCargaPDF = (ovId) => {
   const cardW = 43.5;
   const cardH = 16;
   const cards = [
-    { label: 'OV', value: ov.folio, color: _COL_AZUL },
-    { label: 'PI ORIGEN', value: ov.pedido_folio || '—', color: _COL_AZUL_OSCURO },
+    { label: 'OV', value: String(ov.folio || '—'), color: _COL_AZUL },
+    { label: 'PI ORIGEN', value: String(ov.pedido_folio || '—'), color: _COL_AZUL_OSCURO },
     { label: 'TARIMAS', value: `${tarimas.length}`, color: _COL_VERDE },
-    { label: 'TOTAL KG', value: fmtNum(totalKg), color: _COL_VERDE }
+    { label: 'TOTAL KG', value: String(fmtNum(totalKg)), color: _COL_VERDE }
   ];
   cards.forEach((c, i) => {
     const x = 14 + (i * (cardW + 2));
@@ -32386,7 +32456,7 @@ window.imprimirListaCargaPDF = (ovId) => {
       fmtNum(t.peso_neto_kg || t.peso_neto || 0),
       ''
     ]),
-    foot: [['', '', '', '', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, fmtNum(totalCant), (tarimas[0]?.um || '').toUpperCase(), fmtNum(totalKg), '']],
+    foot: [['', '', '', '', '', { content: 'TOTALES', styles: { halign: 'right', fontStyle: 'bold' } }, (new Set(tarimas.map(t=>t.um)).size === 1 ? fmtNum(totalCant) : '—'), (new Set(tarimas.map(t=>t.um)).size === 1 ? (tarimas[0]?.um || '').toUpperCase() : 'MIXTO'), fmtNum(totalKg), '']],
     theme: 'grid',
     headStyles: { 
       fillColor: _COL_AZUL_OSCURO, textColor: 255, fontSize: 8.5, fontStyle: 'bold',
@@ -32423,7 +32493,10 @@ window.imprimirListaCargaPDF = (ovId) => {
   });
   
   y = docPDF.lastAutoTable.finalY + 4;
-  
+
+  // 🔧 FIX DOC: con muchas tarimas el checklist/transporte/firmas se salían de la hoja
+  if (y > 283 - 32) { docPDF.addPage(); y = 24; }
+
   // ===== CHECKLIST DE VERIFICACIÓN (con checkboxes reales) =====
   y = _pdfSeccionTitulo(docPDF, y, 'CHECKLIST DE VERIFICACIÓN', _COL_AZUL_OSCURO);
   
@@ -32458,7 +32531,9 @@ window.imprimirListaCargaPDF = (ovId) => {
   });
   
   y += checklistH + 4;
-  
+
+  if (y > 283 - 24) { docPDF.addPage(); y = 24; }   // 🔧 FIX DOC: salto de página
+
   // ===== TRANSPORTE =====
   y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN DE TRANSPORTE', _COL_AZUL_OSCURO);
   
@@ -32488,10 +32563,12 @@ window.imprimirListaCargaPDF = (ovId) => {
   docPDF.text(ov.conductor || '—', 130, y + 10);
   
   y += transporteH + 4;
-  
+
+  if (y > 283 - 40) { docPDF.addPage(); y = 24; }   // 🔧 FIX DOC: firmas completas o página nueva
+
   // ===== FIRMAS =====
   y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS DE CONFORMIDAD', _COL_AZUL_OSCURO);
-  
+
   const firmaW = 58;
   const firmaH = 28;
   const firmas = [
@@ -32848,7 +32925,9 @@ window.imprimirPackingListPDF = (idOrPkl, pklFilter = null) => {
   }
   
   // ===== CONTROL DE CALIDAD =====
-  if (y < 240) {
+  // 🔧 FIX DOC: antes con tabla larga la sección se OMITÍA en silencio; ahora salta de página
+  if (y >= 240) { docPDF.addPage(); y = 24; }
+  {
     y = _pdfSeccionTitulo(docPDF, y, 'CONTROL DE CALIDAD', _COL_AZUL);
     
     const calH = 22;
@@ -32892,7 +32971,9 @@ window.imprimirPackingListPDF = (idOrPkl, pklFilter = null) => {
   }
   
   // ===== FIRMAS =====
-  if (y < 250) {
+  // 🔧 FIX DOC: las firmas se omitían en silencio con tabla larga; ahora saltan de página
+  if (y >= 250) { docPDF.addPage(); y = 24; }
+  {
     y = _pdfSeccionTitulo(docPDF, y, 'FIRMAS', _COL_AZUL);
     
     const firmaW = 58, firmaH = 24;
@@ -33122,14 +33203,17 @@ window.imprimirHojaRuta = (rutaId) => {
       ['Estatus:', _limpiarEmoji((RUTA_ESTADOS[ruta.estatus]||{}).label) || ruta.estatus || '—'],
     ];
     if (ruta.notas) rows.push(['Notas:', ruta.notas]);
-    rows.forEach((row, i) => {
-      const yy = y + (i * 5.5);
+    // 🔧 FIX DOC: wrap de valores largos (notas) a 136mm y avance según líneas reales
+    let yy = y;
+    rows.forEach((row) => {
       docPDF.setFont('helvetica','bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0],_COL_AZUL_OSCURO[1],_COL_AZUL_OSCURO[2]);
       docPDF.text(row[0], 16, yy);
       docPDF.setFont('helvetica','normal'); docPDF.setTextColor(0,0,0);
-      docPDF.text(String(row[1]), 60, yy);
+      const lineas = docPDF.splitTextToSize(String(row[1]), 136);
+      docPDF.text(lineas, 60, yy);
+      yy += lineas.length * 5.5;
     });
-    y += rows.length * 5.5 + 6;
+    y = yy + 6;
 
     // Paradas
     y = _pdfSeccionTitulo(docPDF, y, `PARADAS (${(ruta.paradas||[]).length})`, _COL_VERDE);
@@ -33145,7 +33229,8 @@ window.imprimirHojaRuta = (rutaId) => {
       docPDF.setFont('helvetica','normal'); docPDF.setFontSize(8); docPDF.setTextColor(80,80,80);
       const ref = [p.ov_folio?('OV '+p.ov_folio):'', p.rma_codigo||''].filter(Boolean).join(' · ');
       if (ref) docPDF.text(ref, 26, y + 11);
-      if (p.direccion) docPDF.text(docPDF.splitTextToSize(p.direccion, 150), 26, y + 14.5);
+      // 🔧 FIX DOC: solo 1 línea de dirección dentro de la tarjeta (antes 2+ líneas se encimaban)
+      if (p.direccion) { const _lDir = docPDF.splitTextToSize(p.direccion, 150); docPDF.text(_lDir[0] + (_lDir.length > 1 ? '…' : ''), 26, y + 14.5); }
       // casilla de firma/entregado
       docPDF.setDrawColor(150,150,150);
       docPDF.rect(180, y + 5, 6, 6, 'S');
@@ -33181,7 +33266,8 @@ window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
     if (!odp) { toast('ODP no encontrada', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
   
-  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId && (!pklFilter || t.packing_list === pklFilter))
+  // 🔧 FIX DOC: excluir tarimas rechazadas/inactivas (antes se imprimían etiquetas "LIBERADO" para rechazadas)
+  const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId && t.activo !== false && t.estatus !== 'rechazada' && (!pklFilter || t.packing_list === pklFilter))
     .sort((a, b) => (a.numero_tarima || 0) - (b.numero_tarima || 0));
   if (tarimas.length === 0) { toast('No hay tarimas para esta ODP', 'error'); return; }
   
@@ -33303,13 +33389,14 @@ window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
     docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
     docPDF.text('PRODUCTO', colDx + 6, yi + 5);
     
-    docPDF.setFontSize(10);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
     const prodCod = odp.producto_codigo || '—';
-    // 🆕 Wrap del código (ancho ~78mm a fuente 10)
-    const lProdEt = docPDF.splitTextToSize(prodCod, 78);
-    docPDF.text(lProdEt[0] || '—', colDx + 6, yi + 10);
+    // 🔧 FIX DOC: auto-encoger fuente para que el código COMPLETO quepa (antes se cortaba sin aviso)
+    let _fzProd = 10;
+    docPDF.setFontSize(_fzProd);
+    while (_fzProd > 6 && docPDF.getTextWidth(prodCod) > 78) { _fzProd -= 0.5; docPDF.setFontSize(_fzProd); }
+    docPDF.text(prodCod, colDx + 6, yi + 10);
     
     // 🆕 Descripción del producto en línea siguiente
     if (odp.descripcion) {
@@ -33359,11 +33446,13 @@ window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
       docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
       docPDF.text(d[0], xd + 5, yd + 5);
       
-      // Valor
-      docPDF.setFontSize(11);
+      // Valor — 🔧 FIX DOC: auto-encoger fuente en vez de truncar (lotes largos quedaban ilegibles)
       docPDF.setFont('helvetica', 'bold');
       docPDF.setTextColor(0, 0, 0);
-      const valStr = d[1].length > 22 ? d[1].substring(0,20)+'...' : d[1];
+      const valStr = String(d[1] || '—');
+      let _fzVal = 11;
+      docPDF.setFontSize(_fzVal);
+      while (_fzVal > 6 && docPDF.getTextWidth(valStr) > dataW2 - 8) { _fzVal -= 0.5; docPDF.setFontSize(_fzVal); }
       docPDF.text(valStr, xd + 5, yd + 11);
     });
     
@@ -37105,8 +37194,9 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
     const resinaDesc = producto ? descripcionResina(producto) : 'Polietileno de baja densidad';
 
     // Tarimas de esta ODP
-    const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId && (!pklFilter || t.packing_list === pklFilter));
-    const lotes = (state.lotes || []).filter(l => l.odp_id === odpId && (!pklFilter || l.packing_list === pklFilter));
+    // 🔧 FIX DOC: excluir rechazadas/inactivas — antes inflaban los kg del certificado
+    const tarimas = (state.tarimas || []).filter(t => t.odp_id === odpId && t.activo !== false && t.estatus !== 'rechazada' && (!pklFilter || t.packing_list === pklFilter));
+    const lotes = (state.lotes || []).filter(l => l.odp_id === odpId && l.activo !== false && (!pklFilter || l.packing_list === pklFilter));
     const totalPaquetes = tarimas.reduce((s, t) => s + (Number(t.paquetes) || 0), 0);
     const totalPiezas = totalPaquetes * (Number(med.piezas_por_paq) || 0);
     
@@ -37254,20 +37344,21 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
       filasCar.push([
         'Ancho (cm)',
         `${producto.ancho} cm (+/-) ${(Number(tols.tol_ancho) || 1) * 10} mm`,
-        { content: `${med.ancho} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
+        { content: (med.ancho != null && med.ancho !== '') ? `${med.ancho} cm` : '—', colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
       ]);
     }
 
     // Fuelle (cm) — 3 columnas separadas: Derecho/Centro/Izquierdo
+    // 🔧 FIX DOC: mediciones no capturadas imprimían "undefined cm" → ahora '—'
     if (tieneFuelle && Number(producto.fuelle) > 0) {
       const okD = dentroTol(med.fuelle_derecho, tols.fuelle_min/2, tols.fuelle_max/2);
       const okI = dentroTol(med.fuelle_izquierdo, tols.fuelle_min/2, tols.fuelle_max/2);
       filasCar.push([
         'Fuelle (cm)',
         `${producto.fuelle} cm ( ${(producto.fuelle/2).toFixed(0)} + ${(producto.fuelle/2).toFixed(0)} ) (+/-) ${(Number(tols.tol_fuelle) || 1) * 10} mm`,
-        { content: med.fuelle_derecho + ' cm', styles: { halign: 'center', textColor: okD === false ? [220,38,38] : [0,0,0], fontStyle: okD === false ? 'bold' : 'normal' } },
+        { content: (med.fuelle_derecho != null && med.fuelle_derecho !== '') ? med.fuelle_derecho + ' cm' : '—', styles: { halign: 'center', textColor: okD === false ? [220,38,38] : [0,0,0], fontStyle: okD === false ? 'bold' : 'normal' } },
         { content: med.fuelle_centro || 'N/A', styles: { halign: 'center' } },
-        { content: med.fuelle_izquierdo + ' cm', styles: { halign: 'center', textColor: okI === false ? [220,38,38] : [0,0,0], fontStyle: okI === false ? 'bold' : 'normal' } },
+        { content: (med.fuelle_izquierdo != null && med.fuelle_izquierdo !== '') ? med.fuelle_izquierdo + ' cm' : '—', styles: { halign: 'center', textColor: okI === false ? [220,38,38] : [0,0,0], fontStyle: okI === false ? 'bold' : 'normal' } },
       ]);
     }
 
@@ -37277,7 +37368,7 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
       filasCar.push([
         'Largo (cm)',
         `${producto.largo} (+/-) ${(Number(tols.tol_largo) || 1) * 10} mm`,
-        { content: `${med.largo} cm`, colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
+        { content: (med.largo != null && med.largo !== '') ? `${med.largo} cm` : '—', colSpan: 3, styles: { halign: 'center', textColor: ok === false ? [220,38,38] : [0,0,0], fontStyle: ok === false ? 'bold' : 'normal' } }
       ]);
     }
     
@@ -39281,6 +39372,46 @@ window.confirmarCargaOV = async (ovId) => {
     toast('Error: ' + e.message, 'error');
   } finally {
     state.loadingAccion = false; render();
+  }
+};
+
+// 🆕 HELPER ÚNICO POST-ENTREGA — se llama desde TODOS los caminos de entrega
+//    (Embarques del día, tablero de Embarques, entrega por parada y ruta completada).
+//    Hace lo que antes solo hacía marcarOVEntregada:
+//      1) sincroniza odp.estatus con sus tarimas (si no, Seguimiento Producción deja el
+//         pedido atorado en "En logística" aunque ya se entregó → BUG reportado),
+//      2) cierra el PI si todas sus OVs quedaron entregadas y ninguna ODP sigue produciendo.
+window.postEntregaSync = async (ov, tarimaIds, seGeneroSaldo) => {
+  if (!ov) return;
+  try {
+    // 1) Sincronizar ODPs afectadas (tarimas de esta OV)
+    let tids = (tarimaIds && tarimaIds.length) ? tarimaIds : (ov.tarimas_ids || []);
+    if (!tids.length) tids = (state.tarimas || []).filter(t => t.ov_id === ov.id).map(t => t.id);
+    const odpIds = [...new Set(tids
+      .map(tid => (state.tarimas || []).find(t => t.id === tid)?.odp_id)
+      .filter(Boolean))];
+    if (odpIds.length) await window.sincronizarODPsDeTarimas(odpIds);
+
+    // 2) Cerrar el PI si ya no queda nada pendiente
+    //    Si esta entrega fue PARCIAL y generó OV de saldo, el PI sigue abierto por lo pendiente.
+    if (seGeneroSaldo) return;
+    const pedidoFolio = ov.pedido_folio;
+    if (!pedidoFolio) return;
+    const pedido = (state.pedidos || []).find(p => p.folio === pedidoFolio);
+    if (!pedido || pedido.estatus === 'completado' || pedido.estatus === 'cancelado') return;
+    const ovsDelPedido = (state.ordenes_venta || []).filter(o => o.pedido_folio === pedidoFolio && o.estatus !== 'cancelada');
+    const todasCerradas = ovsDelPedido.length > 0 && ovsDelPedido.every(o => ['entregada', 'completada'].includes(o.estatus));
+    const hayODPproduciendo = (state.ordenes_produccion || []).some(o =>
+      (o.pedido_folio === pedidoFolio || o.pedido_id === pedido.id) && !o.archivada &&
+      ['pendiente_planeacion', 'programada', 'en_produccion', 'pausada', 'pendiente_calidad'].includes(o.estatus));
+    if (todasCerradas && !hayODPproduciendo) {
+      await updateDoc(doc(db, 'pedidos', pedido.id), {
+        estatus: 'completado', completado_at: serverTimestamp(), updated_at: serverTimestamp()
+      });
+      const pl = (state.pedidos || []).find(p => p.id === pedido.id); if (pl) pl.estatus = 'completado';
+    }
+  } catch (e) {
+    console.warn('postEntregaSync:', e.message);
   }
 };
 
@@ -42724,7 +42855,7 @@ function renderTrazEmbarques(p, ovs) {
           </div>
           <div style="height:10px;background:#e2e8f0;border-radius:99px;overflow:hidden;display:flex;">
             <div style="width:${r.sol > 0 ? Math.min(100, (r.entregado / r.sol) * 100) : 0}%;background:#16a34a;"></div>
-            <div style="width:${r.sol > 0 ? Math.min(100 - (r.entregado / r.sol) * 100, (r.enCamino / r.sol) * 100) : 0}%;background:#06b6d4;"></div>
+            <div style="width:${r.sol > 0 ? Math.max(0, Math.min(100 - (r.entregado / r.sol) * 100, (r.enCamino / r.sol) * 100)) : 0}%;background:#06b6d4;"></div>
           </div>
           ${r.entregas.length > 0 ? `
             <div style="margin-top:8px;font-size:11px;color:#475569;">
@@ -50965,23 +51096,23 @@ window.imprimirPackingList = async (codigoPKL) => {
 <div class="info-box">
   <div>
     <strong>Cliente</strong>
-    <div class="val">${pkl.cliente_codigo} — ${pkl.cliente_nombre}</div>
+    <div class="val">${pkl.cliente_codigo || '—'} — ${pkl.cliente_nombre || '—'}</div>
     ${cliente?.calle ? `<div style="font-size:10px;color:#475569;margin-top:4px;">${cliente.calle}, ${cliente.colonia || ''}</div>` : ''}
     ${cliente?.municipio ? `<div style="font-size:10px;color:#475569;">${cliente.municipio}, ${cliente.estado || ''} ${cliente.cp || ''}</div>` : ''}
   </div>
   <div>
     <strong>Documentos relacionados</strong>
     <div class="val">PI: ${pkl.pedido_folio || '—'}</div>
-    <div class="val">ODP: ${pkl.odp_folio}</div>
+    <div class="val">ODP: ${pkl.odp_folio || '—'}</div>
     ${cliente?.contacto ? `<div style="font-size:10px;color:#475569;margin-top:4px;">Contacto: ${cliente.contacto}</div>` : ''}
   </div>
 </div>
 
 <div class="producto-info">
   <strong style="color:#92400e;">PRODUCTO:</strong>
-  <span style="font-family:monospace;font-weight:700;">${pkl.producto_codigo}</span> — ${pkl.descripcion}<br>
+  <span style="font-family:monospace;font-weight:700;">${pkl.producto_codigo || '—'}</span> — ${pkl.descripcion || ''}<br>
   <strong style="color:#92400e;">EMPAQUE:</strong>
-  ${pkl.num_tarimas} tarima${pkl.num_tarimas > 1 ? 's' : ''} · Contenido por paquete: <strong>${pkl.contenido_por_paquete || '—'} ${UM_LABELS[um] || um}</strong>
+  ${Number(pkl.num_tarimas) || 0} tarima${(Number(pkl.num_tarimas) || 0) > 1 ? 's' : ''} · Contenido por paquete: <strong>${pkl.contenido_por_paquete || '—'} ${UM_LABELS[um] || um}</strong>
 </div>
 
 <table>
@@ -51042,7 +51173,7 @@ window.imprimirPackingList = async (codigoPKL) => {
     </div>
     <div>
       <div style="font-size:9px;color:#475569;text-transform:uppercase;">% Calidad</div>
-      <strong>${pkl.pct_calidad}%</strong>
+      <strong>${Number(pkl.pct_calidad) || 0}%</strong>
     </div>
     <div>
       <div style="font-size:9px;color:#475569;text-transform:uppercase;">Cantidad total</div>
@@ -52022,7 +52153,7 @@ function _renderOTIPDF(oti, esPreview) {
     docPDF.setTextColor(255, 255, 255);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(10);
-    docPDF.text('⚠ VISTA PREVIA — AÚN NO SE HA GENERADO LA OTI', W/2, y + 5.5, { align: 'center' });
+    docPDF.text('VISTA PREVIA — AÚN NO SE HA GENERADO LA OTI', W/2, y + 5.5, { align: 'center' });
     docPDF.setTextColor(0, 0, 0);
     y += 11;
   } else {
@@ -52408,7 +52539,7 @@ function _renderRecepcionPDF(oti, esPreview) {
     docPDF.setTextColor(255, 255, 255);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setFontSize(10);
-    docPDF.text('⚠ VISTA PREVIA — AÚN NO SE HA CONFIRMADO LA RECEPCIÓN', W/2, y + 5.5, { align: 'center' });
+    docPDF.text('VISTA PREVIA — AÚN NO SE HA CONFIRMADO LA RECEPCIÓN', W/2, y + 5.5, { align: 'center' });
     docPDF.setTextColor(0, 0, 0);
     y += 11;
   }
@@ -52477,10 +52608,11 @@ function _renderRecepcionPDF(oti, esPreview) {
       const sProdCli = `${tc.producto || ''}\n${tc.cliente || ''}`;
       const sEsp = `${fmtNum(tc.cantidad_esperada || 0)} ${tc.um || ''}`.trim();
       const sRec = `${fmtNum(tc.cantidad_recibida || 0)} ${tc.um || ''}`.trim();
+      // 🔧 FIX DOC: helvetica de jsPDF no tiene ✓/⚠/✗ → salían glifos corruptos; texto plano
       const sCond = {
-        'ok': '✓ OK', 'dañada': '⚠ Dañada', 'faltante': '✗ Faltante',
-        'sobrante': '+ Sobrante', 'otro': '? Otro'
-      }[tc.condicion] || tc.condicion;
+        'ok': 'OK', 'dañada': 'DAÑADA', 'faltante': 'FALTANTE',
+        'sobrante': '+ SOBRANTE', 'otro': 'OTRO'
+      }[tc.condicion] || (tc.condicion || '—');
       const sNotas = tc.notas || '';
       
       const lProdCli = docPDF.splitTextToSize(sProdCli, cw.c2 - padCell*2);
