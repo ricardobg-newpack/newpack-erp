@@ -3923,7 +3923,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2f-analitica</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B3-seguimientoped</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -42211,8 +42211,68 @@ function renderTrazEmbarques(p, ovs) {
   if (ovs.length === 0) {
     return `<div style="text-align:center;padding:40px;color:#94a3b8;">🚚 Aún no hay órdenes de venta para este PI</div>`;
   }
-  
-  return ovs.map(ov => {
+
+  // 🆕 SEGUIMIENTO A NIVEL PEDIDO (para Customer Service): consolida todas las
+  //    parcialidades por producto → Solicitado vs Entregado vs Pendiente REAL.
+  const _qtyEnviada = (o) => {
+    let q = Number(o.cantidad_enviada) || 0;
+    if (!q && o.tarimas_ids) q = state.tarimas.filter(t => o.tarimas_ids.includes(t.id)).reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
+    return q;
+  };
+  const lineas = window.pedidoLineas(p.id);
+  const resumen = lineas.map(l => {
+    const sol = Number(l.cantidad_solicitada) || 0;
+    const ovsL = ovs.filter(o => (o.pedido_linea_id && o.pedido_linea_id === l.id) || (!o.pedido_linea_id && o.producto_codigo === l.producto_codigo));
+    const entregado = ovsL.filter(o => ['entregada', 'completada'].includes(o.estatus)).reduce((s, o) => s + _qtyEnviada(o), 0);
+    const enCamino = ovsL.filter(o => ['enviada', 'por_cargar'].includes(o.estatus)).reduce((s, o) => s + _qtyEnviada(o), 0);
+    const pendiente = Math.max(0, sol - entregado - enCamino);
+    const pct = sol > 0 ? Math.min(100, Math.round((entregado / sol) * 100)) : 0;
+    const entregas = ovsL.filter(o => ['entregada', 'completada'].includes(o.estatus))
+      .map(o => ({ folio: o.folio, qty: _qtyEnviada(o), fecha: o.entregada_at }))
+      .sort((a, b) => (a.fecha && a.fecha.seconds || 0) - (b.fecha && b.fecha.seconds || 0));
+    return { l, sol, entregado, enCamino, pendiente, pct, entregas };
+  }).filter(r => r.sol > 0 || r.entregado > 0);
+
+  const resumenHTML = resumen.length === 0 ? '' : `
+    <div style="background:#eff6ff;border:2px solid #3b82f6;border-radius:12px;padding:14px 16px;margin-bottom:16px;">
+      <div style="font-size:12px;font-weight:800;color:#1e40af;text-transform:uppercase;letter-spacing:.03em;margin-bottom:10px;">🎯 Seguimiento del pedido (consolidado por producto)</div>
+      ${resumen.map(r => {
+        const um = r.l.um;
+        const completo = r.pendiente <= 0 && r.enCamino <= 0;
+        return `
+        <div style="background:#fff;border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+            <div style="min-width:200px;">
+              <div class="text-mono" style="font-size:12px;font-weight:800;">${r.l.producto_codigo}</div>
+              <div style="font-size:10.5px;color:#64748b;max-width:320px;">${r.l.descripcion || ''}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:20px;font-weight:900;color:${completo ? '#16a34a' : '#1e40af'};">${r.pct}%</div>
+              <div style="font-size:10px;color:#64748b;">entregado del pedido</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 8px;font-size:12px;">
+            <div>Solicitado: <strong>${fmtCantidadUM(r.sol, um)}</strong></div>
+            <div style="color:#16a34a;">Entregado: <strong>${fmtCantidadUM(r.entregado, um)}</strong></div>
+            ${r.enCamino > 0 ? `<div style="color:#06b6d4;">En camino: <strong>${fmtCantidadUM(r.enCamino, um)}</strong></div>` : ''}
+            <div style="color:${r.pendiente > 0 ? '#dc2626' : '#16a34a'};">Pendiente: <strong>${fmtCantidadUM(r.pendiente, um)}</strong></div>
+          </div>
+          <div style="height:10px;background:#e2e8f0;border-radius:99px;overflow:hidden;display:flex;">
+            <div style="width:${r.sol > 0 ? Math.min(100, (r.entregado / r.sol) * 100) : 0}%;background:#16a34a;"></div>
+            <div style="width:${r.sol > 0 ? Math.min(100 - (r.entregado / r.sol) * 100, (r.enCamino / r.sol) * 100) : 0}%;background:#06b6d4;"></div>
+          </div>
+          ${r.entregas.length > 0 ? `
+            <div style="margin-top:8px;font-size:11px;color:#475569;">
+              <span style="color:#64748b;font-weight:700;">Entregas parciales:</span>
+              ${r.entregas.map((e, i) => `<span style="display:inline-block;background:#dcfce7;color:#166534;border-radius:6px;padding:2px 8px;margin:2px 3px;">#${i + 1} · ${e.folio} · ${fmtCantidadUM(e.qty, um)}${e.fecha ? ` · ${fmtFecha(e.fecha)}` : ''}</span>`).join('')}
+            </div>
+          ` : ''}
+          ${r.pendiente > 0 ? `<div style="margin-top:6px;font-size:11px;color:#b45309;">⏳ Faltan por surtir <strong>${fmtCantidadUM(r.pendiente, um)}</strong> — el pedido sigue abierto.</div>` : `<div style="margin-top:6px;font-size:11px;color:#166534;">✅ Pedido surtido completo.</div>`}
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  return resumenHTML + ovs.map(ov => {
     const tarimas = state.tarimas.filter(t => (ov.tarimas_ids || []).includes(t.id));
     const totalEnviado = tarimas.reduce((s, t) => s + (Number(t.cantidad) || 0), 0);
     const totalKg = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
@@ -42251,7 +42311,8 @@ function renderTrazEmbarques(p, ovs) {
           <div style="text-align:right;">
             <div style="font-size:18px;font-weight:800;color:${colorEst};">${pct}%</div>
             <div style="font-size:11px;color:#64748b;">${fmtCantidadUM(totalEnviado, ov.um)} / ${fmtCantidadUM(cantSol, ov.um)}</div>
-            ${pendiente > 0 ? `<div style="font-size:10px;color:#dc2626;font-weight:700;">⚠ Pendiente: ${fmtCantidadUM(pendiente, ov.um)}</div>` : ''}
+            ${pendiente > 0 && !['entregada', 'enviada', 'completada'].includes(ov.estatus) ? `<div style="font-size:10px;color:#dc2626;font-weight:700;">⚠ Pendiente: ${fmtCantidadUM(pendiente, ov.um)}</div>` : ''}
+            ${['entregada', 'completada'].includes(ov.estatus) && pendiente > 0 ? `<div style="font-size:10px;color:#94a3b8;">envío parcial · saldo en resumen ↑</div>` : ''}
           </div>
         </div>
         
