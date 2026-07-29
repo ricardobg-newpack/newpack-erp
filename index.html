@@ -2333,6 +2333,10 @@ window.sugerirRutaProcesos = sugerirRutaProcesos;
 // ============================================================
 // UNIDADES DE MEDIDA
 // ============================================================
+// 🆕 Estados de la República (para lugares de entrega) + municipios de Nuevo León (autocompletado)
+const ESTADOS_MX = ['Aguascalientes','Baja California','Baja California Sur','Campeche','Chiapas','Chihuahua','Ciudad de México','Coahuila','Colima','Durango','Estado de México','Guanajuato','Guerrero','Hidalgo','Jalisco','Michoacán','Morelos','Nayarit','Nuevo León','Oaxaca','Puebla','Querétaro','Quintana Roo','San Luis Potosí','Sinaloa','Sonora','Tabasco','Tamaulipas','Tlaxcala','Veracruz','Yucatán','Zacatecas'];
+const MUNICIPIOS_NL = ['Abasolo','Agualeguas','Los Aldamas','Allende','Anáhuac','Apodaca','Aramberri','Bustamante','Cadereyta Jiménez','El Carmen','Cerralvo','Ciénega de Flores','China','Doctor Arroyo','Doctor Coss','Doctor González','Galeana','García','San Pedro Garza García','General Bravo','General Escobedo','General Terán','General Treviño','General Zaragoza','General Zuazua','Guadalupe','Los Herreras','Higueras','Hualahuises','Iturbide','Juárez','Lampazos de Naranjo','Linares','Marín','Melchor Ocampo','Mier y Noriega','Mina','Montemorelos','Monterrey','Parás','Pesquería','Los Ramones','Rayones','Sabinas Hidalgo','Salinas Victoria','San Nicolás de los Garza','Hidalgo','Santa Catarina','Santiago','Vallecillo','Villaldama'];
+
 const UM_OPCIONES = ['kg', 'pza', 'millar', 'rollo', 'm'];
 const UM_LABELS = { kg: 'Kg', pza: 'Pieza', millar: 'Millar', rollo: 'Rollo', m: 'Metro lineal' };
 
@@ -3061,6 +3065,29 @@ window.almacenDeTarima = almacenDeTarima;
 // 🆕 STOCK LIBRE de un producto (en la UM del producto) — tarimas disponibles para
 //    cualquier OV: están físicamente almacenadas y NO asignadas a un pedido/OV.
 //    Incluye sobrante de sobreproducción, ODP-STK y devoluciones a stock.
+// 🆕 Código que el CLIENTE le da a NUESTRO producto (ayuda visual/comunicación).
+//    Vive en cliente_productos.codigo_cliente_interno (N:N, un producto puede tener varios clientes).
+window.codigoClienteDe = (clienteCodigo, productoCodigo) => {
+  if (!clienteCodigo || !productoCodigo) return '';
+  const cp = (state.cliente_productos || []).find(x => x.cliente_codigo === clienteCodigo && x.producto_codigo === productoCodigo && x.activo !== false);
+  return (cp && cp.codigo_cliente_interno) ? cp.codigo_cliente_interno : '';
+};
+// Badge listo para usar en cualquier vista (vacío si no hay código)
+window.badgeCodigoCliente = (clienteCodigo, productoCodigo) => {
+  const cod = window.codigoClienteDe(clienteCodigo, productoCodigo);
+  return cod ? `<span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:6px;background:rgba(22,163,74,.14);color:#166534;" title="Código de este producto para el cliente">cód. cliente: ${cod}</span>` : '';
+};
+
+// 🆕 Devuelve la OV ACTIVA a la que está comprometida una tarima, o null.
+//    Si la OV no existe o está CANCELADA, la tarima NO está comprometida (regresa a stock).
+window.ovActivaDeTarima = (t) => {
+  if (!t || (!t.ov_id && !t.ov_folio)) return null;
+  const ov = (state.ordenes_venta || []).find(o => (t.ov_id && o.id === t.ov_id) || (t.ov_folio && o.folio === t.ov_folio));
+  if (!ov) return null;
+  if (['cancelada', 'cancelado'].includes(ov.estatus)) return null;
+  return ov;
+};
+
 window.stockLibreProducto = (productoCodigo) => {
   if (!productoCodigo) return 0;
   return (state.tarimas || []).filter(t => {
@@ -3070,8 +3097,8 @@ window.stockLibreProducto = (productoCodigo) => {
     // Debe estar físicamente disponible (no embarcada/entregada/en empaque)
     const enStock = ['en_cedis_mty', 'en_cedis_mex', 'en_almacen_planta'].includes(t.estatus);
     if (!enStock) return false;
-    // LIBRE = no comprometida a un cliente (sin OV asignada)
-    const sinOV = !t.ov_id && !t.ov_folio;
+    // LIBRE = no comprometida a un cliente (sin OV ACTIVA; una OV cancelada libera la tarima)
+    const sinOV = !window.ovActivaDeTarima(t);
     if (!sinOV) return false;
     // 🔧 FIX STOCK: es STOCK INTERNO (pool NewPack), no earmark de un cliente.
     //    Antes se exigía "sin pedido", pero un PI de "Producción para Stock" estampa
@@ -3923,7 +3950,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B6b-ocultarentregados</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B9-lugaresentrega</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -7789,6 +7816,37 @@ function renderFormPedido() {
               </select>
             </div>
           </div>
+
+          ${(!esStockInterno && datos.cliente_codigo) ? (() => {
+            // 🆕 LUGAR DE ENTREGA del cliente (si tiene varios, se elige; si tiene 1, viene preseleccionado)
+            const cliPI = (state.clientes || []).find(x => x.codigo === datos.cliente_codigo);
+            let lugares = (cliPI && Array.isArray(cliPI.lugares_entrega)) ? cliPI.lugares_entrega : [];
+            if (!lugares.length && cliPI && (cliPI.calle || cliPI.municipio)) {
+              lugares = [{ id: 'LUG1', nombre: 'Principal', calle: cliPI.calle || '', colonia: cliPI.colonia || '', cp: cliPI.cp || '', municipio: cliPI.municipio || '', estado: cliPI.estado || '', pais: cliPI.pais || 'México', contacto: '', telefono: '', referencias: cliPI.referencias || '' }];
+            }
+            if (!lugares.length) return `
+              <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11.5px;color:#92400e;">
+                📍 Este cliente no tiene lugares de entrega capturados. Edítalo en Clientes para agregar su(s) dirección(es).
+              </div>`;
+            const sel = datos.lugar_entrega;
+            return `
+              <div class="field" style="margin-bottom:12px;">
+                <label class="field-label">📍 Lugar de entrega *</label>
+                ${lugares.map((l, i) => {
+                  const activo = sel && (sel.id === l.id || sel.nombre === l.nombre);
+                  const dir = [l.calle, l.colonia, l.municipio, l.estado].filter(Boolean).join(', ');
+                  return `
+                  <div onclick="seleccionarLugarPI(${i})" style="display:flex;align-items:center;gap:10px;padding:9px 12px;border:2px solid ${activo ? '#1e40af' : '#e2e8f0'};background:${activo ? 'rgba(30,64,175,.06)' : '#fff'};border-radius:9px;margin-bottom:6px;cursor:pointer;">
+                    <span style="width:15px;height:15px;border-radius:50%;border:2px solid #1e40af;${activo ? 'background:#1e40af;' : ''}flex-shrink:0;"></span>
+                    <div style="min-width:0;">
+                      <div style="font-weight:800;font-size:12.5px;">${l.nombre || ('Lugar ' + (i + 1))}</div>
+                      <div style="font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${dir || 'Sin dirección'}</div>
+                    </div>
+                  </div>`;
+                }).join('')}
+              </div>`;
+          })() : ''}
+
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field">
               <label class="field-label">${esStockInterno ? 'Referencia interna' : 'ODC del cliente'}</label>
@@ -7816,7 +7874,7 @@ function renderFormPedido() {
                 return `
                   <div style="padding:12px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:10px;${yaAgregado ? 'background:#f0fdf4;' : ''}">
                     <div style="flex:1;min-width:0;">
-                      <div class="text-mono" style="font-size:11px;font-weight:700;">${p.codigo}</div>
+                      <div class="text-mono" style="font-size:11px;font-weight:700;">${p.codigo} ${!esStockInterno ? window.badgeCodigoCliente(datos.cliente_codigo, p.codigo) : ''}</div>
                       <div style="font-size:12px;color:#475569;margin-top:2px;">${p.descripcion}</div>
                     </div>
                     ${yaAgregado ? `<span style="padding:5px 8px;background:#16a34a;color:#fff;border-radius:6px;font-size:10px;font-weight:700;">✓</span>` :
@@ -15111,7 +15169,9 @@ function renderLogisticaRutas() {
   });
   const ovsPorProgramar = (state.ordenes_venta || []).filter(o => {
     if (o.archivada || o.estatus !== 'por_cargar' || ovsEnRutas.has(o.id)) return false;
-    // Solo las del CEDIS activo
+    // 🆕 Solo las que CS marcó para AGRUPAR EN RUTA (propio multiparada). Las directas las
+    //    carga y envía el Almacén desde Embarques/Embarques del día, no pasan por ruta.
+    if (!o.requiere_ruta) return false;
     const ovCedis = (o.cedis || 'CEDIS-MTY').toUpperCase().includes('MEX') ? 'CEDIS-MEX' : 'CEDIS-MTY';
     return ovCedis === cedisActivo;
   });
@@ -15314,6 +15374,7 @@ function renderLogisticaRutas() {
           <summary style="cursor:pointer;padding:12px 15px;font-weight:800;font-size:13px;color:#166534;list-style:none;">✅ Viajes completados (${rutasCompletadas.length}) <span style="font-weight:500;color:#94a3b8;font-size:11px;">— clic para ver</span></summary>
           <div style="padding:0 12px 12px;display:flex;flex-direction:column;gap:12px;">
             ${rutasCompletadas.slice(0,50).map(cardRuta).join('')}
+            ${rutasCompletadas.length > 50 ? `<div style="text-align:center;color:#94a3b8;font-size:11px;padding:6px;">Mostrando los 50 más recientes de ${rutasCompletadas.length}.</div>` : ''}
           </div>
         </details>
       `:''}
@@ -16899,7 +16960,7 @@ function modalComoProducir() {
         <div class="modal-body" style="padding:20px;overflow-y:auto;">
           <!-- Producto -->
           <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:3px;">${odp.producto_descripcion || producto?.descripcion || odp.producto_codigo}</div>
-          <div style="font-size:12px;color:#64748b;font-family:monospace;margin-bottom:16px;">${odp.producto_codigo}</div>
+          <div style="font-size:12px;color:#64748b;font-family:monospace;margin-bottom:16px;">${odp.producto_codigo} ${window.badgeCodigoCliente(odp.cliente_codigo, odp.producto_codigo)}</div>
           
           ${med ? `
             <!-- QUÉ ES -->
@@ -17146,6 +17207,25 @@ function renderModal() {
   return '';
 }
 
+// 🆕 Handlers de la lista de lugares de entrega del cliente
+window.cliLugarSet = (i, k, v) => { if (state.cliLugares && state.cliLugares[i]) state.cliLugares[i][k] = v; };
+window.cliLugarAdd = () => {
+  if (!state.cliLugares) state.cliLugares = [];
+  state.cliLugares.push({ nombre: '', calle: '', colonia: '', cp: '', municipio: '', estado: 'Nuevo León', pais: 'México', contacto: '', telefono: '', referencias: '' });
+  render();
+};
+window.cliLugarDel = (i) => {
+  if (!state.cliLugares || state.cliLugares.length <= 1) return;
+  if (!confirm('¿Quitar este lugar de entrega?')) return;
+  state.cliLugares.splice(i, 1);
+  render();
+};
+// 🆕 Edición de códigos del cliente por producto (cliente_productos.codigo_cliente_interno)
+window.cliCodigoSet = (cpId, v) => {
+  if (!state.cliCodigosEdit) state.cliCodigosEdit = {};
+  state.cliCodigosEdit[cpId] = v;
+};
+
 function modalCrearCliente() {
   return modalFormCliente(null);
 }
@@ -17162,7 +17242,21 @@ function modalFormCliente(cliente) {
   const u = state.user || {};
   // 🆕 FAC/CYC/CEO/ADMIN pueden cambiar el código del cliente
   const puedeEditarCodigo = ['FAC','CYC','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin';
-  
+
+  // 🆕 LUGARES DE ENTREGA — lista editable en state.cliLugares (init por cliente)
+  const _keyLug = c.codigo || '__nuevo__';
+  if (state.cliLugaresKey !== _keyLug) {
+    state.cliLugaresKey = _keyLug;
+    if (Array.isArray(c.lugares_entrega) && c.lugares_entrega.length) {
+      state.cliLugares = c.lugares_entrega.map(l => ({ ...l }));
+    } else if (c.calle || c.municipio) {
+      // Migración suave: la dirección única actual pasa a ser el lugar #1
+      state.cliLugares = [{ nombre: 'Principal', calle: c.calle || '', colonia: c.colonia || '', cp: c.cp || '', municipio: c.municipio || '', estado: c.estado || 'Nuevo León', pais: c.pais || 'México', contacto: '', telefono: '', referencias: c.referencias || '' }];
+    } else {
+      state.cliLugares = [{ nombre: 'Principal', calle: '', colonia: '', cp: '', municipio: '', estado: 'Nuevo León', pais: 'México', contacto: '', telefono: '', referencias: '' }];
+    }
+  }
+
   return `
     <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
       <div class="modal" style="max-width:680px;">
@@ -17201,20 +17295,62 @@ function modalFormCliente(cliente) {
           </div>
           
           <div style="margin-top:14px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
-            <strong style="font-size:13px;display:block;margin-bottom:10px;">📍 Dirección de entrega</strong>
-            <div class="field"><label class="field-label">Calle y número</label><input class="input" id="cli-calle" value="${c.calle || ''}" /></div>
-            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;">
-              <div class="field"><label class="field-label">Colonia</label><input class="input" id="cli-colonia" value="${c.colonia || ''}" /></div>
-              <div class="field"><label class="field-label">CP</label><input class="input" id="cli-cp" value="${c.cp || ''}" /></div>
-              <div class="field"><label class="field-label">Municipio</label><input class="input" id="cli-municipio" value="${c.municipio || ''}" /></div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-              <div class="field"><label class="field-label">Estado</label><input class="input" id="cli-estado" value="${c.estado || ''}" placeholder="Nuevo León" /></div>
-              <div class="field"><label class="field-label">País</label><input class="input" id="cli-pais" value="${c.pais || 'México'}" /></div>
-            </div>
-            <div class="field"><label class="field-label">Referencias / Indicaciones</label><textarea class="input" id="cli-referencias" style="min-height:60px;">${c.referencias || ''}</textarea></div>
+            <strong style="font-size:13px;display:block;margin-bottom:4px;">📍 Lugares de entrega (${(state.cliLugares || []).length})</strong>
+            <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">Un cliente puede tener varios lugares de entrega. Al crear un pedido se elige a cuál va el material.</div>
+            <datalist id="dl-municipios-nl">${MUNICIPIOS_NL.map(m => `<option value="${m}">`).join('')}</datalist>
+            ${(state.cliLugares || []).map((l, i) => `
+              <div style="border:1.5px solid #cbd5e1;border-radius:10px;padding:12px;margin-bottom:10px;background:#fff;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                  <span style="font-size:15px;">📍</span>
+                  <input class="input" style="flex:1;font-weight:700;" placeholder="Nombre del lugar (ej: Planta Apodaca, Bodega Centro)" value="${l.nombre || ''}" oninput="cliLugarSet(${i},'nombre',this.value)" />
+                  ${(state.cliLugares || []).length > 1 ? `<button type="button" onclick="cliLugarDel(${i})" style="background:#fee2e2;color:#dc2626;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:800;">✕</button>` : ''}
+                </div>
+                <div class="field"><label class="field-label">Calle y número</label><input class="input" value="${l.calle || ''}" oninput="cliLugarSet(${i},'calle',this.value)" /></div>
+                <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;">
+                  <div class="field"><label class="field-label">Colonia</label><input class="input" value="${l.colonia || ''}" oninput="cliLugarSet(${i},'colonia',this.value)" /></div>
+                  <div class="field"><label class="field-label">CP</label><input class="input" value="${l.cp || ''}" oninput="cliLugarSet(${i},'cp',this.value)" /></div>
+                  <div class="field"><label class="field-label">Municipio</label><input class="input" list="dl-municipios-nl" value="${l.municipio || ''}" oninput="cliLugarSet(${i},'municipio',this.value)" placeholder="Escribe o elige" /></div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="field"><label class="field-label">Estado</label>
+                    <select class="input" onchange="cliLugarSet(${i},'estado',this.value)">
+                      ${ESTADOS_MX.map(e => `<option value="${e}" ${(l.estado || 'Nuevo León') === e ? 'selected' : ''}>${e}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="field"><label class="field-label">País</label><input class="input" value="${l.pais || 'México'}" oninput="cliLugarSet(${i},'pais',this.value)" /></div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="field"><label class="field-label">Quién recibe <span style="color:#94a3b8;font-weight:400;">(opcional)</span></label><input class="input" value="${l.contacto || ''}" oninput="cliLugarSet(${i},'contacto',this.value)" placeholder="Persona que recibe" /></div>
+                  <div class="field"><label class="field-label">Teléfono del lugar <span style="color:#94a3b8;font-weight:400;">(opcional)</span></label><input class="input" value="${l.telefono || ''}" oninput="cliLugarSet(${i},'telefono',this.value)" /></div>
+                </div>
+                <div class="field" style="margin-bottom:0;"><label class="field-label">Referencias / Indicaciones</label><textarea class="input" style="min-height:44px;" oninput="cliLugarSet(${i},'referencias',this.value)">${l.referencias || ''}</textarea></div>
+              </div>
+            `).join('')}
+            <button type="button" onclick="cliLugarAdd()" style="width:100%;border:2px dashed #cbd5e1;background:none;border-radius:10px;padding:11px;cursor:pointer;font-weight:800;font-size:12.5px;color:#16a34a;">＋ Agregar lugar de entrega</button>
           </div>
-          
+
+          ${esEditar ? (() => {
+            // 🆕 Códigos del CLIENTE por producto (ayuda visual/comunicación) — editable también desde aquí
+            const cps = (state.cliente_productos || []).filter(x => x.cliente_codigo === c.codigo && x.activo !== false);
+            if (!cps.length) return '';
+            return `
+            <div style="margin-top:14px;padding:14px;background:#f0fdf4;border-radius:10px;border:1px solid #bbf7d0;">
+              <strong style="font-size:13px;display:block;margin-bottom:4px;">🔗 Códigos del cliente por producto (${cps.length})</strong>
+              <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">El código con el que ESTE cliente conoce cada producto nuestro. Se muestra en pedidos, producción y embarques.</div>
+              ${cps.map(cp => {
+                const prod = (state.productos_pt || []).find(p => p.codigo === cp.producto_codigo);
+                return `
+                <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;flex-wrap:wrap;">
+                  <div style="flex:1;min-width:180px;">
+                    <div class="text-mono" style="font-size:11px;font-weight:800;">${cp.producto_codigo}</div>
+                    <div style="font-size:10.5px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px;">${prod?.descripcion || ''}</div>
+                  </div>
+                  <input class="input" style="width:180px;font-family:monospace;font-weight:700;" placeholder="Código del cliente" value="${cp.codigo_cliente_interno || ''}" oninput="cliCodigoSet('${cp.id}', this.value)" />
+                </div>`;
+              }).join('')}
+            </div>`;
+          })() : ''}
+
           <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field"><label class="field-label">CEDIS asignado</label>
               <select class="input" id="cli-cedis">
@@ -18113,7 +18249,7 @@ function modalCapturarTurnoExtrusion(odp, ruta, idx, procActual, maquinaAsignada
               <div style="font-size:11px;color:#991b1b;font-weight:800;">ODP</div>
               <div style="font-family:monospace;font-size:18px;font-weight:900;color:#0f172a;">${odp.folio}</div>
               <div style="font-size:11.5px;color:#475569;font-weight:600;margin-top:2px;">${odp.descripcion || odp.producto_codigo}</div>
-              <div style="font-size:10.5px;color:#64748b;font-family:monospace;margin-top:2px;">${odp.producto_codigo}</div>
+              <div style="font-size:10.5px;color:#64748b;font-family:monospace;margin-top:2px;">${odp.producto_codigo} ${window.badgeCodigoCliente(odp.cliente_codigo, odp.producto_codigo)}</div>
             </div>
             <div style="text-align:right;">
               <div style="font-size:11px;color:#991b1b;font-weight:800;">META</div>
@@ -20897,27 +21033,25 @@ function renderTarjetaOV(o, subTab) {
   const esCS = u.depto === 'CS' || u.depto === 'KAM' || esCEO;
   const esCEDIS = ['CEDMTY','CEDMEX'].includes(u.depto) || esCEO;
   
-  // Acciones según estado
+  // 🆕 FLUJO CON DUEÑO POR PASO + TURNO VISIBLE (acción solo para el rol responsable)
+  //   Asignar → CS/KAM · Preparar → Almacén CEDIS · Despachar → CS/KAM · Confirmar → según modo
+  const esAlmacenEmb = ['CEDMTY', 'CEDMEX', 'ALP'].includes(u.depto) || esCEO;
+  const _espera = (rol) => `<span style="font-size:11.5px;color:#94a3b8;font-style:italic;padding:8px 4px;align-self:center;">⏳ Esperando a ${rol}</span>`;
+  const _turnoBadge = { pendiente_asignar: ['👉 Turno: CS/KAM', '#1e40af'], preparando: ['👉 Turno: Almacén', '#b45309'], lista_embarcar: ['👉 Turno: CS/KAM (despachar)', '#16a34a'], por_cargar: [o.ruta_codigo ? '🚚 En ruta' : '👉 Turno: Almacén (cargar y enviar)', '#7c3aed'], enviada: ['👉 Turno: confirmar entrega', '#0891b2'] }[o.estatus];
   let acciones = '';
-  if (o.estatus === 'pendiente_asignar' && esCS) {
-    acciones += `<button class="btn-primary" onclick="abrirAsignarTarimasOV('${o.id}')" style="padding:8px 14px;background:#f59e0b;">📋 Asignar tarimas</button>`;
-  }
-  if (o.estatus === 'preparando' && esCEDIS) {
-    acciones += `<button class="btn-primary" onclick="marcarOVLista('${o.id}')" style="padding:8px 14px;background:#16a34a;">${ICONS.check} Marcar como LISTA</button>`;
-  }
-  if (o.estatus === 'lista_embarcar' && esCS) {
-    acciones += `<button class="btn-primary" onclick="abrirModal('generar-remision-ov','${o.id}')" style="padding:8px 14px;background:#3b82f6;">📄 Generar remisión/factura</button>`;
-  }
-  if (o.estatus === 'por_cargar' && esCEDIS) {
-    // 🔧 UN SOLO CANAL: el envío se hace desde Logística/Rutas, no aquí.
-    if (o.ruta_codigo) {
-      acciones += `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#8b5cf6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 En ruta ${o.ruta_codigo} — ver en Logística</button>`;
-    } else {
-      acciones += `<button onclick="window.programarOVEnRuta('${o.id}')" style="padding:8px 14px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 Programar envío</button>`;
-    }
-  }
-  if (o.estatus === 'enviada' && (esCS || esCEO)) {
-    acciones += `<button class="btn-primary" onclick="marcarOVEntregada('${o.id}')" style="padding:8px 14px;background:#15803d;">✅ Marcar entregada</button>`;
+  if (_turnoBadge) acciones += `<span style="font-size:11px;font-weight:800;color:${_turnoBadge[1]};background:${_turnoBadge[1]}18;padding:6px 11px;border-radius:99px;align-self:center;">${_turnoBadge[0]}</span>`;
+  if (o.estatus === 'pendiente_asignar') {
+    acciones += esCS ? `<button class="btn-primary" onclick="abrirAsignarTarimasOV('${o.id}')" style="padding:8px 14px;background:#1e40af;">📋 Asignar tarimas</button>` : _espera('CS/KAM');
+  } else if (o.estatus === 'preparando') {
+    acciones += esAlmacenEmb ? `<button class="btn-primary" onclick="marcarOVLista('${o.id}')" style="padding:8px 14px;background:#b45309;">✅ Marcar preparada</button>` : _espera('Almacén CEDIS');
+  } else if (o.estatus === 'lista_embarcar') {
+    acciones += esCS ? `<button class="btn-primary" onclick="abrirDespacho('${o.id}')" style="padding:8px 14px;background:#16a34a;">🚚 Despachar</button>` : _espera('CS/KAM');
+  } else if (o.estatus === 'por_cargar') {
+    if (o.ruta_codigo) acciones += `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 En ruta ${o.ruta_codigo} — ver</button>`;
+    else if (o.requiere_ruta) acciones += esAlmacenEmb ? `<button onclick="window.irAVista('logistica_rutas')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;">🚚 Agrupar en ruta (Logística)</button>` : _espera('Almacén');
+    else acciones += esAlmacenEmb ? `<button class="btn-primary" onclick="confirmarCargadoEnviado('${o.id}')" style="padding:8px 14px;background:#7c3aed;">🚛 Cargar y enviar</button>` : _espera('Almacén CEDIS');
+  } else if (o.estatus === 'enviada') {
+    acciones += window.puedeConfirmarEntregaOV(o) ? `<button class="btn-primary" onclick="confirmarEntregaSalida('${o.id}')" style="padding:8px 14px;background:#0891b2;">✓ Confirmar entrega</button>` : _espera('quien confirma la entrega');
   }
   
   // Botones PDF (disponibles desde que se genera remisión en adelante)
@@ -20946,7 +21080,7 @@ function renderTarjetaOV(o, subTab) {
           <div style="font-size:12px;color:#64748b;margin-top:3px;">
             📋 PI: <span class="text-mono" style="color:#3b82f6;font-weight:700;">${o.pedido_folio}</span>
             ${o.odp_folio ? ` · 🏭 ODP: <span class="text-mono">${o.odp_folio}</span>` : ''}
-            · <span class="text-mono">${o.producto_codigo}</span>
+            · <span class="text-mono">${o.producto_codigo}</span> ${window.badgeCodigoCliente(o.cliente_codigo, o.producto_codigo)}
             ${o.cedis ? ` · 📦 ${o.cedis}` : ''}
           </div>
           ${o.remision ? `<div style="font-size:12px;color:#475569;margin-top:3px;">📄 Remisión: <strong>${o.remision}</strong>${o.factura ? ` · 💰 Factura: <strong>${o.factura}</strong>` : ''}</div>` : ''}
@@ -20984,6 +21118,17 @@ window.setCedisEmbarques = (cedis) => {
   // Reset del sub-tab para que detecte default correcto si cambia
   // (no es estrictamente necesario, pero ayuda)
   render();
+};
+
+// 🆕 ¿Quién confirma la entrega de una OV, según el modo? (helper único, usado en Embarques y Embarques del día)
+window.puedeConfirmarEntregaOV = (o, u) => {
+  u = u || state.user || {};
+  const dep = u.depto, admin = u.rol === 'admin';
+  if (admin || ['CEO', 'ADMIN'].includes(dep)) return true;
+  if (o.modo_envio === 'cliente') return ['CEDMTY', 'CEDMEX', 'ALP', 'CS', 'KAM'].includes(dep);
+  if (o.modo_envio === 'tercero') return ['CS', 'KAM'].includes(dep);
+  if (o.modo_envio === 'propio') return ['CS', 'KAM', 'FAC', 'ALP', 'CEDMTY', 'CEDMEX'].includes(dep);
+  return ['CS', 'KAM'].includes(dep);
 };
 
 // 🆕 Sub-tabs / selector de la vista de Inventario (existencias vs analítica)
@@ -21043,7 +21188,7 @@ function renderInventarioAlmacen(almFijo) {
     g[key][bucket] += c;
     g[key].totalCant += c; g[key].totalKg += kg; g[key].tarimas++;
     const esStockLibre = (t.cliente_codigo === 'STOCK' || !t.cliente_codigo);
-    const tieneOV = !!(t.ov_id || t.ov_folio);
+    const tieneOV = !!window.ovActivaDeTarima(t);   // OV cancelada/borrada NO cuenta como comprometida
     if (tieneOV) {
       g[key].enOVCant += c;                          // ya asignada a una OV
     } else if (esStockLibre) {
@@ -21218,6 +21363,8 @@ function renderSalidasDia() {
   // ¿Quién confirma la entrega de un envío directo, según el modo?
   //   cliente recoge → CEDIS/CS (al momento) · tercero → CS (da seguimiento) · propio → CS/FAC/Logística
   const _dep = u.depto, _admin = u.rol === 'admin';
+  const _esCSd = _admin || ['CS', 'KAM', 'CEO', 'ADMIN'].includes(_dep);       // despacha (CS/KAM)
+  const _esAlmd = _admin || ['CEDMTY', 'CEDMEX', 'ALP', 'CEO', 'ADMIN'].includes(_dep); // carga y envía (Almacén)
   const puedeConfirmarEntrega = (o) => {
     if (_admin || ['CEO', 'ADMIN'].includes(_dep)) return true;
     if (o.modo_envio === 'cliente') return ['CEDMTY', 'CEDMEX', 'ALP', 'CS', 'KAM'].includes(_dep);
@@ -21254,7 +21401,8 @@ function renderSalidasDia() {
   });
 
   // KPIs
-  const porDespachar = ovs.filter(o => o.estatus === 'lista_embarcar' || (o.estatus === 'por_cargar' && !o.ruta_codigo)).length;
+  const porDespachar = ovs.filter(o => o.estatus === 'lista_embarcar').length;                       // CS/KAM
+  const porCargar = ovs.filter(o => o.estatus === 'por_cargar' && !o.ruta_codigo && !o.requiere_ruta).length; // Almacén
   const enCamino = ovs.filter(o => o.estatus === 'enviada').length;
 
   // Resuelve estado visual + acción de cada pedido (una acción clara SIEMPRE que aplique)
@@ -21273,19 +21421,34 @@ function renderSalidasDia() {
       if (puedeConfirmarEntrega(o)) accion = `<button onclick="confirmarEntregaSalida('${o.id}')" style="border:none;background:#0891b2;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">✓ Confirmar entrega</button>`;
     } else if (enRuta) {
       color = '#1e40af'; chip = `<span style="font-size:10px;font-weight:800;color:#1e40af;background:rgba(30,64,175,.12);padding:3px 9px;border-radius:99px;">🚚 PROGRAMADO EN RUTA</span>`;
-    } else {
+    } else if (o.estatus === 'lista_embarcar') {
+      // Turno de CS/KAM: generar remisión + elegir modo (Despachar)
       color = '#16a34a';
-      chip = o.estatus === 'lista_embarcar'
-        ? `<span style="font-size:10px;font-weight:800;color:#16a34a;background:rgba(22,163,74,.14);padding:3px 9px;border-radius:99px;">🟢 LISTA</span>`
-        : `<span style="font-size:10px;font-weight:800;color:#b45309;background:rgba(180,83,9,.14);padding:3px 9px;border-radius:99px;">📦 POR DESPACHAR</span>`;
-      accion = `<button onclick="abrirDespacho('${o.id}')" style="border:none;background:#16a34a;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">🚚 Despachar</button>`;
+      chip = `<span style="font-size:10px;font-weight:800;color:#16a34a;background:rgba(22,163,74,.14);padding:3px 9px;border-radius:99px;">🟢 LISTA · turno CS/KAM</span>`;
+      accion = _esCSd
+        ? `<button onclick="abrirDespacho('${o.id}')" style="border:none;background:#16a34a;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">🚚 Despachar</button>`
+        : `<span style="font-size:11px;color:#94a3b8;font-style:italic;">⏳ Turno de CS/KAM</span>`;
+    } else {
+      // por_cargar (documentado) → turno del Almacén
+      color = '#7c3aed';
+      if (o.requiere_ruta) {
+        chip = `<span style="font-size:10px;font-weight:800;color:#7c3aed;background:rgba(124,58,237,.12);padding:3px 9px;border-radius:99px;">🚚 POR AGRUPAR EN RUTA</span>`;
+        accion = _esAlmd
+          ? `<button onclick="window.irAVista('logistica_rutas')" style="border:none;background:#7c3aed;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">🚚 Agrupar en ruta</button>`
+          : `<span style="font-size:11px;color:#94a3b8;font-style:italic;">⏳ Turno de Almacén</span>`;
+      } else {
+        chip = `<span style="font-size:10px;font-weight:800;color:#7c3aed;background:rgba(124,58,237,.12);padding:3px 9px;border-radius:99px;">📦 POR CARGAR · turno Almacén</span>`;
+        accion = _esAlmd
+          ? `<button onclick="confirmarCargadoEnviado('${o.id}')" style="border:none;background:#7c3aed;color:#fff;border-radius:9px;padding:9px 15px;font-weight:800;font-size:12px;cursor:pointer;">🚛 Cargar y enviar</button>`
+          : `<span style="font-size:11px;color:#94a3b8;font-style:italic;">⏳ Turno de Almacén</span>`;
+      }
     }
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 15px;background:#fff;border:1px solid #e2e8f0;border-left:5px solid ${color};border-radius:12px;margin-bottom:10px;flex-wrap:wrap;">
         <div style="min-width:230px;flex:1;">
           <div style="font-weight:800;font-size:14px;">${o.cliente_nombre || o.cliente_codigo || '—'} ${verRuta}</div>
-          <div style="font-size:11.5px;color:#64748b;margin-top:1px;"><span class="text-mono">${o.folio}</span> · ${o.producto_codigo || ''} · ${fmtCantidadUM(Number(o.cantidad_enviada || o.cantidad_solicitada) || 0, o.um)}</div>
-          <div style="font-size:10.5px;color:#94a3b8;">📦 ${ts.length} tarima(s) · ${fmtNum(Math.round(kg))} kg${o.remision ? ` · 📄 ${o.remision}` : ''}${modoTxt ? ` · ${modoTxt}` : ''}</div>
+          <div style="font-size:11.5px;color:#64748b;margin-top:1px;"><span class="text-mono">${o.folio}</span> · ${o.producto_codigo || ''} ${window.badgeCodigoCliente(o.cliente_codigo, o.producto_codigo)} · ${fmtCantidadUM(Number(o.cantidad_enviada || o.cantidad_solicitada) || 0, o.um)}</div>
+          <div style="font-size:10.5px;color:#94a3b8;">📦 ${ts.length} tarima(s) · ${fmtNum(Math.round(kg))} kg${o.remision ? ` · 📄 ${o.remision}` : ''}${modoTxt ? ` · ${modoTxt}` : ''}${o.lugar_entrega && o.lugar_entrega.nombre ? ` · 📍 ${o.lugar_entrega.nombre}${o.lugar_entrega.municipio ? ' (' + o.lugar_entrega.municipio + ')' : ''}` : ''}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">${chip}${accion}</div>
       </div>`;
@@ -21311,7 +21474,8 @@ function renderSalidasDia() {
     </div>
 
     <div class="grid-stats" style="margin-bottom:16px;">
-      <div class="stat-card"><div class="stat-icon">🟢</div><div class="stat-value">${porDespachar}</div><div class="stat-label">Por despachar</div></div>
+      <div class="stat-card"><div class="stat-icon">🟢</div><div class="stat-value">${porDespachar}</div><div class="stat-label">Por despachar (CS)</div></div>
+      <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-value">${porCargar}</div><div class="stat-label">Por cargar (Almacén)</div></div>
       <div class="stat-card"><div class="stat-icon">🛣️</div><div class="stat-value">${enCamino}</div><div class="stat-label">En camino</div></div>
       <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-value">${entregadosHoy.length}</div><div class="stat-label">Entregados hoy</div></div>
     </div>
@@ -21457,9 +21621,11 @@ window.confirmarDespacho = async () => {
     operadorNombre = f.recoge_nombre || ''; unidadPlacas = f.recoge_placas || ''; detalleModo = 'Cliente recoge';
   }
 
-  // ¿agrupar en ruta? solo aplica a propio → queda por_cargar para armar la ruta en Logística
+  // ¿agrupar en ruta? solo aplica a propio → se arma la ruta en Logística.
+  // CS/KAM solo DOCUMENTA (remisión + modo) → OV queda 'por_cargar'; el Almacén luego
+  // marca "Cargar y enviar" (o se despacha por la ruta si es agrupado).
   const agrupar = f.modo === 'propio' && f.agrupar === true;
-  const nuevoEstatus = agrupar ? 'por_cargar' : 'enviada';
+  const nuevoEstatus = 'por_cargar';
 
   state.loadingAccion = true; render();
   try {
@@ -21485,9 +21651,9 @@ window.confirmarDespacho = async () => {
       unidad_placas: unidadPlacas, placas: unidadPlacas,
       guia_tercero: guia,
       remision_at: serverTimestamp(), remision_por: state.user.id, remision_por_nombre: state.user.nombre,
+      requiere_ruta: agrupar,   // 🆕 si es propio agrupado, el Almacén lo despacha vía ruta en Logística
       updated_at: serverTimestamp()
     };
-    if (!agrupar) { patch.enviada_at = serverTimestamp(); }
     batch.update(doc(db, 'ordenes_venta', ov.id), patch);
     (ov.tarimas_ids || []).forEach(tid => batch.update(doc(db, 'tarimas', tid), { remision_folio: remFolio, updated_at: serverTimestamp() }));
     await batch.commit();
@@ -21495,20 +21661,55 @@ window.confirmarDespacho = async () => {
     // Doc de remisión (fuera del batch por el contador)
     await addDoc(collection(db, 'remisiones'), {
       folio: remFolio, tipo: 'cedis_a_cliente', modo_envio: f.modo,
-      origen: ov.cedis || 'CEDIS-MTY', destino: ov.cliente_nombre || 'Cliente',
+      origen: ov.cedis || 'CEDIS-MTY',
+      destino: (ov.lugar_entrega && ov.lugar_entrega.nombre) ? `${ov.cliente_nombre} · ${ov.lugar_entrega.nombre}` : (ov.cliente_nombre || 'Cliente'),
+      lugar_entrega: ov.lugar_entrega || null,   // 🆕 dirección de entrega en la remisión
       ov_id: ov.id, ov_folio: ov.folio, pedido_folio: ov.pedido_folio || '',
       cliente_codigo: ov.cliente_codigo || '', cliente_nombre: ov.cliente_nombre || '',
       tarimas_ids: ov.tarimas_ids || [], num_tarimas: tarimas.length, kg_total: Number(totalKg) || 0,
       transportista_nombre: transportistaNombre, transportista_tipo: transportistaTipo,
       operador_nombre: operadorNombre, unidad_placas: unidadPlacas, guia_tercero: guia,
-      estatus: agrupar ? 'por_cargar' : 'en_camino',
+      estatus: 'por_cargar',
       creado_por: state.user.id, creado_por_nombre: state.user.nombre, created_at: serverTimestamp()
     });
 
     state.despachoForm = null; state.modal = null;
     toast(agrupar
-      ? `📄 ${remFolio} generada · ${ov.folio} lista para agrupar en ruta (Logística)`
-      : `🚚 ${ov.folio} EN CAMINO · ${detalleModo} · Remisión ${remFolio}`, 'success');
+      ? `📄 ${remFolio} generada · ${ov.folio} → agrupar en ruta (Logística), luego Almacén carga`
+      : `📄 ${remFolio} generada · ${ov.folio} lista para que Almacén la cargue y envíe`, 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    state.loadingAccion = false; render();
+  }
+};
+
+// 🆕 ALMACÉN informa que ya cargó y salió el material (por_cargar → enviada/en camino).
+//    La documentación (remisión + modo) ya la hizo CS/KAM en el Despacho.
+window.confirmarCargadoEnviado = async (ovId) => {
+  const ov = state.ordenes_venta.find(x => x.id === ovId);
+  if (!ov) return;
+  const transp = ov.transportista_nombre || ov.transportista || '—';
+  if (!confirm(`¿Confirmar que ${ov.folio} · ${ov.cliente_nombre} ya se CARGÓ y SALIÓ?\n\nRemisión: ${ov.remision || '—'} · ${transp}`)) return;
+  state.loadingAccion = true; render();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'ordenes_venta', ov.id), {
+      estatus: 'enviada', enviada_at: serverTimestamp(),
+      cargado_por: state.user.id, cargado_por_nombre: state.user.nombre, updated_at: serverTimestamp()
+    });
+    (ov.tarimas_ids || []).forEach(tid => {
+      batch.update(doc(db, 'tarimas', tid), { estatus: 'embarcada', embarcada_at: serverTimestamp(), updated_at: serverTimestamp() });
+      const tl = (state.tarimas || []).find(t => t.id === tid); if (tl) tl.estatus = 'embarcada';
+    });
+    const ovL = (state.ordenes_venta || []).find(o => o.id === ov.id); if (ovL) ovL.estatus = 'enviada';
+    const deptoCedis = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
+    ['CS', 'KAM', 'CEO', deptoCedis].forEach(d => batch.set(doc(collection(db, 'notificaciones')), {
+      titulo: `🚚 ${ov.folio} cargado y en camino`, mensaje: `${ov.cliente_nombre} · Rem ${ov.remision || ''} · ${transp}`,
+      depto_destino: d, tipo: 'info', folio_ref: ov.folio, created_at: serverTimestamp()
+    }));
+    await batch.commit();
+    toast(`🚚 ${ov.folio} cargado y en camino. CS notificado para seguimiento.`, 'success');
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
@@ -34303,9 +34504,14 @@ window.imprimirRemisionClientePDF = (remId) => {
     }
     
     // Dirección de entrega (ancho completo)
-    if (cliente?.direccion_entrega || cliente?.direccion) {
+    // 🆕 Prioridad: lugar de entrega elegido en el pedido (rem.lugar_entrega) → dirección clásica del cliente
+    const _lug = rem?.lugar_entrega;
+    const _dirEntrega = _lug
+      ? [(_lug.nombre ? '📍 ' + _lug.nombre : ''), [_lug.calle, _lug.colonia].filter(Boolean).join(', '), [_lug.municipio, _lug.estado, _lug.cp].filter(Boolean).join(', '), (_lug.contacto ? 'Recibe: ' + _lug.contacto + (_lug.telefono ? ' · ' + _lug.telefono : '') : '')].filter(Boolean).join('  ·  ')
+      : (cliente?.direccion_entrega || cliente?.direccion || [cliente?.calle, cliente?.colonia, cliente?.municipio, cliente?.estado].filter(Boolean).join(', '));
+    if (_dirEntrega) {
       y = _checkPageBreak(y, 20);
-      const h5 = _pdfCampoFlex(docPDF, 'Dirección de entrega', cliente.direccion_entrega || cliente.direccion, margen, y, W - margen*2, { minH: 10 });
+      const h5 = _pdfCampoFlex(docPDF, 'Dirección de entrega', _dirEntrega, margen, y, W - margen*2, { minH: 10 });
       y += h5 + 2;
     }
     
@@ -38947,7 +39153,8 @@ window.confirmarGenerarRemisionOV = async () => {
       folio: remFolio,
       tipo: 'cedis_a_cliente',
       origen: origenCedis,
-      destino: ov.cliente_nombre || 'Cliente',
+      destino: (ov.lugar_entrega && ov.lugar_entrega.nombre) ? `${ov.cliente_nombre} · ${ov.lugar_entrega.nombre}` : (ov.cliente_nombre || 'Cliente'),
+      lugar_entrega: ov.lugar_entrega || null,   // 🆕 dirección de entrega del pedido
       ov_id: ov.id,
       ov_folio: ov.folio,
       pedido_folio: ov.pedido_folio || '',
@@ -39892,8 +40099,9 @@ function modalAsignarTarimasOV() {
   const disponibles = state.tarimas.filter(t => {
     // Mismo producto SIEMPRE
     if (t.producto_codigo !== ov.producto_codigo) return false;
-    // Sin OV asignada
-    if (t.ov_id || t.ov_folio) return false;
+    // Sin OV ACTIVA asignada (una OV cancelada libera la tarima para reasignar)
+    const _ovAct = window.ovActivaDeTarima(t);
+    if (_ovAct && _ovAct.id !== ov.id) return false;
     // En almacén disponible
     if (!['en_cedis_mty','en_cedis_mex','en_almacen_planta'].includes(t.estatus)) return false;
     
@@ -45648,6 +45856,17 @@ window.asignarMaquinaProceso = (procCod, maqCod) => {
 // Recolectar campos del formulario de cliente
 function recolectarDatosCliente() {
   const logoBase64 = ($('#cli-logo-base64')?.value || '').trim();
+  // 🆕 Lugares de entrega: limpiar vacíos y garantizar nombre
+  const lugares = (state.cliLugares || [])
+    .map((l, i) => ({
+      id: l.id || ('LUG' + (i + 1)),
+      nombre: (l.nombre || '').trim() || ('Lugar ' + (i + 1)),
+      calle: (l.calle || '').trim(), colonia: (l.colonia || '').trim(), cp: (l.cp || '').trim(),
+      municipio: (l.municipio || '').trim(), estado: (l.estado || '').trim(), pais: (l.pais || 'México').trim(),
+      contacto: (l.contacto || '').trim(), telefono: (l.telefono || '').trim(), referencias: (l.referencias || '').trim()
+    }))
+    .filter(l => l.calle || l.municipio || l.colonia);
+  const l0 = lugares[0] || { calle: '', colonia: '', cp: '', municipio: '', estado: '', pais: 'México', referencias: '' };
   return {
     nombre: ($('#cli-nom').value || '').trim(),
     rfc: ($('#cli-rfc').value || '').trim().toUpperCase(),
@@ -45656,13 +45875,12 @@ function recolectarDatosCliente() {
     telefono: ($('#cli-tel').value || '').trim(),
     celular: ($('#cli-cel').value || '').trim(),
     comprador: ($('#cli-comprador').value || '').trim(),
-    calle: ($('#cli-calle').value || '').trim(),
-    colonia: ($('#cli-colonia').value || '').trim(),
-    cp: ($('#cli-cp').value || '').trim(),
-    municipio: ($('#cli-municipio').value || '').trim(),
-    estado: ($('#cli-estado').value || '').trim(),
-    pais: ($('#cli-pais').value || 'México').trim(),
-    referencias: ($('#cli-referencias').value || '').trim(),
+    // 🆕 Lugares de entrega (array) + espejo del lugar #1 en los campos clásicos
+    //    (compatibilidad: la remisión PDF y datos viejos leen calle/colonia/etc.)
+    lugares_entrega: lugares,
+    calle: l0.calle, colonia: l0.colonia, cp: l0.cp,
+    municipio: l0.municipio, estado: l0.estado, pais: l0.pais,
+    referencias: l0.referencias,
     cedis_asignado: $('#cli-cedis').value,
     dias_credito: Number($('#cli-credito').value) || 0,
     notas: ($('#cli-notas').value || '').trim(),
@@ -45907,7 +46125,8 @@ window.crearCliente = async () => {
     
     const snap = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
     state.clientes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    
+
+    state.cliLugaresKey = null; state.cliLugares = null;   // reset del editor de lugares
     cerrarModal();
     toast('✅ Cliente creado');
   } catch (e) {
@@ -45927,11 +46146,26 @@ window.editarCliente = async (codigo) => {
       ...datos,
       updated_at: serverTimestamp()
     });
-    
+
+    // 🆕 Guardar cambios de códigos del cliente por producto (si editó alguno)
+    const edits = state.cliCodigosEdit || {};
+    const cambios = Object.keys(edits);
+    if (cambios.length) {
+      const bt = writeBatch(db);
+      cambios.forEach(cpId => {
+        bt.update(doc(db, 'cliente_productos', cpId), { codigo_cliente_interno: (edits[cpId] || '').trim(), updated_at: serverTimestamp() });
+        const cpL = (state.cliente_productos || []).find(x => x.id === cpId);
+        if (cpL) cpL.codigo_cliente_interno = (edits[cpId] || '').trim();
+      });
+      await bt.commit();
+      state.cliCodigosEdit = null;
+    }
+
     // Refrescar localmente
     const idx = state.clientes.findIndex(c => c.codigo === codigo);
     if (idx >= 0) state.clientes[idx] = { ...state.clientes[idx], ...datos };
-    
+
+    state.cliLugaresKey = null; state.cliLugares = null;   // reset del editor de lugares
     cerrarModal();
     toast('✅ Cliente actualizado');
   } catch (e) {
@@ -46021,9 +46255,29 @@ window.seleccionarClientePI = (codigo) => {
   d.cliente_nombre = c?.nombre || '';
   d.cedis_asignado = c?.cedis_asignado || d.cedis_asignado || 'CEDIS-MTY';
   d.lineas = [];
+  // 🆕 Lugar de entrega: autoseleccionar si el cliente tiene UNO solo
+  d.lugar_entrega = null;
+  const lugs = window.lugaresDeCliente(c);
+  if (lugs.length === 1) d.lugar_entrega = { ...lugs[0] };
   state.busqProd = '';
   state.busqClientePI = '';
   render();
+};
+
+// 🆕 Lugares de entrega de un cliente (array nuevo, o dirección clásica como 'Principal')
+window.lugaresDeCliente = (c) => {
+  if (!c) return [];
+  if (Array.isArray(c.lugares_entrega) && c.lugares_entrega.length) return c.lugares_entrega;
+  if (c.calle || c.municipio) return [{ id: 'LUG1', nombre: 'Principal', calle: c.calle || '', colonia: c.colonia || '', cp: c.cp || '', municipio: c.municipio || '', estado: c.estado || '', pais: c.pais || 'México', contacto: '', telefono: '', referencias: c.referencias || '' }];
+  return [];
+};
+
+// 🆕 Elegir lugar de entrega en el PI
+window.seleccionarLugarPI = (idx) => {
+  const d = state.pedidoData; if (!d) return;
+  const c = window.getCliente(d.cliente_codigo);
+  const lugs = window.lugaresDeCliente(c);
+  if (lugs[idx]) { d.lugar_entrega = { ...lugs[idx] }; render(); }
 };
 
 window.cambiarClientePI = () => {
@@ -46033,6 +46287,7 @@ window.cambiarClientePI = () => {
   }
   state.pedidoData.cliente_codigo = '';
   state.pedidoData.cliente_nombre = '';
+  state.pedidoData.lugar_entrega = null;
   state.pedidoData.lineas = [];
   state.busqProd = '';
   state.busqClientePI = '';
@@ -46546,7 +46801,13 @@ window.enviarPedido = async () => {
   capturarPedido();
   const d = state.pedidoData;
   if (!d.cliente_codigo) { toast('Selecciona un cliente', 'error'); return; }
-  
+  // 🆕 Si el cliente tiene lugares de entrega y no se eligió uno → obligar la selección
+  if (d.tipo_pi !== 'stock_interno' && d.cliente_codigo !== 'STOCK') {
+    const _lugs = window.lugaresDeCliente(window.getCliente(d.cliente_codigo));
+    if (_lugs.length > 1 && !d.lugar_entrega) { toast('📍 Selecciona el lugar de entrega del cliente', 'error'); return; }
+    if (_lugs.length === 1 && !d.lugar_entrega) d.lugar_entrega = { ..._lugs[0] };
+  }
+
   const validas = d.lineas.filter(l => l.producto_codigo && Number(l.cantidad_solicitada) > 0);
   if (validas.length === 0) { toast('Captura al menos una línea con cantidad', 'error'); return; }
   
@@ -46679,6 +46940,8 @@ window.enviarPedido = async () => {
       odc_cliente: d.odc_cliente || '',
       fecha_requerida: d.fecha_requerida || null,
       cedis_asignado: d.cedis_asignado,
+      // 🆕 Lugar de entrega elegido (snapshot completo, para que quede en el pedido)
+      lugar_entrega: d.lugar_entrega || null,
       estatus: 'pendiente_aprobacion',
       tipo,
       observaciones: d.observaciones || '',
@@ -46787,6 +47050,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
           cantidad: cantStock,
           um: l.um,
           tipo_origen: esLineaCOM ? 'comercializado' : 'stock',
+          lugar_entrega: pedido.lugar_entrega || null,   // 🆕 lugar de entrega heredado del PI
           // 🛒 Flag clave para que CEDIS sepa que NO viene de producción
           es_comercializado: esLineaCOM,
           precio_unitario: Number(l.precio_unitario) || 0,
@@ -46883,6 +47147,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
             tipo_origen: 'producir',
             odp_folio: folioODP1,
             odp_id: ref1.id,              // 🔗 FIX TRAZABILIDAD C1 — vínculo OV→ODP por id
+            lugar_entrega: pedido.lugar_entrega || null,   // 🆕 lugar de entrega heredado del PI
             pedido_linea_id: l.id || '',  // 🆕 F1 — Vínculo a línea
             estatus: 'esperando_produccion',
             tarimas_ids: [],
