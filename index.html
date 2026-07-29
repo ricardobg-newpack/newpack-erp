@@ -3990,7 +3990,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0729-B12-fifoalmacen</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0729-B13-pickerinsumos</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -26658,56 +26658,76 @@ function modalRC(esEdicion) {
           <!-- AGREGAR LÍNEA -->
           <div style="padding:14px;background:#f0fdf4;border:1px solid #16a34a;border-radius:10px;margin-bottom:12px;">
             <div style="font-weight:800;color:#166534;font-size:12px;margin-bottom:8px;">➕ Agregar insumo</div>
-            <!-- 🔍 Buscador rápido: escribe y filtra las opciones del selector -->
-            <input class="input" id="rc-prod-buscar" type="text" placeholder="🔍 Escribe para buscar (código o nombre)..." autocomplete="off" oninput="window.filtrarProductosRC(this.value)" style="margin-bottom:8px;border-color:#16a34a;" />
-            <div style="display:grid;grid-template-columns:3fr 1fr 1fr;gap:8px;">
-              <select class="input" id="rc-prod-select" size="1">
-                <option value="">— Selecciona producto —</option>
-                ${mps.length > 0 ? `
-                  <optgroup label="🧪 Materias Primas / Aditivos / Pigmentos">
-                    ${mps.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(mp => {
-                      const cat = categoriaDeMP(mp);
-                      const catObj = getCategoriaCompra(cat);
-                      return `<option value="MP|${mp.codigo}" data-desc="${mp.descripcion || ''}" data-um="${mp.um || 'Kg'}" data-tipo="MP" data-cat="${cat}">${catObj?.icono || ''} ${mp.codigo} — ${mp.descripcion}</option>`;
-                    }).join('')}
-                  </optgroup>
-                ` : ''}
-                ${productosMTTO.length > 0 ? `
-                  <optgroup label="🔧 Refacciones de Mantenimiento">
-                    ${productosMTTO.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
-                      const fam = getFamiliaMTTO(p.familia);
-                      return `<option value="MTTO|${p.codigo}" data-desc="${p.descripcion || ''}" data-um="${p.um || 'pza'}" data-tipo="MTTO" data-cat="MTTO">${fam?.icono || '🔧'} ${p.codigo} — ${p.descripcion}</option>`;
-                    }).join('')}
-                  </optgroup>
-                ` : ''}
-                ${productosEmpaque.length > 0 ? `
-                  <optgroup label="📦 Empaque (cajas, stretch, cinta, etc.)">
-                    ${productosEmpaque.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
-                      const fam = getFamiliaEmpaque(p.familia);
-                      return `<option value="EMP|${p.codigo}" data-desc="${p.descripcion || ''}" data-um="${p.um || 'pza'}" data-tipo="EMP" data-cat="EMP">${fam?.icono || '📦'} ${p.codigo} — ${p.descripcion}</option>`;
-                    }).join('')}
-                  </optgroup>
-                ` : ''}
-                ${productosOficina.length > 0 ? `
-                  <optgroup label="🖇️ Oficina (papelería, tóner, limpieza, etc.)">
-                    ${productosOficina.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
-                      const fam = getFamiliaOficina(p.familia);
-                      return `<option value="OFI|${p.codigo}" data-desc="${p.descripcion || ''}" data-um="${p.um || 'pza'}" data-tipo="OFI" data-cat="OFI">${fam?.icono || '🖇️'} ${p.codigo} — ${p.descripcion}</option>`;
-                    }).join('')}
-                  </optgroup>
-                ` : ''}
-                ${productosCOM.length > 0 ? `
-                  <optgroup label="🛒 Comercializado (revendemos a clientes)">
-                    ${productosCOM.sort((a,b) => a.codigo.localeCompare(b.codigo)).map(p => {
-                      const fam = getFamiliaCOM(p.familia);
-                      return `<option value="COM|${p.codigo}" data-desc="${p.descripcion || ''}" data-um="${p.um || 'pza'}" data-tipo="COM" data-cat="COM">${fam?.icono || '🛒'} ${p.codigo} — ${p.descripcion}</option>`;
-                    }).join('')}
-                  </optgroup>
-                ` : ''}
-              </select>
-              <input class="input" id="rc-cant" type="text" inputmode="decimal" placeholder="Cantidad" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'')" />
-              <button onclick="agregarLineaRC()" style="padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">➕ Agregar</button>
-            </div>
+            ${(() => {
+              // 🆕 PICKER RÁPIDO — typeahead + chips de categoría + stock a la vista + recientes
+              const catalogo = [
+                ...mps.map(mp => { const cat = categoriaDeMP(mp); const c = getCategoriaCompra(cat); return { tipo: 'MP', codigo: mp.codigo, desc: mp.descripcion || '', um: mp.um || 'Kg', cat, icono: c?.icono || '🧪', stock: window._stockMP(mp.codigo), min: Number(mp.stock_minimo) || 0 }; }),
+                ...productosMTTO.map(p => ({ tipo: 'MTTO', codigo: p.codigo, desc: p.descripcion || '', um: p.um || 'pza', cat: 'MTTO', icono: (getFamiliaMTTO(p.familia)?.icono) || '🔧', stock: Number(p.stock_actual) || 0, min: Number(p.stock_minimo) || 0 })),
+                ...productosEmpaque.map(p => ({ tipo: 'EMP', codigo: p.codigo, desc: p.descripcion || '', um: p.um || 'pza', cat: 'EMP', icono: (getFamiliaEmpaque(p.familia)?.icono) || '📦', stock: Number(p.stock_actual) || 0, min: Number(p.stock_minimo) || 0 })),
+                ...productosOficina.map(p => ({ tipo: 'OFI', codigo: p.codigo, desc: p.descripcion || '', um: p.um || 'pza', cat: 'OFI', icono: (getFamiliaOficina(p.familia)?.icono) || '🖇️', stock: Number(p.stock_actual) || 0, min: Number(p.stock_minimo) || 0 })),
+                ...productosCOM.map(p => ({ tipo: 'COM', codigo: p.codigo, desc: p.descripcion || '', um: p.um || 'pza', cat: 'COM', icono: (getFamiliaCOM(p.familia)?.icono) || '🛒', stock: Number(p.stock_actual) || 0, min: Number(p.stock_minimo) || 0 })),
+              ];
+              const CHIPS = [{ k: '', lbl: '⭐ Todos' }];
+              if (mps.length) CHIPS.push({ k: 'MP', lbl: '🧪 Materia Prima' });
+              if (productosMTTO.length) CHIPS.push({ k: 'MTTO', lbl: '🔧 Refacciones' });
+              if (productosEmpaque.length) CHIPS.push({ k: 'EMP', lbl: '📦 Empaque' });
+              if (productosOficina.length) CHIPS.push({ k: 'OFI', lbl: '🖇️ Oficina' });
+              if (productosCOM.length) CHIPS.push({ k: 'COM', lbl: '🛒 Comercializado' });
+              const q = (state.rcBusq || '').toLowerCase().trim();
+              const catF = state.rcCat || '';
+              let resultados, tituloLista;
+              if (q) {
+                resultados = catalogo.filter(x => (!catF || x.tipo === catF) && (x.codigo + ' ' + x.desc).toLowerCase().includes(q));
+                tituloLista = `🔍 ${resultados.length} resultado(s)`;
+              } else {
+                // Sin búsqueda: lo pedido recientemente por el área (lo más probable primero)
+                const vistos = new Set(); const rec = [];
+                (state.requisiciones_compras || []).slice()
+                  .sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0))
+                  .forEach(rc => (rc.lineas || []).forEach(l => {
+                    const key = (l.tipo_catalogo || 'MP') + '|' + (l.mp_codigo || l.producto_codigo);
+                    if (vistos.has(key)) return; vistos.add(key);
+                    const item = catalogo.find(x => x.tipo === (l.tipo_catalogo || 'MP') && x.codigo === (l.mp_codigo || l.producto_codigo));
+                    if (item && (!catF || item.tipo === catF)) rec.push(item);
+                  }));
+                resultados = rec.length ? rec : catalogo.filter(x => !catF || x.tipo === catF);
+                tituloLista = rec.length ? '⭐ Pedidos recientemente (escribe para buscar otro)' : 'Catálogo (escribe para buscar)';
+              }
+              const sel = state.rcSel;
+              const stockChip = (x) => `<span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:6px;background:${x.stock <= 0 ? '#fee2e2' : (x.min > 0 && x.stock < x.min ? '#fef3c7' : '#dcfce7')};color:${x.stock <= 0 ? '#991b1b' : (x.min > 0 && x.stock < x.min ? '#92400e' : '#166534')};white-space:nowrap;">stock ${fmtNum(x.stock)} ${x.um}</span>`;
+              return `
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+                ${CHIPS.map(c => `<button type="button" onclick="rcSetCat('${c.k}')" style="padding:6px 12px;border-radius:99px;cursor:pointer;font-weight:800;font-size:11px;border:2px solid ${catF === c.k ? '#16a34a' : '#e2e8f0'};background:${catF === c.k ? '#16a34a' : '#fff'};color:${catF === c.k ? '#fff' : '#475569'};">${c.lbl}</button>`).join('')}
+              </div>
+              ${sel ? `
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#dcfce7;border:2px solid #16a34a;border-radius:10px;padding:10px 12px;">
+                  <div style="flex:1;min-width:200px;">
+                    <div style="font-weight:800;font-size:13px;">${sel.icono} <span class="text-mono">${sel.codigo}</span></div>
+                    <div style="font-size:11px;color:#166534;">${sel.desc} · stock actual: <strong>${fmtNum(sel.stock)} ${sel.um}</strong></div>
+                  </div>
+                  <input class="input" id="rc-cant" type="text" inputmode="decimal" placeholder="Cantidad (${sel.um})" autocomplete="off" style="width:140px;font-weight:800;text-align:right;" oninput="this.value=this.value.replace(/[^0-9.]/g,'')" onkeydown="if(event.key==='Enter')agregarLineaRC()" />
+                  <button onclick="agregarLineaRC()" style="padding:10px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">➕ Agregar</button>
+                  <button onclick="rcQuitarSel()" title="Cambiar producto" style="padding:10px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✕</button>
+                </div>
+                <div style="font-size:10px;color:#64748b;margin-top:4px;">💡 Captura la cantidad y presiona <strong>Enter</strong> para agregar y seguir con el siguiente insumo.</div>
+              ` : `
+                <input class="input" id="rc-prod-buscar" type="text" placeholder="🔍 Escribe código o nombre (ej. HDPE, aditivo, bobina)..." autocomplete="off" value="${state.rcBusq || ''}" oninput="rcBuscarInsumo(this.value)" style="margin-bottom:6px;border-color:#16a34a;" />
+                <div style="font-size:10.5px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.03em;margin:2px 0 4px;">${tituloLista}</div>
+                <div style="max-height:220px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff;">
+                  ${resultados.length === 0 ? `<div style="padding:16px;text-align:center;color:#94a3b8;font-size:12px;">Sin coincidencias — revisa el texto o cambia de categoría</div>` :
+                    resultados.slice(0, 30).map(x => `
+                    <div onclick="rcElegirInsumo('${x.tipo}','${x.codigo.replace(/'/g, "\\'")}')" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #f1f5f9;cursor:pointer;" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='#fff'">
+                      <div style="min-width:0;">
+                        <span style="font-size:14px;">${x.icono}</span>
+                        <strong class="text-mono" style="font-size:12px;">${x.codigo}</strong>
+                        <span style="font-size:11.5px;color:#475569;"> — ${x.desc}</span>
+                      </div>
+                      ${stockChip(x)}
+                    </div>`).join('')}
+                  ${resultados.length > 30 ? `<div style="padding:8px;text-align:center;color:#94a3b8;font-size:10.5px;">Mostrando 30 de ${resultados.length} — escribe más para afinar</div>` : ''}
+                </div>
+              `}`;
+            })()}
             ${mps.length === 0 && productosMTTO.length === 0 && productosEmpaque.length === 0 && productosOficina.length === 0 && productosCOM.length === 0 ? `
               <div style="margin-top:8px;font-size:11px;color:#dc2626;font-weight:700;">⚠ No hay productos disponibles para tu departamento. Contacta a Compras o Admin.</div>
             ` : ''}
@@ -26813,26 +26833,61 @@ window.filtrarProductosRC = (texto) => {
   }
 };
 
-window.agregarLineaRC = () => {
-  // El select ahora se llama 'rc-prod-select' y trae valores tipo "MP|codigo" o "MTTO|codigo"
-  const sel = $('#rc-prod-select') || $('#rc-mp-select'); // fallback por si quedó algún submódulo viejo
-  const cantInp = $('#rc-cant');
-  if (!sel || !cantInp) return;
-  const valor = sel.value;
-  const cantidad = Number(cantInp.value) || 0;
-  if (!valor) { toast('Selecciona un producto', 'error'); return; }
-  if (cantidad <= 0) { toast('Cantidad debe ser mayor a 0', 'error'); return; }
-  
-  const opt = sel.selectedOptions[0];
-  // Detectar formato: "MP|XXX", "MTTO|XXX", o legacy "XXX"
-  let tipo_catalogo = 'MP';
-  let prod_codigo = valor;
-  if (valor.includes('|')) {
-    [tipo_catalogo, prod_codigo] = valor.split('|');
+// 🆕 Handlers del PICKER rápido de insumos (RC)
+window.rcBuscarInsumo = (v) => {
+  state.rcBusq = v; state.rcSel = null;
+  window.forzarRender();
+  const inp = $('#rc-prod-buscar');
+  if (inp) { inp.focus(); const p = inp.value.length; inp.setSelectionRange(p, p); }
+};
+window.rcSetCat = (k) => {
+  state.rcCat = k; state.rcSel = null;
+  window.forzarRender();
+  const inp = $('#rc-prod-buscar'); if (inp) inp.focus();
+};
+window.rcElegirInsumo = (tipo, codigo) => {
+  let item = null;
+  if (tipo === 'MP') {
+    const mp = (state.materias_primas || []).find(m => m.codigo === codigo);
+    if (mp) { const cat = categoriaDeMP(mp); item = { tipo, codigo, desc: mp.descripcion || '', um: mp.um || 'Kg', cat, icono: getCategoriaCompra(cat)?.icono || '🧪', stock: window._stockMP(codigo) }; }
+  } else {
+    const src = { MTTO: state.productos_mtto, EMP: state.productos_empaque, OFI: state.productos_oficina, COM: state.productos_comercializados }[tipo] || [];
+    const p = (src || []).find(x => x.codigo === codigo);
+    if (p) item = { tipo, codigo, desc: p.descripcion || '', um: p.um || 'pza', cat: tipo, icono: ({ MTTO: '🔧', EMP: '📦', OFI: '🖇️', COM: '🛒' })[tipo], stock: Number(p.stock_actual) || 0 };
   }
-  const descripcion = opt?.dataset.desc || '';
-  const um = opt?.dataset.um || 'Kg';
-  const categoria = opt?.dataset.cat || 'RESINA';
+  if (!item) { toast('Producto no encontrado', 'error'); return; }
+  state.rcSel = item;
+  window.forzarRender();
+  const cantInp = $('#rc-cant'); if (cantInp) cantInp.focus();
+};
+window.rcQuitarSel = () => {
+  state.rcSel = null;
+  window.forzarRender();
+  const inp = $('#rc-prod-buscar'); if (inp) inp.focus();
+};
+
+window.agregarLineaRC = () => {
+  const cantInp = $('#rc-cant');
+  if (!cantInp) return;
+  const cantidad = Number(cantInp.value) || 0;
+  if (cantidad <= 0) { toast('Cantidad debe ser mayor a 0', 'error'); return; }
+
+  // 🆕 Fuente principal: el picker (state.rcSel). Fallback: select viejo si algún módulo lo usa.
+  let tipo_catalogo = 'MP', prod_codigo = '', descripcion = '', um = 'Kg', categoria = 'RESINA';
+  if (state.rcSel) {
+    tipo_catalogo = state.rcSel.tipo; prod_codigo = state.rcSel.codigo;
+    descripcion = state.rcSel.desc; um = state.rcSel.um; categoria = state.rcSel.cat || 'RESINA';
+  } else {
+    const sel = $('#rc-prod-select') || $('#rc-mp-select');
+    if (!sel || !sel.value) { toast('Selecciona un producto', 'error'); return; }
+    const valor = sel.value;
+    const opt = sel.selectedOptions[0];
+    prod_codigo = valor;
+    if (valor.includes('|')) { [tipo_catalogo, prod_codigo] = valor.split('|'); }
+    descripcion = opt?.dataset.desc || '';
+    um = opt?.dataset.um || 'Kg';
+    categoria = opt?.dataset.cat || 'RESINA';
+  }
   
   if (!state.modalForm) state.modalForm = { lineas: [] };
   if (!state.modalForm.lineas) state.modalForm.lineas = [];
@@ -26882,9 +26937,13 @@ window.agregarLineaRC = () => {
     });
   }
   
-  sel.value = '';
+  // 🆕 Reset del picker: listo para buscar el siguiente insumo sin tocar el mouse
+  state.rcSel = null; state.rcBusq = '';
+  const _selViejo = $('#rc-prod-select') || $('#rc-mp-select');
+  if (_selViejo) _selViejo.value = '';
   cantInp.value = '';
   render();
+  const _b = $('#rc-prod-buscar'); if (_b) _b.focus();
 };
 
 window.quitarLineaRC = (idx) => {
@@ -46036,6 +46095,8 @@ function capturarPedido() {
 window.abrirModal = (m, data) => {
   state.modal = m;
   state.modalData = data;
+  // 🆕 Reset del picker de insumos de la RC (no arrastrar búsqueda/selección vieja)
+  if (m === 'crear-rc' || m === 'editar-rc') { state.rcSel = null; state.rcBusq = ''; state.rcCat = ''; }
   if (['crear-producto-pt','editar-producto-pt','programar-odp','liberar-calidad','completar-proceso','crear-maquina','editar-maquina','crear-personal','editar-personal','capturar-turno','crear-usuario','editar-usuario','crear-mp','editar-mp','crear-rc','editar-rc','generar-oc','editar-oc','recibir-oc','crear-proveedor','editar-proveedor','codigos-proveedor','crear-mtto','editar-mtto','salida-mtto','ajuste-mtto','crear-empaque','editar-empaque','salida-empaque','ajuste-empaque','transfer-empaque','crear-oficina','editar-oficina','salida-oficina','ajuste-oficina','crear-com','editar-com','salida-com','ajuste-com','transfer-com','generar-remision-ov','transportista','operador-logistica','unidad-logistica'].includes(m)) state.modalForm = null;
   window.forzarRender();
 };
