@@ -3923,7 +3923,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2e-inventarios</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0728-B2f-analitica</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -21086,6 +21086,11 @@ window.setCedisEmbarques = (cedis) => {
   render();
 };
 
+// 🆕 Sub-tabs / selector de la vista de Inventario (existencias vs analítica)
+window.setInvTab = (k) => { state.invTab = k; state.invProductoSel = null; render(); };
+window.setInvPeriodo = (p) => { state.invPeriodo = p; render(); };
+window.setInvProducto = (cod) => { state.invProductoSel = (state.invProductoSel === cod ? null : cod); render(); };
+
 
 // ============================================================
 // MIGRACIÓN: OVs legacy → nuevo flujo Embarques
@@ -21105,6 +21110,15 @@ function renderInventarioAlmacen(almFijo) {
   const almDeEstatus = (est) => est === 'en_almacen_planta' ? 'PLANTA' : (est === 'en_cedis_mty' ? 'CEDIS-MTY' : 'CEDIS-MEX');
   const almSel = almFijo;  // vista bloqueada a un solo almacén (sin tabs)
   const ALM_LABEL = { 'PLANTA': '🏭 Almacén Planta', 'CEDIS-MTY': '📦 CEDIS Monterrey', 'CEDIS-MEX': '🇲🇽 CEDIS México' }[almSel] || almSel;
+
+  // 🆕 Sub-tabs: Inventario (existencias) vs Consumo y Rotación (analítica)
+  const invTab = state.invTab || 'inventario';
+  const _btn = (k, lbl) => `<button onclick="setInvTab('${k}')" style="padding:9px 16px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;border:2px solid ${invTab === k ? '#16a34a' : '#e2e8f0'};background:${invTab === k ? '#16a34a' : '#fff'};color:${invTab === k ? '#fff' : '#475569'};">${lbl}</button>`;
+  const _tabBar = `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:15px;font-weight:900;color:#0f172a;margin-right:6px;">${ALM_LABEL}</span>
+    ${_btn('inventario', '📦 Inventario')} ${_btn('analitica', '📊 Consumo y Rotación')}
+  </div>`;
+  if (invTab === 'analitica') return _tabBar + renderAnaliticaAlmacen(almSel);
 
   const tarimas = (state.tarimas || []).filter(t => t.activo !== false && ESTATUS_STOCK.includes(t.estatus) && almDeEstatus(t.estatus) === almSel);
 
@@ -21158,7 +21172,7 @@ function renderInventarioAlmacen(almFijo) {
     ? `<span style="font-weight:700;">${fmtNum(cant)}</span> <span style="font-size:10px;color:#94a3b8;">${UM_LABELS[(um||'kg').toLowerCase()] || um}</span>`
     : `<span style="color:#cbd5e1;">—</span>`;
 
-  return `
+  return _tabBar + `
     <div style="padding:14px;background:#fff;border:2px solid #16a34a;border-radius:14px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:20px;">🔍</span>
@@ -21170,11 +21184,6 @@ function renderInventarioAlmacen(almFijo) {
         <strong style="color:#b45309;">⏳ Por asignar</strong> = material de cliente sin OV (producido en parcialidad).
         ${totAtorado > 0 ? `<br>⚠️ Hay material de cliente <strong>sin OV abierta</strong>; usa <strong>"➕ Generar OV"</strong> para poder asignarlo y enviarlo.` : ''}
       </div>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-      <span style="font-size:15px;font-weight:900;color:#0f172a;">${ALM_LABEL}</span>
-      <span style="font-size:11px;color:#94a3b8;font-weight:600;">Inventario de producto terminado</span>
     </div>
 
     <div class="grid-stats" style="margin-bottom:14px;">
@@ -21293,6 +21302,200 @@ window.generarOVsPendientesProducto = async (prodCod) => {
     state.loadingAccion = false; render();
   }
 };
+
+// 🆕 ANALÍTICA de CONSUMO / ROTACIÓN por producto para UN almacén (A: tabla · B: ficha).
+function renderAnaliticaAlmacen(almFijo) {
+  const periodo = state.invPeriodo || 'mensual';
+  const N = periodo === 'mensual' ? 6 : 8;
+  const diasPer = periodo === 'mensual' ? 30 : 7;
+  const _ms = (ts) => ts && ts.seconds ? ts.seconds * 1000 : (ts && ts.toDate ? ts.toDate().getTime() : (ts ? new Date(ts).getTime() : 0));
+  const lunes = (d) => { const x = new Date(d); const off = (x.getDay() + 6) % 7; x.setHours(0,0,0,0); x.setDate(x.getDate() - off); return x; };
+  const keyOf = (d) => periodo === 'mensual'
+    ? (d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'))
+    : (() => { const l = lunes(d); return l.getFullYear() + '-' + String(l.getMonth() + 1).padStart(2, '0') + '-' + String(l.getDate()).padStart(2, '0'); })();
+  const labelOf = (d) => periodo === 'mensual'
+    ? d.toLocaleDateString('es-MX', { month: 'short' })
+    : (() => { const l = lunes(d); return String(l.getDate()).padStart(2, '0') + '/' + String(l.getMonth() + 1).padStart(2, '0'); })();
+
+  // Periodos recientes (llaves + etiquetas), del más viejo al más nuevo
+  const now = new Date();
+  const keys = [], labels = [];
+  for (let i = N - 1; i >= 0; i--) {
+    const d = new Date(now);
+    if (periodo === 'mensual') d.setMonth(d.getMonth() - i); else d.setDate(d.getDate() - i * 7);
+    keys.push(keyOf(d)); labels.push(labelOf(d));
+  }
+  const keySet = new Set(keys);
+
+  const cedisDe = (t) => {
+    const o = (state.ordenes_venta || []).find(x => x.id === t.ov_id);
+    return (o && o.cedis) || t.cedis_destino || 'CEDIS-MTY';
+  };
+
+  // Existencias actuales por producto en este almacén
+  const ESTATUS_STOCK = ['en_almacen_planta', 'en_cedis_mty', 'en_cedis_mex'];
+  const almDeEstatus = (est) => est === 'en_almacen_planta' ? 'PLANTA' : (est === 'en_cedis_mty' ? 'CEDIS-MTY' : 'CEDIS-MEX');
+  const stockPorProd = {};
+  (state.tarimas || []).forEach(t => {
+    if (t.activo === false || !ESTATUS_STOCK.includes(t.estatus)) return;
+    if (almDeEstatus(t.estatus) !== almFijo) return;
+    stockPorProd[t.producto_codigo] = (stockPorProd[t.producto_codigo] || 0) + (Number(t.cantidad) || 0);
+  });
+
+  // Salidas (tarimas entregadas) atribuidas a este almacén
+  const prod = {};  // codigo -> { desc, um, per:{key:qty}, total, eventos, ultima }
+  (state.tarimas || []).forEach(t => {
+    if (t.estatus !== 'entregada') return;
+    if (cedisDe(t) !== almFijo) return;
+    const ms = _ms(t.entregada_at); if (!ms) return;
+    const d = new Date(ms); const k = keyOf(d);
+    const cod = t.producto_codigo || '—';
+    if (!prod[cod]) prod[cod] = { codigo: cod, desc: t.descripcion || '', um: t.um || 'kg', per: {}, total: 0, dias: new Set(), ultima: 0 };
+    const p = prod[cod];
+    const c = Number(t.cantidad) || 0;
+    if (keySet.has(k)) {
+      p.per[k] = (p.per[k] || 0) + c;
+      p.total += c;
+      // "Salida" = día de embarque distinto (varias tarimas el mismo día = 1 salida)
+      p.dias.add(d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate());
+    }
+    if (ms > p.ultima) p.ultima = ms;
+  });
+
+  // Unir productos con stock aunque no tengan salidas
+  Object.keys(stockPorProd).forEach(cod => {
+    if (!prod[cod]) {
+      const t0 = (state.tarimas || []).find(t => t.producto_codigo === cod);
+      prod[cod] = { codigo: cod, desc: t0 ? (t0.descripcion || '') : '', um: t0 ? (t0.um || 'kg') : 'kg', per: {}, total: 0, dias: new Set(), ultima: 0 };
+    }
+  });
+
+  // Métricas
+  const filas = Object.values(prod).map(p => {
+    const stock = stockPorProd[p.codigo] || 0;
+    const prom = p.total / N;                                  // consumo promedio por periodo
+    const last3 = keys.slice(-3).map(k => p.per[k] || 0);
+    const pronostico = last3.reduce((s, x) => s + x, 0) / (last3.length || 1);
+    const consumoDiario = p.total / (N * diasPer);
+    const diasInv = consumoDiario > 0 ? stock / consumoDiario : null;   // null = no hay consumo
+    const rotacion = stock > 0 ? prom / stock : null;          // veces por periodo
+    const eventos = p.dias.size;                               // salidas = días de embarque distintos
+    const frecDias = eventos > 0 ? (N * diasPer) / eventos : null;
+    return { ...p, stock, prom, pronostico, diasInv, rotacion, frecDias };
+  });
+  // Ordenar: primero los que consumen más
+  filas.sort((a, b) => b.total - a.total);
+
+  const totConsumo = filas.reduce((s, p) => s + p.total, 0);
+  const _fmtDias = (d) => d === null ? '<span style="color:#cbd5e1;">—</span>' : (d > 999 ? '>999 d' : Math.round(d) + ' d');
+  const _pillDias = (d) => {
+    if (d === null) return '<span style="color:#94a3b8;font-size:10px;">sin consumo</span>';
+    const col = d < 15 ? ['#166534', 'rgba(22,163,74,.14)'] : (d > 60 ? ['#b45309', 'rgba(180,83,9,.15)'] : ['#1e40af', 'rgba(30,64,175,.12)']);
+    return `<span style="font-weight:800;color:${col[0]};background:${col[1]};padding:2px 8px;border-radius:6px;">${Math.round(d)} d</span>`;
+  };
+
+  const selCod = state.invProductoSel;
+  const selP = selCod ? filas.find(p => p.codigo === selCod) : null;
+
+  // FICHA (B) del producto seleccionado
+  let fichaHTML = '';
+  if (selP) {
+    const maxV = Math.max(1, ...keys.map(k => selP.per[k] || 0), selP.pronostico);
+    fichaHTML = `
+      <div style="border:2px solid #16a34a;border-radius:14px;background:#fff;padding:16px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div>
+            <div class="text-mono" style="font-size:14px;font-weight:900;">${selP.codigo}</div>
+            <div style="font-size:11.5px;color:#64748b;">${selP.desc || ''}</div>
+          </div>
+          <button onclick="setInvProducto('${selP.codigo}')" style="border:none;background:#f1f5f9;border-radius:8px;padding:6px 10px;cursor:pointer;font-weight:700;font-size:12px;color:#475569;">✕ Cerrar ficha</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 14px;">
+          <div style="background:#f8fafc;border-radius:10px;padding:11px;"><div style="font-size:19px;font-weight:900;">${fmtNum(Math.round(selP.prom))}<span style="font-size:10px;"> ${UM_LABELS[(selP.um||'kg').toLowerCase()]||selP.um}</span></div><div style="font-size:10px;color:#64748b;text-transform:uppercase;">Consumo prom/${periodo === 'mensual' ? 'mes' : 'sem'}</div></div>
+          <div style="background:#f8fafc;border-radius:10px;padding:11px;"><div style="font-size:19px;font-weight:900;">${_fmtDias(selP.diasInv)}</div><div style="font-size:10px;color:#64748b;text-transform:uppercase;">Días de inventario</div></div>
+          <div style="background:#f8fafc;border-radius:10px;padding:11px;"><div style="font-size:19px;font-weight:900;">${selP.frecDias === null ? '—' : Math.round(selP.frecDias) + ' d'}</div><div style="font-size:10px;color:#64748b;text-transform:uppercase;">Sale cada</div></div>
+          <div style="background:#f8fafc;border-radius:10px;padding:11px;"><div style="font-size:19px;font-weight:900;color:#16a34a;">${fmtNum(Math.round(selP.pronostico))}<span style="font-size:10px;"> ${UM_LABELS[(selP.um||'kg').toLowerCase()]||selP.um}</span></div><div style="font-size:10px;color:#64748b;text-transform:uppercase;">Pronóstico próx.</div></div>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:8px;height:130px;border-bottom:1px solid #e2e8f0;padding:6px 2px 0;">
+          ${keys.map((k, i) => {
+            const v = selP.per[k] || 0;
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;">
+              <div style="font-size:10px;font-weight:700;">${v > 0 ? fmtNum(v) : ''}</div>
+              <div style="width:70%;background:${i === keys.length - 1 ? '#16a34a' : '#86efac'};border-radius:3px 3px 0 0;height:${Math.round((v / maxV) * 95)}%;"></div>
+              <div style="font-size:10px;color:#64748b;">${labels[i]}</div>
+            </div>`;
+          }).join('')}
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;">
+            <div style="font-size:10px;font-weight:700;color:#16a34a;">${fmtNum(Math.round(selP.pronostico))}</div>
+            <div style="width:70%;border:1px dashed #16a34a;border-radius:3px 3px 0 0;height:${Math.round((selP.pronostico / maxV) * 95)}%;background:repeating-linear-gradient(45deg,rgba(22,163,74,.25),rgba(22,163,74,.25) 4px,transparent 4px,transparent 8px);"></div>
+            <div style="font-size:10px;color:#16a34a;font-weight:700;">Pronóst.</div>
+          </div>
+        </div>
+        <div style="font-size:10.5px;color:#64748b;margin-top:8px;">Barras = consumo (entregado) por ${periodo === 'mensual' ? 'mes' : 'semana'}. Última barra sólida = periodo actual · rayada = pronóstico (promedio de los últimos 3).</div>
+      </div>`;
+  }
+
+  return `
+    <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:12px;color:#64748b;font-weight:700;">Periodo:</span>
+      <button onclick="setInvPeriodo('mensual')" style="padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${periodo==='mensual'?'#16a34a':'#e2e8f0'};background:${periodo==='mensual'?'#16a34a':'#fff'};color:${periodo==='mensual'?'#fff':'#475569'};">📅 Mensual</button>
+      <button onclick="setInvPeriodo('semanal')" style="padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${periodo==='semanal'?'#16a34a':'#e2e8f0'};background:${periodo==='semanal'?'#16a34a':'#fff'};color:${periodo==='semanal'?'#fff':'#475569'};">🗓️ Semanal</button>
+      <span style="font-size:11px;color:#94a3b8;margin-left:auto;">Consumo total (${N} ${periodo==='mensual'?'meses':'semanas'}): <strong>${fmtNum(Math.round(totConsumo))}</strong></span>
+    </div>
+
+    ${fichaHTML}
+
+    ${filas.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;">📈</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">Aún no hay historial de salidas en este almacén</div>
+        <div style="font-size:12px;margin-top:6px;">El consumo se acumula conforme se entregan pedidos desde aquí.</div>
+      </div>
+    ` : `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;min-width:820px;font-size:12.5px;">
+          <thead>
+            <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.03em;">
+              <th style="padding:9px 11px;text-align:left;">Producto</th>
+              <th style="padding:9px 11px;text-align:right;">Existencia</th>
+              <th style="padding:9px 11px;text-align:center;">Consumo (${N} ${periodo==='mensual'?'meses':'sem'})</th>
+              <th style="padding:9px 11px;text-align:right;">Prom/${periodo==='mensual'?'mes':'sem'}</th>
+              <th style="padding:9px 11px;text-align:right;">Días inv.</th>
+              <th style="padding:9px 11px;text-align:right;">Sale cada</th>
+              <th style="padding:9px 11px;text-align:right;">Pronóstico</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filas.map(p => {
+              const maxV = Math.max(1, ...keys.map(k => p.per[k] || 0));
+              const spark = keys.map((k, i) => {
+                const v = p.per[k] || 0;
+                return `<i style="display:block;width:6px;border-radius:1px;height:${Math.max(2, Math.round((v / maxV) * 26))}px;background:${i === keys.length - 1 ? '#16a34a' : '#86efac'};"></i>`;
+              }).join('');
+              const sel = selCod === p.codigo;
+              return `
+              <tr onclick="setInvProducto('${p.codigo}')" style="border-top:1px solid #f1f5f9;cursor:pointer;${sel ? 'background:#f0fdf4;' : ''}">
+                <td style="padding:9px 11px;">
+                  <div class="text-mono" style="font-size:11.5px;font-weight:800;">${p.codigo}</div>
+                  <div style="font-size:10.5px;color:#64748b;max-width:230px;">${p.desc || ''}</div>
+                </td>
+                <td style="padding:9px 11px;text-align:right;font-weight:700;">${fmtNum(p.stock)} <span style="font-size:9px;color:#94a3b8;">${UM_LABELS[(p.um||'kg').toLowerCase()]||p.um}</span></td>
+                <td style="padding:9px 11px;"><div style="display:flex;align-items:flex-end;gap:2px;height:28px;justify-content:center;">${spark}</div></td>
+                <td style="padding:9px 11px;text-align:right;font-weight:700;">${fmtNum(Math.round(p.prom))}</td>
+                <td style="padding:9px 11px;text-align:right;">${_pillDias(p.diasInv)}</td>
+                <td style="padding:9px 11px;text-align:right;">${p.frecDias === null ? '<span style="color:#cbd5e1;">—</span>' : Math.round(p.frecDias) + ' d'}</td>
+                <td style="padding:9px 11px;text-align:right;font-weight:800;color:#16a34a;">${fmtNum(Math.round(p.pronostico))}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="font-size:10.5px;color:#64748b;margin-top:8px;line-height:1.6;">
+        👆 Clic en un producto para ver su ficha con gráfica. <strong>Días inv.</strong> = cuánto dura el stock al ritmo actual (🟢&lt;15 ok · 🟠&gt;60 estancado) · <strong>Sale cada</strong> = días promedio entre salidas · <strong>Pronóstico</strong> = promedio de los últimos 3 ${periodo==='mensual'?'meses':'semanas'}.
+      </div>
+    `}
+  `;
+}
 
 function renderStockProducto() {
   const filtro = (state.filtros.stock_producto || '').toLowerCase();
