@@ -3990,7 +3990,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0730-B17-cotizador</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0730-B18-cotizadormetros</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -21438,13 +21438,16 @@ window.generarOVsPendientesProducto = async (prodCod) => {
 // ============================================================
 const COT_FACTOR_COMERCIAL = 0.485;
 const COT_CALIBRES_STD = [30, 40, 50, 70, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 320, 350, 400, 450, 480, 500, 550, 600, 650, 680, 700, 750, 800, 850, 900, 950, 1000];
-const COT_MATERIALES = [
-  { k: 'BD', nombre: 'Baja Densidad', calMin: 80, calMax: 1200, nota: 'ancho máx 6 m' },
-  { k: 'AD', nombre: 'Alta Densidad', calMin: 40, calMax: 500, nota: 'ancho máx 4 m' },
-  { k: 'BR15', nombre: 'Bolsa en Rollo 1.5"', calMin: 40, calMax: 200, nota: 'ancho máx 130 + fuelle' },
-  { k: 'BR3', nombre: 'Bolsa en Rollo 3"', calMin: 40, calMax: 1200, nota: 'ancho máx 145 + fuelle' },
-  { k: 'BS', nombre: 'Bolsa Suelta', calMin: 40, calMax: 1200, nota: 'ancho máx 2 m + fuelle' },
-];
+// Rango de calibre por MATERIAL (tabla del Excel). Materiales sin rango: no se valida.
+const COT_RANGOS_MATERIAL = {
+  'Baja Densidad': { min: 80, max: 1200, nota: 'ancho máx 6 m' },
+  'Alta Densidad': { min: 40, max: 500, nota: 'ancho máx 4 m' },
+};
+// Capas por TIPO de producto (mismo catálogo del alta de códigos):
+//   tubular/manga/bolsa = 2 capas · película plana/AX1L/hoja = 1 capa
+const COT_TIPO_CAPAS = { BS: 2, BR: 2, BP: 2, BM: 2, RP: 2, RM: 2, RT: 2, TM: 2, TP: 2, MP: 2, MS: 2, PP: 1, PR: 1, PU: 1, PS: 1, RA: 1, AP: 1, HJ: 1, MN: 1, MQ: 1, HM: 1, AC: 1 };
+// Tipos que se entregan EN ROLLO (muestran piezas por rollo + bobina)
+const COT_TIPOS_ROLLO = ['BR', 'RP', 'RM', 'RT', 'TM', 'TP', 'MP', 'MN', 'MQ'];
 window.cotSet = (k, v, keepFocusId) => {
   if (!state.cotForm) state.cotForm = {};
   state.cotForm[k] = v;
@@ -21464,8 +21467,10 @@ window.cotCalc = (f) => {
   const largo = (Number(f.largo) || 0) * factor;
   const cal = Number(f.calibre) || 0;
   const precioKg = Number(f.precio_kg) || 0;
-  const capas = f.producto === 'hoja' ? 1 : 2;   // bolsa/rollo = tubular (2 capas)
-  // peso millar tubular con FACTOR COMERCIAL 0.485; hoja = mitad
+  // Capas según el TIPO de producto (tubular = 2, película plana/hoja = 1)
+  const _tip = (window.TIPOS_GEN || []).find(t => t.nombre === f.tipo);
+  const capas = COT_TIPO_CAPAS[_tip?.codigo] ?? 2;
+  // peso millar tubular con FACTOR COMERCIAL 0.485; 1 capa = mitad
   const pesoMillar = (ancho + fuelle) * largo * COT_FACTOR_COMERCIAL * (cal / 10000) * (capas / 2);
   const pesoPieza = pesoMillar / 1000;
   const precioMillar = pesoMillar * precioKg;
@@ -21478,7 +21483,15 @@ window.cotCalc = (f) => {
   const pesoBobina = Number(f.peso_bobina) || 0;
   const pesoRollo = pzasRollo > 0 ? (pzasRollo * pesoPieza + pesoBobina) : 0;
   const precioRollo = pzasRollo > 0 ? (pzasRollo * precioPieza) : 0;
-  return { ancho, fuelle, largo, cal, pesoMillar, pesoPieza, precioMillar, precioPieza, piezasKg, piezasPaq, kgPaq, pesoRollo, precioRollo, pzasRollo };
+  // MODO METROS: rollo tubular / película vendida por metros lineales (sin largo de pieza).
+  // kg por metro = misma fórmula con largo = 1 m (100 cm): (ancho+fuelle) × 0.485 × cal/10000 × capas/2 ÷ 10
+  const pesoMetro = (ancho + fuelle) * COT_FACTOR_COMERCIAL * (cal / 10000) * (capas / 2) / 10;
+  const precioMetro = pesoMetro * precioKg;
+  const mtsRollo = Number(f.metros_rollo) || 0;
+  const pesoRolloM = mtsRollo > 0 ? (mtsRollo * pesoMetro + pesoBobina) : 0;   // físico (con bobina)
+  const precioRolloM = mtsRollo > 0 ? (mtsRollo * precioMetro) : 0;            // se cobra solo la película
+  const metrosKg = pesoMetro > 0 ? 1 / pesoMetro : 0;
+  return { ancho, fuelle, largo, cal, pesoMillar, pesoPieza, precioMillar, precioPieza, piezasKg, piezasPaq, kgPaq, pesoRollo, precioRollo, pzasRollo, pesoMetro, precioMetro, mtsRollo, pesoRolloM, precioRolloM, metrosKg };
 };
 
 // Conversor de calibres: el cliente habla en micras/mm/mil/pulgadas → calibre NewPack (puntos)
@@ -21499,18 +21512,32 @@ window.cotUsarCalibre = (cal) => { if (!state.cotForm) state.cotForm = {}; state
 window.cotCopiarWhats = () => {
   const f = state.cotForm || {};
   const r = window.cotCalc(f);
-  if (!(r.pesoMillar > 0 && Number(f.precio_kg) > 0)) { toast('Completa medidas, calibre y precio para copiar', 'error'); return; }
-  const mat = COT_MATERIALES.find(m => m.k === f.material);
-  const med = r.fuelle > 0 ? `${f.ancho}+${f.fuelle}x${f.largo}` : `${f.ancho}x${f.largo}`;
-  const lineas = [
-    `*Cotización NewPack*`,
-    `${f.producto === 'hoja' ? 'Hoja' : f.producto === 'rollo' ? 'Bolsa en rollo' : 'Bolsa'} ${mat?.nombre || ''} ${med} ${f.unidades === 'pulgadas' ? 'pulg' : 'cm'} · Calibre ${f.calibre}`,
-    `Peso del millar: ${fmtNum(r.pesoMillar.toFixed(2))} kg`,
-    `Precio millar: $${fmtNum(r.precioMillar.toFixed(2))}`,
-    `Precio por pieza: $${r.precioPieza.toFixed(4)}`,
-    `Paquete de ${r.kgPaq} kg ≈ ${fmtNum(Math.floor(r.piezasPaq))} piezas`,
-  ];
-  if (r.pzasRollo > 0) lineas.push(`Rollo de ${fmtNum(r.pzasRollo)} pzas: $${fmtNum(r.precioRollo.toFixed(2))} · peso ${r.pesoRollo.toFixed(2)} kg (incluye bobina)`);
+  const esMetros = f.modo === 'metros';
+  const ok = esMetros ? (r.pesoMetro > 0 && Number(f.precio_kg) > 0) : (r.pesoMillar > 0 && Number(f.precio_kg) > 0);
+  if (!ok) { toast('Completa medidas, calibre y precio para copiar', 'error'); return; }
+  const um = f.unidades === 'pulgadas' ? 'pulg' : 'cm';
+  let lineas;
+  if (esMetros) {
+    const med = r.fuelle > 0 ? `${f.ancho}+${f.fuelle}` : `${f.ancho}`;
+    lineas = [
+      `*Cotización NewPack*`,
+      `${f.material || ''} · ${f.tipo || ''} · ancho ${med} ${um} · Calibre ${f.calibre} · por metros`,
+      `Peso por metro: ${(r.pesoMetro * 1000).toFixed(1)} g (${fmtNum(r.metrosKg.toFixed(1))} m por kg)`,
+      `Precio por metro: $${r.precioMetro.toFixed(4)}`,
+    ];
+    if (r.mtsRollo > 0) lineas.push(`Rollo de ${fmtNum(r.mtsRollo)} m: $${fmtNum(r.precioRolloM.toFixed(2))} · peso ${r.pesoRolloM.toFixed(2)} kg (incluye bobina)`);
+  } else {
+    const med = r.fuelle > 0 ? `${f.ancho}+${f.fuelle}x${f.largo}` : `${f.ancho}x${f.largo}`;
+    lineas = [
+      `*Cotización NewPack*`,
+      `${f.material || ''} · ${f.tipo || ''} · ${med} ${um} · Calibre ${f.calibre}`,
+      `Peso del millar: ${fmtNum(r.pesoMillar.toFixed(2))} kg`,
+      `Precio millar: $${fmtNum(r.precioMillar.toFixed(2))}`,
+      `Precio por pieza: $${r.precioPieza.toFixed(4)}`,
+      `Paquete de ${r.kgPaq} kg ≈ ${fmtNum(Math.floor(r.piezasPaq))} piezas`,
+    ];
+    if (r.pzasRollo > 0) lineas.push(`Rollo de ${fmtNum(r.pzasRollo)} pzas: $${fmtNum(r.precioRollo.toFixed(2))} · peso ${r.pesoRollo.toFixed(2)} kg (incluye bobina)`);
+  }
   lineas.push(`_Precios más IVA · sujeto a confirmación_`);
   const txt = lineas.join('\n');
   try { navigator.clipboard.writeText(txt); toast('📋 Cotización copiada — pégala en WhatsApp/correo', 'success'); }
@@ -21518,19 +21545,25 @@ window.cotCopiarWhats = () => {
 };
 
 function renderCotizador() {
-  if (!state.cotForm) state.cotForm = { producto: 'bolsa', unidades: 'cm', material: 'BD', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras' };
+  if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras' };
   const f = state.cotForm;
   const r = window.cotCalc(f);
-  const mat = COT_MATERIALES.find(m => m.k === f.material);
   const conv = window.cotConvertirCalibre(f.conv_val, f.conv_um);
-  const listo = r.pesoMillar > 0;
+  const esMetros = f.modo === 'metros';
+  const listo = esMetros ? r.pesoMetro > 0 : r.pesoMillar > 0;
   const conPrecio = listo && Number(f.precio_kg) > 0;
 
-  // Validaciones de rango por material (de la tabla del Excel)
+  // Tipo seleccionado (catálogo del alta de códigos) → capas y si es rollo
+  const tipObj = (window.TIPOS_GEN || []).find(t => t.nombre === f.tipo);
+  const capas = COT_TIPO_CAPAS[tipObj?.codigo] ?? 2;
+  const esRollo = COT_TIPOS_ROLLO.includes(tipObj?.codigo);
+
+  // Validaciones de rango de calibre por MATERIAL (de la tabla del Excel)
+  const rango = COT_RANGOS_MATERIAL[f.material];
   const avisos = [];
-  if (mat && r.cal > 0) {
-    if (r.cal < mat.calMin) avisos.push(`⚠ Calibre ${r.cal} está DEBAJO del mínimo de ${mat.nombre} (${mat.calMin}).`);
-    if (r.cal > mat.calMax) avisos.push(`⚠ Calibre ${r.cal} está ARRIBA del máximo de ${mat.nombre} (${mat.calMax}).`);
+  if (rango && r.cal > 0) {
+    if (r.cal < rango.min) avisos.push(`⚠ Calibre ${r.cal} está DEBAJO del mínimo de ${f.material} (${rango.min}).`);
+    if (r.cal > rango.max) avisos.push(`⚠ Calibre ${r.cal} está ARRIBA del máximo de ${f.material} (${rango.max}).`);
   }
 
   const inp = (id, campo, label, ph, extra) => `
@@ -21548,32 +21581,54 @@ function renderCotizador() {
     </div>`;
 
   return `
-    <!-- QUÉ COTIZAS -->
+    <!-- QUÉ COTIZAS: Material + Tipo de producto (mismos catálogos del alta de códigos) -->
     <div style="background:#fff;border:2px solid #16a34a;border-radius:14px;padding:16px;margin-bottom:14px;">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
-        ${btnSel('producto', 'bolsa', '👝 Bolsa (tubular)', '#16a34a')}
-        ${btnSel('producto', 'hoja', '📄 Hoja (1 capa)', '#0891b2')}
-        ${btnSel('producto', 'rollo', '🌀 Bolsa en rollo', '#7c3aed')}
-        <span style="flex:1;"></span>
-        ${btnSel('unidades', 'cm', 'cm', '#334155')}
-        ${btnSel('unidades', 'pulgadas', 'pulgadas', '#334155')}
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin-bottom:10px;align-items:end;">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Material</label>
+          <select class="input" onchange="window.cotSet('material', this.value)">
+            ${(window.MATERIALES_GEN || []).map(m => `<option value="${m.nombre}" ${f.material === m.nombre ? 'selected' : ''}>${m.nombre} (${m.codigo})</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Tipo de producto</label>
+          <select class="input" onchange="window.cotSet('tipo', this.value)">
+            ${(window.TIPOS_GEN || []).map(t => `<option value="${t.nombre}" ${f.tipo === t.nombre ? 'selected' : ''}>${t.nombre} (${t.codigo})</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;gap:6px;">
+          ${btnSel('unidades', 'cm', 'cm', '#334155')}
+          ${btnSel('unidades', 'pulgadas', 'pulgadas', '#334155')}
+        </div>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
-        ${COT_MATERIALES.map(m => btnSel('material', m.k, m.nombre, '#1e40af')).join('')}
+      <div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">
+        ${capas === 2 ? '👝 Tubular / bolsa — el cálculo usa 2 capas de película' : '📄 Plana / hoja — el cálculo usa 1 capa (peso a la mitad)'}
+        ${rango ? ` · 📏 ${f.material}: calibre ${rango.min}–${rango.max} · ${rango.nota}` : ''}
+        ${esRollo ? ' · 🌀 se entrega en rollo' : ''}
       </div>
-      ${mat ? `<div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">📏 ${mat.nombre}: calibre ${mat.calMin}–${mat.calMax} · ${mat.nota}</div>` : ''}
+      <!-- CÓMO SE COTIZA: por pieza (millar) o por metros lineales (rollo/película sin largo de pieza) -->
+      <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:11px;font-weight:800;color:#475569;">Cotizar:</span>
+        ${btnSel('modo', 'pieza', '🧾 Por pieza / millar', '#16a34a')}
+        ${btnSel('modo', 'metros', '📏 Por metros (rollo)', '#7c3aed')}
+        ${esMetros ? '<span style="font-size:10.5px;color:#7c3aed;">sin largo de pieza — capturas ancho, calibre y metros por rollo</span>' : ''}
+      </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;">
         ${inp('cot-ancho', 'ancho', `Ancho (${f.unidades})`, '33')}
         ${inp('cot-fuelle', 'fuelle', `Fuelle (${f.unidades})`, '0')}
-        ${inp('cot-largo', 'largo', `Largo (${f.unidades})`, '60')}
+        ${esMetros ? '' : inp('cot-largo', 'largo', `Largo (${f.unidades})`, '60')}
         ${inp('cot-cal', 'calibre', 'Calibre (puntos)', '100')}
         ${inp('cot-precio', 'precio_kg', 'Precio por kg ($)', '50.00')}
       </div>
-      ${f.producto === 'rollo' ? `
+      ${esMetros ? `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px;">
+          ${inp('cot-mtsrollo', 'metros_rollo', 'Metros por rollo', '500')}
+          ${inp('cot-bobina', 'peso_bobina', 'Peso bobina/core (kg)', '0.3')}
+        </div>` : (esRollo ? `
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px;">
           ${inp('cot-pzrollo', 'piezas_rollo', 'Piezas por rollo', '100')}
           ${inp('cot-bobina', 'peso_bobina', 'Peso bobina/core (kg)', '0.3')}
-        </div>` : ''}
+        </div>` : '')}
       ${avisos.length ? avisos.map(a => `<div style="margin-top:10px;font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 11px;">${a}</div>`).join('') : ''}
     </div>
 
@@ -21597,7 +21652,17 @@ function renderCotizador() {
     </div>
 
     <!-- RESULTADOS EN VIVO -->
-    ${listo ? `
+    ${listo ? (esMetros ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
+        ${card('Peso por metro', (r.pesoMetro * 1000).toFixed(1) + ' g', fmtNum(r.metrosKg.toFixed(1)) + ' metros por kg')}
+        ${card('Precio por metro', conPrecio ? '$' + r.precioMetro.toFixed(4) : '— captura $/kg', '', '#16a34a')}
+        ${r.mtsRollo > 0 ? `
+          ${card('Precio por rollo', conPrecio ? '$' + fmtNum(r.precioRolloM.toFixed(2)) : '—', fmtNum(r.mtsRollo) + ' metros', '#7c3aed')}
+          ${card('Peso del rollo', r.pesoRolloM.toFixed(2) + ' kg', 'incluye bobina de ' + f.peso_bobina + ' kg (no se cobra)', '#7c3aed')}
+        ` : `
+          ${card('Precio por rollo', '— captura metros por rollo', '', '#94a3b8')}
+        `}
+      </div>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
         ${card('Peso del millar', fmtNum(r.pesoMillar.toFixed(2)) + ' kg', 'peso por pieza: ' + (r.pesoPieza * 1000).toFixed(2) + ' g')}
         ${card('Precio millar', conPrecio ? '$' + fmtNum(r.precioMillar.toFixed(2)) : '— captura $/kg', '', '#16a34a')}
@@ -21614,7 +21679,7 @@ function renderCotizador() {
           ${card('Peso del rollo', r.pesoRollo.toFixed(2) + ' kg', 'incluye bobina de ' + f.peso_bobina + ' kg', '#7c3aed')}
           ${card('Precio por rollo', conPrecio ? '$' + fmtNum(r.precioRollo.toFixed(2)) : '—', fmtNum(r.pzasRollo) + ' piezas', '#7c3aed')}
         ` : ''}
-      </div>
+      </div>`) + `
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button onclick="window.cotCopiarWhats()" style="padding:12px 20px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:14px;">📋 Copiar respuesta (WhatsApp/correo)</button>
         <span style="font-size:11px;color:#94a3b8;align-self:center;">Fase 2 próximamente: guardar como cotización formal con folio y PDF</span>
@@ -21622,8 +21687,8 @@ function renderCotizador() {
     ` : `
       <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
         <div style="font-size:40px;">🧮</div>
-        <div style="font-weight:700;color:#475569;margin-top:8px;">Captura medidas y calibre para cotizar en vivo</div>
-        <div style="font-size:12px;margin-top:4px;">Peso del millar = (ancho + fuelle) × largo × 0.485 × calibre ÷ 10,000 — la misma fórmula del Excel.</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">Captura ${esMetros ? 'ancho y calibre' : 'medidas y calibre'} para cotizar en vivo</div>
+        <div style="font-size:12px;margin-top:4px;">${esMetros ? 'Por metros: peso por metro = (ancho + fuelle) × 0.485 × calibre ÷ 10,000 ÷ 10 — y el rollo se cotiza por sus metros.' : 'Peso del millar = (ancho + fuelle) × largo × 0.485 × calibre ÷ 10,000 — la misma fórmula del Excel.'}</div>
       </div>
     `}
   `;
