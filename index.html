@@ -3990,7 +3990,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0729-B15-pickertodos</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0730-B17-cotizador</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4008,6 +4008,7 @@ function renderApp() {
         <div class="sidebar-section">Comercial</div>
         ${(['CS','KAM','CEO','ADMIN','COMP'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'clientes' ? 'active' : ''}" data-vista="clientes">${ICONS.users} Clientes</button>
+          <button class="nav-item ${state.vista === 'cotizador' ? 'active' : ''}" data-vista="cotizador">🧮 Cotizador</button>
         ` : ''}
         <button class="nav-item ${state.vista === 'pedidos' ? 'active' : ''}" data-vista="pedidos">${ICONS.cart} Pedidos (PI/OV/ODP)</button>
         ${esCS ? `
@@ -4267,6 +4268,7 @@ function tituloVista() {
     inv_mty: '📦 Inventario CEDIS Monterrey',
     inv_mex: '🇲🇽 Inventario CEDIS México',
     salidas_dia: '📤 Embarques del día',
+    cotizador: '🧮 Cotizador — Área Comercial',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -4324,6 +4326,7 @@ function renderVista() {
   if (v === 'inv_mty') return renderInventarioAlmacen('CEDIS-MTY');
   if (v === 'inv_mex') return renderInventarioAlmacen('CEDIS-MEX');
   if (v === 'salidas_dia') return renderSalidasDia();
+  if (v === 'cotizador') return renderCotizador();
   if (v === 'peletizado') return renderPeletizado();
   if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
   if (v === 'seguimiento_parcialidades') return renderSeguimientoParcialidades();
@@ -21424,6 +21427,208 @@ window.generarOVsPendientesProducto = async (prodCod) => {
   }
 };
 
+// ============================================================
+// 🧮 COTIZADOR COMERCIAL — Fase 1 (calculadora con las fórmulas del Excel NewPack)
+//    Fórmula maestra (validada contra el Excel real):
+//      peso_millar(kg) = (ancho + fuelle) × largo × 0.485 × calibre/10000   [bolsa tubular, cm]
+//      hoja 1 capa = la mitad (÷2) · en pulgadas se convierte ×2.54
+//    El $/kg manda: precio millar = peso_millar × $/kg; lo demás se deriva.
+//    ⚠ FACTOR COMERCIAL = 0.485 (para VENTA/cotización). NO cambiarlo: producción usa
+//      otro factor para sus cálculos internos, pero comercial SIEMPRE cotiza con 0.485.
+// ============================================================
+const COT_FACTOR_COMERCIAL = 0.485;
+const COT_CALIBRES_STD = [30, 40, 50, 70, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 320, 350, 400, 450, 480, 500, 550, 600, 650, 680, 700, 750, 800, 850, 900, 950, 1000];
+const COT_MATERIALES = [
+  { k: 'BD', nombre: 'Baja Densidad', calMin: 80, calMax: 1200, nota: 'ancho máx 6 m' },
+  { k: 'AD', nombre: 'Alta Densidad', calMin: 40, calMax: 500, nota: 'ancho máx 4 m' },
+  { k: 'BR15', nombre: 'Bolsa en Rollo 1.5"', calMin: 40, calMax: 200, nota: 'ancho máx 130 + fuelle' },
+  { k: 'BR3', nombre: 'Bolsa en Rollo 3"', calMin: 40, calMax: 1200, nota: 'ancho máx 145 + fuelle' },
+  { k: 'BS', nombre: 'Bolsa Suelta', calMin: 40, calMax: 1200, nota: 'ancho máx 2 m + fuelle' },
+];
+window.cotSet = (k, v, keepFocusId) => {
+  if (!state.cotForm) state.cotForm = {};
+  state.cotForm[k] = v;
+  window.forzarRender();
+  if (keepFocusId) {
+    const el = document.getElementById(keepFocusId);
+    if (el) { el.focus(); try { const p = el.value.length; el.setSelectionRange(p, p); } catch (e) {} }
+  }
+};
+
+// Cálculo central (todo deriva de aquí — misma lógica que el Excel)
+window.cotCalc = (f) => {
+  const esPulg = f.unidades === 'pulgadas';
+  const factor = esPulg ? 2.54 : 1;
+  const ancho = (Number(f.ancho) || 0) * factor;
+  const fuelle = (Number(f.fuelle) || 0) * factor;
+  const largo = (Number(f.largo) || 0) * factor;
+  const cal = Number(f.calibre) || 0;
+  const precioKg = Number(f.precio_kg) || 0;
+  const capas = f.producto === 'hoja' ? 1 : 2;   // bolsa/rollo = tubular (2 capas)
+  // peso millar tubular con FACTOR COMERCIAL 0.485; hoja = mitad
+  const pesoMillar = (ancho + fuelle) * largo * COT_FACTOR_COMERCIAL * (cal / 10000) * (capas / 2);
+  const pesoPieza = pesoMillar / 1000;
+  const precioMillar = pesoMillar * precioKg;
+  const precioPieza = precioMillar / 1000;
+  const piezasKg = pesoMillar > 0 ? 1000 / pesoMillar : 0;
+  const kgPaq = Number(f.kg_paquete) || 25;
+  const piezasPaq = piezasKg * kgPaq;
+  // rollo: peso físico incluye la bobina (core); la bobina no se cobra
+  const pzasRollo = Number(f.piezas_rollo) || 0;
+  const pesoBobina = Number(f.peso_bobina) || 0;
+  const pesoRollo = pzasRollo > 0 ? (pzasRollo * pesoPieza + pesoBobina) : 0;
+  const precioRollo = pzasRollo > 0 ? (pzasRollo * precioPieza) : 0;
+  return { ancho, fuelle, largo, cal, pesoMillar, pesoPieza, precioMillar, precioPieza, piezasKg, piezasPaq, kgPaq, pesoRollo, precioRollo, pzasRollo };
+};
+
+// Conversor de calibres: el cliente habla en micras/mm/mil/pulgadas → calibre NewPack (puntos)
+window.cotConvertirCalibre = (valor, um) => {
+  const v = Number(valor) || 0;
+  if (v <= 0) return null;
+  let cal = 0;
+  if (um === 'micras') cal = v / 0.254;
+  else if (um === 'mm') cal = (v * 1000) / 0.254;
+  else if (um === 'mil') cal = v * 100;
+  else if (um === 'pulgadas') cal = v * 100000;
+  const std = COT_CALIBRES_STD.reduce((mejor, c) => Math.abs(c - cal) < Math.abs(mejor - cal) ? c : mejor, COT_CALIBRES_STD[0]);
+  return { exacto: Math.round(cal * 10) / 10, estandar: std };
+};
+
+window.cotUsarCalibre = (cal) => { if (!state.cotForm) state.cotForm = {}; state.cotForm.calibre = cal; window.forzarRender(); };
+
+window.cotCopiarWhats = () => {
+  const f = state.cotForm || {};
+  const r = window.cotCalc(f);
+  if (!(r.pesoMillar > 0 && Number(f.precio_kg) > 0)) { toast('Completa medidas, calibre y precio para copiar', 'error'); return; }
+  const mat = COT_MATERIALES.find(m => m.k === f.material);
+  const med = r.fuelle > 0 ? `${f.ancho}+${f.fuelle}x${f.largo}` : `${f.ancho}x${f.largo}`;
+  const lineas = [
+    `*Cotización NewPack*`,
+    `${f.producto === 'hoja' ? 'Hoja' : f.producto === 'rollo' ? 'Bolsa en rollo' : 'Bolsa'} ${mat?.nombre || ''} ${med} ${f.unidades === 'pulgadas' ? 'pulg' : 'cm'} · Calibre ${f.calibre}`,
+    `Peso del millar: ${fmtNum(r.pesoMillar.toFixed(2))} kg`,
+    `Precio millar: $${fmtNum(r.precioMillar.toFixed(2))}`,
+    `Precio por pieza: $${r.precioPieza.toFixed(4)}`,
+    `Paquete de ${r.kgPaq} kg ≈ ${fmtNum(Math.floor(r.piezasPaq))} piezas`,
+  ];
+  if (r.pzasRollo > 0) lineas.push(`Rollo de ${fmtNum(r.pzasRollo)} pzas: $${fmtNum(r.precioRollo.toFixed(2))} · peso ${r.pesoRollo.toFixed(2)} kg (incluye bobina)`);
+  lineas.push(`_Precios más IVA · sujeto a confirmación_`);
+  const txt = lineas.join('\n');
+  try { navigator.clipboard.writeText(txt); toast('📋 Cotización copiada — pégala en WhatsApp/correo', 'success'); }
+  catch (e) { toast('No se pudo copiar automáticamente', 'error'); }
+};
+
+function renderCotizador() {
+  if (!state.cotForm) state.cotForm = { producto: 'bolsa', unidades: 'cm', material: 'BD', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras' };
+  const f = state.cotForm;
+  const r = window.cotCalc(f);
+  const mat = COT_MATERIALES.find(m => m.k === f.material);
+  const conv = window.cotConvertirCalibre(f.conv_val, f.conv_um);
+  const listo = r.pesoMillar > 0;
+  const conPrecio = listo && Number(f.precio_kg) > 0;
+
+  // Validaciones de rango por material (de la tabla del Excel)
+  const avisos = [];
+  if (mat && r.cal > 0) {
+    if (r.cal < mat.calMin) avisos.push(`⚠ Calibre ${r.cal} está DEBAJO del mínimo de ${mat.nombre} (${mat.calMin}).`);
+    if (r.cal > mat.calMax) avisos.push(`⚠ Calibre ${r.cal} está ARRIBA del máximo de ${mat.nombre} (${mat.calMax}).`);
+  }
+
+  const inp = (id, campo, label, ph, extra) => `
+    <div>
+      <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${label}</label>
+      <input class="input" id="${id}" type="text" inputmode="decimal" value="${f[campo] ?? ''}" placeholder="${ph || ''}" autocomplete="off"
+        oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.cotSet('${campo}', this.value, '${id}')" ${extra || ''} />
+    </div>`;
+  const btnSel = (campo, k, lbl, color) => `<button type="button" onclick="window.cotSet('${campo}','${k}')" style="padding:9px 13px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${f[campo] === k ? color : '#e2e8f0'};background:${f[campo] === k ? color : '#fff'};color:${f[campo] === k ? '#fff' : '#475569'};">${lbl}</button>`;
+  const card = (lbl, val, sub, color) => `
+    <div style="background:#f8fafc;border-radius:10px;padding:12px 14px;">
+      <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;">${lbl}</div>
+      <div style="font-size:21px;font-weight:900;color:${color || '#0f172a'};">${val}</div>
+      ${sub ? `<div style="font-size:10.5px;color:#94a3b8;">${sub}</div>` : ''}
+    </div>`;
+
+  return `
+    <!-- QUÉ COTIZAS -->
+    <div style="background:#fff;border:2px solid #16a34a;border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        ${btnSel('producto', 'bolsa', '👝 Bolsa (tubular)', '#16a34a')}
+        ${btnSel('producto', 'hoja', '📄 Hoja (1 capa)', '#0891b2')}
+        ${btnSel('producto', 'rollo', '🌀 Bolsa en rollo', '#7c3aed')}
+        <span style="flex:1;"></span>
+        ${btnSel('unidades', 'cm', 'cm', '#334155')}
+        ${btnSel('unidades', 'pulgadas', 'pulgadas', '#334155')}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+        ${COT_MATERIALES.map(m => btnSel('material', m.k, m.nombre, '#1e40af')).join('')}
+      </div>
+      ${mat ? `<div style="font-size:10.5px;color:#64748b;margin-bottom:10px;">📏 ${mat.nombre}: calibre ${mat.calMin}–${mat.calMax} · ${mat.nota}</div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;">
+        ${inp('cot-ancho', 'ancho', `Ancho (${f.unidades})`, '33')}
+        ${inp('cot-fuelle', 'fuelle', `Fuelle (${f.unidades})`, '0')}
+        ${inp('cot-largo', 'largo', `Largo (${f.unidades})`, '60')}
+        ${inp('cot-cal', 'calibre', 'Calibre (puntos)', '100')}
+        ${inp('cot-precio', 'precio_kg', 'Precio por kg ($)', '50.00')}
+      </div>
+      ${f.producto === 'rollo' ? `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px;">
+          ${inp('cot-pzrollo', 'piezas_rollo', 'Piezas por rollo', '100')}
+          ${inp('cot-bobina', 'peso_bobina', 'Peso bobina/core (kg)', '0.3')}
+        </div>` : ''}
+      ${avisos.length ? avisos.map(a => `<div style="margin-top:10px;font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 11px;">${a}</div>`).join('') : ''}
+    </div>
+
+    <!-- CONVERSOR DE CALIBRES -->
+    <div style="background:#eff6ff;border:1.5px solid #3b82f6;border-radius:12px;padding:12px 16px;margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:800;color:#1e40af;margin-bottom:8px;">🔄 ¿El cliente te dio otra medida? Conviértela a calibre NewPack</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input class="input" id="cot-conv" type="text" inputmode="decimal" value="${f.conv_val || ''}" placeholder="Ej: 60" style="width:110px;" autocomplete="off"
+          oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.cotSet('conv_val', this.value, 'cot-conv')" />
+        <select class="input" style="width:130px;" onchange="window.cotSet('conv_um', this.value)">
+          <option value="micras" ${f.conv_um === 'micras' ? 'selected' : ''}>micras (µm)</option>
+          <option value="mm" ${f.conv_um === 'mm' ? 'selected' : ''}>milímetros</option>
+          <option value="mil" ${f.conv_um === 'mil' ? 'selected' : ''}>mil (milésimas)</option>
+          <option value="pulgadas" ${f.conv_um === 'pulgadas' ? 'selected' : ''}>pulgadas</option>
+        </select>
+        ${conv ? `
+          <span style="font-size:13px;color:#1e40af;">= calibre <strong>${fmtNum(conv.exacto)}</strong> · estándar más cercano: <strong>${conv.estandar}</strong></span>
+          <button type="button" onclick="window.cotUsarCalibre(${conv.estandar})" style="padding:7px 13px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Usar ${conv.estandar}</button>
+        ` : `<span style="font-size:12px;color:#94a3b8;">captura el valor que te dio el cliente</span>`}
+      </div>
+    </div>
+
+    <!-- RESULTADOS EN VIVO -->
+    ${listo ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
+        ${card('Peso del millar', fmtNum(r.pesoMillar.toFixed(2)) + ' kg', 'peso por pieza: ' + (r.pesoPieza * 1000).toFixed(2) + ' g')}
+        ${card('Precio millar', conPrecio ? '$' + fmtNum(r.precioMillar.toFixed(2)) : '— captura $/kg', '', '#16a34a')}
+        ${card('Precio por pieza', conPrecio ? '$' + r.precioPieza.toFixed(4) : '—', '', '#16a34a')}
+        ${card('Piezas por kg', fmtNum(r.piezasKg.toFixed(1)), '')}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px;">
+        <div style="background:#f0fdf4;border:1.5px solid #16a34a;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:10px;color:#166534;font-weight:700;text-transform:uppercase;">Paquete de <input class="input" id="cot-kgpaq" type="text" inputmode="decimal" value="${f.kg_paquete}" style="width:46px;display:inline-block;padding:1px 4px;font-size:11px;text-align:center;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.cotSet('kg_paquete', this.value, 'cot-kgpaq')" /> kg</div>
+          <div style="font-size:21px;font-weight:900;color:#166534;">≈ ${fmtNum(Math.floor(r.piezasPaq))} piezas</div>
+          <div style="font-size:10.5px;color:#16a34a;">la respuesta a "¿de cuántas piezas son los paquetes?"</div>
+        </div>
+        ${r.pzasRollo > 0 ? `
+          ${card('Peso del rollo', r.pesoRollo.toFixed(2) + ' kg', 'incluye bobina de ' + f.peso_bobina + ' kg', '#7c3aed')}
+          ${card('Precio por rollo', conPrecio ? '$' + fmtNum(r.precioRollo.toFixed(2)) : '—', fmtNum(r.pzasRollo) + ' piezas', '#7c3aed')}
+        ` : ''}
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button onclick="window.cotCopiarWhats()" style="padding:12px 20px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:14px;">📋 Copiar respuesta (WhatsApp/correo)</button>
+        <span style="font-size:11px;color:#94a3b8;align-self:center;">Fase 2 próximamente: guardar como cotización formal con folio y PDF</span>
+      </div>
+    ` : `
+      <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;">🧮</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">Captura medidas y calibre para cotizar en vivo</div>
+        <div style="font-size:12px;margin-top:4px;">Peso del millar = (ancho + fuelle) × largo × 0.485 × calibre ÷ 10,000 — la misma fórmula del Excel.</div>
+      </div>
+    `}
+  `;
+}
+
 // 🆕 SALIDAS DEL DÍA — programación de embarques simple por CEDIS.
 //    Almacén ve QUÉ va a cargar por día y qué está ya programado en ruta.
 window.setSalidasCedis = (c) => { state.filtros.salidas_cedis = c; render(); };
@@ -25948,6 +26153,35 @@ function modalMateriaPrima(esEdicion) {
             </div>
             `;
           })() : ''}
+
+          ${(f.tipo === 'pigmento' || f.tipo === 'aditivo') ? (() => {
+            // 🆕 Ligar al CÓDIGO DE PRODUCTO: clave de 2 letras que aparecerá en el codificador
+            const esPig = f.tipo === 'pigmento';
+            const catalogoFijo = esPig ? window.COLORES_GEN : window.ADITIVOS_GEN;
+            const clave = String(f.clave_codigo || '').toUpperCase();
+            const choqueFijo = clave.length === 2 && catalogoFijo.some(x => x.codigo === clave);
+            const choqueMP = clave.length === 2 && (state.materias_primas || []).some(m =>
+              m.id !== (mp?.id) && m.activo !== false && m.tipo === f.tipo && String(m.clave_codigo || '').toUpperCase() === clave);
+            return `
+            <div class="field" style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:10px;">
+              <label class="field-label" style="color:#1e40af;">🔗 Ligar al código de producto <span style="font-weight:400;color:#64748b;font-size:10px;">(opcional)</span></label>
+              <div style="font-size:11px;color:#475569;margin-bottom:8px;">Si le asignas una <strong>clave de 2 letras</strong>, este ${esPig ? 'pigmento aparecerá como COLOR' : 'aditivo aparecerá'} en el generador de códigos al crear productos nuevos. Los códigos de productos ya existentes <strong>no cambian</strong>.</div>
+              <div style="display:grid;grid-template-columns:130px 1fr;gap:10px;">
+                <div>
+                  <label class="field-label" style="font-size:10px;">Clave (2 letras)</label>
+                  <input class="input" value="${clave}" maxlength="2" placeholder="${esPig ? 'Ej: MO' : 'Ej: IG'}" style="text-transform:uppercase;font-family:monospace;font-weight:800;text-align:center;letter-spacing:0.2em;" oninput="window.modalFormSet('clave_codigo', this.value.toUpperCase().replace(/[^A-Z]/g,'').slice(0,2))" />
+                </div>
+                <div>
+                  <label class="field-label" style="font-size:10px;">Nombre en el codificador</label>
+                  <input class="input" value="${f.nombre_codigo || ''}" placeholder="${(f.descripcion || (esPig ? 'MORADO' : 'IGNÍFUGO')).toUpperCase()}" style="text-transform:uppercase;" oninput="window.modalFormSetSilent('nombre_codigo', this.value.toUpperCase())" />
+                </div>
+              </div>
+              ${choqueFijo ? `<div style="font-size:11px;color:#dc2626;font-weight:700;margin-top:6px;">⛔ La clave "${clave}" ya la usa el catálogo fijo (${catalogoFijo.find(x=>x.codigo===clave)?.nombre}). Elige otra.</div>` : ''}
+              ${choqueMP ? `<div style="font-size:11px;color:#dc2626;font-weight:700;margin-top:6px;">⛔ La clave "${clave}" ya la usa otro ${f.tipo} de Materias Primas. Elige otra.</div>` : ''}
+              ${clave.length === 2 && !choqueFijo && !choqueMP ? `<div style="font-size:11px;color:#16a34a;font-weight:700;margin-top:6px;">✓ Clave disponible — aparecerá como "${(f.nombre_codigo || f.descripcion || '').toUpperCase() || '(captura el nombre)'} (${clave})"</div>` : ''}
+            </div>
+            `;
+          })() : ''}
           
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="field">
@@ -26013,6 +26247,22 @@ window.confirmarMP = async (id) => {
       data.categoria_resina = state.modalForm?.categoria_resina || window.adivinarCategoriaResina({ codigo, descripcion });
     } else {
       data.categoria_resina = null;
+    }
+    // 🆕 Liga al CÓDIGO DE PRODUCTO (solo pigmento/aditivo, opcional)
+    if (tipo === 'pigmento' || tipo === 'aditivo') {
+      const clave = String(state.modalForm?.clave_codigo || '').toUpperCase().trim();
+      if (clave) {
+        if (!/^[A-Z]{2}$/.test(clave)) { toast('La clave para código de producto debe ser exactamente 2 letras', 'error'); state.loadingAccion = false; render(); return; }
+        const catFijo = tipo === 'pigmento' ? window.COLORES_GEN : window.ADITIVOS_GEN;
+        if (catFijo.some(x => x.codigo === clave)) { toast(`La clave ${clave} ya la usa el catálogo fijo. Elige otra.`, 'error'); state.loadingAccion = false; render(); return; }
+        const dupMP = (state.materias_primas || []).some(m => m.id !== id && m.activo !== false && m.tipo === tipo && String(m.clave_codigo || '').toUpperCase() === clave);
+        if (dupMP) { toast(`La clave ${clave} ya la usa otro ${tipo}. Elige otra.`, 'error'); state.loadingAccion = false; render(); return; }
+        data.clave_codigo = clave;
+        data.nombre_codigo = String(state.modalForm?.nombre_codigo || descripcion).toUpperCase().trim();
+      } else {
+        data.clave_codigo = null;
+        data.nombre_codigo = null;
+      }
     }
     if (id) {
       await updateDoc(doc(db, 'materias_primas', id), data);
@@ -43420,14 +43670,44 @@ window.TIPOS_GEN = TIPOS_GEN;
 window.COLORES_GEN = COLORES_GEN;
 window.ADITIVOS_GEN = ADITIVOS_GEN;
 
+// 🆕 CATÁLOGO DINÁMICO del codificador de productos:
+//    base fija (arriba, intocable — protege los códigos ya generados) + los pigmentos/aditivos
+//    dados de alta en MATERIAS PRIMAS que tengan "clave de código" (2 letras).
+//    Desactivar el insumo lo quita para productos NUEVOS; los códigos viejos no cambian.
+window._genExtraMP = (tipoMP, incluirInactivos) => (state.materias_primas || [])
+  .filter(m => (incluirInactivos || m.activo !== false) && m.tipo === tipoMP && m.clave_codigo)
+  .map(m => ({
+    nombre: String(m.nombre_codigo || m.descripcion || m.codigo).toUpperCase().trim(),
+    codigo: String(m.clave_codigo).toUpperCase().trim(),
+    esMP: true, mp_codigo: m.codigo
+  }));
+// incluirInactivos=true se usa en el LOOKUP de generarCodigoPT: un producto viejo cuyo
+// pigmento ya se desactivó puede seguir regenerando su código. El SELECT solo ofrece activos.
+window.coloresGenAll = (incluirInactivos) => {
+  const base = COLORES_GEN.slice();
+  window._genExtraMP('pigmento', incluirInactivos).forEach(e => {
+    if (!base.some(b => b.codigo === e.codigo || b.nombre === e.nombre)) base.push(e);
+  });
+  return base;
+};
+window.aditivosGenAll = (incluirInactivos) => {
+  const base = ADITIVOS_GEN.slice();
+  window._genExtraMP('aditivo', incluirInactivos).forEach(e => {
+    if (!base.some(b => b.codigo === e.codigo || b.nombre === e.nombre)) base.push(e);
+  });
+  return base;
+};
+
 // Generación de código según patrón NewPack: MM TT AAA FFF LLL CCCC CO AD S
 // Ancho/Fuelle/Largo: 3 dígitos cada uno (cm directo)
 // Calibre: 4 dígitos (calibre × 2 con padding, ej: 200 → 0400, 30 → 0060)
 function generarCodigoPT({ material, tipo, ancho, fuelle, largo, calibre, color, aditivo, secuencia = 1 }) {
   const mat = MATERIALES_GEN.find(x => x.nombre === material);
   const tip = TIPOS_GEN.find(x => x.nombre === tipo);
-  const col = COLORES_GEN.find(x => x.nombre === color);
-  const adi = ADITIVOS_GEN.find(x => x.nombre === aditivo);
+  // 🆕 Busca en el catálogo dinámico (fijos + pigmentos/aditivos de Materias Primas,
+  //    incluyendo inactivos para que productos viejos sigan regenerando su código)
+  const col = window.coloresGenAll(true).find(x => x.nombre === color);
+  const adi = window.aditivosGenAll(true).find(x => x.nombre === aditivo);
   if (!mat || !tip || !col || !adi) return '';
   const a = String(Math.round(Number(ancho) || 0)).padStart(3, '0').slice(0, 3);
   const f = String(Math.round(Number(fuelle) || 0)).padStart(3, '0').slice(0, 3);
@@ -44996,13 +45276,13 @@ function modalCrearProductoPT() {
             <div class="field">
               <label class="field-label">Color *</label>
               <select class="input form-pt" data-field="color">
-                ${COLORES_GEN.map(c => `<option value="${c.nombre}" ${f.color === c.nombre ? 'selected' : ''}>${c.nombre} (${c.codigo})</option>`).join('')}
+                ${window.coloresGenAll().map(c => `<option value="${c.nombre}" ${f.color === c.nombre ? 'selected' : ''}>${c.nombre} (${c.codigo})${c.esMP ? ' · de Materias Primas' : ''}</option>`).join('')}
               </select>
             </div>
             <div class="field">
               <label class="field-label">Aditivo *</label>
               <select class="input form-pt" data-field="aditivo">
-                ${ADITIVOS_GEN.map(a => `<option value="${a.nombre}" ${f.aditivo === a.nombre ? 'selected' : ''}>${a.nombre} (${a.codigo})</option>`).join('')}
+                ${window.aditivosGenAll().map(a => `<option value="${a.nombre}" ${f.aditivo === a.nombre ? 'selected' : ''}>${a.nombre} (${a.codigo})${a.esMP ? ' · de Materias Primas' : ''}</option>`).join('')}
               </select>
             </div>
           </div>
