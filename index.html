@@ -3998,7 +3998,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0730-B19-cotizaciones</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B21-cotizacionescrm</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -21546,6 +21546,7 @@ window.cotCopiarWhats = () => {
     ];
     if (r.pzasRollo > 0) lineas.push(`Rollo de ${fmtNum(r.pzasRollo)} pzas: $${fmtNum(r.precioRollo.toFixed(2))} · peso ${r.pesoRollo.toFixed(2)} kg (incluye bobina)`);
   }
+  lineas.splice(2, 0, window._cotSpecTxt(f));
   lineas.push(`_Precios más IVA · sujeto a confirmación_`);
   const txt = lineas.join('\n');
   try { navigator.clipboard.writeText(txt); toast('📋 Cotización copiada — pégala en WhatsApp/correo', 'success'); }
@@ -21557,10 +21558,10 @@ window.cotCopiarWhats = () => {
 //    prospecto (alta ligera), multi-líneas, vigencia y PDF.
 //    Colección: cotizaciones · folio COT-AAAA-#### (contador cot_AAAA)
 // ============================================================
-const COT_CONDICIONES_DEFAULT = 'Precios en MXN más IVA. Tiempo de entrega a confirmar al recibir su orden de compra. Al vencer la vigencia los precios están sujetos a cambio sin previo aviso.';
+const COT_CONDICIONES_DEFAULT = 'Precios más IVA. Tiempo de entrega a confirmar al recibir su orden de compra. Al vencer la vigencia los precios están sujetos a cambio sin previo aviso.';
 
 window._cotDraft = () => {
-  if (!state.cotDraft) state.cotDraft = { cliente_tipo: 'cliente', cliente_codigo: '', prospecto: { empresa: '', contacto: '', telefono: '', correo: '' }, vigencia_dias: '15', condiciones: COT_CONDICIONES_DEFAULT, notas: '', lineas: [] };
+  if (!state.cotDraft) state.cotDraft = { cliente_tipo: 'cliente', cliente_codigo: '', prospecto: { empresa: '', contacto: '', telefono: '', correo: '' }, moneda: 'MXN', vigencia_dias: '15', condiciones: COT_CONDICIONES_DEFAULT, notas: '', lineas: [] };
   return state.cotDraft;
 };
 window._cotFoco = (id) => {
@@ -21569,13 +21570,40 @@ window._cotFoco = (id) => {
   if (el) { el.focus(); try { const p = el.value.length; el.setSelectionRange(p, p); } catch (e) {} }
 };
 
-// Cantidad × precio unitario según el modo de la línea (pieza = millares · metros = rollos)
+// Unidades de venta disponibles por línea según su modo de cálculo
+window.cotUnidadesLinea = (l) => l.modo === 'metros'
+  ? [['rollo', 'Rollo'], ['metro', 'Metro'], ['kg', 'Kg']]
+  : [['millar', 'Millar'], ['pieza', 'Pieza'], ['paquete', 'Paquete'], ['kg', 'Kg']].concat(Number(l.piezas_rollo) > 0 ? [['rollo', 'Rollo']] : []);
+
+// Cantidad × precio unitario según la UNIDAD DE VENTA elegida (millar, pieza,
+// paquete, kg, rollo, metro) — todo deriva del mismo cálculo base
 window._cotLineaCalc = (l) => {
   const cant = Number(l.cantidad) || 0;
-  const esM = l.modo === 'metros';
-  const unit = esM ? (Number(l.precio_rollo_m) || 0) : (Number(l.precio_millar) || 0);
-  const kgU = esM ? (Number(l.mts_rollo) || 0) * (Number(l.peso_metro) || 0) : (Number(l.peso_millar) || 0);
-  return { cant, unit, importe: cant * unit, kg: cant * kgU, unidad: esM ? `rollo(s) de ${fmtNum(l.mts_rollo)} m` : 'millar(es)' };
+  const pKg = Number(l.precio_kg) || 0;
+  const uv = l.unidad_venta || (l.modo === 'metros' ? 'rollo' : 'millar');
+  let unit = 0, kgU = 0, unidad = '';
+  if (l.modo === 'metros') {
+    if (uv === 'metro') { unit = Number(l.precio_metro) || 0; kgU = Number(l.peso_metro) || 0; unidad = 'metro(s)'; }
+    else if (uv === 'kg') { unit = pKg; kgU = 1; unidad = 'kg'; }
+    else { unit = Number(l.precio_rollo_m) || 0; kgU = (Number(l.mts_rollo) || 0) * (Number(l.peso_metro) || 0); unidad = `rollo(s) de ${fmtNum(l.mts_rollo)} m`; }
+  } else {
+    if (uv === 'pieza') { unit = Number(l.precio_pieza) || 0; kgU = (Number(l.peso_millar) || 0) / 1000; unidad = 'pieza(s)'; }
+    else if (uv === 'paquete') { unit = (Number(l.kg_paquete) || 0) * pKg; kgU = Number(l.kg_paquete) || 0; unidad = `paquete(s) de ${fmtNum(l.kg_paquete)} kg`; }
+    else if (uv === 'kg') { unit = pKg; kgU = 1; unidad = 'kg'; }
+    else if (uv === 'rollo' && Number(l.piezas_rollo) > 0) { unit = Number(l.precio_rollo) || 0; kgU = (Number(l.piezas_rollo) || 0) * (Number(l.peso_millar) || 0) / 1000; unidad = `rollo(s) de ${fmtNum(l.piezas_rollo)} pzas`; }
+    else { unit = Number(l.precio_millar) || 0; kgU = Number(l.peso_millar) || 0; unidad = 'millar(es)'; }
+  }
+  return { cant, unit, importe: cant * unit, kg: cant * kgU, unidad, uv };
+};
+
+// Especificación del producto en texto (para la cotización, el PDF y el futuro pedido)
+window._cotSpecTxt = (l) => {
+  const p = [`Color: ${l.color || 'Transparente'}`];
+  if (l.aditivo && l.aditivo !== 'NINGUNO') p.push(`Aditivo: ${l.aditivo}`);
+  p.push(l.impresion === 'si' ? `Impresión ${l.tintas || '—'} tinta(s)${l.colores_imp ? `: ${l.colores_imp}` : ''}` : 'Sin impresión');
+  if (l.presentacion) p.push(`Presentación: ${l.presentacion}`);
+  if (l.minimo) p.push(`Mínimo: ${l.minimo}`);
+  return p.join(' · ');
 };
 
 window.cotAgregarLinea = () => {
@@ -21599,6 +21627,11 @@ window.cotAgregarLinea = () => {
     precio_rollo_m: r.precioRolloM || 0, peso_rollo_m: r.pesoRolloM || 0,
     piezas_rollo: r.pzasRollo || 0, precio_rollo: r.precioRollo || 0, peso_rollo: r.pesoRollo || 0,
     cantidad: '1',
+    unidad_venta: esMetros ? 'rollo' : 'millar',
+    // Especificación del producto (viaja al PDF y al futuro pedido)
+    color: f.color || 'Transparente', aditivo: f.aditivo || 'NINGUNO',
+    impresion: f.impresion || '', tintas: f.tintas || '', colores_imp: f.colores_imp || '',
+    presentacion: f.presentacion || '', minimo: f.minimo || '',
   });
   toast('➕ Línea agregada — abajo puedes ajustar cantidades y guardar');
   window.forzarRender();
@@ -21647,6 +21680,7 @@ window.cotGuardar = async () => {
       cliente_nombre: clienteNombre,
       prospecto: d.cliente_tipo === 'prospecto' ? { ...d.prospecto } : null,
       lineas, subtotal, iva, total: subtotal + iva,
+      moneda: d.moneda || 'MXN',
       vigencia_dias: dias,
       fecha: hoy.toLocaleDateString('en-CA'),
       vence: new Date(hoy.getTime() + dias * 86400000).toLocaleDateString('en-CA'),
@@ -21663,16 +21697,72 @@ window.cotGuardar = async () => {
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
-window.cotMarcarEnviada = async (id) => {
-  try { await updateDoc(doc(db, 'cotizaciones', id), { estado: 'enviada', enviada_at: serverTimestamp(), updated_at: serverTimestamp() }); toast('✉️ Marcada como enviada al cliente'); }
+// Estado REAL de una cotización: ganada/perdida se respetan; si no, vencida
+// automática cuando pasó la fecha; si no, el estado guardado.
+window._cotEstadoReal = (c) => {
+  if (['ganada', 'perdida'].includes(c.estado)) return c.estado;
+  const hoy = new Date().toLocaleDateString('en-CA');
+  if (c.vence && c.vence < hoy) return 'vencida';
+  return c.estado || 'borrador';
+};
+
+// Cambio de estado con bitácora automática (enviada → negociacion → ganada/perdida)
+window.cotCambiarEstado = async (id, estado) => {
+  const c = (state.cotizaciones || []).find(x => x.id === id);
+  if (!c) return;
+  const extra = {};
+  if (estado === 'perdida') {
+    const motivo = prompt('¿Por qué se perdió? (precio, tiempo de entrega, competencia, ya no compró...)');
+    if (motivo === null) return;
+    extra.motivo_perdida = motivo || '';
+  }
+  const u = state.user || {};
+  const lbl = { enviada: 'Enviada al cliente', negociacion: 'En negociación', ganada: '🏆 GANADA', perdida: '❌ Perdida' }[estado] || estado;
+  const seguimientos = (c.seguimientos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota: `${lbl}${extra.motivo_perdida ? ' · ' + extra.motivo_perdida : ''}` }]);
+  try {
+    await updateDoc(doc(db, 'cotizaciones', id), { estado, ...extra, seguimientos, updated_at: serverTimestamp() });
+    toast(estado === 'ganada' ? '🏆 ¡Cotización ganada! (en Fase 3b la ligamos al pedido)' : `Estado: ${lbl}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// Nota de seguimiento manual ("cliente pidió esperar a septiembre", etc.)
+window.cotNota = async (id) => {
+  const c = (state.cotizaciones || []).find(x => x.id === id);
+  if (!c) return;
+  const nota = prompt('Nota de seguimiento:');
+  if (!nota) return;
+  const u = state.user || {};
+  const seguimientos = (c.seguimientos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota }]);
+  try { await updateDoc(doc(db, 'cotizaciones', id), { seguimientos, updated_at: serverTimestamp() }); toast('📝 Nota guardada'); }
   catch (e) { toast('Error: ' + e.message, 'error'); }
 };
+
+// Archivar: sale de las vistas de trabajo pero se conserva TODO el historial
+window.cotArchivar = async (id, archivar) => {
+  try { await updateDoc(doc(db, 'cotizaciones', id), { archivada: !!archivar, updated_at: serverTimestamp() }); toast(archivar ? '🗄 Archivada — la encuentras en la pestaña Archivadas y en Por cliente' : '📤 Desarchivada'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// Eliminar de verdad: SOLO dirección (las rules lo bloquean para el resto)
+window.cotEliminar = async (id) => {
+  const c = (state.cotizaciones || []).find(x => x.id === id);
+  if (!c) return;
+  if (!confirm(`¿Eliminar DEFINITIVAMENTE la ${c.folio}?\n\nSi ya se trabajó, mejor archívala para conservar el historial del cliente.`)) return;
+  try { await deleteDoc(doc(db, 'cotizaciones', id)); toast('🗑 Cotización eliminada'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.cotSetSubtab = (t) => { state.cotSubtab = t; render(); };
+window.cotSetVend = (v) => { state.cotVend = v; render(); };
+window.cotCliToggle = (k) => { state.cotCliExp = state.cotCliExp === k ? '' : k; render(); };
+window.cotVerCliente = (k) => { state.cotTab = 'lista'; state.cotSubtab = 'clientes'; state.cotCliExp = k; render(); };
 window.cotDuplicar = (id) => {
   const c = (state.cotizaciones || []).find(x => x.id === id);
   if (!c) return;
   state.cotDraft = {
     cliente_tipo: c.cliente_tipo || 'cliente', cliente_codigo: c.cliente_codigo || '',
     prospecto: { empresa: '', contacto: '', telefono: '', correo: '', ...(c.prospecto || {}) },
+    moneda: c.moneda || 'MXN',
     vigencia_dias: String(c.vigencia_dias || 15), condiciones: c.condiciones || COT_CONDICIONES_DEFAULT, notas: c.notas || '',
     lineas: (c.lineas || []).map(l => ({ ...l, cantidad: String(l.cantidad || 1) })),
   };
@@ -21706,8 +21796,8 @@ window._pdfCotizacion = (cot) => {
 
   y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
   docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
-  docPDF.roundedRect(14, y, 91, 36, 2, 2, 'F');
-  docPDF.roundedRect(107, y, 89, 36, 2, 2, 'F');
+  docPDF.roundedRect(14, y, 91, 38, 2, 2, 'F');
+  docPDF.roundedRect(107, y, 89, 38, 2, 2, 'F');
 
   // Bloque cliente / prospecto
   docPDF.setFontSize(7);
@@ -21752,8 +21842,9 @@ window._pdfCotizacion = (cot) => {
   dato('Fecha:', cot.fecha);
   dato('Vigencia:', `${cot.vigencia_dias} días`);
   dato('Vence:', cot.vence, true);
+  dato('Moneda:', cot.moneda === 'USD' ? 'USD (dólares)' : 'MXN (pesos)');
   dato('Vendedor:', cot.vendedor);
-  y += 42;
+  y += 44;
 
   y = _pdfSeccionTitulo(docPDF, y, 'PARTIDAS COTIZADAS', _COL_VERDE);
   // Encabezado de tabla
@@ -21773,10 +21864,14 @@ window._pdfCotizacion = (cot) => {
   };
   y = thead(y);
   (cot.lineas || []).forEach((l, i) => {
-    if (y > 240) { docPDF.addPage(); y = thead(20); }
+    if (y > 235) { docPDF.addPage(); y = thead(20); }
     const lDesc = docPDF.splitTextToSize(l.descripcion || '—', 92);
     const nDesc = Math.min(lDesc.length, 2);
-    const hRow = 5 + nDesc * 3.6 + 3.5;
+    // 📌 Al cliente NO se le muestra info técnica (peso millar, etc.) — solo la
+    //    descripción del producto + su especificación y el precio en su unidad.
+    const lSpec = docPDF.splitTextToSize(window._cotSpecTxt(l), 92);
+    const nSpec = Math.min(lSpec.length, 2);
+    const hRow = 3 + nDesc * 3.6 + nSpec * 3.2 + 2.5;
     if (i % 2 === 0) { docPDF.setFillColor(248, 250, 252); docPDF.rect(14, y, 182, hRow, 'F'); }
     docPDF.setTextColor(30, 41, 59);
     docPDF.setFontSize(7.5);
@@ -21789,14 +21884,11 @@ window._pdfCotizacion = (cot) => {
     docPDF.text('$' + fmtNum((Number(l.precio_unitario) || 0).toFixed(2)), 168, y + 4.5, { align: 'right' });
     docPDF.setFont('helvetica', 'bold');
     docPDF.text('$' + fmtNum((Number(l.importe) || 0).toFixed(2)), 194, y + 4.5, { align: 'right' });
-    // Sub-línea técnica (peso, precio pieza / metro, paquete)
+    // Especificación del producto (color, aditivo, impresión, presentación, mínimo)
     docPDF.setFont('helvetica', 'normal');
-    docPDF.setFontSize(6);
+    docPDF.setFontSize(6.5);
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    const sub = l.modo === 'metros'
-      ? `${((Number(l.peso_metro) || 0) * 1000).toFixed(1)} g/m · $${(Number(l.precio_metro) || 0).toFixed(4)} por metro · rollo ${fmtNum(l.mts_rollo)} m ≈ ${(Number(l.peso_rollo_m) || 0).toFixed(2)} kg · base $${fmtNum(l.precio_kg)}/kg`
-      : `peso millar ${(Number(l.peso_millar) || 0).toFixed(2)} kg · $${(Number(l.precio_pieza) || 0).toFixed(4)} por pieza · paquete ${l.kg_paquete} kg ≈ ${fmtNum(l.piezas_paq)} pzas · base $${fmtNum(l.precio_kg)}/kg`;
-    docPDF.text(sub, 22, y + 4.5 + nDesc * 3.6 + 2.5);
+    lSpec.slice(0, 2).forEach((line, j) => docPDF.text(line, 22, y + 4.5 + nDesc * 3.6 + 2.5 + j * 3.2));
     y += hRow;
   });
 
@@ -21815,7 +21907,7 @@ window._pdfCotizacion = (cot) => {
   docPDF.setFont('helvetica', 'bold');
   docPDF.setFontSize(10);
   docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-  docPDF.text('TOTAL MXN:', 130, y + 18);
+  docPDF.text(`TOTAL ${cot.moneda === 'USD' ? 'USD' : 'MXN'}:`, 130, y + 18);
   docPDF.text('$' + fmtNum((Number(cot.total) || 0).toFixed(2)), 192, y + 18, { align: 'right' });
   docPDF.setTextColor(0, 0, 0);
   y += 28;
@@ -21851,7 +21943,7 @@ window._pdfCotizacion = (cot) => {
 };
 
 function renderCotizador() {
-  if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras' };
+  if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras', color: 'Transparente', aditivo: 'NINGUNO', impresion: '', tintas: '', colores_imp: '', presentacion: '', minimo: '' };
   const f = state.cotForm;
   const r = window.cotCalc(f);
   const conv = window.cotConvertirCalibre(f.conv_val, f.conv_um);
@@ -21946,6 +22038,52 @@ function renderCotizador() {
           ${inp('cot-bobina', 'peso_bobina', 'Peso bobina/core (kg)', '0.3')}
         </div>` : '')}
       ${avisos.length ? avisos.map(a => `<div style="margin-top:10px;font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 11px;">${a}</div>`).join('') : ''}
+
+      <!-- ESPECIFICACIÓN DEL PRODUCTO — no afecta el precio; viaja a la cotización
+           para que CS/Planeación/Producción sepan exactamente qué pidió el cliente -->
+      <div style="border-top:1px dashed #e2e8f0;margin-top:12px;padding-top:10px;">
+        <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;">🎨 Especificación del producto <span style="font-weight:600;color:#94a3b8;">(sale en la cotización tal cual)</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Color / pigmento</label>
+            <select class="input" onchange="window.cotSet('color', this.value)">
+              ${(window.coloresGenAll ? window.coloresGenAll() : []).map(c => `<option value="${c.nombre}" ${f.color === c.nombre ? 'selected' : ''}>${c.nombre}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Aditivo</label>
+            <select class="input" onchange="window.cotSet('aditivo', this.value)">
+              ${(window.aditivosGenAll ? window.aditivosGenAll() : []).map(a => `<option value="${a.nombre}" ${f.aditivo === a.nombre ? 'selected' : ''}>${a.nombre}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Impresión</label>
+            <select class="input" onchange="window.cotSet('impresion', this.value)">
+              <option value="" ${!f.impresion ? 'selected' : ''}>Sin impresión</option>
+              <option value="si" ${f.impresion === 'si' ? 'selected' : ''}>Con impresión</option>
+            </select>
+          </div>
+          ${f.impresion === 'si' ? `
+          ${inp('cot-tintas', 'tintas', 'No. de tintas', '2')}
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Colores de impresión</label>
+            <input class="input" id="cot-colimp" type="text" value="${(f.colores_imp || '').replace(/"/g, '&quot;')}" placeholder="Ej: blanco y rojo" autocomplete="off"
+              oninput="window.cotSet('colores_imp', this.value, 'cot-colimp')" />
+          </div>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:10px;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Presentación</label>
+            <input class="input" id="cot-pres" type="text" value="${(f.presentacion || '').replace(/"/g, '&quot;')}" placeholder="Ej: paquetes de 25 kg flejados en tarima" autocomplete="off"
+              oninput="window.cotSet('presentacion', this.value, 'cot-pres')" />
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Mínimo a pedir</label>
+            <input class="input" id="cot-min" type="text" value="${(f.minimo || '').replace(/"/g, '&quot;')}" placeholder="Ej: 500 kg por pedido" autocomplete="off"
+              oninput="window.cotSet('minimo', this.value, 'cot-min')" />
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- CONVERSOR DE CALIBRES -->
@@ -22053,12 +22191,20 @@ function _cotDraftPanelHTML() {
             ${d.lineas.map((l, i) => `
               <tr style="border-bottom:1px solid #f1f5f9;">
                 <td style="padding:7px 8px;color:#94a3b8;font-weight:800;">${i + 1}</td>
-                <td style="padding:7px 8px;min-width:220px;">${l.descripcion}</td>
+                <td style="padding:7px 8px;min-width:220px;">
+                  ${l.descripcion}
+                  <div style="font-size:10.5px;color:#94a3b8;margin-top:2px;">${window._cotSpecTxt(l)}</div>
+                </td>
                 <td style="padding:7px 8px;text-align:right;">
                   <input class="input" id="cot-lin-cant-${i}" type="text" inputmode="decimal" value="${l.cantidad}" style="width:70px;text-align:right;padding:4px 6px;"
                     oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.cotLineaSet(${i},'cantidad',this.value,'cot-lin-cant-${i}')" />
                 </td>
-                <td style="padding:7px 8px;color:#64748b;white-space:nowrap;">${calcs[i].unidad}</td>
+                <td style="padding:7px 8px;">
+                  <select class="input" style="padding:4px 6px;font-size:11.5px;min-width:90px;" onchange="window.cotLineaSet(${i},'unidad_venta',this.value)">
+                    ${window.cotUnidadesLinea(l).map(([v, lbl]) => `<option value="${v}" ${calcs[i].uv === v ? 'selected' : ''}>${lbl}</option>`).join('')}
+                  </select>
+                  <div style="font-size:10px;color:#94a3b8;margin-top:2px;white-space:nowrap;">${calcs[i].unidad}</div>
+                </td>
                 <td style="padding:7px 8px;text-align:right;white-space:nowrap;">$${fmtNum(calcs[i].unit.toFixed(2))}</td>
                 <td style="padding:7px 8px;text-align:right;font-weight:800;white-space:nowrap;">$${fmtNum(calcs[i].importe.toFixed(2))}</td>
                 <td style="padding:7px 4px;"><button onclick="window.cotQuitarLinea(${i})" title="Quitar línea" style="padding:4px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;">✕</button></td>
@@ -22066,10 +22212,17 @@ function _cotDraftPanelHTML() {
           </tbody>
         </table>
       </div>
-      <div style="display:flex;justify-content:flex-end;gap:22px;font-size:13px;margin-bottom:16px;flex-wrap:wrap;">
-        <span style="color:#64748b;">Subtotal: <strong>$${fmtNum(subtotal.toFixed(2))}</strong></span>
-        <span style="color:#64748b;">IVA 16%: <strong>$${fmtNum(iva.toFixed(2))}</strong></span>
-        <span style="color:#166534;font-weight:900;font-size:15px;">TOTAL: $${fmtNum((subtotal + iva).toFixed(2))} MXN</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;font-size:13px;margin-bottom:16px;flex-wrap:wrap;">
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span style="font-size:11px;font-weight:800;color:#475569;">Moneda:</span>
+          ${['MXN', 'USD'].map(m => `<button type="button" onclick="window.cotDraftSet('moneda','${m}')" style="padding:7px 13px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${(d.moneda || 'MXN') === m ? (m === 'USD' ? '#16a34a' : '#334155') : '#e2e8f0'};background:${(d.moneda || 'MXN') === m ? (m === 'USD' ? '#16a34a' : '#334155') : '#fff'};color:${(d.moneda || 'MXN') === m ? '#fff' : '#475569'};">${m === 'MXN' ? '🇲🇽 Pesos' : '🇺🇸 Dólares'}</button>`).join('')}
+          ${(d.moneda || 'MXN') === 'USD' ? '<span style="font-size:10.5px;color:#16a34a;">el precio $/kg que capturaste se toma como USD</span>' : ''}
+        </div>
+        <div style="display:flex;gap:22px;flex-wrap:wrap;">
+          <span style="color:#64748b;">Subtotal: <strong>$${fmtNum(subtotal.toFixed(2))}</strong></span>
+          <span style="color:#64748b;">IVA 16%: <strong>$${fmtNum(iva.toFixed(2))}</strong></span>
+          <span style="color:#166534;font-weight:900;font-size:15px;">TOTAL: $${fmtNum((subtotal + iva).toFixed(2))} ${d.moneda || 'MXN'}</span>
+        </div>
       </div>
 
       <!-- Destinatario -->
@@ -22131,62 +22284,163 @@ function _cotDraftPanelHTML() {
     </div>`;
 }
 
-// 🆕 Lista de cotizaciones guardadas
+// 🆕 Lista de cotizaciones — CRM: pipeline por estado, filtro por vendedor,
+//    archivo y seguimiento por cliente ("¿qué le hemos cotizado a X?")
 function _cotListaHTML() {
+  const u = state.user || {};
+  const esJefe = u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto);
+  const uid = u.id || u.uid || '';
   const hoy = new Date().toLocaleDateString('en-CA');
+  const en3dias = new Date(Date.now() + 3 * 86400000).toLocaleDateString('en-CA');
+
+  // ── Cada vendedor ve las suyas por default (jefes ven todas); puede cambiar
+  const vend = state.cotVend || (esJefe ? 'todas' : 'mias');
+  const esMia = c => (c.vendedor_uid && c.vendedor_uid === uid) || (!c.vendedor_uid && c.vendedor && c.vendedor === u.nombre);
+  let all = (state.cotizaciones || []).map(c => ({ ...c, _er: window._cotEstadoReal(c) }));
+  if (vend === 'mias') all = all.filter(esMia);
+
+  // ── Pipeline
+  const activas = all.filter(c => !c.archivada && ['borrador', 'enviada', 'negociacion'].includes(c._er));
+  const porVencer = activas.filter(c => c.vence && c.vence >= hoy && c.vence <= en3dias);
+  const ganadas = all.filter(c => c._er === 'ganada');
+  const perdidas = all.filter(c => c._er === 'perdida');
+  const vencidas = all.filter(c => !c.archivada && c._er === 'vencida');
+  const archivadas = all.filter(c => c.archivada);
+  const resueltas = ganadas.length + perdidas.length;
+  const conversion = resueltas ? Math.round(ganadas.length * 100 / resueltas) : null;
+
+  const subtab = state.cotSubtab || 'activas';
   const filtro = (state.filtros.cotizaciones || '').toLowerCase().trim();
-  let arr = (state.cotizaciones || []).slice();
-  if (filtro) arr = arr.filter(c => ((c.folio || '') + ' ' + (c.cliente_nombre || '') + ' ' + (c.vendedor || '') + ' ' + (c.estado || '')).toLowerCase().includes(filtro));
-  arr.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+  const pasaFiltro = c => !filtro || ((c.folio || '') + ' ' + (c.cliente_nombre || '') + ' ' + (c.vendedor || '') + ' ' + (c.lineas || []).map(l => l.descripcion).join(' ')).toLowerCase().includes(filtro);
 
   const chipEstado = (c) => {
-    const vencida = c.vence && c.vence < hoy && ['borrador', 'enviada'].includes(c.estado);
-    if (vencida) return '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#ffedd5;color:#9a3412;">⏰ VENCIDA</span>';
-    const m = { borrador: ['#f1f5f9', '#475569', '📝 BORRADOR'], enviada: ['#dbeafe', '#1e40af', '✉️ ENVIADA'], ganada: ['#dcfce7', '#166534', '🏆 GANADA'], perdida: ['#fee2e2', '#991b1b', '❌ PERDIDA'] };
-    const [bg, col, lbl] = m[c.estado] || m.borrador;
-    return `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:${bg};color:${col};">${lbl}</span>`;
+    const m = { borrador: ['#f1f5f9', '#475569', '📝 BORRADOR'], enviada: ['#dbeafe', '#1e40af', '✉️ ENVIADA'], negociacion: ['#fef9c3', '#854d0e', '🤝 NEGOCIACIÓN'], ganada: ['#dcfce7', '#166534', '🏆 GANADA'], perdida: ['#fee2e2', '#991b1b', '❌ PERDIDA'], vencida: ['#ffedd5', '#9a3412', '⏰ VENCIDA'] };
+    const [bg, col, lbl] = m[c._er] || m.borrador;
+    return `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:${bg};color:${col};">${lbl}</span>${c.archivada ? ' <span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#e2e8f0;color:#475569;">🗄 ARCHIVADA</span>' : ''}`;
+  };
+  const btn = (fn, lbl, color, outline) => `<button onclick="${fn}" style="padding:8px 13px;background:${outline ? '#fff' : color};color:${outline ? color : '#fff'};border:${outline ? `1.5px solid ${color}` : 'none'};border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">${lbl}</button>`;
+
+  // Tarjeta de una cotización con acciones según su estado real
+  const card = (c) => {
+    const seg = c.seguimientos || [];
+    const acc = [btn(`window.pdfCotizacion('${c.id}')`, '📄 PDF', '#0f172a')];
+    if (!c.archivada) {
+      if (c._er === 'borrador') acc.push(btn(`window.cotCambiarEstado('${c.id}','enviada')`, '✉️ Marcar enviada', '#3b82f6'));
+      if (c._er === 'enviada') acc.push(btn(`window.cotCambiarEstado('${c.id}','negociacion')`, '🤝 Negociación', '#ca8a04'));
+      if (['enviada', 'negociacion'].includes(c._er)) {
+        acc.push(btn(`window.cotCambiarEstado('${c.id}','ganada')`, '🏆 Ganada', '#16a34a'));
+        acc.push(btn(`window.cotCambiarEstado('${c.id}','perdida')`, '❌ Perdida', '#dc2626', true));
+      }
+      if (['ganada', 'perdida', 'vencida'].includes(c._er)) acc.push(btn(`window.cotArchivar('${c.id}',true)`, '🗄 Archivar', '#64748b', true));
+      acc.push(btn(`window.cotNota('${c.id}')`, '📝 Nota', '#475569', true));
+    } else {
+      acc.push(btn(`window.cotArchivar('${c.id}',false)`, '📤 Desarchivar', '#64748b', true));
+    }
+    acc.push(btn(`window.cotDuplicar('${c.id}')`, '📋 Recotizar', '#7c3aed', true));
+    if (esJefe) acc.push(btn(`window.cotEliminar('${c.id}')`, '🗑 Eliminar', '#dc2626', true));
+    const urgente = !c.archivada && ['borrador', 'enviada', 'negociacion'].includes(c._er) && c.vence && c.vence >= hoy && c.vence <= en3dias;
+    return `
+      <div style="background:#fff;border:1px solid ${urgente ? '#f59e0b' : '#e2e8f0'};border-radius:12px;padding:13px 16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div style="min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-weight:900;font-size:14px;" class="text-mono">${c.folio}</span>
+              ${chipEstado(c)}
+              ${c.cliente_tipo === 'prospecto' ? '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#f3e8ff;color:#7c3aed;">✨ PROSPECTO</span>' : ''}
+              ${urgente ? '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#fef3c7;color:#92400e;">⏳ vence pronto</span>' : ''}
+            </div>
+            <div onclick="window.cotVerCliente(decodeURIComponent('${encodeURIComponent(c.cliente_nombre || '—')}'))" title="Ver historial de este cliente" style="font-size:13px;font-weight:700;color:#0f172a;margin-top:3px;cursor:pointer;text-decoration:underline dotted #94a3b8;">${c.cliente_nombre || '—'}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">
+              ${(c.lineas || []).length} partida(s) · ${c.fecha || ''} · vence <strong>${c.vence || '—'}</strong> · ${c.vendedor || ''}
+            </div>
+            <div style="font-size:11px;color:#94a3b8;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px;">${(c.lineas || []).map(l => l.descripcion).join(' | ')}</div>
+            ${c.motivo_perdida ? `<div style="font-size:11px;color:#991b1b;margin-top:3px;">Motivo de pérdida: ${c.motivo_perdida}</div>` : ''}
+            ${seg.length ? `
+            <details style="margin-top:5px;">
+              <summary style="font-size:11px;color:#475569;font-weight:700;cursor:pointer;">📒 Seguimiento (${seg.length})</summary>
+              <div style="font-size:11px;color:#64748b;margin-top:4px;padding-left:10px;border-left:2px solid #e2e8f0;">
+                ${seg.slice().reverse().map(s => `<div style="margin-bottom:2px;"><strong>${s.fecha}</strong> · ${s.usuario}: ${s.nota}</div>`).join('')}
+              </div>
+            </details>` : ''}
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:10px;color:#64748b;font-weight:700;">TOTAL (con IVA)</div>
+            <div style="font-size:19px;font-weight:900;color:#16a34a;">$${fmtNum((Number(c.total) || 0).toFixed(2))} <span style="font-size:11px;color:#64748b;">${c.moneda || 'MXN'}</span></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">${acc.join('')}</div>
+      </div>`;
   };
 
-  return `
-    <div class="toolbar" style="flex-wrap:wrap;margin-bottom:14px;">
-      <input class="input" id="cot-filtro-lista" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, cliente, vendedor..." value="${(state.filtros.cotizaciones || '').replace(/"/g, '&quot;')}" autocomplete="off"
-        oninput="window.cotFiltroLista(this.value)" />
-      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} cotización(es)</span>
-    </div>
-    ${arr.length === 0 ? `
-      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
-        <div style="font-size:40px;">📋</div>
-        <div style="font-weight:700;color:#475569;margin-top:8px;">Aún no hay cotizaciones guardadas</div>
-        <div style="font-size:12px;margin-top:4px;">En la pestaña Cotizar: calcula, "➕ Agregar a cotización formal" y guarda.</div>
-      </div>` : `
+  const vacio = (msg) => `
+    <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+      <div style="font-size:40px;">📋</div>
+      <div style="font-weight:700;color:#475569;margin-top:8px;">${msg}</div>
+    </div>`;
+
+  // ── Cuerpo según sub-pestaña
+  let cuerpo;
+  if (subtab === 'clientes') {
+    // Agrupado por cliente: "ya le cotizaste 3 veces — revisa las anteriores"
+    const grupos = {};
+    all.filter(pasaFiltro).forEach(c => { const k = c.cliente_nombre || '—'; (grupos[k] = grupos[k] || []).push(c); });
+    const lista = Object.keys(grupos).map(k => {
+      const cots = grupos[k].sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+      return { k, cots, g: cots.filter(x => x._er === 'ganada').length, p: cots.filter(x => x._er === 'perdida').length, act: cots.filter(x => !x.archivada && ['borrador', 'enviada', 'negociacion'].includes(x._er)).length };
+    }).sort((a, b) => (b.cots[0].created_at?.seconds || 0) - (a.cots[0].created_at?.seconds || 0));
+    cuerpo = lista.length === 0 ? vacio('Sin clientes con cotizaciones en este filtro') : `
       <div style="display:flex;flex-direction:column;gap:10px;">
-        ${arr.map(c => `
-          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:13px 16px;">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+        ${lista.map(gr => `
+          <div style="background:#fff;border:1px solid ${state.cotCliExp === gr.k ? '#7c3aed' : '#e2e8f0'};border-radius:12px;overflow:hidden;">
+            <div onclick="window.cotCliToggle(decodeURIComponent('${encodeURIComponent(gr.k)}'))" style="cursor:pointer;padding:13px 16px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
               <div style="min-width:0;">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                  <span style="font-weight:900;font-size:14px;" class="text-mono">${c.folio}</span>
-                  ${chipEstado(c)}
-                  ${c.cliente_tipo === 'prospecto' ? '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#f3e8ff;color:#7c3aed;">✨ PROSPECTO</span>' : ''}
-                </div>
-                <div style="font-size:13px;font-weight:700;color:#0f172a;margin-top:3px;">${c.cliente_nombre || '—'}</div>
-                <div style="font-size:11px;color:#64748b;margin-top:2px;">
-                  ${(c.lineas || []).length} partida(s) · ${c.fecha || ''} · vence <strong>${c.vence || '—'}</strong> · ${c.vendedor || ''}
-                </div>
-                <div style="font-size:11px;color:#94a3b8;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px;">${(c.lineas || []).map(l => l.descripcion).join(' | ')}</div>
+                <div style="font-weight:800;font-size:14px;color:#0f172a;">${gr.k} ${gr.cots[0].cliente_tipo === 'prospecto' ? '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#f3e8ff;color:#7c3aed;">✨ PROSPECTO</span>' : ''}</div>
+                <div style="font-size:11.5px;color:#64748b;margin-top:2px;">${gr.cots.length} cotización(es) · 🏆 ${gr.g} · ❌ ${gr.p} · 🔥 ${gr.act} activa(s) · última: ${gr.cots[0].fecha || ''} (${gr.cots[0].folio})</div>
               </div>
-              <div style="text-align:right;">
-                <div style="font-size:10px;color:#64748b;font-weight:700;">TOTAL (con IVA)</div>
-                <div style="font-size:19px;font-weight:900;color:#16a34a;">$${fmtNum((Number(c.total) || 0).toFixed(2))}</div>
-              </div>
+              <div style="color:#94a3b8;font-weight:800;">${state.cotCliExp === gr.k ? '▲' : '▼'}</div>
             </div>
-            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-              <button onclick="window.pdfCotizacion('${c.id}')" style="padding:8px 14px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📄 PDF</button>
-              ${c.estado === 'borrador' ? `<button onclick="window.cotMarcarEnviada('${c.id}')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✉️ Marcar enviada</button>` : ''}
-              <button onclick="window.cotDuplicar('${c.id}')" style="padding:8px 14px;background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Duplicar / recotizar</button>
-            </div>
+            ${state.cotCliExp === gr.k ? `<div style="border-top:1px solid #f1f5f9;padding:10px;display:flex;flex-direction:column;gap:8px;background:#f8fafc;">${gr.cots.map(card).join('')}</div>` : ''}
           </div>`).join('')}
-      </div>`}
+      </div>`;
+  } else {
+    let arr = subtab === 'ganadas' ? ganadas.filter(c => !c.archivada)
+      : subtab === 'perdidas' ? perdidas.filter(c => !c.archivada)
+      : subtab === 'vencidas' ? vencidas
+      : subtab === 'archivadas' ? archivadas
+      : activas;
+    arr = arr.filter(pasaFiltro).sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+    const msgs = { activas: 'Sin cotizaciones activas — calcula y "➕ Agregar a cotización formal" en la pestaña Cotizar', ganadas: 'Aún sin ganadas aquí — ¡a cerrar! 🏆', perdidas: 'Sin perdidas registradas', vencidas: 'Nada vencido — buen ritmo de seguimiento', archivadas: 'Nada archivado todavía' };
+    cuerpo = arr.length === 0 ? vacio(msgs[subtab] || 'Sin resultados') : `<div style="display:flex;flex-direction:column;gap:10px;">${arr.map(card).join('')}</div>`;
+  }
+
+  return `
+    <!-- KPIs del pipeline -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #3b82f6;"><div style="font-size:10px;font-weight:700;color:#64748b;">🔥 ACTIVAS</div><div style="font-size:21px;font-weight:800;color:#3b82f6;">${activas.length}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #f59e0b;"><div style="font-size:10px;font-weight:700;color:#64748b;">⏳ VENCEN ≤3 DÍAS</div><div style="font-size:21px;font-weight:800;color:#f59e0b;">${porVencer.length}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #16a34a;"><div style="font-size:10px;font-weight:700;color:#64748b;">🏆 GANADAS</div><div style="font-size:21px;font-weight:800;color:#16a34a;">${ganadas.length}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">📈 CONVERSIÓN</div><div style="font-size:21px;font-weight:800;color:#7c3aed;">${conversion === null ? '—' : conversion + '%'}</div><div style="font-size:10px;color:#94a3b8;">de ${resueltas} resueltas</div></div>
+    </div>
+
+    <!-- Sub-pestañas + filtro vendedor -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
+      <button class="tab-btn ${subtab === 'activas' ? 'active' : ''}" onclick="window.cotSetSubtab('activas')">🔥 Activas (${activas.length})</button>
+      <button class="tab-btn ${subtab === 'ganadas' ? 'active' : ''}" onclick="window.cotSetSubtab('ganadas')">🏆 Ganadas (${ganadas.filter(c => !c.archivada).length})</button>
+      <button class="tab-btn ${subtab === 'perdidas' ? 'active' : ''}" onclick="window.cotSetSubtab('perdidas')">❌ Perdidas (${perdidas.filter(c => !c.archivada).length})</button>
+      <button class="tab-btn ${subtab === 'vencidas' ? 'active' : ''}" onclick="window.cotSetSubtab('vencidas')">⏰ Vencidas (${vencidas.length})</button>
+      <button class="tab-btn ${subtab === 'archivadas' ? 'active' : ''}" onclick="window.cotSetSubtab('archivadas')">🗄 Archivadas (${archivadas.length})</button>
+      <button class="tab-btn ${subtab === 'clientes' ? 'active' : ''}" onclick="window.cotSetSubtab('clientes')">👥 Por cliente</button>
+      <span style="flex:1;"></span>
+      <span style="font-size:11px;font-weight:800;color:#475569;">Vendedor:</span>
+      <button onclick="window.cotSetVend('mias')" style="padding:6px 12px;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;border:2px solid ${vend === 'mias' ? '#16a34a' : '#e2e8f0'};background:${vend === 'mias' ? '#16a34a' : '#fff'};color:${vend === 'mias' ? '#fff' : '#475569'};">Mías</button>
+      <button onclick="window.cotSetVend('todas')" style="padding:6px 12px;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;border:2px solid ${vend === 'todas' ? '#16a34a' : '#e2e8f0'};background:${vend === 'todas' ? '#16a34a' : '#fff'};color:${vend === 'todas' ? '#fff' : '#475569'};">Todas</button>
+    </div>
+
+    <div class="toolbar" style="flex-wrap:wrap;margin-bottom:14px;">
+      <input class="input" id="cot-filtro-lista" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, cliente, vendedor, producto..." value="${(state.filtros.cotizaciones || '').replace(/"/g, '&quot;')}" autocomplete="off"
+        oninput="window.cotFiltroLista(this.value)" />
+    </div>
+    ${cuerpo}
   `;
 }
 
