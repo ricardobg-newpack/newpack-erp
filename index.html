@@ -3998,7 +3998,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B21-cotizacionescrm</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B23-cotapedido</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -21588,7 +21588,14 @@ window._cotLineaCalc = (l) => {
     else { unit = Number(l.precio_rollo_m) || 0; kgU = (Number(l.mts_rollo) || 0) * (Number(l.peso_metro) || 0); unidad = `rollo(s) de ${fmtNum(l.mts_rollo)} m`; }
   } else {
     if (uv === 'pieza') { unit = Number(l.precio_pieza) || 0; kgU = (Number(l.peso_millar) || 0) / 1000; unidad = 'pieza(s)'; }
-    else if (uv === 'paquete') { unit = (Number(l.kg_paquete) || 0) * pKg; kgU = Number(l.kg_paquete) || 0; unidad = `paquete(s) de ${fmtNum(l.kg_paquete)} kg`; }
+    else if (uv === 'paquete') {
+      // 📦 Paquete VARIABLE: se define por kg, piezas o millares + la cantidad que trae
+      const pTipo = l.paq_tipo || 'kg';
+      const pCant = Number(l.paq_cant) || Number(l.kg_paquete) || 0;
+      if (pTipo === 'piezas') { unit = pCant * (Number(l.precio_pieza) || 0); kgU = pCant * (Number(l.peso_millar) || 0) / 1000; unidad = `paquete(s) de ${fmtNum(pCant)} pzas`; }
+      else if (pTipo === 'millares') { unit = pCant * (Number(l.precio_millar) || 0); kgU = pCant * (Number(l.peso_millar) || 0); unidad = `paquete(s) de ${fmtNum(pCant)} millar(es)`; }
+      else { unit = pCant * pKg; kgU = pCant; unidad = `paquete(s) de ${fmtNum(pCant)} kg`; }
+    }
     else if (uv === 'kg') { unit = pKg; kgU = 1; unidad = 'kg'; }
     else if (uv === 'rollo' && Number(l.piezas_rollo) > 0) { unit = Number(l.precio_rollo) || 0; kgU = (Number(l.piezas_rollo) || 0) * (Number(l.peso_millar) || 0) / 1000; unidad = `rollo(s) de ${fmtNum(l.piezas_rollo)} pzas`; }
     else { unit = Number(l.precio_millar) || 0; kgU = Number(l.peso_millar) || 0; unidad = 'millar(es)'; }
@@ -21628,6 +21635,7 @@ window.cotAgregarLinea = () => {
     piezas_rollo: r.pzasRollo || 0, precio_rollo: r.precioRollo || 0, peso_rollo: r.pesoRollo || 0,
     cantidad: '1',
     unidad_venta: esMetros ? 'rollo' : 'millar',
+    paq_tipo: 'kg', paq_cant: String(r.kgPaq || 25),
     // Especificación del producto (viaja al PDF y al futuro pedido)
     color: f.color || 'Transparente', aditivo: f.aditivo || 'NINGUNO',
     impresion: f.impresion || '', tintas: f.tintas || '', colores_imp: f.colores_imp || '',
@@ -21721,7 +21729,7 @@ window.cotCambiarEstado = async (id, estado) => {
   const seguimientos = (c.seguimientos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota: `${lbl}${extra.motivo_perdida ? ' · ' + extra.motivo_perdida : ''}` }]);
   try {
     await updateDoc(doc(db, 'cotizaciones', id), { estado, ...extra, seguimientos, updated_at: serverTimestamp() });
-    toast(estado === 'ganada' ? '🏆 ¡Cotización ganada! (en Fase 3b la ligamos al pedido)' : `Estado: ${lbl}`);
+    toast(estado === 'ganada' ? '🏆 ¡Ganada! Usa el botón "📦 Crear pedido" para convertirla en PI' : `Estado: ${lbl}`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
@@ -21750,6 +21758,79 @@ window.cotEliminar = async (id) => {
   if (!confirm(`¿Eliminar DEFINITIVAMENTE la ${c.folio}?\n\nSi ya se trabajó, mejor archívala para conservar el historial del cliente.`)) return;
   try { await deleteDoc(doc(db, 'cotizaciones', id)); toast('🗑 Cotización eliminada'); }
   catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 🏆→📦 GANADA → CREAR PEDIDO: pre-llena el formulario "Nuevo PI" con el
+//   cliente y la especificación completa de lo cotizado. CS captura las líneas
+//   con códigos de producto (dando de alta el código si es producto nuevo).
+window.cotCrearPedido = (cotId) => {
+  const c = (state.cotizaciones || []).find(x => x.id === cotId);
+  if (!c) return;
+  if (window._cotEstadoReal(c) !== 'ganada') { toast('Primero márcala como 🏆 Ganada', 'error'); return; }
+  if (c.pedido_folio) { toast(`Esta cotización ya generó el pedido ${c.pedido_folio}`, 'error'); return; }
+  if (c.cliente_tipo === 'prospecto') { window.cotConvertirProspecto(cotId); return; }
+  const cli = (state.clientes || []).find(x => x.codigo === c.cliente_codigo);
+  if (!cli) { toast('El cliente de la cotización ya no está en el catálogo', 'error'); return; }
+  const resumen = (c.lineas || []).map((l, i) => {
+    const cal = window._cotLineaCalc(l);
+    return `${i + 1}) ${l.descripcion} · ${window._cotSpecTxt(l)} · ${fmtNum(l.cantidad)} ${l.unidad || cal.unidad} · $${fmtNum((Number(l.precio_unitario) || cal.unit).toFixed(2))} c/u ${c.moneda || 'MXN'}${Number(l.kg_aprox) > 0 ? ` · aprox ${fmtNum(Number(l.kg_aprox).toFixed(0))} kg` : ''}`;
+  }).join('\n');
+  state.pedidoData = {
+    tipo_pi: 'cliente',
+    cliente_codigo: cli.codigo,
+    cliente_nombre: cli.nombre || cli.codigo,
+    odc_cliente: '', fecha_requerida: '',
+    cedis_asignado: cli.cedis_asignado || 'CEDIS-MTY',
+    lugar_entrega: null,
+    observaciones: `Según cotización ${c.folio}:\n${resumen}`,
+    lineas: [],
+    cot_id: c.id, cot_folio: c.folio,
+  };
+  state.vista = 'pedidos';
+  state.tabs.pedidos = 'nuevo';
+  state.busqProd = '';
+  toast(`📦 Armando el PI de ${c.folio} — la especificación cotizada va en observaciones; captura las líneas (si es producto nuevo, dale de alta su código primero)`);
+  render();
+};
+
+// ✨ Prospecto GANADO → alta de cliente formal (con los datos de la cotización)
+window.cotConvertirProspecto = async (cotId) => {
+  const c = (state.cotizaciones || []).find(x => x.id === cotId);
+  if (!c) return;
+  const p = c.prospecto || {};
+  const cod = prompt(`✨ Este prospecto ganó — hay que darlo de alta como CLIENTE formal.\n\nEmpresa: ${c.cliente_nombre}\nContacto: ${p.contacto || '—'} · ${p.telefono || '—'}\n\nAsigna su CÓDIGO de cliente (ej. A012):`);
+  if (cod === null) return;
+  const codU = String(cod).trim().toUpperCase();
+  if (!/^[A-Z0-9-]{2,10}$/.test(codU)) { toast('Código inválido — solo letras/números/guión, ej. A012', 'error'); return; }
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const existing = await getDoc(doc(db, 'clientes', codU));
+    if (existing.exists()) { toast(`Ya existe un cliente con el código ${codU}`, 'error'); return; }
+    await setDoc(doc(db, 'clientes', codU), {
+      codigo: codU,
+      nombre: c.cliente_nombre,
+      contacto_nombre: p.contacto || '',
+      telefono: p.telefono || '',
+      email: p.correo || '',
+      cedis_asignado: 'CEDIS-MTY',
+      activo: true,
+      origen: 'cotizador',
+      created_at: serverTimestamp(),
+    });
+    const snap = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
+    state.clientes = snap.docs.map(d2 => ({ id: d2.id, ...d2.data() }));
+    const u = state.user || {};
+    const seguimientos = (c.seguimientos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota: `✨ Prospecto dado de alta como cliente ${codU}` }]);
+    await updateDoc(doc(db, 'cotizaciones', cotId), { cliente_tipo: 'cliente', cliente_codigo: codU, seguimientos, updated_at: serverTimestamp() });
+    // Actualizar copia local para continuar sin esperar el snapshot
+    c.cliente_tipo = 'cliente'; c.cliente_codigo = codU; c.seguimientos = seguimientos;
+    toast(`✅ Cliente ${codU} creado (completa RFC/dirección en Clientes cuando puedas)`);
+    state.loadingAccion = false;
+    window.cotCrearPedido(cotId);
+    return;
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { if (state.loadingAccion) { state.loadingAccion = false; window.forzarRender(); } }
 };
 
 window.cotSetSubtab = (t) => { state.cotSubtab = t; render(); };
@@ -21939,7 +22020,13 @@ window._pdfCotizacion = (cot) => {
   docPDF.text('Atentamente · New Pack', 57, y + 8, { align: 'center' });
 
   _pdfPiePagina(docPDF);
-  docPDF.save(`${cot.folio}.pdf`);
+  // 👁 VISTA PREVIA en pestaña nueva (no descarga sola). Desde el visor del
+  //    navegador se puede imprimir o descargar. Si el popup se bloquea → descarga.
+  try {
+    const url = docPDF.output('bloburl');
+    const win = window.open(url, '_blank');
+    if (!win) { docPDF.save(`${cot.folio}.pdf`); toast('El navegador bloqueó la vista previa — se descargó el PDF', 'error'); }
+  } catch (e) { docPDF.save(`${cot.folio}.pdf`); }
 };
 
 function renderCotizador() {
@@ -22203,6 +22290,17 @@ function _cotDraftPanelHTML() {
                   <select class="input" style="padding:4px 6px;font-size:11.5px;min-width:90px;" onchange="window.cotLineaSet(${i},'unidad_venta',this.value)">
                     ${window.cotUnidadesLinea(l).map(([v, lbl]) => `<option value="${v}" ${calcs[i].uv === v ? 'selected' : ''}>${lbl}</option>`).join('')}
                   </select>
+                  ${calcs[i].uv === 'paquete' ? `
+                  <div style="display:flex;gap:4px;margin-top:4px;align-items:center;">
+                    <span style="font-size:10px;color:#64748b;font-weight:700;">de</span>
+                    <input class="input" id="cot-lin-paqc-${i}" type="text" inputmode="decimal" value="${l.paq_cant ?? l.kg_paquete ?? ''}" style="width:55px;text-align:right;padding:3px 5px;font-size:11px;"
+                      oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.cotLineaSet(${i},'paq_cant',this.value,'cot-lin-paqc-${i}')" />
+                    <select class="input" style="padding:3px 4px;font-size:11px;width:auto;" onchange="window.cotLineaSet(${i},'paq_tipo',this.value)">
+                      <option value="kg" ${(l.paq_tipo || 'kg') === 'kg' ? 'selected' : ''}>kg</option>
+                      <option value="piezas" ${l.paq_tipo === 'piezas' ? 'selected' : ''}>piezas</option>
+                      <option value="millares" ${l.paq_tipo === 'millares' ? 'selected' : ''}>millares</option>
+                    </select>
+                  </div>` : ''}
                   <div style="font-size:10px;color:#94a3b8;margin-top:2px;white-space:nowrap;">${calcs[i].unidad}</div>
                 </td>
                 <td style="padding:7px 8px;text-align:right;white-space:nowrap;">$${fmtNum(calcs[i].unit.toFixed(2))}</td>
@@ -22324,6 +22422,7 @@ function _cotListaHTML() {
   const card = (c) => {
     const seg = c.seguimientos || [];
     const acc = [btn(`window.pdfCotizacion('${c.id}')`, '📄 PDF', '#0f172a')];
+    if (c._er === 'ganada' && !c.pedido_folio) acc.unshift(btn(`window.cotCrearPedido('${c.id}')`, '📦 Crear pedido', '#16a34a'));
     if (!c.archivada) {
       if (c._er === 'borrador') acc.push(btn(`window.cotCambiarEstado('${c.id}','enviada')`, '✉️ Marcar enviada', '#3b82f6'));
       if (c._er === 'enviada') acc.push(btn(`window.cotCambiarEstado('${c.id}','negociacion')`, '🤝 Negociación', '#ca8a04'));
@@ -22355,6 +22454,7 @@ function _cotListaHTML() {
             </div>
             <div style="font-size:11px;color:#94a3b8;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px;">${(c.lineas || []).map(l => l.descripcion).join(' | ')}</div>
             ${c.motivo_perdida ? `<div style="font-size:11px;color:#991b1b;margin-top:3px;">Motivo de pérdida: ${c.motivo_perdida}</div>` : ''}
+            ${c.pedido_folio ? `<div style="font-size:11px;color:#166534;font-weight:700;margin-top:3px;">📦 Generó el pedido <span class="text-mono">${c.pedido_folio}</span></div>` : ''}
             ${seg.length ? `
             <details style="margin-top:5px;">
               <summary style="font-size:11px;color:#475569;font-weight:700;cursor:pointer;">📒 Seguimiento (${seg.length})</summary>
@@ -48431,6 +48531,9 @@ window.enviarPedido = async () => {
       cedis_asignado: d.cedis_asignado,
       // 🆕 Lugar de entrega elegido (snapshot completo, para que quede en el pedido)
       lugar_entrega: d.lugar_entrega || null,
+      // 🧮 Si nació de una cotización ganada (COT → PI)
+      cotizacion_id: d.cot_id || null,
+      cotizacion_folio: d.cot_folio || null,
       estatus: 'pendiente_aprobacion',
       tipo,
       observaciones: d.observaciones || '',
@@ -48474,7 +48577,16 @@ window.enviarPedido = async () => {
     });
     
     await batch.commit();
-    
+
+    // 🧮 Sellar la cotización de origen con el folio del PI (cierre COT → PI)
+    if (d.cot_id) {
+      try {
+        const _cot = (state.cotizaciones || []).find(x => x.id === d.cot_id);
+        const _segs = ((_cot && _cot.seguimientos) || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: state.user?.nombre || '', nota: `📦 Pedido ${folio} creado desde esta cotización` }]);
+        await updateDoc(doc(db, 'cotizaciones', d.cot_id), { pedido_folio: folio, seguimientos: _segs, updated_at: serverTimestamp() });
+      } catch (eCot) { console.error('Liga COT→PI:', eCot); }
+    }
+
     state.pedidoData = null;
     state.busqProd = '';
     state.tabs.pedidos = 'pendientes';
