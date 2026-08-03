@@ -234,6 +234,8 @@ const state = {
   movimientos_comercializados: [],
   // 🧮 CRM COMERCIAL — cotizaciones formales
   cotizaciones: [],
+  // 📜 Bitácora de auditoría (inmutable)
+  auditoria: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3607,7 +3609,12 @@ async function cargarTodo() {
       onSnapshot(collection(db, 'cotizaciones'), (snap) => {
         state.cotizaciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
-      }, () => { /* sin permiso de lectura: depto no comercial */ })
+      }, () => { /* sin permiso de lectura: depto no comercial */ }),
+      // 📜 Bitácora de auditoría (solo CEO/ADMIN pueden leerla; los demás ignoran el error)
+      onSnapshot(query(collection(db, 'auditoria'), orderBy('created_at', 'desc'), limit(300)), (snap) => {
+        state.auditoria = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => { /* sin permiso de lectura: no es CEO/ADMIN */ })
     );
   } catch (err) {
     console.error('Error:', err);
@@ -3637,6 +3644,26 @@ window.odpsDePedido = (pedidoId) => state.ordenes_produccion.filter(o => o.pedid
 // ============================================================
 // CONTADORES (folios secuenciales)
 // ============================================================
+// ============================================================
+// 📜 BITÁCORA DE AUDITORÍA (colección inmutable 'auditoria')
+//    Quién hizo qué, cuándo y sobre qué folio. Las rules impiden
+//    editarla o borrarla (ni siquiera en los resets del sistema).
+//    Fire-and-forget: NUNCA bloquea ni rompe la acción principal.
+// ============================================================
+window.logAccion = (accion, folioRef, detalle) => {
+  try {
+    addDoc(collection(db, 'auditoria'), {
+      accion: String(accion || ''),
+      folio_ref: String(folioRef || ''),
+      detalle: String(detalle || '').slice(0, 3000),
+      usuario_id: state.user?.id || '',
+      usuario_nombre: state.user?.nombre || state.user?.email || '',
+      depto: state.user?.depto || '',
+      created_at: serverTimestamp()
+    }).catch(() => {});
+  } catch (e) { /* la bitácora jamás debe tumbar la operación */ }
+};
+
 async function siguienteFolio(tipo) {
   const ref = doc(db, 'contadores', tipo);
   let nuevo;
@@ -3998,7 +4025,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B24-recalltraza</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B25-bitacora</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4012,6 +4039,9 @@ function renderApp() {
         <div class="sidebar-section">General</div>
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
         <button class="nav-item ${state.vista === 'centro_control' ? 'active' : ''}" data-vista="centro_control" style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;font-weight:800;">📊 Centro de Control</button>
+        ${(['CEO', 'ADMIN'].includes(u.depto) || esAdmin) ? `
+          <button class="nav-item ${state.vista === 'bitacora' ? 'active' : ''}" data-vista="bitacora">📜 Bitácora de Auditoría</button>
+        ` : ''}
         
         <div class="sidebar-section">Comercial</div>
         ${(['CS','KAM','CEO','ADMIN','COMP'].includes(u.depto) || esAdmin) ? `
@@ -4279,6 +4309,7 @@ function tituloVista() {
     salidas_dia: '📤 Embarques del día',
     cotizador: '🧮 Cotizador — Área Comercial',
     recall: '🚨 Recall — Trazabilidad bidireccional MP ↔ Cliente',
+    bitacora: '📜 Bitácora de Auditoría — quién hizo qué',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -4318,6 +4349,7 @@ function renderVista() {
   if (v === 'calidad') return renderCalidad();
   if (v === 'certificados_calidad') return renderCertificadosCalidad();
   if (v === 'recall') return renderRecall();
+  if (v === 'bitacora') return renderBitacora();
   if (v === 'devoluciones') return renderDevoluciones();
   if (v === 'logistica_rutas') return renderLogisticaRutas();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -10690,6 +10722,8 @@ window.resetSistemaPruebas = async () => {
     toast('Reset cancelado (texto incorrecto)', 'error');
     return;
   }
+  // 🔒 FC: huella INDELEBLE antes de borrar (la bitácora es inmutable y sobrevive al reset)
+  window.logAccion('reset_pruebas', 'SISTEMA', 'Reset de datos de prueba autorizado (triple confirmación)');
   
   const confirm3 = confirm(
     `⚠️ ÚLTIMA CONFIRMACIÓN — PASO 3/3\n\n` +
@@ -10889,6 +10923,7 @@ window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
     const pLocal = state.pedidos.find(x => x.id === pedidoId);
     if (pLocal) pLocal.estatus = 'cancelado';
     toast(`✅ PI ${folio} cancelado. ${tarimasRelacionadas.length} tarima(s) regresaron a stock libre.`, 'success');
+    window.logAccion('cancelar_pi', folio, `${motivo.trim()} · ${ovsHijas.length} OV(s), ${odpsHijas.length} ODP(s), ${tarimasRelacionadas.length} tarima(s) liberadas`);
   } catch (e) {
     console.error('Error cancelar PI:', e);
     toast('Error: ' + e.message, 'error');
@@ -11839,6 +11874,7 @@ window.eliminarODPPermanente = async (odpId) => {
   
   try {
     state.loadingAccion = true;
+    window.logAccion('eliminar_odp', (state.ordenes_produccion.find(o => o.id === odpId)?.folio) || odpId, 'BORRADO DEFINITIVO de la ODP');
     await deleteDoc(doc(db, 'ordenes_produccion', odpId));
     // Quitar del state local de inmediato
     state.ordenes_produccion = state.ordenes_produccion.filter(o => o.id !== odpId);
@@ -11941,6 +11977,7 @@ window.cancelarODPConDevolucion = async (odpId) => {
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
     if (odpLocal) { odpLocal.estatus = 'cancelada'; odpLocal.archivada = true; }
     toast(`✅ ODP ${odp.folio} cancelada. ${tarimas.length} tarima(s) liberadas a stock.${ovAviso}`, 'success');
+    window.logAccion('cancelar_odp', odp.folio, `${motivo.trim()}${ovAviso}`);
   } catch (e) {
     console.error('Error cancelar ODP:', e);
     toast('Error: ' + e.message, 'error');
@@ -12465,6 +12502,7 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
       }).catch(()=>{});
       // 🔗 FA4: cerrar también la remisión de esta OV
       await window._remisionEntregada(parada.ov_id, _recibio);
+      window.logAccion('entrega_parada', ruta.codigo, `${parada.cliente_nombre || ''} · recibió: ${_recibio || '—'}`);
       const ovLocal = (state.ordenes_venta||[]).find(o => o.id === parada.ov_id);
       if (ovLocal) ovLocal.estatus = 'entregada';
       // 🔧 FIX TRAZABILIDAD: marcar las TARIMAS de esta OV como 'entregada' para que el
@@ -12602,6 +12640,7 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
     }
     await updateDoc(doc(db, 'rutas_logistica', rutaId), patch);
     toast(nuevoEstado === 'completada' ? '✅ Ruta completada. OVs entregadas.' : nuevoEstado === 'en_ruta' ? '🚚 Ruta despachada. OVs marcadas como enviadas.' : 'Ruta actualizada.', 'success');
+    if (nuevoEstado === 'completada' || nuevoEstado === 'en_ruta') window.logAccion(nuevoEstado === 'completada' ? 'ruta_completada' : 'ruta_despachada', ruta.codigo, `${(ruta.paradas || []).length} parada(s)`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
@@ -12656,6 +12695,7 @@ window.cancelarOCConDevolucion = async (ocId) => {
     });
     
     toast(`✅ OC ${oc.folio} cancelada`, 'success');
+    window.logAccion('cancelar_oc', oc.folio, motivo.trim());
   } catch (e) {
     console.error('Error cancelar OC:', e);
     toast('Error: ' + e.message, 'error');
@@ -12820,6 +12860,9 @@ window.resetearSistemaTotal = async () => {
     toast('Cancelado: confirmación incorrecta', 'info');
     return;
   }
+  // 🔒 FC: huella INDELEBLE antes de borrar — este reset borraba 30 colecciones
+  //    sin dejar NINGÚN rastro; la bitácora es inmutable y sobrevive.
+  window.logAccion('reset_total', 'SISTEMA', 'RESET TOTAL de datos de operación autorizado (doble confirmación)');
 
   const { getDocs, writeBatch } = window.fb;
   let totalBorrados = 0;
@@ -21843,7 +21886,7 @@ window.cotEliminar = async (id) => {
   const c = (state.cotizaciones || []).find(x => x.id === id);
   if (!c) return;
   if (!confirm(`¿Eliminar DEFINITIVAMENTE la ${c.folio}?\n\nSi ya se trabajó, mejor archívala para conservar el historial del cliente.`)) return;
-  try { await deleteDoc(doc(db, 'cotizaciones', id)); toast('🗑 Cotización eliminada'); }
+  try { await deleteDoc(doc(db, 'cotizaciones', id)); toast('🗑 Cotización eliminada'); window.logAccion('eliminar_cotizacion', c.folio, `${c.cliente_nombre || ''} · total $${c.total || 0} ${c.moneda || 'MXN'}`); }
   catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
@@ -22924,6 +22967,43 @@ function renderRecall() {
   `;
 }
 
+// 📜 BITÁCORA DE AUDITORÍA — visor (solo CEO/ADMIN; la colección es inmutable)
+window.bitFiltro = (v) => { state.filtros.bitacora = v; window.forzarRender(); window._cotFoco('bit-filtro'); };
+
+function renderBitacora() {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto))) {
+    return '<div style="padding:50px;text-align:center;color:#94a3b8;">🔒 Solo dirección puede ver la bitácora.</div>';
+  }
+  const filtro = (state.filtros.bitacora || '').toLowerCase().trim();
+  let arr = (state.auditoria || []).slice();
+  if (filtro) arr = arr.filter(a => ((a.accion || '') + ' ' + (a.folio_ref || '') + ' ' + (a.usuario_nombre || '') + ' ' + (a.depto || '') + ' ' + (a.detalle || '')).toLowerCase().includes(filtro));
+  const _fecha = (ts) => ts?.seconds ? new Date(ts.seconds * 1000).toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+  const ICON_ACC = { aprobar_pedido: '✅', cancelar_pi: '❌', cancelar_ov: '❌', cancelar_odp: '❌', cancelar_oc: '❌', liberar_calidad: '🧪', entrega_ov: '🏁', entrega_parada: '🚚', ruta_completada: '🚚', recepcion_oc: '📥', editar_oc: '✏️', editar_pi: '✏️', editar_cliente: '✏️', eliminar_odp: '🗑', eliminar_captura: '🗑', eliminar_cotizacion: '🗑', reset_pruebas: '💣', reset_total: '💣' };
+  return `
+    <div class="toolbar" style="flex-wrap:wrap;margin-bottom:12px;">
+      <input class="input" id="bit-filtro" style="max-width:360px;flex:1;min-width:220px;" placeholder="🔍 Acción, folio, usuario, depto..." autocomplete="off"
+        value="${(state.filtros.bitacora || '').replace(/"/g, '&quot;')}" oninput="window.bitFiltro(this.value)" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} registro(s) · últimos 300 · esta bitácora NO se puede editar ni borrar</span>
+    </div>
+    ${arr.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;">📜</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">Sin registros aún — se irán acumulando con cada acción crítica</div>
+      </div>` : `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        ${arr.map(a => `
+          <div style="display:flex;gap:10px;padding:9px 14px;border-bottom:1px solid #f1f5f9;font-size:12px;align-items:baseline;flex-wrap:wrap;">
+            <span style="color:#94a3b8;white-space:nowrap;min-width:110px;">${_fecha(a.created_at)}</span>
+            <span style="font-weight:800;white-space:nowrap;">${ICON_ACC[a.accion] || '·'} ${a.accion}</span>
+            <span class="text-mono" style="color:#1e40af;white-space:nowrap;">${a.folio_ref || ''}</span>
+            <span style="color:#475569;">${a.usuario_nombre || ''} <span style="color:#94a3b8;">(${a.depto || '—'})</span></span>
+            ${a.detalle ? `<span style="color:#64748b;flex:1;min-width:200px;overflow:hidden;text-overflow:ellipsis;">${String(a.detalle).slice(0, 220)}</span>` : ''}
+          </div>`).join('')}
+      </div>`}
+  `;
+}
+
 // 🆕 SALIDAS DEL DÍA — programación de embarques simple por CEDIS.
 //    Almacén ve QUÉ va a cargar por día y qué está ya programado en ruta.
 window.setSalidasCedis = (c) => { state.filtros.salidas_cedis = c; render(); };
@@ -23338,6 +23418,7 @@ window.confirmarEntregaSalida = async (ovId) => {
     //    (sin esto el pedido se quedaba atorado en "En logística" aunque ya estaba entregado)
     await window.postEntregaSync(ov, tids, !!fol);
     toast(fol ? `✅ ${ov.folio} entregado · 🔁 saldo ${fol} generado por lo pendiente` : `✅ ${ov.folio} entregado`, 'success');
+    window.logAccion('entrega_ov', ov.folio, `${ov.cliente_nombre || ''} · recibió: ${_recibio || '—'}${fol ? ` · saldo ${fol}` : ''}`);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
@@ -29624,6 +29705,11 @@ window.confirmarEditarOC = async (ocId) => {
 
   state.loadingAccion = true; render();
   try {
+    // 🔒 FC: before-image — precios/líneas anteriores quedan en la bitácora (antes se perdían)
+    window.logAccion('editar_oc', oc.folio, JSON.stringify({
+      antes: { proveedor: oc.proveedor, moneda: oc.moneda, costo_total: oc.costo_total, fecha_promesa: oc.fecha_promesa, lineas: (oc.lineas || []).map(l => ({ mp: l.mp_codigo, cant: l.cantidad, costo: l.costo_unitario })) },
+      despues: { proveedor: f.proveedor, moneda: f.moneda, costo_total: totalCalc, fecha_promesa: f.fecha_promesa, lineas: lineasLimpias.map(l => ({ mp: l.mp_codigo, cant: l.cantidad, costo: l.costo_unitario })) }
+    }));
     const dataActualizada = {
       moneda: f.moneda || 'MXN',
       tipo_cambio: Number(f.tipo_cambio) || 0,
@@ -30310,9 +30396,10 @@ window.confirmarRecepcionOC = async (ocId) => {
     }
     
     await batch.commit();
-    
+
     cerrarModal();
     toast(`✅ ${lineasARecibir.length} lote(s) creado(s) · OC ${todaCompleta ? 'COMPLETA' : 'parcial'}${hayRechazo ? ' · Hay rechazo de calidad' : ''}`);
+    window.logAccion('recepcion_oc', oc.folio, `${oc.proveedor || ''} · ${lineasARecibir.length} lote(s)${todaCompleta ? ' · COMPLETA' : ' · parcial'}${hayRechazo ? ' · CON RECHAZO' : ''}`);
   } catch (e) {
     console.error('Error recepción:', e);
     toast('Error: ' + e.message, 'error');
@@ -41419,9 +41506,10 @@ window.marcarOVEntregada = async (ovId) => {
       console.warn('Error sincronizando ODPs tras entrega:', eSync);
     }
     
-    toast(esParcial 
+    toast(esParcial
       ? `🏁 ${ov.folio} entregada PARCIAL · OV de saldo ${folioOVSaldo} por ${fmtCantidadUM(saldo, ov.um)} generada`
       : `🏁 ${ov.folio} ENTREGADA`);
+    window.logAccion('entrega_ov', ov.folio, `${ov.cliente_nombre || ''} · recibió: ${_recibioOV || '—'}${esParcial ? ` · PARCIAL, saldo ${folioOVSaldo}` : ''}`);
   } catch (e) {
     console.error('Error marcando entregada:', e);
     let mensaje = e.message || String(e);
@@ -43884,6 +43972,7 @@ window.eliminarCapturaProduccion = async (capId, odpId) => {
     state.capturas_produccion = (state.capturas_produccion || []).filter(c => c.id !== capId);
     if (typeof renderSoloModal === 'function') renderSoloModal();
     toast('🗑️ Captura eliminada · avance recalculado', 'success');
+    window.logAccion('eliminar_captura', (state.ordenes_produccion.find(o => o.id === odpId)?.folio) || odpId, 'BORRADO DEFINITIVO de captura de producción');
   } catch (e) { toast('Error al eliminar: ' + e.message, 'error'); }
 };
 
@@ -48123,11 +48212,18 @@ window.crearCliente = async () => {
 window.editarCliente = async (codigo) => {
   const datos = recolectarDatosCliente();
   if (!datos.nombre) { toast('El nombre es obligatorio', 'error'); return; }
-  
+
   state.loadingAccion = true; render();
   try {
+    // 🔒 FC: before-image — los datos fiscales/comerciales previos quedan en la bitácora
+    const _antes = (state.clientes || []).find(c => c.codigo === codigo) || {};
+    const _snapCli = (c) => ({ nombre: c.nombre, rfc: c.rfc, dias_credito: c.dias_credito, limite_credito_texto: c.limite_credito_texto, cedis_asignado: c.cedis_asignado, uso_cfdi: c.uso_cfdi, email: c.email, telefono: c.telefono });
+    window.logAccion('editar_cliente', codigo, JSON.stringify({ antes: _snapCli(_antes), despues: _snapCli(datos) }));
+
     await updateDoc(doc(db, 'clientes', codigo), {
       ...datos,
+      editado_por: state.user?.id || '',
+      editado_por_nombre: state.user?.nombre || state.user?.email || '',
       updated_at: serverTimestamp()
     });
 
@@ -48904,6 +49000,8 @@ window.enviarPedido = async () => {
       state.busqProd = '';
       state.tabs.pedidos = 'pendientes';
       toast('✏️ ' + folio + ' actualizado');
+      // 🔒 FC: before-image de las líneas anteriores (las removidas se borraban sin rastro)
+      window.logAccion('editar_pi', folio, JSON.stringify({ antes: lineasViejas.map(l => ({ p: l.producto_codigo, cant: l.cantidad_solicitada, um: l.um, precio: l.precio_unitario })), despues: validas.map(l => ({ p: l.producto_codigo, cant: l.cantidad_solicitada, um: l.um, precio: l.precio_unitario })) }));
       state.loadingAccion = false; render();
       return;
     }
@@ -49015,7 +49113,11 @@ window.aprobarPedido = async (pedidoId, folio) => {
     
     const lineas = window.pedidoLineas(pedidoId);
     const ovs = [], odps = [];
-    
+    // 🔒 FC: TODA la aprobación se escribe en UN solo commit atómico. Antes eran
+    //    addDoc/setDoc sueltos: una falla a medias dejaba OVs/ODPs creadas con el
+    //    PI aún "pendiente_aprobacion" (y duplicados al reintentar).
+    const batchAll = writeBatch(db);
+
     // Generar folios
     for (const l of lineas) {
       // 🛒 Si la línea es comercializada O el PI completo es comercializado: solo OV, sin ODP
@@ -49035,7 +49137,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
       if (cantStock > 0 && !esStockInterno) {
         const num = await siguienteFolio('ov');
         const folioOV = 'OV-' + String(num).padStart(5, '0');
-        await addDoc(collection(db, 'ordenes_venta'), {
+        batchAll.set(doc(collection(db, 'ordenes_venta')), {
           folio: folioOV, pedido_id: pedidoId, pedido_folio: pedido.folio,
           pedido_linea_id: l.id || '',  // 🆕 F1 — Vínculo a línea
           cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
@@ -49101,8 +49203,17 @@ window.aprobarPedido = async (pedidoId, folio) => {
         const num1 = await siguienteFolio('odp');
         const folioODP1 = 'ODP-' + String(num1).padStart(5, '0');
         const ref1 = doc(collection(db, 'ordenes_produccion'));
-        await setDoc(ref1, {
+        // 🔒 FC: si lleva OV de producir, su folio y ref se generan ANTES para que la
+        //    back-ref ODP→OV vaya en el MISMO set (antes era un update posterior no atómico)
+        let refOVprod = null, folioOVprod = '';
+        if (!esStockInterno) {
+          const numOVp = await siguienteFolio('ov');
+          folioOVprod = 'OV-' + String(numOVp).padStart(5, '0');
+          refOVprod = doc(collection(db, 'ordenes_venta'));
+        }
+        batchAll.set(ref1, {
           folio: folioODP1, pedido_id: pedidoId, pedido_folio: pedido.folio,
+          ov_id: refOVprod ? refOVprod.id : '', ov_folio: folioOVprod || '',
           pedido_linea_id: l.id || '',
           cantidad_asignada: cantProd,
           proceso_codigo: 'P-1',
@@ -49131,9 +49242,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
         
         // ===== OV de producir (SOLO si NO es stock interno) =====
         if (!esStockInterno) {
-          const numOV = await siguienteFolio('ov');
-          const folioOVprod = 'OV-' + String(numOV).padStart(5, '0');
-          const ovRefProd = await addDoc(collection(db, 'ordenes_venta'), {
+          batchAll.set(refOVprod, {
             folio: folioOVprod, pedido_id: pedidoId, pedido_folio: pedido.folio,
             cliente_codigo: pedido.cliente_codigo, cliente_nombre: pedido.cliente_nombre,
             cedis: pedido.cedis_asignado || 'CEDIS-MTY',
@@ -49156,25 +49265,23 @@ window.aprobarPedido = async (pedidoId, folio) => {
             updated_at: serverTimestamp()
           });
           ovs.push(folioOVprod);
-          // 🔗 FIX TRAZABILIDAD C1 — back-ref ODP→OV (antes la ODP nunca guardaba ov_id/ov_folio)
-          await updateDoc(ref1, { ov_id: ovRefProd.id, ov_folio: folioOVprod });
+          // (la back-ref ODP→OV ya viajó en el set de la ODP — mismo commit atómico)
         }
       }
     }
-    
-    // Actualizar pedido
-    await updateDoc(doc(db, 'pedidos', pedidoId), {
+
+    // Actualizar pedido (mismo commit — o entra TODO o no entra nada)
+    batchAll.update(doc(db, 'pedidos', pedidoId), {
       estatus: 'aprobado',
       aprobado_por: state.user.id,
       aprobado_por_nombre: state.user.nombre,
       fecha_aprobacion: serverTimestamp(),
       updated_at: serverTimestamp()
     });
-    
-    // Notificaciones
-    const batch = writeBatch(db);
+
+    // Notificaciones (mismo commit)
     if (ovs.length > 0) {
-      batch.set(doc(collection(db, 'notificaciones')), {
+      batchAll.set(doc(collection(db, 'notificaciones')), {
         titulo: 'OVs generadas',
         mensaje: ovs.join(', ') + ' • ' + pedido.cliente_nombre,
         depto_destino: 'ALP',
@@ -49183,7 +49290,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
       });
     }
     if (odps.length > 0) {
-      batch.set(doc(collection(db, 'notificaciones')), {
+      batchAll.set(doc(collection(db, 'notificaciones')), {
         titulo: esStockInterno ? '🏭 ODPs internas de STOCK generadas' : 'ODPs generadas',
         mensaje: odps.join(', ') + ' • ' + (esStockInterno ? 'Para STOCK' : pedido.cliente_nombre),
         depto_destino: 'PLN',
@@ -49191,7 +49298,8 @@ window.aprobarPedido = async (pedidoId, folio) => {
         created_at: serverTimestamp()
       });
     }
-    await batch.commit();
+    await batchAll.commit();
+    window.logAccion('aprobar_pedido', pedido.folio, `OVs: ${ovs.join(', ') || '—'} · ODPs: ${odps.join(', ') || '—'}`);
     
     let msg = esStockInterno ? '🏭 PI STOCK aprobado' : '✅ Pedido aprobado';
     if (ovs.length) msg += ' • OVs: ' + ovs.join(', ');
@@ -49321,6 +49429,7 @@ window.cancelarPI = async (pedidoId, folio) => {
     
     await batch.commit();
     toast(`❌ PI ${folio} cancelado correctamente`, 'success');
+    window.logAccion('cancelar_pi', folio, motivo);
     cerrarModal();
   } catch (e) {
     console.error('Error cancelando PI:', e);
@@ -49426,6 +49535,7 @@ window.cancelarOV = async (ovId) => {
     
     await batch.commit();
     toast(`❌ OV ${ov.folio} cancelada · ${tarimasAsignadas.length} tarima(s) liberadas${odpCascada}`, 'success');
+    window.logAccion('cancelar_ov', ov.folio, `${motivo}${odpCascada}`);
     cerrarModal();
   } catch (e) {
     console.error('Error cancelando OV:', e);
@@ -52529,6 +52639,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
       
       cerrarModal();
       toast(`✅ Liberado · ${codigoPKL} · ${numTarimas} lote(s) generados${mensajePI ? ' (+ PI reposición)' : ''} · Generando Certificado y Etiquetas...`);
+      window.logAccion('liberar_calidad', odp.folio, `${codigoPKL} · ${numTarimas} tarima(s)/lote(s)${esParcialLib ? ' · liberación PARCIAL' : ''}`);
       // 📄 Auto-generar Certificado de Calidad (NPA-CAL-FR-02) + 🏷️ Etiquetas por tarima
       setTimeout(() => {
         try { window.imprimirCertificadoCalidadPDF(odpId, null, esParcialLib ? codigoPKL : null); }
