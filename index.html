@@ -3998,7 +3998,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B23-cotapedido</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B24-recalltraza</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4049,6 +4049,7 @@ function renderApp() {
         ${(esCS || esKAM || esCAL || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'certificados_calidad' ? 'active' : ''}" data-vista="certificados_calidad">📜 Certificados de Calidad</button>
           <button class="nav-item ${state.vista === 'devoluciones' ? 'active' : ''}" data-vista="devoluciones">🔄 Devoluciones (RMA)</button>
+          <button class="nav-item ${state.vista === 'recall' ? 'active' : ''}" data-vista="recall">🚨 Recall / Trazabilidad</button>
         ` : ''}
         ${(esCS || esKAM || esCAL || esFAC || esCEDMTY || esCEDMEX || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas</button>
@@ -4277,6 +4278,7 @@ function tituloVista() {
     inv_mex: '🇲🇽 Inventario CEDIS México',
     salidas_dia: '📤 Embarques del día',
     cotizador: '🧮 Cotizador — Área Comercial',
+    recall: '🚨 Recall — Trazabilidad bidireccional MP ↔ Cliente',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -4315,6 +4317,7 @@ function renderVista() {
   if (v === 'panel_operador') return renderPanelOperador();
   if (v === 'calidad') return renderCalidad();
   if (v === 'certificados_calidad') return renderCertificadosCalidad();
+  if (v === 'recall') return renderRecall();
   if (v === 'devoluciones') return renderDevoluciones();
   if (v === 'logistica_rutas') return renderLogisticaRutas();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -10831,12 +10834,15 @@ window.cancelarPedidoConDevolucion = async (pedidoId, folio) => {
     
     const batch = writeBatch(db);
     const ahora = serverTimestamp();
+    // 🔗 FA2: campos unificados de cancelación (id + nombre + motivo en ambas variantes)
     const meta = {
       cancelado_motivo: motivo.trim(),
-      cancelado_por: state.user?.nombre || state.user?.email || 'sistema',
+      motivo_cancelacion: motivo.trim(),
+      cancelado_por: state.user?.id || '',
+      cancelado_por_nombre: state.user?.nombre || state.user?.email || 'sistema',
       cancelado_at: ahora
     };
-    
+
     // Cancelar el PI
     batch.update(doc(db, 'pedidos', pedidoId), {
       estatus: 'cancelado',
@@ -11874,19 +11880,22 @@ window.cancelarODPConDevolucion = async (odpId) => {
     
     const batch = writeBatch(db);
     const ahora = serverTimestamp();
+    // 🔗 FA2: campos unificados de cancelación (id + nombre + motivo en ambas variantes)
     const meta = {
       cancelado_motivo: motivo.trim(),
-      cancelado_por: state.user?.nombre || state.user?.email || 'sistema',
+      motivo_cancelacion: motivo.trim(),
+      cancelado_por: state.user?.id || '',
+      cancelado_por_nombre: state.user?.nombre || state.user?.email || 'sistema',
       cancelado_at: ahora
     };
-    
+
     batch.update(doc(db, 'ordenes_produccion', odpId), {
       estatus: 'cancelada',
       archivada: true,
       ...meta,
       updated_at: ahora
     });
-    
+
     tarimas.forEach(t => {
       batch.update(doc(db, 'tarimas', t.id), {
         pedido_folio_anterior: t.pedido_folio,
@@ -11896,12 +11905,42 @@ window.cancelarODPConDevolucion = async (odpId) => {
         updated_at: ahora
       });
     });
-    
+
+    // 🔗 FA2: cascada ODP→OV — la OV ligada no debe quedar esperando producción inexistente
+    let ovAviso = '';
+    let ovLigada = null;
+    if (odp.ov_id) {
+      ovLigada = (state.ordenes_venta || []).find(o => o.id === odp.ov_id) || null;
+      if (!ovLigada) {
+        try { const sOv = await getDoc(doc(db, 'ordenes_venta', odp.ov_id)); if (sOv.exists()) ovLigada = { id: sOv.id, ...sOv.data() }; } catch (e) {}
+      }
+    }
+    if (ovLigada && !['cancelada', 'entregada', 'completada'].includes(ovLigada.estatus)) {
+      // No se cancela sola (puede tener tarimas de otra fuente / decisión comercial) —
+      // se marca el hueco y se avisa a CS/KAM para que decidan (cancelar OV o resurtir)
+      batch.update(doc(db, 'ordenes_venta', ovLigada.id), {
+        odp_cancelada: true,
+        odp_cancelada_motivo: motivo.trim(),
+        odp_cancelada_at: ahora,
+        updated_at: ahora
+      });
+      ['CS', 'KAM'].forEach(depto => {
+        const refN = doc(collection(db, 'notificaciones'));
+        batch.set(refN, {
+          titulo: `⚠ ODP ${odp.folio} cancelada — su OV ${ovLigada.folio} queda sin producción`,
+          mensaje: `${ovLigada.cliente_nombre || ''} · Motivo: ${motivo.trim()} · Decidir: cancelar la OV, surtir de stock o reprogramar producción`,
+          depto_destino: depto, tipo: 'alerta', folio_ref: ovLigada.folio,
+          leida: false, created_at: serverTimestamp()
+        });
+      });
+      ovAviso = ` · ⚠ OV ${ovLigada.folio} avisada a CS/KAM`;
+    }
+
     await batch.commit();
     // Optimistic: reflejar la cancelación en el state local de inmediato
     const odpLocal = state.ordenes_produccion.find(o => o.id === odpId);
     if (odpLocal) { odpLocal.estatus = 'cancelada'; odpLocal.archivada = true; }
-    toast(`✅ ODP ${odp.folio} cancelada. ${tarimas.length} tarima(s) liberadas a stock.`, 'success');
+    toast(`✅ ODP ${odp.folio} cancelada. ${tarimas.length} tarima(s) liberadas a stock.${ovAviso}`, 'success');
   } catch (e) {
     console.error('Error cancelar ODP:', e);
     toast('Error: ' + e.message, 'error');
@@ -12369,6 +12408,33 @@ window.toggleParadaCargada = async (rutaId, paradaId) => {
 };
 
 // 📦 Marcar/desmarcar una parada individual como ENTREGADA (mientras la ruta va en_ruta)
+// 🔗 FA4: cerrar el ciclo de la REMISIÓN al entregar su OV.
+//    Antes las remisiones nunca se actualizaban (estatus congelado, sin fecha ni
+//    quién) — el documento entregado al cliente quedaba sin cierre en el sistema.
+window._remisionEntregada = async (ovId, recibio) => {
+  if (!ovId) return;
+  try {
+    let rems = (state.remisiones || []).filter(r => r.ov_id === ovId && r.estatus !== 'entregada');
+    if (!rems.length) {
+      // Puede no estar en state (límite 500) → buscar directo en Firestore
+      const snapR = await getDocs(query(collection(db, 'remisiones'), where('ov_id', '==', ovId)));
+      rems = snapR.docs.map(d => ({ id: d.id, ...d.data() })).filter(r => r.estatus !== 'entregada');
+    }
+    for (const r of rems) {
+      await updateDoc(doc(db, 'remisiones', r.id), {
+        estatus: 'entregada',
+        entregada_at: serverTimestamp(),
+        entregada_por: state.user?.id || '',
+        entregada_por_nombre: state.user?.nombre || state.user?.email || '',
+        entrega_recibio: recibio || '',
+        updated_at: serverTimestamp()
+      });
+      const rl = (state.remisiones || []).find(x => x.id === r.id);
+      if (rl) rl.estatus = 'entregada';
+    }
+  } catch (e) { console.error('_remisionEntregada:', e); }
+};
+
 window.toggleParadaEntregada = async (rutaId, paradaId) => {
   const u = state.user || {};
   if (!_esLogistica(u)) { toast('🔒 Sin permiso.', 'error'); return; }
@@ -12377,8 +12443,13 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
   const parada = (ruta.paradas || []).find(p => p.id === paradaId);
   if (!parada) return;
   const nuevoValor = !parada.entregada;
+  // 🔗 FA4: POD mínimo — quién recibió en el cliente (opcional, pero queda registrado)
+  let _recibio = '';
+  if (nuevoValor && (parada.tipo === 'entrega' || parada.tipo === 'combinada')) {
+    _recibio = prompt(`📦 Entrega de ${parada.cliente_nombre || 'la parada'}\n\n¿Quién RECIBIÓ en el cliente? (nombre — opcional, Aceptar para continuar)`) || '';
+  }
   const nuevas = (ruta.paradas || []).map(p =>
-    p.id === paradaId ? { ...p, entregada: nuevoValor, entregada_at: nuevoValor ? Date.now() : null } : p
+    p.id === paradaId ? { ...p, entregada: nuevoValor, entregada_at: nuevoValor ? Date.now() : null, entregada_por_nombre: nuevoValor ? (state.user?.nombre || state.user?.email || '') : null, entrega_recibio: nuevoValor ? _recibio : null } : p
   );
   state.loadingAccion = true; window.forzarRender();
   try {
@@ -12387,7 +12458,13 @@ window.toggleParadaEntregada = async (rutaId, paradaId) => {
     if (nuevoValor && (parada.tipo === 'entrega' || parada.tipo === 'combinada') && parada.ov_id) {
       await updateDoc(doc(db, 'ordenes_venta', parada.ov_id), {
         estatus: 'entregada', entregada_at: serverTimestamp(),
+        // 🔗 FA4: quién confirmó — la entrega por ruta no lo guardaba (por Embarques sí)
+        entregada_por: state.user?.id || '',
+        entregada_por_nombre: state.user?.nombre || state.user?.email || '',
+        entrega_recibio: _recibio,
       }).catch(()=>{});
+      // 🔗 FA4: cerrar también la remisión de esta OV
+      await window._remisionEntregada(parada.ov_id, _recibio);
       const ovLocal = (state.ordenes_venta||[]).find(o => o.id === parada.ov_id);
       if (ovLocal) ovLocal.estatus = 'entregada';
       // 🔧 FIX TRAZABILIDAD: marcar las TARIMAS de esta OV como 'entregada' para que el
@@ -12467,8 +12544,11 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
     }
     if (nuevoEstado === 'completada') {
       patch.completada_at = serverTimestamp();
+      patch.completada_por = state.user?.id || '';
+      patch.completada_por_nombre = state.user?.nombre || state.user?.email || '';
       // 🔧 Marcar cada parada como entregada/recolectada (para que el progreso muestre 100%)
-      patch.paradas = (ruta.paradas || []).map(p => ({ ...p, entregada: true, entregada_at: Date.now() }));
+      // 🔗 FA4: con quién la marcó (cierre masivo de ruta = mismo usuario en todas)
+      patch.paradas = (ruta.paradas || []).map(p => p.entregada ? p : ({ ...p, entregada: true, entregada_at: Date.now(), entregada_por_nombre: state.user?.nombre || state.user?.email || '', entrega_recibio: p.entrega_recibio || '' }));
       // Efectos: OVs entregadas + RMAs recolectadas
       const _btTar = writeBatch(db);
       let _hayTar = false;
@@ -12476,7 +12556,11 @@ window.avanzarRuta = async (rutaId, nuevoEstado) => {
         if ((p.tipo === 'entrega' || p.tipo === 'combinada') && p.ov_id) {
           await updateDoc(doc(db, 'ordenes_venta', p.ov_id), {
             estatus: 'entregada', entregada_at: serverTimestamp(),
+            entregada_por: state.user?.id || '',
+            entregada_por_nombre: state.user?.nombre || state.user?.email || '',
           }).catch(()=>{});
+          // 🔗 FA4: cerrar la remisión de esta OV
+          await window._remisionEntregada(p.ov_id, p.entrega_recibio || '');
           const ovLocal = (state.ordenes_venta||[]).find(o => o.id === p.ov_id);
           if (ovLocal) ovLocal.estatus = 'entregada';
           // 🔧 FIX TRAZABILIDAD: marcar las tarimas de esta OV como 'entregada'
@@ -12564,7 +12648,9 @@ window.cancelarOCConDevolucion = async (ocId) => {
     await updateDoc(doc(db, 'ordenes_compra', ocId), {
       estatus: 'cancelada',
       cancelado_motivo: motivo.trim(),
-      cancelado_por: state.user?.nombre || state.user?.email || 'sistema',
+      motivo_cancelacion: motivo.trim(),
+      cancelado_por: state.user?.id || '',
+      cancelado_por_nombre: state.user?.nombre || state.user?.email || 'sistema',
       cancelado_at: serverTimestamp(),
       updated_at: serverTimestamp()
     });
@@ -21423,6 +21509,7 @@ window.generarOVsPendientesProducto = async (prodCod) => {
         odp_folio: t0.odp_folio || '', odp_id: t0.odp_id || '',
         estatus: 'pendiente_asignar', tarimas_ids: [],
         observaciones: `OV generada desde Stock para asignar material pendiente de ${t0.pedido_folio || '—'}`,
+        creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
         created_at: serverTimestamp(), updated_at: serverTimestamp()
       });
       creadas++;
@@ -22544,6 +22631,299 @@ function _cotListaHTML() {
   `;
 }
 
+// ============================================================
+// 🚨 SIMULADOR DE RECALL — trazabilidad bidireccional MP ↔ Cliente
+//    Dirección 1: lote de MP → ODPs que lo consumieron → tarimas → clientes/remisiones
+//    Dirección 2: tarima de PT → ODP → lotes de MP → proveedor/OC/certificado
+//    Consulta Firestore directo donde el state tiene límite (ODP 200 / tarimas 1000)
+//    para NO perder históricos. Es la evidencia del "mock recall" que piden auditores.
+// ============================================================
+const _RECALL_UBI = {
+  pendiente_empaque: '🏭 Planta · pendiente empaque', liberada_empaque: '🏭 Planta · liberada',
+  en_almacen_planta: '🏭 Almacén planta', en_transito_cedis_mty: '🚚 Tránsito → CEDIS MTY',
+  en_transito_cedis: '🚚 Tránsito → CEDIS', en_cedis_mty: '🏬 CEDIS MTY',
+  en_transito_cedis_mex: '🚚 Tránsito → CEDIS MEX', en_cedis_mex: '🏬 CEDIS MEX',
+  embarcada: '📦 Embarcada', entregada: '🔴 ENTREGADA AL CLIENTE', rechazada: '⛔ Rechazada', devuelta: '🔄 Devuelta',
+};
+window._recallUbi = (t) => _RECALL_UBI[t?.estatus] || (t?.estatus || '—');
+
+// ODP → resumen de huecos de trazabilidad MP (procesos de extrusión sin consumos)
+window._recallHuecosODP = (o) => (o?.procesos_completados || [])
+  .filter(pc => pc.sin_descuento_mp)
+  .map(pc => `${pc.codigo || ''}: ${pc.sin_descuento_mp.motivo || 'sin descuento de MP'} (${pc.sin_descuento_mp.usuario || '—'})`);
+
+// ── Dirección 1: LOTE MP → clientes afectados
+window.recallRunMP = async (loteMpId) => {
+  const lote = (state.lotes_mp || []).find(l => l.id === loteMpId);
+  if (!lote) { toast('Lote de MP no encontrado', 'error'); return; }
+  state.recallBusy = true; state.recallRes = null; window.forzarRender();
+  try {
+    // 1) ODPs por movimientos_mp (kardex completo en state) + consumos_mp en ODPs del state
+    const movs = (state.movimientos_mp || []).filter(m =>
+      (m.lote_id === loteMpId || (m.lote_folio && m.lote_folio === lote.lote_folio)) && m.odp_id);
+    const odpIds = [...new Set(movs.map(m => m.odp_id))];
+    (state.ordenes_produccion || []).forEach(o => {
+      const usa = (o.procesos_completados || []).some(pc => (pc.consumos_mp || []).some(c =>
+        (c.lotes || []).some(lc => lc.lote_id === loteMpId || (lc.lote_folio && lc.lote_folio === lote.lote_folio))));
+      if (usa && !odpIds.includes(o.id)) odpIds.push(o.id);
+    });
+
+    // 2) Resolver cada ODP (getDoc directo si no está en state por el límite de 200)
+    const odps = [];
+    for (const id of odpIds) {
+      let o = (state.ordenes_produccion || []).find(x => x.id === id) || null;
+      if (!o) { try { const s = await getDoc(doc(db, 'ordenes_produccion', id)); if (s.exists()) o = { id: s.id, ...s.data() }; } catch (e) {} }
+      if (o) odps.push(o);
+    }
+
+    // 3) Tarimas de cada ODP — consulta directa a Firestore (cobertura total)
+    const tarimas = [];
+    for (const o of odps) {
+      let ts = [];
+      try {
+        const s = await getDocs(query(collection(db, 'tarimas'), where('odp_id', '==', o.id)));
+        ts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch (e) { ts = (state.tarimas || []).filter(t => t.odp_id === o.id); }
+      ts.forEach(t => { if (!tarimas.some(x => x.id === t.id)) tarimas.push({ ...t, _odp_folio: o.folio }); });
+    }
+
+    // 4) Remisiones de las tarimas embarcadas/entregadas (vía ov_id)
+    const ovIds = [...new Set(tarimas.map(t => t.ov_id).filter(Boolean))];
+    const remisiones = [];
+    for (const ovId of ovIds) {
+      let rems = (state.remisiones || []).filter(r => r.ov_id === ovId);
+      if (!rems.length) {
+        try { const s = await getDocs(query(collection(db, 'remisiones'), where('ov_id', '==', ovId))); rems = s.docs.map(d => ({ id: d.id, ...d.data() })); } catch (e) {}
+      }
+      rems.forEach(r => { if (!remisiones.some(x => x.id === r.id)) remisiones.push(r); });
+    }
+
+    // 5) Agrupar por cliente
+    const porCliente = {};
+    tarimas.forEach(t => {
+      const k = t.cliente_nombre || t.cliente_codigo || 'STOCK (sin cliente)';
+      (porCliente[k] = porCliente[k] || []).push(t);
+    });
+    const kgMovidos = movs.reduce((s, m) => s + (Number(m.cantidad) || 0), 0);
+    const kgPT = tarimas.reduce((s, t) => s + (Number(t.peso_neto_kg || t.peso_neto) || 0), 0);
+    const huecos = odps.flatMap(o => window._recallHuecosODP(o).map(h => `${o.folio} · ${h}`));
+
+    state.recallRes = { modo: 'mp', lote, movs, odps, tarimas, remisiones, porCliente, kgMovidos, kgPT, huecos, generado: new Date().toLocaleString('es-MX') };
+  } catch (e) { console.error('recallRunMP:', e); toast('Error: ' + e.message, 'error'); }
+  finally { state.recallBusy = false; window.forzarRender(); }
+};
+
+// ── Dirección 2: TARIMA / LOTE PT → lotes de MP y proveedor
+window.recallRunPT = async (busq) => {
+  const q0 = String(busq || '').trim().toUpperCase();
+  if (!q0) { toast('Escribe el código de la tarima o del lote PT', 'error'); return; }
+  state.recallBusy = true; state.recallRes = null; window.forzarRender();
+  try {
+    // 1) Localizar tarima: state → Firestore por codigo → por lote_codigo
+    let t = (state.tarimas || []).find(x => String(x.codigo || '').toUpperCase() === q0)
+      || (state.tarimas || []).find(x => String(x.lote_codigo || '').toUpperCase() === q0);
+    if (!t) {
+      try {
+        let s = await getDocs(query(collection(db, 'tarimas'), where('codigo', '==', q0)));
+        if (s.empty) s = await getDocs(query(collection(db, 'tarimas'), where('lote_codigo', '==', q0)));
+        if (!s.empty) t = { id: s.docs[0].id, ...s.docs[0].data() };
+      } catch (e) {}
+    }
+    if (!t) { toast(`No se encontró tarima/lote "${q0}"`, 'error'); state.recallBusy = false; window.forzarRender(); return; }
+
+    // 2) Su ODP (getDoc directo si no está en state)
+    let odp = (state.ordenes_produccion || []).find(o => o.id === t.odp_id) || null;
+    if (!odp && t.odp_id) { try { const s = await getDoc(doc(db, 'ordenes_produccion', t.odp_id)); if (s.exists()) odp = { id: s.id, ...s.data() }; } catch (e) {} }
+
+    // 3) Lotes de MP consumidos (consumos_mp de la ODP) + enriquecer con el lote_mp (OC/proveedor/certificado)
+    const consumos = (odp?.procesos_completados || []).flatMap(pc => (pc.consumos_mp || []).map(c => ({ ...c, _proceso: pc.codigo })));
+    const lotesMP = [];
+    consumos.forEach(c => (c.lotes || []).forEach(lc => {
+      const lm = (state.lotes_mp || []).find(x => x.id === lc.lote_id || x.lote_folio === lc.lote_folio);
+      lotesMP.push({
+        mp_codigo: c.mp_codigo, mp_desc: c.descripcion || '', proceso: c._proceso || '',
+        lote_folio: lc.lote_folio, lote_proveedor: lc.lote_proveedor || lm?.lote_proveedor || '',
+        proveedor: lc.proveedor || lm?.proveedor || '', cantidad: Number(lc.cantidad) || 0,
+        oc_folio: lm?.oc_folio || '', certificado: lm?.certificado_numero || '', fecha_recepcion: lm?.fecha_recepcion || '',
+      });
+    }));
+    // Corroboración por kardex
+    const movsODP = odp ? (state.movimientos_mp || []).filter(m => m.odp_id === odp.id) : [];
+    const huecos = odp ? window._recallHuecosODP(odp) : [];
+
+    // 4) Tarimas hermanas (misma ODP = mismo alcance de recall)
+    let hermanas = [];
+    if (odp) {
+      try {
+        const s = await getDocs(query(collection(db, 'tarimas'), where('odp_id', '==', odp.id)));
+        hermanas = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(x => x.id !== t.id);
+      } catch (e) { hermanas = (state.tarimas || []).filter(x => x.odp_id === odp.id && x.id !== t.id); }
+    }
+
+    state.recallRes = { modo: 'pt', tarima: t, odp, lotesMP, movsODP, huecos, hermanas, generado: new Date().toLocaleString('es-MX') };
+  } catch (e) { console.error('recallRunPT:', e); toast('Error: ' + e.message, 'error'); }
+  finally { state.recallBusy = false; window.forzarRender(); }
+};
+
+window.recallModo = (m) => { state.recallDir = m; state.recallRes = null; render(); };
+window.recallBuscaMP = (v) => { state.recallBusqMP = v; window.forzarRender(); window._cotFoco('recall-busca-mp'); };
+
+// 📋 Reporte en texto (evidencia del simulacro — pegar en correo/WhatsApp/minuta)
+window.recallCopiar = () => {
+  const r = state.recallRes;
+  if (!r) return;
+  const L = [];
+  L.push(`🚨 SIMULACRO DE RECALL — NewPack · generado ${r.generado} por ${state.user?.nombre || ''}`);
+  if (r.modo === 'mp') {
+    L.push(`Origen: lote MP ${r.lote.lote_folio} · ${r.lote.mp_codigo} · Proveedor: ${r.lote.proveedor || '—'} · Lote fab.: ${r.lote.lote_proveedor || '—'} · OC: ${r.lote.oc_folio || '—'} · Cert.: ${r.lote.certificado_numero || '—'}`);
+    L.push(`Alcance: ${r.odps.length} ODP(s) · ${r.tarimas.length} tarima(s) · ${fmtNum(r.kgPT.toFixed(0))} kg PT · ${Object.keys(r.porCliente).length} cliente(s) · ${fmtNum(r.kgMovidos.toFixed(1))} kg de MP consumidos`);
+    Object.keys(r.porCliente).forEach(cli => {
+      L.push(`\n• ${cli}:`);
+      r.porCliente[cli].forEach(t => L.push(`   - ${t.codigo} (${t._odp_folio || t.odp_folio}) · ${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg · ${window._recallUbi(t)}`));
+    });
+    if (r.huecos.length) { L.push(`\n⚠ HUECOS DE TRAZABILIDAD:`); r.huecos.forEach(h => L.push(`   - ${h}`)); }
+  } else {
+    L.push(`Origen: tarima ${r.tarima.codigo} · lote ${r.tarima.lote_codigo || '—'} · ${r.tarima.producto_codigo} · Cliente: ${r.tarima.cliente_nombre || 'stock'} · Ubicación: ${window._recallUbi(r.tarima)}`);
+    L.push(`ODP: ${r.odp?.folio || '⚠ NO LOCALIZADA'}${r.odp ? ` · producida ${r.odp.produccion_terminada_at?.seconds ? new Date(r.odp.produccion_terminada_at.seconds * 1000).toLocaleDateString('es-MX') : '—'}` : ''}`);
+    if (r.lotesMP.length) {
+      L.push(`\nMaterias primas consumidas (${r.lotesMP.length} lote(s)):`);
+      r.lotesMP.forEach(l => L.push(`   - ${l.mp_codigo} · lote ${l.lote_folio} · ${fmtNum(l.cantidad.toFixed(1))} kg · Prov: ${l.proveedor || '—'} · Lote fab: ${l.lote_proveedor || '—'} · OC ${l.oc_folio || '—'} · Cert ${l.certificado || '—'}`));
+    } else {
+      L.push(`\n⚠ SIN CONSUMOS DE MP REGISTRADOS EN LA ODP${r.huecos.length ? ` — motivo: ${r.huecos.join(' | ')}` : ''}`);
+    }
+    if (r.hermanas.length) L.push(`\nTarimas hermanas implicadas (misma ODP): ${r.hermanas.map(h => h.codigo).join(', ')}`);
+  }
+  try { navigator.clipboard.writeText(L.join('\n')); toast('📋 Reporte de recall copiado'); } catch (e) { toast('No se pudo copiar', 'error'); }
+};
+
+function renderRecall() {
+  const dir = state.recallDir || 'mp';
+  const r = state.recallRes;
+  const busy = state.recallBusy;
+  const btnDir = (m, lbl) => `<button onclick="window.recallModo('${m}')" style="padding:10px 16px;border-radius:10px;cursor:pointer;font-weight:800;font-size:13px;border:2px solid ${dir === m ? '#dc2626' : '#e2e8f0'};background:${dir === m ? '#dc2626' : '#fff'};color:${dir === m ? '#fff' : '#475569'};">${lbl}</button>`;
+
+  // Buscador según dirección
+  let buscador = '';
+  if (dir === 'mp') {
+    const q = (state.recallBusqMP || '').toLowerCase().trim();
+    const lotes = (state.lotes_mp || [])
+      .filter(l => !q || ((l.lote_folio || '') + ' ' + (l.mp_codigo || '') + ' ' + (l.lote_proveedor || '') + ' ' + (l.proveedor || '') + ' ' + (l.oc_folio || '')).toLowerCase().includes(q))
+      .sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+    buscador = `
+      <input class="input" id="recall-busca-mp" type="text" placeholder="🔍 Lote MP, código de resina/pigmento, lote del proveedor, proveedor, OC..." autocomplete="off"
+        value="${(state.recallBusqMP || '').replace(/"/g, '&quot;')}" oninput="window.recallBuscaMP(this.value)" style="margin-bottom:8px;" />
+      <div style="max-height:220px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff;">
+        ${lotes.slice(0, 15).map(l => `
+          <div onclick="window.recallRunMP('${l.id}')" style="padding:8px 12px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12px;display:flex;justify-content:space-between;gap:8px;" onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='#fff'">
+            <div><strong class="text-mono">${l.lote_folio || l.id}</strong> · ${l.mp_codigo} <span style="color:#64748b;">· Prov: ${l.proveedor || '—'} · Lote fab: ${l.lote_proveedor || '—'} · ${l.oc_folio || ''}</span></div>
+            <span style="color:#94a3b8;white-space:nowrap;">${l.fecha_recepcion || ''}</span>
+          </div>`).join('') || '<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Sin lotes que coincidan</div>'}
+        ${lotes.length > 15 ? `<div style="padding:6px;text-align:center;color:#94a3b8;font-size:10px;">Mostrando 15 de ${lotes.length} — afina la búsqueda</div>` : ''}
+      </div>`;
+  } else {
+    buscador = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input class="input" id="recall-busca-pt" type="text" placeholder="Código de TARIMA (TAR-...) o de LOTE PT" autocomplete="off" style="flex:1;min-width:240px;"
+          onkeydown="if(event.key==='Enter')window.recallRunPT(this.value)" />
+        <button onclick="window.recallRunPT(document.getElementById('recall-busca-pt').value)" style="padding:10px 18px;background:#dc2626;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">🔍 Rastrear</button>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:6px;">También puedes escanear el QR de la tarima y pegar el código aquí.</div>`;
+  }
+
+  // Resultados
+  let resultado = '';
+  if (busy) {
+    resultado = `<div style="padding:40px;text-align:center;color:#dc2626;font-weight:800;background:#fff;border-radius:14px;border:1px solid #fecaca;">⏳ Rastreando en Firestore (históricos incluidos)...</div>`;
+  } else if (r && r.modo === 'mp') {
+    const nCli = Object.keys(r.porCliente).length;
+    resultado = `
+      <div style="background:#fff;border:2px solid #dc2626;border-radius:14px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div style="font-size:15px;font-weight:900;">Lote MP <span class="text-mono">${r.lote.lote_folio}</span> · ${r.lote.mp_codigo}</div>
+            <div style="font-size:12px;color:#475569;margin-top:2px;">Proveedor: <strong>${r.lote.proveedor || '—'}</strong> · Lote fábrica: <strong>${r.lote.lote_proveedor || '—'}</strong> · OC: ${r.lote.oc_folio || '—'} · Certificado: ${r.lote.certificado_numero || '—'} · Recibido: ${r.lote.fecha_recepcion || '—'}</div>
+          </div>
+          <button onclick="window.recallCopiar()" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Copiar reporte</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:14px 0;">
+          <div style="background:#fef2f2;border-radius:10px;padding:10px 12px;"><div style="font-size:10px;font-weight:700;color:#991b1b;">ODPs AFECTADAS</div><div style="font-size:22px;font-weight:900;color:#dc2626;">${r.odps.length}</div></div>
+          <div style="background:#fef2f2;border-radius:10px;padding:10px 12px;"><div style="font-size:10px;font-weight:700;color:#991b1b;">TARIMAS IMPLICADAS</div><div style="font-size:22px;font-weight:900;color:#dc2626;">${r.tarimas.length}</div></div>
+          <div style="background:#fef2f2;border-radius:10px;padding:10px 12px;"><div style="font-size:10px;font-weight:700;color:#991b1b;">KG DE PT</div><div style="font-size:22px;font-weight:900;color:#dc2626;">${fmtNum(r.kgPT.toFixed(0))}</div></div>
+          <div style="background:#fef2f2;border-radius:10px;padding:10px 12px;"><div style="font-size:10px;font-weight:700;color:#991b1b;">CLIENTES</div><div style="font-size:22px;font-weight:900;color:#dc2626;">${nCli}</div></div>
+          <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;"><div style="font-size:10px;font-weight:700;color:#64748b;">KG MP CONSUMIDOS</div><div style="font-size:22px;font-weight:900;color:#0f172a;">${fmtNum(r.kgMovidos.toFixed(1))}</div></div>
+        </div>
+        ${r.huecos.length ? `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#92400e;"><strong>⚠ Huecos de trazabilidad detectados:</strong><br>${r.huecos.map(h => `· ${h}`).join('<br>')}</div>` : ''}
+        ${r.odps.length === 0 ? '<div style="padding:20px;text-align:center;color:#16a34a;font-weight:800;">✅ Este lote de MP no registra consumo en ninguna ODP — sin producto terminado implicado.</div>' : ''}
+        ${Object.keys(r.porCliente).map(cli => `
+          <div style="border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:8px;">
+            <div style="font-weight:900;font-size:13px;margin-bottom:6px;">${cli} <span style="color:#64748b;font-weight:600;">· ${r.porCliente[cli].length} tarima(s)</span></div>
+            ${r.porCliente[cli].map(t => {
+              const rem = r.remisiones.find(x => x.ov_id === t.ov_id);
+              return `<div style="font-size:12px;color:#475569;padding:3px 0;border-bottom:1px dashed #f1f5f9;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                <span><strong class="text-mono">${t.codigo}</strong> · ${t._odp_folio || t.odp_folio || ''} · lote ${t.lote_codigo || '—'} · ${fmtNum(t.peso_neto_kg || t.peso_neto || 0)} kg</span>
+                <span style="font-weight:700;">${window._recallUbi(t)}${rem ? ` · remisión ${rem.folio}${rem.estatus === 'entregada' ? ' (entregada)' : ''}` : ''}</span>
+              </div>`;
+            }).join('')}
+          </div>`).join('')}
+        <div style="font-size:10.5px;color:#94a3b8;margin-top:8px;">Generado: ${r.generado} · Nota: el alcance es por ODP completa (todas sus tarimas se implican).</div>
+      </div>`;
+  } else if (r && r.modo === 'pt') {
+    resultado = `
+      <div style="background:#fff;border:2px solid #dc2626;border-radius:14px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div style="font-size:15px;font-weight:900;">Tarima <span class="text-mono">${r.tarima.codigo}</span> · ${r.tarima.producto_codigo}</div>
+            <div style="font-size:12px;color:#475569;margin-top:2px;">Lote PT: ${r.tarima.lote_codigo || '—'} · Cliente: <strong>${r.tarima.cliente_nombre || 'stock'}</strong> · Ubicación: <strong>${window._recallUbi(r.tarima)}</strong> · ODP: <strong class="text-mono">${r.odp?.folio || '⚠ no localizada'}</strong></div>
+          </div>
+          <button onclick="window.recallCopiar()" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Copiar reporte</button>
+        </div>
+        ${r.huecos.length ? `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:12px;color:#92400e;"><strong>⚠ Esta ODP cerró extrusión SIN descuento de MP:</strong><br>${r.huecos.map(h => `· ${h}`).join('<br>')}</div>` : ''}
+        ${r.lotesMP.length ? `
+          <div style="font-weight:800;font-size:13px;margin:14px 0 6px;">🧪 Materias primas consumidas (${r.lotesMP.length} lote(s)) — corroborado con ${r.movsODP.length} movimiento(s) de kardex</div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead><tr style="background:#f8fafc;color:#64748b;font-size:10px;text-transform:uppercase;">
+                <th style="padding:6px 8px;text-align:left;">MP</th><th style="padding:6px 8px;text-align:left;">Lote interno</th><th style="padding:6px 8px;text-align:right;">Kg</th><th style="padding:6px 8px;text-align:left;">Proveedor</th><th style="padding:6px 8px;text-align:left;">Lote fábrica</th><th style="padding:6px 8px;text-align:left;">OC</th><th style="padding:6px 8px;text-align:left;">Certificado</th><th style="padding:6px 8px;text-align:left;">Recibido</th>
+              </tr></thead>
+              <tbody>${r.lotesMP.map(l => `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:6px 8px;"><strong>${l.mp_codigo}</strong><div style="font-size:10px;color:#94a3b8;">${l.mp_desc}</div></td>
+                  <td style="padding:6px 8px;" class="text-mono">${l.lote_folio || '—'}</td>
+                  <td style="padding:6px 8px;text-align:right;">${fmtNum(l.cantidad.toFixed(1))}</td>
+                  <td style="padding:6px 8px;">${l.proveedor || '—'}</td>
+                  <td style="padding:6px 8px;" class="text-mono">${l.lote_proveedor || '—'}</td>
+                  <td style="padding:6px 8px;" class="text-mono">${l.oc_folio || '—'}</td>
+                  <td style="padding:6px 8px;">${l.certificado || '—'}</td>
+                  <td style="padding:6px 8px;">${l.fecha_recepcion || '—'}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+          </div>` : `<div style="padding:18px;text-align:center;background:#fef2f2;border-radius:10px;margin-top:12px;color:#991b1b;font-weight:700;">⚠ La ODP no registra consumos de MP — hueco de trazabilidad${r.odp ? '' : ' (ODP no localizada)'}</div>`}
+        ${r.hermanas.length ? `
+          <div style="font-weight:800;font-size:13px;margin:14px 0 6px;">📦 Tarimas hermanas implicadas (misma ODP = mismo alcance): ${r.hermanas.length}</div>
+          <div style="font-size:12px;color:#475569;">${r.hermanas.map(h => `<span style="display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:3px 9px;margin:2px;"><strong class="text-mono">${h.codigo}</strong> · ${window._recallUbi(h)}${h.cliente_nombre ? ` · ${h.cliente_nombre}` : ''}</span>`).join('')}</div>` : ''}
+        <div style="font-size:10.5px;color:#94a3b8;margin-top:10px;">Generado: ${r.generado}</div>
+      </div>`;
+  } else {
+    resultado = `
+      <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;">🚨</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">${dir === 'mp' ? 'Elige un lote de MP para ver TODO lo que tocó' : 'Escribe una tarima o lote PT para rastrear hasta el proveedor'}</div>
+        <div style="font-size:12px;margin-top:4px;">Es la evidencia del simulacro de recall (mock recall) que piden clientes y auditores — en segundos, no en horas.</div>
+      </div>`;
+  }
+
+  return `
+    <div style="background:#fff;border:2px solid #dc2626;border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        ${btnDir('mp', '🧪 Desde lote de MP → ¿a qué clientes llegó?')}
+        ${btnDir('pt', '📦 Desde tarima/lote PT → ¿qué MP y proveedor lleva?')}
+      </div>
+      ${buscador}
+    </div>
+    ${resultado}
+  `;
+}
+
 // 🆕 SALIDAS DEL DÍA — programación de embarques simple por CEDIS.
 //    Almacén ve QUÉ va a cargar por día y qué está ya programado en ruta.
 window.setSalidasCedis = (c) => { state.filtros.salidas_cedis = c; render(); };
@@ -22920,12 +23300,15 @@ window.confirmarEntregaSalida = async (ovId) => {
   if (!ov) return;
   const modoTxt = { propio: 'New Pack Logística', tercero: 'transportista tercero', cliente: 'el cliente (recogió)' }[ov.modo_envio] || 'envío';
   if (!confirm(`¿Confirmar que ${ov.folio} · ${ov.cliente_nombre} fue ENTREGADO?\n\nSalió por: ${modoTxt}.`)) return;
+  // 🔗 FA4: POD mínimo — quién recibió en el cliente (opcional pero queda registrado)
+  const _recibio = prompt('¿Quién RECIBIÓ en el cliente? (nombre — opcional, Aceptar para continuar)') || '';
   state.loadingAccion = true; render();
   try {
     const batch = writeBatch(db);
     batch.update(doc(db, 'ordenes_venta', ov.id), {
       estatus: 'entregada', entregada_at: serverTimestamp(),
       entrega_confirmada_por: state.user.id, entrega_confirmada_por_nombre: state.user.nombre,
+      entrega_recibio: _recibio,
       updated_at: serverTimestamp()
     });
     let tids = ov.tarimas_ids || [];
@@ -22948,6 +23331,8 @@ window.confirmarEntregaSalida = async (ovId) => {
         await updateDoc(doc(db, 'rutas_logistica', ruta.id), patchRuta).catch(() => {});
       }
     }
+    // 🔗 FA4: cerrar el ciclo de la remisión (estatus + fecha + quién + quién recibió)
+    await window._remisionEntregada(ov.id, _recibio);
     const fol = await window.generarSaldoOVEntrega(ov);   // saldo si fue parcial (camino único)
     // 🔧 FIX SEGUIMIENTO: sincroniza odp.estatus con las tarimas y cierra el PI si ya no falta nada
     //    (sin esto el pedido se quedaba atorado en "En logística" aunque ya estaba entregado)
@@ -40870,6 +41255,7 @@ window.generarSaldoOVEntrega = async (ov) => {
       estatus: 'pendiente_asignar', tarimas_ids: [],
       fecha_entrega_solicitada: ov.fecha_entrega_solicitada || null,
       observaciones: `⚠ OV de SALDO por entrega parcial de ${ov.folio} (entregado ${fmtCantidadUM(cantEnv, ov.um)} de ${fmtCantidadUM(cantSol, ov.um)})`,
+      creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
       created_at: serverTimestamp(), updated_at: serverTimestamp()
     });
     const deptoCedisS = ov.cedis === 'CEDIS-MEX' ? 'CEDMEX' : 'CEDMTY';
@@ -40909,7 +41295,10 @@ window.marcarOVEntregada = async (ovId) => {
   } else {
     if (!confirm(`Confirmar que ${ov.folio} fue ENTREGADA al cliente?`)) return;
   }
-  
+
+  // 🔗 FA4: POD mínimo — quién recibió en el cliente (opcional pero queda registrado)
+  const _recibioOV = prompt('¿Quién RECIBIÓ en el cliente? (nombre — opcional, Aceptar para continuar)') || '';
+
   state.loadingAccion = true; render();
   try {
     const batch = writeBatch(db);
@@ -40917,6 +41306,7 @@ window.marcarOVEntregada = async (ovId) => {
       estatus: 'entregada',
       es_entrega_parcial: esParcial,
       saldo_pendiente: esParcial ? saldo : 0,
+      entrega_recibio: _recibioOV,
       entregada_at: serverTimestamp(),
       entregada_por: state.user.id,
       entregada_por_nombre: state.user.nombre,
@@ -40964,10 +41354,12 @@ window.marcarOVEntregada = async (ovId) => {
         ov_origen_folio: ov.folio,
         ov_origen_id: ov.id,
         odp_folio: ov.odp_folio || '',
+        odp_id: ov.odp_id || '',              // 🔗 FA3: esta variante perdía el odp_id (la otra sí lo guardaba)
         estatus: 'pendiente_asignar',        // CEDIS revisa si hay stock; si no, esperará
         tarimas_ids: [],
         fecha_entrega_solicitada: ov.fecha_entrega_solicitada || null,
         observaciones: `⚠ OV de SALDO por entrega parcial de ${ov.folio} (${fmtCantidadUM(cantEnv, ov.um)} de ${fmtCantidadUM(cantSol, ov.um)})`,
+        creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
         created_at: serverTimestamp(),
         updated_at: serverTimestamp()
       });
@@ -41007,7 +41399,10 @@ window.marcarOVEntregada = async (ovId) => {
     }
     
     await batch.commit();
-    
+
+    // 🔗 FA4: cerrar el ciclo de la remisión (estatus + fecha + quién + quién recibió)
+    await window._remisionEntregada(ov.id, _recibioOV);
+
     // 🆕 FIX — Sincronizar el estatus de las ODPs con sus tarimas entregadas
     try {
       const odpIdsAfectadas = (ov.tarimas_ids || [])
@@ -48659,6 +49054,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
           tarimas_ids: [],
           fecha_entrega_solicitada: pedido.fecha_requerida || null,
           observaciones: l.observaciones || '',
+          creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
           created_at: serverTimestamp(),
           updated_at: serverTimestamp()
         });
@@ -48727,6 +49123,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
           tipo_origen: esStockInterno ? 'stock_interno' : 'pedido_cliente',
           cedis_destino: pedido.cedis_asignado || 'CEDIS-MTY',
           requiere_proceso_secundario: requiereSec,
+          creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
           created_at: serverTimestamp()
         });
         odps.push(folioODP1);
@@ -48754,6 +49151,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
             tarimas_ids: [],
             fecha_entrega_solicitada: pedido.fecha_requerida || null,
             observaciones: l.observaciones || '',
+            creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
             created_at: serverTimestamp(),
             updated_at: serverTimestamp()
           });
@@ -48858,12 +49256,14 @@ window.cancelarPI = async (pedidoId, folio) => {
           estatus: 'cancelada',
           cancelado_at: serverTimestamp(),
           cancelado_por: state.user.id,
+          cancelado_por_nombre: state.user.nombre || state.user.email,
           motivo_cancelacion: `PI cancelado: ${motivo}`,
+          cancelado_motivo: `PI cancelado: ${motivo}`,
           updated_at: serverTimestamp()
         });
       }
     });
-    
+
     // 3. Cancelar ODPs no iniciadas (en programada)
     const odps = (state.ordenes_produccion || []).filter(o => o.pedido_id === pedidoId);
     odps.forEach(odp => {
@@ -48872,10 +49272,27 @@ window.cancelarPI = async (pedidoId, folio) => {
           estatus: 'cancelada',
           cancelado_at: serverTimestamp(),
           cancelado_por: state.user.id,
+          cancelado_por_nombre: state.user.nombre || state.user.email,
           motivo_cancelacion: `PI cancelado: ${motivo}`,
+          cancelado_motivo: `PI cancelado: ${motivo}`,
           updated_at: serverTimestamp()
         });
       }
+    });
+
+    // 🔗 FA2: ODPs que NO se pueden cancelar en automático (ya en producción o más allá)
+    //    — antes quedaban huérfanas en silencio; ahora se avisa a PLN/PRO para que decidan
+    const odpsVivas = odps.filter(o => !['programada','esperando_programacion','cancelada'].includes(o.estatus) && !o.archivada);
+    odpsVivas.forEach(odp => {
+      ['PLN', 'PRO'].forEach(depto => {
+        const refN = doc(collection(db, 'notificaciones'));
+        batch.set(refN, {
+          titulo: `⚠ PI ${folio} cancelado con ODP ${odp.folio} en curso`,
+          mensaje: `La ODP está en "${odp.estatus}" y NO se canceló en automático. Decidir: continuar como stock o cancelarla. Motivo: ${motivo}`,
+          depto_destino: depto, tipo: 'alerta', folio_ref: odp.folio,
+          leida: false, created_at: serverTimestamp()
+        });
+      });
     });
     
     // 4. Liberar tarimas asignadas a las OVs canceladas
@@ -48931,11 +49348,20 @@ window.cancelarOV = async (ovId) => {
   }
   
   if (!confirm(`¿Confirmar cancelación de OV ${ov.folio}?\n\nMotivo: ${motivo}\n\nLas tarimas asignadas se liberarán.`)) return;
-  
+
   state.loadingAccion = true; render();
   try {
+    // 🔗 FA2: localizar la ODP ligada (puede no estar en state por el límite de 200)
+    let odpLigada = null;
+    if (ov.odp_id) {
+      odpLigada = (state.ordenes_produccion || []).find(o => o.id === ov.odp_id) || null;
+      if (!odpLigada) {
+        try { const sOdp = await getDoc(doc(db, 'ordenes_produccion', ov.odp_id)); if (sOdp.exists()) odpLigada = { id: sOdp.id, ...sOdp.data() }; } catch (e) {}
+      }
+    }
+
     const batch = writeBatch(db);
-    
+
     // 1. Cancelar OV
     batch.update(doc(db, 'ordenes_venta', ovId), {
       estatus: 'cancelada',
@@ -48943,8 +49369,38 @@ window.cancelarOV = async (ovId) => {
       cancelado_por: state.user.id,
       cancelado_por_nombre: state.user.nombre || state.user.email,
       motivo_cancelacion: motivo,
+      cancelado_motivo: motivo,
       updated_at: serverTimestamp()
     });
+
+    // 🔗 FA2: cascada OV→ODP — la producción no debe seguir corriendo para una OV cancelada
+    let odpCascada = '';
+    if (odpLigada && odpLigada.estatus !== 'cancelada') {
+      if (['esperando_programacion', 'programada', 'pendiente_planeacion'].includes(odpLigada.estatus)) {
+        batch.update(doc(db, 'ordenes_produccion', odpLigada.id), {
+          estatus: 'cancelada',
+          cancelado_at: serverTimestamp(),
+          cancelado_por: state.user.id,
+          cancelado_por_nombre: state.user.nombre || state.user.email,
+          motivo_cancelacion: `OV ${ov.folio} cancelada: ${motivo}`,
+          cancelado_motivo: `OV ${ov.folio} cancelada: ${motivo}`,
+          updated_at: serverTimestamp()
+        });
+        odpCascada = ` · ODP ${odpLigada.folio} cancelada en cascada`;
+      } else {
+        // ODP ya en producción o más allá: no se cancela sola — PLN/PRO deciden qué hacer
+        ['PLN', 'PRO'].forEach(depto => {
+          const refN = doc(collection(db, 'notificaciones'));
+          batch.set(refN, {
+            titulo: `⚠ OV ${ov.folio} cancelada con ODP ${odpLigada.folio} en curso`,
+            mensaje: `La ODP está en "${odpLigada.estatus}". Decidir: continuar como producción para stock o cancelarla. Motivo de la cancelación: ${motivo}`,
+            depto_destino: depto, tipo: 'alerta', folio_ref: odpLigada.folio,
+            leida: false, created_at: serverTimestamp()
+          });
+        });
+        odpCascada = ` · ⚠ ODP ${odpLigada.folio} sigue en curso (avisado a PLN/PRO)`;
+      }
+    }
     
     // 2. Liberar tarimas asignadas
     const tarimasAsignadas = (state.tarimas || []).filter(t => t.ov_id === ovId);
@@ -48969,7 +49425,7 @@ window.cancelarOV = async (ovId) => {
     });
     
     await batch.commit();
-    toast(`❌ OV ${ov.folio} cancelada · ${tarimasAsignadas.length} tarima(s) liberadas`, 'success');
+    toast(`❌ OV ${ov.folio} cancelada · ${tarimasAsignadas.length} tarima(s) liberadas${odpCascada}`, 'success');
     cerrarModal();
   } catch (e) {
     console.error('Error cancelando OV:', e);
@@ -49446,7 +49902,10 @@ window.confirmarCompletarProceso = async (odpId) => {
   // ====================================================
   let consumosMP = []; // para mostrar en toast y guardar registro
   let faltantesMP = []; // si alguna MP no alcanza
-  
+  // 🔒 FA1: si Extrusión cierra SIN consumo de MP, el motivo queda registrado en la ODP
+  //    (antes había 3 puertas silenciosas que dejaban tarimas sin liga a lotes de MP)
+  let sinDescuentoMP = null;
+
   if (esExtrusion && producto && !MODO_SIMPLIFICADO_PROD) {
     // Verificar si tiene capas (formato nuevo) o formulación plana (formato antiguo)
     const capas = producto.capas || [];
@@ -49473,8 +49932,9 @@ window.confirmarCompletarProceso = async (odpId) => {
       }
       
       if (!capasOk || !canonesOk) {
-        const conf = confirm(`⚠ La formulación del producto ${producto.codigo} tiene errores (capas no suman 100% o algún cañón no suma 100%).\n\n¿Cerrar Extrusión SIN descontar MP del inventario?`);
+        const conf = confirm(`⚠ La formulación del producto ${producto.codigo} tiene errores (capas no suman 100% o algún cañón no suma 100%).\n\n¿Cerrar Extrusión SIN descontar MP del inventario?\n\n⚠ La ODP quedará SIN trazabilidad de materia prima y se registrará este hueco (se avisará a Planeación y Calidad).`);
         if (!conf) return;
+        sinDescuentoMP = { tipo: 'formula_invalida', motivo: `Formulación de ${producto.codigo} con errores: capas o cañones no suman 100%` };
       } else {
         // Acumular descuentos necesarios por MP (un mismo MP puede estar en varias capas)
         const necesariosPorMP = {}; // {mp_codigo: {descripcion, kg_necesarios, detalles_capa: []}}
@@ -49600,9 +50060,18 @@ window.confirmarCompletarProceso = async (odpId) => {
           return; // detener aquí, el modal se encargará de continuar
         }
       }
+    } else {
+      // 🔒 FA1 puerta B: producto SIN formulación capturada — antes cerraba en silencio
+      if (!confirm(`⚠ El producto ${producto.codigo} NO tiene formulación capturada.\n\nSe cerrará Extrusión SIN descontar MP y la ODP quedará SIN trazabilidad de materia prima (se registrará este hueco y se avisará a Planeación y Calidad).\n\n¿Continuar de todos modos?`)) return;
+      sinDescuentoMP = { tipo: 'sin_formula', motivo: `Producto ${producto.codigo} sin formulación capturada` };
     }
+  } else if (esExtrusion) {
+    // 🔒 FA1 puerta A: modo simplificado o producto no encontrado — antes cerraba en silencio
+    sinDescuentoMP = MODO_SIMPLIFICADO_PROD
+      ? { tipo: 'modo_simplificado', motivo: 'Modo simplificado de producción activo (sin descuento de MP)' }
+      : { tipo: 'producto_no_encontrado', motivo: `Producto ${odp.producto_codigo || '—'} no encontrado en catálogo` };
   }
-  
+
   state.loadingAccion = true; render();
   try {
     // ===== APLICAR DESCUENTOS DE MP EN FIRESTORE (FIFO) =====
@@ -49671,9 +50140,27 @@ window.confirmarCompletarProceso = async (odpId) => {
       turnos: turnosResumen,
       notas_cierre: notasCierre,
       consumos_mp: consumosMP.length > 0 ? consumosMP : null, // ⭐ Trazabilidad MP consumida
+      // 🔒 FA1: hueco de trazabilidad EXPLÍCITO — Extrusión cerró sin descontar MP
+      sin_descuento_mp: (esExtrusion && consumosMP.length === 0 && sinDescuentoMP)
+        ? { ...sinDescuentoMP, usuario: state.user.nombre || state.user.email || '', usuario_id: state.user.id || '', fecha: new Date().toISOString() }
+        : null,
       completado_at: new Date().toISOString(),
       completado_por: state.user.nombre || state.user.email
     }];
+
+    // 🔒 FA1: avisar a Planeación y Calidad del hueco de trazabilidad (no bloquea el cierre)
+    if (esExtrusion && consumosMP.length === 0 && sinDescuentoMP) {
+      const _notifSinMP = (depto) => addDoc(collection(db, 'notificaciones'), {
+        titulo: `⚠ ${odp.folio} cerró Extrusión SIN descuento de MP`,
+        mensaje: `${sinDescuentoMP.motivo} · Esta ODP quedó sin trazabilidad de materia prima — regularizar (salida manual de MP con referencia a la ODP)`,
+        depto_destino: depto,
+        tipo: 'alerta',
+        folio_ref: odp.folio,
+        leida: false,
+        created_at: serverTimestamp()
+      }).catch(() => {});
+      _notifSinMP('PLN'); _notifSinMP('CAL');
+    }
     
     if (esUltimo) {
       // Último proceso → Calidad
@@ -51853,9 +52340,10 @@ window.confirmarLiberarCalidad = async (odpId) => {
           almacen_actual: 'PENDIENTE-EMPAQUE',
           es_parcial: esParcialLib,
           activo: true,
+          creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
           created_at: serverTimestamp()
         });
-        
+
         lotesGenerados.push({ codigo_lote: codigoLote, tarima_codigo: codigoTarima, cantidad: cantTarima });
       }
       
