@@ -232,6 +232,8 @@ const state = {
   // 🛒 COMERCIALIZADO — Productos que compramos y revendemos (sin fabricar)
   productos_comercializados: [],
   movimientos_comercializados: [],
+  // 🧮 CRM COMERCIAL — cotizaciones formales
+  cotizaciones: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3599,7 +3601,13 @@ async function cargarTodo() {
       onSnapshot(collection(db, 'movimientos_comercializados'), (snap) => {
         state.movimientos_comercializados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
-      })
+      }),
+      // 🧮 COTIZACIONES (CRM comercial) — lectura restringida por rules; el error
+      //    de permiso en deptos no-comerciales se ignora (no ven este módulo)
+      onSnapshot(collection(db, 'cotizaciones'), (snap) => {
+        state.cotizaciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => { /* sin permiso de lectura: depto no comercial */ })
     );
   } catch (err) {
     console.error('Error:', err);
@@ -3990,7 +3998,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0730-B18-cotizadormetros</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0730-B19-cotizaciones</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -21544,6 +21552,304 @@ window.cotCopiarWhats = () => {
   catch (e) { toast('No se pudo copiar automáticamente', 'error'); }
 };
 
+// ============================================================
+// 🧮 COTIZADOR FASE 2 — Cotización formal con folio, cliente o
+//    prospecto (alta ligera), multi-líneas, vigencia y PDF.
+//    Colección: cotizaciones · folio COT-AAAA-#### (contador cot_AAAA)
+// ============================================================
+const COT_CONDICIONES_DEFAULT = 'Precios en MXN más IVA. Tiempo de entrega a confirmar al recibir su orden de compra. Al vencer la vigencia los precios están sujetos a cambio sin previo aviso.';
+
+window._cotDraft = () => {
+  if (!state.cotDraft) state.cotDraft = { cliente_tipo: 'cliente', cliente_codigo: '', prospecto: { empresa: '', contacto: '', telefono: '', correo: '' }, vigencia_dias: '15', condiciones: COT_CONDICIONES_DEFAULT, notas: '', lineas: [] };
+  return state.cotDraft;
+};
+window._cotFoco = (id) => {
+  if (!id) return;
+  const el = document.getElementById(id);
+  if (el) { el.focus(); try { const p = el.value.length; el.setSelectionRange(p, p); } catch (e) {} }
+};
+
+// Cantidad × precio unitario según el modo de la línea (pieza = millares · metros = rollos)
+window._cotLineaCalc = (l) => {
+  const cant = Number(l.cantidad) || 0;
+  const esM = l.modo === 'metros';
+  const unit = esM ? (Number(l.precio_rollo_m) || 0) : (Number(l.precio_millar) || 0);
+  const kgU = esM ? (Number(l.mts_rollo) || 0) * (Number(l.peso_metro) || 0) : (Number(l.peso_millar) || 0);
+  return { cant, unit, importe: cant * unit, kg: cant * kgU, unidad: esM ? `rollo(s) de ${fmtNum(l.mts_rollo)} m` : 'millar(es)' };
+};
+
+window.cotAgregarLinea = () => {
+  const f = state.cotForm || {};
+  const r = window.cotCalc(f);
+  const esMetros = f.modo === 'metros';
+  const ok = esMetros ? (r.pesoMetro > 0 && r.mtsRollo > 0 && Number(f.precio_kg) > 0) : (r.pesoMillar > 0 && Number(f.precio_kg) > 0);
+  if (!ok) { toast(esMetros ? 'Completa ancho, calibre, precio $/kg y metros por rollo' : 'Completa medidas, calibre y precio $/kg', 'error'); return; }
+  const um = f.unidades === 'pulgadas' ? 'pulg' : 'cm';
+  const med = esMetros
+    ? `ancho ${r.fuelle > 0 ? `${f.ancho}+${f.fuelle}` : f.ancho} ${um}`
+    : `${r.fuelle > 0 ? `${f.ancho}+${f.fuelle}x${f.largo}` : `${f.ancho}x${f.largo}`} ${um}`;
+  window._cotDraft().lineas.push({
+    descripcion: `${f.material || ''} · ${f.tipo || ''} · ${med} · Cal ${f.calibre}${esMetros ? ` · rollo de ${fmtNum(r.mtsRollo)} m` : ''}`,
+    modo: f.modo || 'pieza', material: f.material || '', tipo: f.tipo || '', unidades: f.unidades || 'cm',
+    ancho: f.ancho || '', fuelle: f.fuelle || '', largo: esMetros ? '' : (f.largo || ''), calibre: f.calibre || '',
+    precio_kg: Number(f.precio_kg) || 0,
+    peso_millar: r.pesoMillar || 0, precio_millar: r.precioMillar || 0, precio_pieza: r.precioPieza || 0,
+    kg_paquete: r.kgPaq || 0, piezas_paq: Math.floor(r.piezasPaq) || 0,
+    peso_metro: r.pesoMetro || 0, precio_metro: r.precioMetro || 0, mts_rollo: r.mtsRollo || 0,
+    precio_rollo_m: r.precioRolloM || 0, peso_rollo_m: r.pesoRolloM || 0,
+    piezas_rollo: r.pzasRollo || 0, precio_rollo: r.precioRollo || 0, peso_rollo: r.pesoRollo || 0,
+    cantidad: '1',
+  });
+  toast('➕ Línea agregada — abajo puedes ajustar cantidades y guardar');
+  window.forzarRender();
+};
+window.cotQuitarLinea = (i) => { window._cotDraft().lineas.splice(i, 1); window.forzarRender(); };
+window.cotLineaSet = (i, campo, v, focusId) => { const d = window._cotDraft(); if (d.lineas[i]) d.lineas[i][campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.cotDraftSet = (campo, v, focusId) => { window._cotDraft()[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.cotProsSet = (campo, v, focusId) => { window._cotDraft().prospecto[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.cotTipoDest = (t) => { window._cotDraft().cliente_tipo = t; window.forzarRender(); };
+window.cotCliBusca = (v) => { state.cotCliBusq = v; window.forzarRender(); window._cotFoco('cot-cli-busca'); };
+window.cotCliSel = (cod) => { window._cotDraft().cliente_codigo = cod; state.cotCliBusq = ''; window.forzarRender(); };
+window.cotVaciar = () => { if (!confirm('¿Vaciar la cotización en curso? Se pierden las líneas capturadas.')) return; state.cotDraft = null; window.forzarRender(); };
+window.cotSetTab = (t) => { state.cotTab = t; render(); };
+window.cotFiltroLista = (v) => { state.filtros.cotizaciones = v; window.forzarRender(); window._cotFoco('cot-filtro-lista'); };
+
+window.cotGuardar = async () => {
+  const d = window._cotDraft();
+  if (!d.lineas.length) { toast('Agrega al menos una línea a la cotización', 'error'); return; }
+  if (d.lineas.some(l => !(Number(l.cantidad) > 0))) { toast('Hay líneas con cantidad en 0 — ajústalas o quítalas', 'error'); return; }
+  let clienteNombre = '';
+  if (d.cliente_tipo === 'cliente') {
+    const cli = (state.clientes || []).find(c => c.codigo === d.cliente_codigo);
+    if (!cli) { toast('Selecciona el cliente del catálogo', 'error'); return; }
+    clienteNombre = cli.nombre || cli.codigo;
+  } else {
+    if (!String(d.prospecto.empresa || '').trim()) { toast('Captura al menos la empresa del prospecto', 'error'); return; }
+    clienteNombre = String(d.prospecto.empresa).trim();
+  }
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const año = new Date().getFullYear();
+    const n = await siguienteFolio(`cot_${año}`);
+    const folio = `COT-${año}-${String(n).padStart(4, '0')}`;
+    // Congelar importes al guardar (el borrador los calcula en vivo)
+    const lineas = d.lineas.map(l => { const c = window._cotLineaCalc(l); return { ...l, cantidad: c.cant, unidad: c.unidad, precio_unitario: c.unit, importe: c.importe, kg_aprox: c.kg }; });
+    const subtotal = lineas.reduce((s, l) => s + l.importe, 0);
+    const iva = subtotal * 0.16;
+    const dias = Math.max(1, Number(d.vigencia_dias) || 15);
+    const hoy = new Date();
+    const u = state.user || {};
+    const docData = {
+      folio, estado: 'borrador',
+      cliente_tipo: d.cliente_tipo,
+      cliente_codigo: d.cliente_tipo === 'cliente' ? d.cliente_codigo : '',
+      cliente_nombre: clienteNombre,
+      prospecto: d.cliente_tipo === 'prospecto' ? { ...d.prospecto } : null,
+      lineas, subtotal, iva, total: subtotal + iva,
+      vigencia_dias: dias,
+      fecha: hoy.toLocaleDateString('en-CA'),
+      vence: new Date(hoy.getTime() + dias * 86400000).toLocaleDateString('en-CA'),
+      condiciones: d.condiciones || '', notas: d.notas || '',
+      vendedor: u.nombre || u.email || '', vendedor_uid: u.id || u.uid || '',
+      created_at: serverTimestamp(), updated_at: serverTimestamp(),
+    };
+    const ref = await addDoc(collection(db, 'cotizaciones'), docData);
+    state.cotDraft = null;
+    state.cotTab = 'lista';
+    toast(`✅ Cotización ${folio} guardada`);
+    try { window._pdfCotizacion({ id: ref.id, ...docData }); } catch (e) { console.error('PDF cotización:', e); }
+  } catch (e) { console.error(e); toast('Error guardando: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+window.cotMarcarEnviada = async (id) => {
+  try { await updateDoc(doc(db, 'cotizaciones', id), { estado: 'enviada', enviada_at: serverTimestamp(), updated_at: serverTimestamp() }); toast('✉️ Marcada como enviada al cliente'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.cotDuplicar = (id) => {
+  const c = (state.cotizaciones || []).find(x => x.id === id);
+  if (!c) return;
+  state.cotDraft = {
+    cliente_tipo: c.cliente_tipo || 'cliente', cliente_codigo: c.cliente_codigo || '',
+    prospecto: { empresa: '', contacto: '', telefono: '', correo: '', ...(c.prospecto || {}) },
+    vigencia_dias: String(c.vigencia_dias || 15), condiciones: c.condiciones || COT_CONDICIONES_DEFAULT, notas: c.notas || '',
+    lineas: (c.lineas || []).map(l => ({ ...l, cantidad: String(l.cantidad || 1) })),
+  };
+  state.cotTab = 'calc';
+  toast(`📋 ${c.folio} cargada como borrador nuevo — ajusta y guarda (saldrá con folio nuevo)`);
+  window.forzarRender();
+};
+window.pdfCotizacion = (id) => {
+  const c = (state.cotizaciones || []).find(x => x.id === id);
+  if (!c) { toast('Cotización no encontrada', 'error'); return; }
+  window._pdfCotizacion(c);
+};
+
+// PDF formato NewPack (mismo lenguaje visual que OC/remisión)
+window._pdfCotizacion = (cot) => {
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const { jsPDF } = window.jspdf;
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  let y = _pdfHeaderEmpresa(docPDF, 'COTIZACIÓN', cot.folio);
+
+  docPDF.setFontSize(20);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('COTIZACIÓN', 105, y + 4, { align: 'center' });
+  docPDF.setFontSize(8);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+  docPDF.text('Propuesta comercial', 105, y + 9, { align: 'center' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 14;
+
+  y = _pdfSeccionTitulo(docPDF, y, 'INFORMACIÓN GENERAL', _COL_AZUL);
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(14, y, 91, 36, 2, 2, 'F');
+  docPDF.roundedRect(107, y, 89, 36, 2, 2, 'F');
+
+  // Bloque cliente / prospecto
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text(cot.cliente_tipo === 'prospecto' ? 'PROSPECTO' : 'CLIENTE', 17, y + 5);
+  docPDF.setFontSize(9);
+  docPDF.setTextColor(30, 41, 59);
+  const lNom = docPDF.splitTextToSize(cot.cliente_nombre || '—', 86);
+  lNom.slice(0, 2).forEach((line, i) => docPDF.text(line, 17, y + 11 + i * 4));
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(71, 85, 105);
+  let cy = y + 11 + Math.min(lNom.length, 2) * 4 + 1;
+  if (cot.cliente_tipo === 'prospecto' && cot.prospecto) {
+    if (cot.prospecto.contacto) { docPDF.text(`Contacto: ${cot.prospecto.contacto}`, 17, cy); cy += 4; }
+    const tc = [cot.prospecto.telefono, cot.prospecto.correo].filter(Boolean).join(' · ');
+    if (tc) { docPDF.text(docPDF.splitTextToSize(tc, 86)[0], 17, cy); cy += 4; }
+  } else {
+    const cli = (state.clientes || []).find(c => c.codigo === cot.cliente_codigo);
+    if (cot.cliente_codigo) { docPDF.text(`Código: ${cot.cliente_codigo}`, 17, cy); cy += 4; }
+    if (cli?.rfc) { docPDF.text(`RFC: ${cli.rfc}`, 17, cy); cy += 4; }
+  }
+
+  // Bloque datos de la cotización
+  docPDF.setFontSize(7);
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+  docPDF.text('DATOS DE LA COTIZACIÓN', 110, y + 5);
+  docPDF.setFontSize(8);
+  docPDF.setTextColor(71, 85, 105);
+  let dy = y + 11;
+  const dato = (lbl, val, verde) => {
+    docPDF.setFont('helvetica', 'bold'); docPDF.text(lbl, 110, dy);
+    docPDF.setFont('helvetica', 'normal');
+    if (verde) docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.text(String(val || '—'), 145, dy);
+    if (verde) docPDF.setTextColor(71, 85, 105);
+    dy += 5;
+  };
+  dato('Folio:', cot.folio);
+  dato('Fecha:', cot.fecha);
+  dato('Vigencia:', `${cot.vigencia_dias} días`);
+  dato('Vence:', cot.vence, true);
+  dato('Vendedor:', cot.vendedor);
+  y += 42;
+
+  y = _pdfSeccionTitulo(docPDF, y, 'PARTIDAS COTIZADAS', _COL_VERDE);
+  // Encabezado de tabla
+  const thead = (yy) => {
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+    docPDF.rect(14, yy, 182, 6, 'F');
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.setFontSize(6.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('#', 16, yy + 4);
+    docPDF.text('DESCRIPCIÓN', 22, yy + 4);
+    docPDF.text('CANT', 118, yy + 4, { align: 'right' });
+    docPDF.text('UNIDAD', 121, yy + 4);
+    docPDF.text('P. UNITARIO', 168, yy + 4, { align: 'right' });
+    docPDF.text('IMPORTE', 194, yy + 4, { align: 'right' });
+    return yy + 6;
+  };
+  y = thead(y);
+  (cot.lineas || []).forEach((l, i) => {
+    if (y > 240) { docPDF.addPage(); y = thead(20); }
+    const lDesc = docPDF.splitTextToSize(l.descripcion || '—', 92);
+    const nDesc = Math.min(lDesc.length, 2);
+    const hRow = 5 + nDesc * 3.6 + 3.5;
+    if (i % 2 === 0) { docPDF.setFillColor(248, 250, 252); docPDF.rect(14, y, 182, hRow, 'F'); }
+    docPDF.setTextColor(30, 41, 59);
+    docPDF.setFontSize(7.5);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text(String(i + 1), 16, y + 4.5);
+    lDesc.slice(0, 2).forEach((line, j) => docPDF.text(line, 22, y + 4.5 + j * 3.6));
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text(fmtNum(l.cantidad), 118, y + 4.5, { align: 'right' });
+    docPDF.text(String(l.unidad || ''), 121, y + 4.5);
+    docPDF.text('$' + fmtNum((Number(l.precio_unitario) || 0).toFixed(2)), 168, y + 4.5, { align: 'right' });
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.text('$' + fmtNum((Number(l.importe) || 0).toFixed(2)), 194, y + 4.5, { align: 'right' });
+    // Sub-línea técnica (peso, precio pieza / metro, paquete)
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setFontSize(6);
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    const sub = l.modo === 'metros'
+      ? `${((Number(l.peso_metro) || 0) * 1000).toFixed(1)} g/m · $${(Number(l.precio_metro) || 0).toFixed(4)} por metro · rollo ${fmtNum(l.mts_rollo)} m ≈ ${(Number(l.peso_rollo_m) || 0).toFixed(2)} kg · base $${fmtNum(l.precio_kg)}/kg`
+      : `peso millar ${(Number(l.peso_millar) || 0).toFixed(2)} kg · $${(Number(l.precio_pieza) || 0).toFixed(4)} por pieza · paquete ${l.kg_paquete} kg ≈ ${fmtNum(l.piezas_paq)} pzas · base $${fmtNum(l.precio_kg)}/kg`;
+    docPDF.text(sub, 22, y + 4.5 + nDesc * 3.6 + 2.5);
+    y += hRow;
+  });
+
+  // Totales
+  if (y > 235) { docPDF.addPage(); y = 20; }
+  y += 4;
+  docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+  docPDF.roundedRect(126, y, 70, 22, 2, 2, 'F');
+  docPDF.setFontSize(8);
+  docPDF.setTextColor(71, 85, 105);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.text('Subtotal:', 130, y + 6);
+  docPDF.text('$' + fmtNum((Number(cot.subtotal) || 0).toFixed(2)), 192, y + 6, { align: 'right' });
+  docPDF.text('IVA 16%:', 130, y + 11);
+  docPDF.text('$' + fmtNum((Number(cot.iva) || 0).toFixed(2)), 192, y + 11, { align: 'right' });
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.setFontSize(10);
+  docPDF.setTextColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+  docPDF.text('TOTAL MXN:', 130, y + 18);
+  docPDF.text('$' + fmtNum((Number(cot.total) || 0).toFixed(2)), 192, y + 18, { align: 'right' });
+  docPDF.setTextColor(0, 0, 0);
+  y += 28;
+
+  // Condiciones + notas
+  if (y > 245) { docPDF.addPage(); y = 20; }
+  y = _pdfSeccionTitulo(docPDF, y, 'CONDICIONES', _COL_AZUL);
+  docPDF.setFontSize(7.5);
+  docPDF.setFont('helvetica', 'normal');
+  docPDF.setTextColor(71, 85, 105);
+  const lCond = docPDF.splitTextToSize(cot.condiciones || COT_CONDICIONES_DEFAULT, 178);
+  docPDF.text(lCond, 16, y + 2);
+  y += 2 + lCond.length * 3.4;
+  if (cot.notas) {
+    const lNotas = docPDF.splitTextToSize('Notas: ' + cot.notas, 178);
+    docPDF.text(lNotas, 16, y + 3);
+    y += 3 + lNotas.length * 3.4;
+  }
+
+  // Firma del vendedor
+  if (y > 255) { docPDF.addPage(); y = 30; }
+  y += 14;
+  docPDF.setDrawColor(148, 163, 184);
+  docPDF.line(24, y, 90, y);
+  docPDF.setFontSize(7.5);
+  docPDF.setTextColor(71, 85, 105);
+  docPDF.text(cot.vendedor || '', 57, y + 4, { align: 'center' });
+  docPDF.setFont('helvetica', 'bold');
+  docPDF.text('Atentamente · New Pack', 57, y + 8, { align: 'center' });
+
+  _pdfPiePagina(docPDF);
+  docPDF.save(`${cot.folio}.pdf`);
+};
+
 function renderCotizador() {
   if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras' };
   const f = state.cotForm;
@@ -21552,6 +21858,16 @@ function renderCotizador() {
   const esMetros = f.modo === 'metros';
   const listo = esMetros ? r.pesoMetro > 0 : r.pesoMillar > 0;
   const conPrecio = listo && Number(f.precio_kg) > 0;
+
+  // 🆕 Fase 2: pestañas Cotizar | Cotizaciones guardadas
+  const cotTab = state.cotTab || 'calc';
+  const nLineasDraft = (state.cotDraft?.lineas || []).length;
+  const tabsHTML = `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
+      <button class="tab-btn ${cotTab === 'calc' ? 'active' : ''}" onclick="window.cotSetTab('calc')">🧮 Cotizar${nLineasDraft ? ` · ${nLineasDraft} línea${nLineasDraft > 1 ? 's' : ''} en curso` : ''}</button>
+      <button class="tab-btn ${cotTab === 'lista' ? 'active' : ''}" onclick="window.cotSetTab('lista')">📋 Cotizaciones (${(state.cotizaciones || []).length})</button>
+    </div>`;
+  if (cotTab === 'lista') return tabsHTML + _cotListaHTML();
 
   // Tipo seleccionado (catálogo del alta de códigos) → capas y si es rollo
   const tipObj = (window.TIPOS_GEN || []).find(t => t.nombre === f.tipo);
@@ -21580,7 +21896,7 @@ function renderCotizador() {
       ${sub ? `<div style="font-size:10.5px;color:#94a3b8;">${sub}</div>` : ''}
     </div>`;
 
-  return `
+  return tabsHTML + `
     <!-- QUÉ COTIZAS: Material + Tipo de producto (mismos catálogos del alta de códigos) -->
     <div style="background:#fff;border:2px solid #16a34a;border-radius:14px;padding:16px;margin-bottom:14px;">
       <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin-bottom:10px;align-items:end;">
@@ -21682,7 +21998,7 @@ function renderCotizador() {
       </div>`) + `
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button onclick="window.cotCopiarWhats()" style="padding:12px 20px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:14px;">📋 Copiar respuesta (WhatsApp/correo)</button>
-        <span style="font-size:11px;color:#94a3b8;align-self:center;">Fase 2 próximamente: guardar como cotización formal con folio y PDF</span>
+        <button onclick="window.cotAgregarLinea()" style="padding:12px 20px;background:#7c3aed;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:14px;">➕ Agregar a cotización formal</button>
       </div>
     ` : `
       <div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
@@ -21691,6 +22007,186 @@ function renderCotizador() {
         <div style="font-size:12px;margin-top:4px;">${esMetros ? 'Por metros: peso por metro = (ancho + fuelle) × 0.485 × calibre ÷ 10,000 ÷ 10 — y el rollo se cotiza por sus metros.' : 'Peso del millar = (ancho + fuelle) × largo × 0.485 × calibre ÷ 10,000 — la misma fórmula del Excel.'}</div>
       </div>
     `}
+  ` + _cotDraftPanelHTML();
+}
+
+// 🆕 Panel del borrador de cotización formal (líneas + destinatario + guardar)
+function _cotDraftPanelHTML() {
+  const d = state.cotDraft;
+  if (!d || !d.lineas.length) return '';
+  const calcs = d.lineas.map(l => window._cotLineaCalc(l));
+  const subtotal = calcs.reduce((s, c) => s + c.importe, 0);
+  const iva = subtotal * 0.16;
+  const cliSel = d.cliente_tipo === 'cliente' ? (state.clientes || []).find(c => c.codigo === d.cliente_codigo) : null;
+  const q = (state.cotCliBusq || '').toLowerCase().trim();
+  const clientesFilt = (state.clientes || []).filter(c => !q || ((c.codigo || '') + ' ' + (c.nombre || '')).toLowerCase().includes(q));
+  const tBtn = (t, lbl) => `<button type="button" onclick="window.cotTipoDest('${t}')" style="padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${d.cliente_tipo === t ? '#7c3aed' : '#e2e8f0'};background:${d.cliente_tipo === t ? '#7c3aed' : '#fff'};color:${d.cliente_tipo === t ? '#fff' : '#475569'};">${lbl}</button>`;
+  const inpP = (id, campo, label, ph, req) => `
+    <div>
+      <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${label}${req ? ' *' : ''}</label>
+      <input class="input" id="${id}" type="text" value="${(d.prospecto[campo] || '').replace(/"/g, '&quot;')}" placeholder="${ph}" autocomplete="off"
+        oninput="window.cotProsSet('${campo}', this.value, '${id}')" />
+    </div>`;
+
+  return `
+    <div style="background:#fff;border:2px solid #7c3aed;border-radius:14px;padding:16px;margin-top:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+        <div style="font-size:16px;font-weight:900;color:#0f172a;">📝 Cotización en curso · ${d.lineas.length} línea${d.lineas.length > 1 ? 's' : ''}</div>
+        <button onclick="window.cotVaciar()" style="padding:7px 12px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">🗑 Vaciar</button>
+      </div>
+
+      <!-- Líneas -->
+      <div style="overflow-x:auto;margin-bottom:14px;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="background:#f8fafc;color:#64748b;font-size:10px;text-transform:uppercase;">
+              <th style="padding:7px 8px;text-align:left;">#</th>
+              <th style="padding:7px 8px;text-align:left;">Descripción</th>
+              <th style="padding:7px 8px;text-align:right;">Cantidad</th>
+              <th style="padding:7px 8px;text-align:left;">Unidad</th>
+              <th style="padding:7px 8px;text-align:right;">P. unitario</th>
+              <th style="padding:7px 8px;text-align:right;">Importe</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${d.lineas.map((l, i) => `
+              <tr style="border-bottom:1px solid #f1f5f9;">
+                <td style="padding:7px 8px;color:#94a3b8;font-weight:800;">${i + 1}</td>
+                <td style="padding:7px 8px;min-width:220px;">${l.descripcion}</td>
+                <td style="padding:7px 8px;text-align:right;">
+                  <input class="input" id="cot-lin-cant-${i}" type="text" inputmode="decimal" value="${l.cantidad}" style="width:70px;text-align:right;padding:4px 6px;"
+                    oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.cotLineaSet(${i},'cantidad',this.value,'cot-lin-cant-${i}')" />
+                </td>
+                <td style="padding:7px 8px;color:#64748b;white-space:nowrap;">${calcs[i].unidad}</td>
+                <td style="padding:7px 8px;text-align:right;white-space:nowrap;">$${fmtNum(calcs[i].unit.toFixed(2))}</td>
+                <td style="padding:7px 8px;text-align:right;font-weight:800;white-space:nowrap;">$${fmtNum(calcs[i].importe.toFixed(2))}</td>
+                <td style="padding:7px 4px;"><button onclick="window.cotQuitarLinea(${i})" title="Quitar línea" style="padding:4px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;">✕</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:22px;font-size:13px;margin-bottom:16px;flex-wrap:wrap;">
+        <span style="color:#64748b;">Subtotal: <strong>$${fmtNum(subtotal.toFixed(2))}</strong></span>
+        <span style="color:#64748b;">IVA 16%: <strong>$${fmtNum(iva.toFixed(2))}</strong></span>
+        <span style="color:#166534;font-weight:900;font-size:15px;">TOTAL: $${fmtNum((subtotal + iva).toFixed(2))} MXN</span>
+      </div>
+
+      <!-- Destinatario -->
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+        <span style="font-size:11px;font-weight:800;color:#475569;">Para:</span>
+        ${tBtn('cliente', '🏢 Cliente del catálogo')}
+        ${tBtn('prospecto', '✨ Prospecto nuevo')}
+      </div>
+      ${d.cliente_tipo === 'cliente' ? (cliSel ? `
+        <div style="display:flex;align-items:center;gap:10px;background:#7c3aed12;border:2px solid #7c3aed;border-radius:10px;padding:9px 12px;margin-bottom:12px;max-width:520px;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:800;font-size:13px;"><span class="text-mono">${cliSel.codigo}</span></div>
+            <div style="font-size:11px;color:#475569;">${cliSel.nombre || ''}</div>
+          </div>
+          <button type="button" onclick="window.cotCliSel('')" title="Cambiar" style="padding:7px 11px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✕</button>
+        </div>` : `
+        <div style="max-width:520px;margin-bottom:12px;">
+          <input class="input" id="cot-cli-busca" type="text" placeholder="🔍 Escribe código o nombre del cliente..." autocomplete="off" value="${(state.cotCliBusq || '').replace(/"/g, '&quot;')}"
+            oninput="window.cotCliBusca(this.value)" style="margin-bottom:6px;border-color:#7c3aed;" />
+          <div style="max-height:170px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff;">
+            ${clientesFilt.length === 0 ? '<div style="padding:12px;text-align:center;color:#94a3b8;font-size:12px;">Sin coincidencias — ¿es un prospecto nuevo?</div>' :
+              clientesFilt.slice(0, 15).map(c => `
+              <div onclick="window.cotCliSel('${c.codigo}')" style="padding:7px 11px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12px;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
+                <strong class="text-mono">${c.codigo}</strong> <span style="color:#475569;">— ${c.nombre || ''}</span>
+              </div>`).join('')}
+            ${clientesFilt.length > 15 ? `<div style="padding:6px;text-align:center;color:#94a3b8;font-size:10px;">Mostrando 15 de ${clientesFilt.length} — escribe más para afinar</div>` : ''}
+          </div>
+        </div>`) : `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:12px;">
+          ${inpP('cot-pros-emp', 'empresa', 'Empresa', 'Nombre de la empresa', true)}
+          ${inpP('cot-pros-con', 'contacto', 'Contacto', 'Nombre de la persona')}
+          ${inpP('cot-pros-tel', 'telefono', 'Teléfono', '81 0000 0000')}
+          ${inpP('cot-pros-cor', 'correo', 'Correo', 'correo@empresa.com')}
+        </div>
+        <div style="font-size:10.5px;color:#7c3aed;margin:-6px 0 12px;">✨ Alta ligera: si la cotización se gana, lo conviertes en cliente formal (Fase 3).</div>`}
+
+      <!-- Vigencia, condiciones y notas -->
+      <div style="display:grid;grid-template-columns:130px 1fr;gap:10px;margin-bottom:12px;align-items:start;">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Vigencia (días)</label>
+          <input class="input" id="cot-vig" type="text" inputmode="decimal" value="${d.vigencia_dias}"
+            oninput="this.value=this.value.replace(/[^0-9]/g,'');window.cotDraftSet('vigencia_dias', this.value, 'cot-vig')" />
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Condiciones (salen en el PDF)</label>
+          <textarea class="input" id="cot-cond" rows="2" style="resize:vertical;font-size:12px;"
+            oninput="window.cotDraftSet('condiciones', this.value, 'cot-cond')">${d.condiciones || ''}</textarea>
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Notas internas / del pedido (opcional)</label>
+        <input class="input" id="cot-notas" type="text" value="${(d.notas || '').replace(/"/g, '&quot;')}" placeholder="Ej: aplica a partir de 500 kg por entrega"
+          oninput="window.cotDraftSet('notas', this.value, 'cot-notas')" />
+      </div>
+
+      <button onclick="window.cotGuardar()" ${state.loadingAccion ? 'disabled' : ''} style="padding:13px 24px;background:#7c3aed;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:14px;${state.loadingAccion ? 'opacity:0.6;' : ''}">
+        ${state.loadingAccion ? '⏳ Guardando...' : '💾 Guardar cotización y generar PDF'}
+      </button>
+    </div>`;
+}
+
+// 🆕 Lista de cotizaciones guardadas
+function _cotListaHTML() {
+  const hoy = new Date().toLocaleDateString('en-CA');
+  const filtro = (state.filtros.cotizaciones || '').toLowerCase().trim();
+  let arr = (state.cotizaciones || []).slice();
+  if (filtro) arr = arr.filter(c => ((c.folio || '') + ' ' + (c.cliente_nombre || '') + ' ' + (c.vendedor || '') + ' ' + (c.estado || '')).toLowerCase().includes(filtro));
+  arr.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+
+  const chipEstado = (c) => {
+    const vencida = c.vence && c.vence < hoy && ['borrador', 'enviada'].includes(c.estado);
+    if (vencida) return '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#ffedd5;color:#9a3412;">⏰ VENCIDA</span>';
+    const m = { borrador: ['#f1f5f9', '#475569', '📝 BORRADOR'], enviada: ['#dbeafe', '#1e40af', '✉️ ENVIADA'], ganada: ['#dcfce7', '#166534', '🏆 GANADA'], perdida: ['#fee2e2', '#991b1b', '❌ PERDIDA'] };
+    const [bg, col, lbl] = m[c.estado] || m.borrador;
+    return `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:${bg};color:${col};">${lbl}</span>`;
+  };
+
+  return `
+    <div class="toolbar" style="flex-wrap:wrap;margin-bottom:14px;">
+      <input class="input" id="cot-filtro-lista" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Buscar folio, cliente, vendedor..." value="${(state.filtros.cotizaciones || '').replace(/"/g, '&quot;')}" autocomplete="off"
+        oninput="window.cotFiltroLista(this.value)" />
+      <span style="font-size:12px;color:#64748b;font-weight:600;">📊 ${arr.length} cotización(es)</span>
+    </div>
+    ${arr.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;">📋</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">Aún no hay cotizaciones guardadas</div>
+        <div style="font-size:12px;margin-top:4px;">En la pestaña Cotizar: calcula, "➕ Agregar a cotización formal" y guarda.</div>
+      </div>` : `
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        ${arr.map(c => `
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:13px 16px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+              <div style="min-width:0;">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <span style="font-weight:900;font-size:14px;" class="text-mono">${c.folio}</span>
+                  ${chipEstado(c)}
+                  ${c.cliente_tipo === 'prospecto' ? '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#f3e8ff;color:#7c3aed;">✨ PROSPECTO</span>' : ''}
+                </div>
+                <div style="font-size:13px;font-weight:700;color:#0f172a;margin-top:3px;">${c.cliente_nombre || '—'}</div>
+                <div style="font-size:11px;color:#64748b;margin-top:2px;">
+                  ${(c.lineas || []).length} partida(s) · ${c.fecha || ''} · vence <strong>${c.vence || '—'}</strong> · ${c.vendedor || ''}
+                </div>
+                <div style="font-size:11px;color:#94a3b8;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px;">${(c.lineas || []).map(l => l.descripcion).join(' | ')}</div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:10px;color:#64748b;font-weight:700;">TOTAL (con IVA)</div>
+                <div style="font-size:19px;font-weight:900;color:#16a34a;">$${fmtNum((Number(c.total) || 0).toFixed(2))}</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+              <button onclick="window.pdfCotizacion('${c.id}')" style="padding:8px 14px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📄 PDF</button>
+              ${c.estado === 'borrador' ? `<button onclick="window.cotMarcarEnviada('${c.id}')" style="padding:8px 14px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✉️ Marcar enviada</button>` : ''}
+              <button onclick="window.cotDuplicar('${c.id}')" style="padding:8px 14px;background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Duplicar / recotizar</button>
+            </div>
+          </div>`).join('')}
+      </div>`}
   `;
 }
 
