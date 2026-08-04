@@ -4061,7 +4061,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B31-facunificado</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B32-estadocuenta</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -23694,6 +23694,141 @@ window.facCobro = async (facturaId) => {
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// 📝 GESTIÓN DE COBRANZA — bitácora de seguimiento por factura (llamadas, promesas de pago)
+window.facGestion = async (facturaId) => {
+  const fa = (state.facturas || []).find(x => x.id === facturaId); if (!fa) return;
+  const nota = prompt(`📝 Gestión de cobranza · ${fa.folio} · ${fa.cliente_nombre}\n\nRegistra la gestión (llamada, correo, promesa de pago con fecha, aclaración...):`);
+  if (!nota || !nota.trim()) return;
+  try {
+    const u = state.user || {};
+    const seguimientos = (fa.seguimientos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota: nota.trim() }]);
+    await updateDoc(doc(db, 'facturas', facturaId), { seguimientos, ultima_gestion: new Date().toLocaleDateString('en-CA'), updated_at: serverTimestamp() });
+    toast('📝 Gestión registrada');
+    window.logAccion('gestion_cobranza', fa.folio, nota.trim().slice(0, 200));
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 📄 ESTADO DE CUENTA por cliente — para ENVIAR al cliente y dar seguimiento.
+//    Facturas abiertas con antigüedad de saldos (aging) + cobros aplicados.
+window.pdfEstadoCuenta = (clienteCodigo) => {
+  try {
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    const hoy = new Date().toLocaleDateString('en-CA');
+    const facs = (state.facturas || [])
+      .filter(f => (f.cliente_codigo === clienteCodigo || f.cliente_nombre === clienteCodigo) && f.estado !== 'cancelada')
+      .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+    const abiertas = facs.filter(f => window._facSaldo(f) > 0.01);
+    if (!facs.length) { toast('Este cliente no tiene facturas registradas', 'error'); return; }
+    const cli = (state.clientes || []).find(c => c.codigo === clienteCodigo) || (state.clientes || []).find(c => c.nombre === clienteCodigo);
+    const nombreCli = cli?.nombre || (facs[0]?.cliente_nombre) || clienteCodigo;
+
+    const _dias = (f) => f.vence && f.vence < hoy ? Math.round((new Date(hoy) - new Date(f.vence)) / 86400000) : 0;
+    // Aging clásico de cobranza (por moneda se separa en los totales)
+    const aging = { vigente: 0, d30: 0, d60: 0, d90: 0, mas90: 0 };
+    abiertas.forEach(f => {
+      const s = window._facSaldo(f); const d = _dias(f);
+      if (d <= 0) aging.vigente += s; else if (d <= 30) aging.d30 += s; else if (d <= 60) aging.d60 += s; else if (d <= 90) aging.d90 += s; else aging.mas90 += s;
+    });
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    let y = _pdfHeaderEmpresa(docPDF, 'ESTADO DE CUENTA', new Date().toLocaleDateString('es-MX'));
+
+    docPDF.setFontSize(18);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('ESTADO DE CUENTA', 105, y + 4, { align: 'center' });
+    docPDF.setFontSize(8);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(`Corte al ${new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })}`, 105, y + 9, { align: 'center' });
+    y += 14;
+
+    // Bloque cliente
+    y = _pdfSeccionTitulo(docPDF, y, 'CLIENTE', _COL_AZUL);
+    docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
+    docPDF.roundedRect(14, y, 182, 16, 2, 2, 'F');
+    docPDF.setFontSize(10);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setTextColor(30, 41, 59);
+    docPDF.text(docPDF.splitTextToSize(nombreCli, 170)[0], 18, y + 6);
+    docPDF.setFontSize(7.5);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.setTextColor(71, 85, 105);
+    docPDF.text(`Código: ${cli?.codigo || clienteCodigo}${cli?.rfc ? ` · RFC: ${cli.rfc}` : ''}${cli?.dias_credito ? ` · Condiciones: ${cli.dias_credito} días de crédito` : ' · Condiciones: contado'}`, 18, y + 12);
+    y += 22;
+
+    // Tabla de facturas abiertas
+    y = _pdfSeccionTitulo(docPDF, y, `FACTURAS PENDIENTES (${abiertas.length})`, _COL_VERDE);
+    const thead = (yy) => {
+      docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
+      docPDF.rect(14, yy, 182, 6, 'F');
+      docPDF.setTextColor(255, 255, 255); docPDF.setFontSize(6.5); docPDF.setFont('helvetica', 'bold');
+      docPDF.text('FACTURA', 16, yy + 4); docPDF.text('EMISIÓN', 48, yy + 4); docPDF.text('VENCE', 70, yy + 4);
+      docPDF.text('DÍAS VENC.', 100, yy + 4, { align: 'right' }); docPDF.text('TOTAL', 128, yy + 4, { align: 'right' });
+      docPDF.text('COBRADO', 156, yy + 4, { align: 'right' }); docPDF.text('SALDO', 184, yy + 4, { align: 'right' });
+      return yy + 6;
+    };
+    y = thead(y);
+    abiertas.forEach((f, i) => {
+      if (y > 250) { docPDF.addPage(); y = thead(20); }
+      const s = window._facSaldo(f); const d = _dias(f);
+      if (i % 2 === 0) { docPDF.setFillColor(248, 250, 252); docPDF.rect(14, y, 182, 7, 'F'); }
+      docPDF.setFontSize(7.5); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(30, 41, 59);
+      docPDF.text(`${f.folio}${f.moneda === 'USD' ? ' (USD)' : ''}`, 16, y + 5);
+      docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(71, 85, 105);
+      docPDF.text(f.fecha || '—', 48, y + 5);
+      docPDF.text(f.vence || '—', 70, y + 5);
+      if (d > 0) { docPDF.setTextColor(220, 38, 38); docPDF.setFont('helvetica', 'bold'); }
+      docPDF.text(d > 0 ? String(d) : '—', 100, y + 5, { align: 'right' });
+      docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(71, 85, 105);
+      docPDF.text('$' + fmtNum((Number(f.monto) || 0).toFixed(2)), 128, y + 5, { align: 'right' });
+      docPDF.text('$' + fmtNum(((Number(f.monto) || 0) - s).toFixed(2)), 156, y + 5, { align: 'right' });
+      docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(0, 0, 0);
+      docPDF.text('$' + fmtNum(s.toFixed(2)), 184, y + 5, { align: 'right' });
+      y += 7;
+    });
+    if (!abiertas.length) {
+      docPDF.setFontSize(9); docPDF.setTextColor(22, 163, 74); docPDF.setFont('helvetica', 'bold');
+      docPDF.text('✓ Sin facturas pendientes — cuenta al corriente. ¡Gracias por su pago puntual!', 105, y + 8, { align: 'center' });
+      y += 14;
+    }
+
+    // Antigüedad de saldos + total
+    y += 6;
+    if (y > 230) { docPDF.addPage(); y = 20; }
+    y = _pdfSeccionTitulo(docPDF, y, 'ANTIGÜEDAD DE SALDOS', _COL_AZUL);
+    const buckets = [['VIGENTE', aging.vigente, [22, 163, 74]], ['1-30 DÍAS', aging.d30, [245, 158, 11]], ['31-60 DÍAS', aging.d60, [234, 88, 12]], ['61-90 DÍAS', aging.d90, [220, 38, 38]], ['+90 DÍAS', aging.mas90, [127, 29, 29]]];
+    const bw = 182 / 5;
+    buckets.forEach((b, i) => {
+      const bx = 14 + i * bw;
+      docPDF.setFillColor(248, 250, 252); docPDF.roundedRect(bx + 1, y, bw - 2, 14, 1.5, 1.5, 'F');
+      docPDF.setFillColor(b[2][0], b[2][1], b[2][2]); docPDF.rect(bx + 1, y, bw - 2, 2.5, 'F');
+      docPDF.setFontSize(6.5); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(100, 116, 139);
+      docPDF.text(b[0], bx + bw / 2, y + 6.5, { align: 'center' });
+      docPDF.setFontSize(9); docPDF.setTextColor(b[2][0], b[2][1], b[2][2]);
+      docPDF.text('$' + fmtNum(b[1].toFixed(2)), bx + bw / 2, y + 11.5, { align: 'center' });
+    });
+    y += 20;
+    const totalSaldo = abiertas.reduce((s, f) => s + window._facSaldo(f), 0);
+    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.roundedRect(110, y, 86, 11, 2, 2, 'F');
+    docPDF.setFontSize(10); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(255, 255, 255);
+    docPDF.text(`SALDO TOTAL: $${fmtNum(totalSaldo.toFixed(2))}`, 153, y + 7, { align: 'center' });
+    y += 17;
+
+    // Pie: aclaraciones + contacto
+    docPDF.setFontSize(7); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(100, 116, 139);
+    docPDF.text(docPDF.splitTextToSize(`Si ya realizó algún pago no reflejado en este estado de cuenta, favor de hacerlo llegar a ${DATOS_EMPRESA.email} para aplicarlo. Montos en la moneda de cada factura (las USD se indican). Este documento es informativo y no sustituye a los CFDI correspondientes.`, 178), 16, y + 3);
+
+    _pdfPiePagina(docPDF);
+    const filename = `EstadoCuenta_${cli?.codigo || clienteCodigo}_${hoy}.pdf`;
+    if (typeof _mostrarVistaPreviaPDF === 'function') _mostrarVistaPreviaPDF(docPDF, filename, `Estado de cuenta · ${nombreCli}`);
+    else docPDF.save(filename);
+    window.logAccion('estado_cuenta', cli?.codigo || clienteCodigo, `${nombreCli} · ${abiertas.length} factura(s) abiertas · saldo $${fmtNum(totalSaldo.toFixed(2))}`);
+  } catch (e) { console.error('Estado de cuenta:', e); toast('Error generando estado de cuenta: ' + e.message, 'error'); }
+};
+
 window.facCancelar = async (facturaId) => {
   const fa = (state.facturas || []).find(x => x.id === facturaId); if (!fa) return;
   const motivo = prompt(`❌ CANCELAR factura ${fa.folio}\n\nMotivo (obligatorio — también cancélala en tu sistema de CFDI):`);
@@ -23787,6 +23922,10 @@ function renderFacturacion() {
             <details style="margin-top:4px;"><summary style="font-size:11px;color:#475569;font-weight:700;cursor:pointer;">💵 Cobros (${cobros.length})</summary>
               <div style="font-size:11px;color:#64748b;margin-top:3px;padding-left:10px;border-left:2px solid #e2e8f0;">${cobros.map(c => `<div>${c.fecha} · $${fmtNum(Number(c.monto).toFixed(2))} · ${c.referencia || 'sin ref'} · ${c.registrado_por_nombre || ''}</div>`).join('')}</div>
             </details>` : ''}
+            ${(f.seguimientos || []).length ? `
+            <details style="margin-top:4px;"><summary style="font-size:11px;color:#475569;font-weight:700;cursor:pointer;">📒 Gestiones de cobranza (${f.seguimientos.length})${f.ultima_gestion ? ` · última: ${f.ultima_gestion}` : ''}</summary>
+              <div style="font-size:11px;color:#64748b;margin-top:3px;padding-left:10px;border-left:2px solid #e2e8f0;">${f.seguimientos.slice().reverse().map(s => `<div><strong>${s.fecha}</strong> · ${s.usuario}: ${s.nota}</div>`).join('')}</div>
+            </details>` : ''}
           </div>
           <div style="text-align:right;">
             <div style="font-size:10px;color:#64748b;font-weight:700;">TOTAL</div>
@@ -23794,6 +23933,7 @@ function renderFacturacion() {
             ${saldo > 0.01 && f.estado !== 'cancelada' ? `<div style="font-size:11px;color:#dc2626;font-weight:800;">saldo $${fmtNum(saldo.toFixed(2))}</div>` : ''}
             <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
               ${saldo > 0.01 && f.estado !== 'cancelada' && esCYCv ? `<button onclick="window.facCobro('${f.id}')" style="padding:7px 13px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💵 Cobro</button>` : ''}
+              ${saldo > 0.01 && f.estado !== 'cancelada' && esCYCv ? `<button onclick="window.facGestion('${f.id}')" title="Registrar llamada / promesa de pago" style="padding:7px 13px;background:#fff;color:#475569;border:1.5px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📝</button>` : ''}
               ${f.estado !== 'cancelada' && esFACv ? `<button onclick="window.facCancelar('${f.id}')" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">❌</button>` : ''}
             </div>
           </div>
@@ -23859,9 +23999,13 @@ function renderFacturacion() {
           Object.keys(porCliente).map(k => {
             const fs = porCliente[k];
             const venc = fs.filter(x => window._facEstadoPago(x) === 'vencida');
-            return `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;">
+            const codCli = fs[0].cliente_codigo || '';
+            return `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;align-items:center;">
               <span style="font-weight:700;">${k} <span style="color:#94a3b8;font-weight:600;">(${fs.length} fact.)</span></span>
-              <span>abierto: <strong>${window._sumaPorMoneda(fs, window._facSaldo)}</strong>${venc.length ? ` · <span style="color:#dc2626;font-weight:800;">vencido: ${window._sumaPorMoneda(venc, window._facSaldo)}</span>` : ''}</span>
+              <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <span>abierto: <strong>${window._sumaPorMoneda(fs, window._facSaldo)}</strong>${venc.length ? ` · <span style="color:#dc2626;font-weight:800;">vencido: ${window._sumaPorMoneda(venc, window._facSaldo)}</span>` : ''}</span>
+                <button onclick="window.pdfEstadoCuenta('${(codCli || k).replace(/'/g, "\\'")}')" style="padding:6px 12px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">📄 Estado de cuenta</button>
+              </span>
             </div>`;
           }).join('')}
       </div>
