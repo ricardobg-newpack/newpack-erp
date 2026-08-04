@@ -247,6 +247,8 @@ const state = {
   empleados: [],
   nominas: [],
   nomina_conceptos: [],
+  nomina_condiciones: [],
+  gastos_rh: [],
   prestamos_rh: [],
   comisiones_vendedores: [],
   modal: null,
@@ -3666,6 +3668,14 @@ async function cargarTodo() {
         state.prestamos_rh = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      onSnapshot(collection(db, 'nomina_condiciones'), (snap) => {
+        state.nomina_condiciones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
+      onSnapshot(collection(db, 'gastos_rh'), (snap) => {
+        state.gastos_rh = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4090,7 +4100,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B37-prestamos</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B38-tablaraya</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -24383,6 +24393,9 @@ window.rhPrestamoCrear = async () => {
     await addDoc(collection(db, 'prestamos_rh'), {
       empleado_id: emp.id, empleado_nombre: emp.nombre,
       monto, saldo: monto, abono_periodo: abono,
+      frecuencia: f.frecuencia || 'semanal',
+      primer_descuento: f.primer_descuento || new Date().toLocaleDateString('en-CA'),
+      num_pagos_plan: Math.ceil(monto / abono),
       motivo: (f.motivo || '').trim(),
       fecha: new Date().toLocaleDateString('en-CA'),
       estado: 'activo', abonos: [],
@@ -24418,6 +24431,297 @@ window._rhAbonarPrestamo = async (prestamoId, monto, periodo, via) => {
     window.logAccion('rh_prestamo_abono', p.empleado_nombre, `$${fmtNum(monto.toFixed(2))} vía ${via || 'nómina'} · saldo $${fmtNum(nuevoSaldo.toFixed(2))}${nuevoSaldo <= 0.01 ? ' · LIQUIDADO ✅' : ''}`);
     if (nuevoSaldo <= 0.01) toast(`✅ Préstamo de ${p.empleado_nombre} LIQUIDADO`);
   } catch (e) { toast('Error abonando préstamo: ' + e.message, 'error'); }
+};
+
+// ═══════════════ 📋 TABLA DE RAYA SEMANAL (motor) ═══════════════
+// Corte de semana CONFIGURABLE (día de inicio 1=lunes ... 7=domingo)
+window._rhDiaInicio = () => { const c = (state.nomina_conceptos || []).find(x => x.tipo === 'config_semana'); return c ? (Number(c.dia_inicio) || 1) : 1; };
+window.rhConfigDiaSemana = async () => {
+  if (!window._esNominaOK()) return;
+  const d = prompt('Día en que INICIA la semana de pago:\n1=lunes 2=martes 3=miércoles 4=jueves 5=viernes 6=sábado 7=domingo', String(window._rhDiaInicio()));
+  if (d === null) return;
+  const n = Math.min(7, Math.max(1, Math.round(Number(d) || 1)));
+  const c = (state.nomina_conceptos || []).find(x => x.tipo === 'config_semana');
+  try {
+    if (c) await updateDoc(doc(db, 'nomina_conceptos', c.id), { dia_inicio: n });
+    else await addDoc(collection(db, 'nomina_conceptos'), { tipo: 'config_semana', dia_inicio: n, nombre: '__config__', activo: false, created_at: serverTimestamp() });
+    state.raya = null; toast(`Corte de semana configurado: inicia día ${n}`); render();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+// Inicio de la semana de pago que contiene una fecha
+window._rhSemanaDe = (d) => {
+  const dia = window._rhDiaInicio();
+  const x = new Date(d); x.setHours(12, 0, 0, 0);
+  const dow = ((x.getDay() + 6) % 7) + 1;  // 1=lun ... 7=dom
+  x.setDate(x.getDate() - ((dow - dia + 7) % 7));
+  return x;
+};
+window._rhSemKey = (x) => 'S-' + x.toLocaleDateString('en-CA');
+window._rhSemLabel = (x) => {
+  const fin = new Date(x.getTime() + 6 * 86400000);
+  const f = (dd) => dd.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
+  return `del ${f(x)} al ${f(fin)}`;
+};
+// ¿El préstamo descuenta ESTA semana? (según su frecuencia)
+window._rhPrestamoAplica = (p, semIni) => {
+  if (p.estado !== 'activo' || (Number(p.saldo) || 0) <= 0.01) return false;
+  const base = window._rhSemanaDe(new Date((p.primer_descuento || p.fecha || '2026-01-01') + 'T12:00:00'));
+  const diffSem = Math.round((semIni - base) / (7 * 86400000));
+  if (diffSem < 0) return false;
+  const f = p.frecuencia || 'semanal';
+  if (f === 'semanal') return true;
+  if (f === 'quincenal') return diffSem % 2 === 0;
+  return semIni.getDate() <= 7;   // mensual: la primera semana de cada mes
+};
+window._rhCondDe = (empId) => (state.nomina_condiciones || []).find(c => c.empleado_id === empId) || null;
+
+// Construir/refrescar las filas de la semana (prellenadas con condiciones + préstamos)
+window._rhRayaInit = (semIni, force) => {
+  const semKey = window._rhSemKey(semIni);
+  if (state.raya && state.raya.semKey === semKey && !force) return state.raya;
+  const yaRegistrados = new Set((state.nominas || []).filter(n => n.periodo === semKey).map(n => n.empleado_id));
+  const rows = {};
+  (state.empleados || []).filter(e => e.activo !== false && !yaRegistrados.has(e.id)).forEach(e => {
+    const cond = window._rhCondDe(e.id);
+    const prests = (state.prestamos_rh || []).filter(p => p.empleado_id === e.id && window._rhPrestamoAplica(p, semIni));
+    rows[e.id] = {
+      nombre: e.nombre, depto: e.depto || '',
+      sueldo: String(cond?.sueldo_semanal ?? ''),
+      bonos: (cond?.bonos_fijos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 })),
+      deds: (cond?.deducciones_fijas || []).map(d2 => ({ nombre: d2.nombre, monto: Number(d2.monto) || 0 })),
+      prestamos: prests.map(p => ({ id: p.id, monto: Math.min(Number(p.abono_periodo) || 0, Number(p.saldo) || 0) })),
+      fondo: String(cond?.fondo_semanal ?? ''),
+      incluir: Number(cond?.sueldo_semanal) > 0,
+      sinCond: !cond
+    };
+  });
+  state.raya = { semKey, semIni: semIni.getTime(), rows };
+  return state.raya;
+};
+window._rhRowNeto = (r) => {
+  const s = Number(r.sueldo) || 0;
+  const tb = (r.bonos || []).reduce((a, b) => a + (Number(b.monto) || 0), 0);
+  const td = (r.deds || []).reduce((a, d2) => a + (Number(d2.monto) || 0), 0);
+  const tp = (r.prestamos || []).reduce((a, p) => a + (Number(p.monto) || 0), 0);
+  const fo = Number(r.fondo) || 0;
+  return { s, tb, td, tp, fo, neto: s + tb - td - tp - fo };
+};
+window.rayaNav = (delta) => {
+  const ini = new Date(state.raya?.semIni || window._rhSemanaDe(new Date()).getTime());
+  ini.setDate(ini.getDate() + delta * 7);
+  window._rhRayaInit(ini, true); render();
+};
+window.rayaSet = (empId, campo, v, focusId) => { const r = state.raya?.rows[empId]; if (r) r[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rayaToggle = (empId) => { const r = state.raya?.rows[empId]; if (r) r.incluir = !r.incluir; render(); };
+window.rayaExp = (empId) => { state.rayaExpId = state.rayaExpId === empId ? '' : empId; render(); };
+window.rayaItem = (empId, tipo, idx, v, focusId) => { const r = state.raya?.rows[empId]; if (!r) return; const it = (tipo === 'bono' ? r.bonos : tipo === 'ded' ? r.deds : r.prestamos)[idx]; if (it) it.monto = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rayaAdd = (empId, tipo, conceptoId) => {
+  if (!conceptoId) return;
+  const c = (state.nomina_conceptos || []).find(x => x.id === conceptoId); if (!c) return;
+  const r = state.raya?.rows[empId]; if (!r) return;
+  (tipo === 'bono' ? r.bonos : r.deds).push({ nombre: c.nombre, monto: Number(c.valor_default) || 0 });
+  render();
+};
+window.rayaDel = (empId, tipo, idx) => { const r = state.raya?.rows[empId]; if (!r) return; (tipo === 'bono' ? r.bonos : tipo === 'ded' ? r.deds : r.prestamos).splice(idx, 1); render(); };
+
+// 📝 REGISTRAR LA SEMANA COMPLETA (todos los incluidos, de un golpe)
+window.rayaRegistrar = async () => {
+  if (!window._esNominaOK()) { toast('🔒 Solo RH/CEO', 'error'); return; }
+  const R = state.raya; if (!R) return;
+  const incl = Object.keys(R.rows).filter(id => R.rows[id].incluir && Number(R.rows[id].sueldo) > 0);
+  if (!incl.length) { toast('No hay empleados incluidos con sueldo', 'error'); return; }
+  const totNeto = incl.reduce((s, id) => s + window._rhRowNeto(R.rows[id]).neto, 0);
+  if (!confirm(`📋 Registrar la nómina de la semana ${window._rhSemLabel(new Date(R.semIni))}\n\n${incl.length} empleado(s) · Neto total $${fmtNum(totNeto.toFixed(2))}\n\n¿Confirmar?`)) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const semIniStr = new Date(R.semIni).toLocaleDateString('en-CA');
+    for (const id of incl) {
+      const r = R.rows[id]; const c = window._rhRowNeto(r);
+      const dedsTot = (r.deds || []).map(d2 => ({ nombre: d2.nombre, monto: Number(d2.monto) || 0 }))
+        .concat((r.prestamos || []).filter(p => Number(p.monto) > 0).map(p => ({ nombre: '💳 Préstamo (abono)', monto: Number(p.monto), prestamo_id: p.id })));
+      await addDoc(collection(db, 'nominas'), {
+        periodo: R.semKey, semana_inicio: semIniStr,
+        empleado_id: id, empleado_nombre: r.nombre, depto: r.depto,
+        sueldo_fijo: c.s,
+        bonos: (r.bonos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 })), total_bonos: c.tb,
+        deducciones: dedsTot, total_deducciones: c.td + c.tp,
+        fondo_ahorro: c.fo, neto: c.neto,
+        capturado_por: state.user?.nombre || '', created_at: serverTimestamp()
+      });
+      for (const p of (r.prestamos || [])) { if (Number(p.monto) > 0) await window._rhAbonarPrestamo(p.id, Number(p.monto), R.semKey, 'nomina'); }
+    }
+    window.logAccion('nomina_semana', R.semKey, `${incl.length} empleado(s) · neto total $${fmtNum(totNeto.toFixed(2))}`);
+    state.raya = null;
+    toast(`🔐 Semana registrada: ${incl.length} empleado(s) · $${fmtNum(totNeto.toFixed(2))}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// 💰 CONDICIONES DE PAGO por empleado (sueldo semanal + fijos + aumentos con motivo)
+window.rhCondAbrir = (empId) => {
+  const c = window._rhCondDe(empId);
+  state.rhCondForm = { empleado_id: empId, sueldo_semanal: String(c?.sueldo_semanal ?? ''), fondo_semanal: String(c?.fondo_semanal ?? ''), bonos_fijos: (c?.bonos_fijos || []).map(b => ({ ...b })), deducciones_fijas: (c?.deducciones_fijas || []).map(d2 => ({ ...d2 })) };
+  render();
+};
+window.rhCondSet = (campo, v, focusId) => { if (state.rhCondForm) state.rhCondForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rhCondAdd = (tipo, conceptoId) => { if (!conceptoId || !state.rhCondForm) return; const c = (state.nomina_conceptos || []).find(x => x.id === conceptoId); if (!c) return; (tipo === 'bono' ? state.rhCondForm.bonos_fijos : state.rhCondForm.deducciones_fijas).push({ nombre: c.nombre, monto: Number(c.valor_default) || 0 }); render(); };
+window.rhCondItem = (tipo, idx, v, focusId) => { const f = state.rhCondForm; if (!f) return; const it = (tipo === 'bono' ? f.bonos_fijos : f.deducciones_fijas)[idx]; if (it) it.monto = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rhCondDel = (tipo, idx) => { const f = state.rhCondForm; if (!f) return; (tipo === 'bono' ? f.bonos_fijos : f.deducciones_fijas).splice(idx, 1); render(); };
+window.rhCondGuardar = async () => {
+  if (!window._esNominaOK()) return;
+  const f = state.rhCondForm; if (!f) return;
+  const emp = (state.empleados || []).find(e => e.id === f.empleado_id); if (!emp) return;
+  const data = {
+    empleado_id: f.empleado_id, empleado_nombre: emp.nombre,
+    sueldo_semanal: Number(f.sueldo_semanal) || 0, fondo_semanal: Number(f.fondo_semanal) || 0,
+    bonos_fijos: (f.bonos_fijos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 })),
+    deducciones_fijas: (f.deducciones_fijas || []).map(d2 => ({ nombre: d2.nombre, monto: Number(d2.monto) || 0 })),
+    actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp()
+  };
+  try {
+    const prev = window._rhCondDe(f.empleado_id);
+    if (prev) await updateDoc(doc(db, 'nomina_condiciones', prev.id), data);
+    else await addDoc(collection(db, 'nomina_condiciones'), { ...data, historial_aumentos: [], created_at: serverTimestamp() });
+    state.rhCondForm = null; state.raya = null;
+    window.logAccion('rh_condiciones', emp.nombre, `sueldo semanal $${fmtNum(data.sueldo_semanal)} · ${data.bonos_fijos.length} bono(s) fijo(s) · ${data.deducciones_fijas.length} deducción(es)`);
+    toast(`💰 Condiciones de pago de ${emp.nombre} guardadas`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+// Aumento de sueldo — SIEMPRE con motivo y al historial
+window.rhAumento = async (empId) => {
+  if (!window._esNominaOK()) return;
+  const cond = window._rhCondDe(empId);
+  const emp = (state.empleados || []).find(e => e.id === empId);
+  if (!cond || !emp) { toast('Primero captura sus condiciones de pago (💰)', 'error'); return; }
+  const ant = Number(cond.sueldo_semanal) || 0;
+  const nuevoStr = prompt(`📈 AUMENTO de ${emp.nombre}\n\nSueldo semanal actual: $${fmtNum(ant.toFixed(2))}\n\nNuevo sueldo semanal:`);
+  if (nuevoStr === null) return;
+  const nuevo = Number(nuevoStr);
+  if (!(nuevo > 0)) { toast('Monto inválido', 'error'); return; }
+  const motivo = prompt('Motivo del aumento (obligatorio):');
+  if (!motivo || !motivo.trim()) { toast('El motivo es obligatorio', 'error'); return; }
+  try {
+    const historial = (cond.historial_aumentos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), anterior: ant, nuevo, motivo: motivo.trim(), por: state.user?.nombre || '' }]);
+    await updateDoc(doc(db, 'nomina_condiciones', cond.id), { sueldo_semanal: nuevo, historial_aumentos: historial, updated_at: serverTimestamp() });
+    state.raya = null;
+    window.logAccion('rh_aumento', emp.nombre, `$${fmtNum(ant.toFixed(2))} → $${fmtNum(nuevo.toFixed(2))} · ${motivo.trim()}`);
+    toast(`📈 ${emp.nombre}: $${fmtNum(ant.toFixed(2))} → $${fmtNum(nuevo.toFixed(2))}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 💸 GASTOS (renta, caja chica, servicios, transporte...) — SOLO RH/CEO
+window._rhGastoCats = () => ['Renta', 'Caja chica', 'Servicios (luz/agua)', 'Transporte', 'Comedor', 'Otros'].concat((state.nomina_conceptos || []).filter(c => c.tipo === 'categoria_gasto' && c.activo !== false).map(c => c.nombre));
+window.rhGastoCatCrear = async () => {
+  if (!window._esNominaOK()) return;
+  const n = prompt('Nueva categoría de gasto:'); if (!n || !n.trim()) return;
+  try { await addDoc(collection(db, 'nomina_conceptos'), { tipo: 'categoria_gasto', nombre: n.trim(), activo: true, created_at: serverTimestamp() }); toast('Categoría creada'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.rhGastoSet = (campo, v, focusId) => { if (!state.rhGastoForm) state.rhGastoForm = {}; state.rhGastoForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rhGastoGuardar = async () => {
+  if (!window._esNominaOK()) { toast('🔒 Solo RH/CEO', 'error'); return; }
+  const f = state.rhGastoForm || {};
+  if (!(Number(f.monto) > 0)) { toast('Captura el monto', 'error'); return; }
+  try {
+    await addDoc(collection(db, 'gastos_rh'), {
+      fecha: f.fecha || new Date().toLocaleDateString('en-CA'),
+      categoria: f.categoria || 'Otros', monto: Number(f.monto), nota: (f.nota || '').trim(),
+      registrado_por: state.user?.nombre || '', created_at: serverTimestamp()
+    });
+    window.logAccion('rh_gasto', f.categoria || 'Otros', `$${fmtNum(Number(f.monto).toFixed(2))} · ${(f.nota || '').trim()}`);
+    state.rhGastoForm = { fecha: f.fecha, categoria: f.categoria, monto: '', nota: '' };
+    toast('💸 Gasto registrado');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.rhGastoBorrar = async (id) => {
+  if (!window._esNominaOK()) return;
+  const g = (state.gastos_rh || []).find(x => x.id === id); if (!g) return;
+  if (!confirm(`¿Eliminar el gasto de ${g.categoria} por $${fmtNum(Number(g.monto).toFixed(2))}?`)) return;
+  try { await deleteDoc(doc(db, 'gastos_rh', id)); toast('Gasto eliminado'); window.logAccion('rh_gasto_eliminado', g.categoria, `$${fmtNum(Number(g.monto).toFixed(2))}`); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.rhNumRango = (r) => { state.rhRango = r; render(); };
+// Rango de fechas [ini, fin] según selección
+window._rhRangoFechas = () => {
+  const hoy = new Date(); hoy.setHours(12, 0, 0, 0);
+  const r = state.rhRango || 'semana';
+  if (r === 'semana') { const i = window._rhSemanaDe(hoy); return [i.toLocaleDateString('en-CA'), new Date(i.getTime() + 6 * 86400000).toLocaleDateString('en-CA'), `Semana ${window._rhSemLabel(i)}`]; }
+  const y = hoy.getFullYear(), m = hoy.getMonth();
+  if (r === 'mes') return [new Date(y, m, 1).toLocaleDateString('en-CA'), new Date(y, m + 1, 0).toLocaleDateString('en-CA'), hoy.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' })];
+  if (r === 'bimestre') return [new Date(y, m - 1, 1).toLocaleDateString('en-CA'), new Date(y, m + 1, 0).toLocaleDateString('en-CA'), 'Bimestre (mes actual + anterior)'];
+  return [new Date(y, 0, 1).toLocaleDateString('en-CA'), new Date(y, 11, 31).toLocaleDateString('en-CA'), `Año ${y}`];
+};
+
+// 📄 DOCUMENTO FORMAL: nómina + gastos del período (CONFIDENCIAL)
+window.pdfNominaGastos = () => {
+  try {
+    if (!window._esNominaOK()) { toast('🔒 Solo RH/CEO', 'error'); return; }
+    if (!window.jspdf) { toast('jsPDF no cargó', 'error'); return; }
+    const [ini, fin, etiqueta] = window._rhRangoFechas();
+    const noms = (state.nominas || []).filter(n => { const f = n.semana_inicio || ''; return f >= ini && f <= fin; });
+    const gastos = (state.gastos_rh || []).filter(g => (g.fecha || '') >= ini && (g.fecha || '') <= fin);
+    const porEmp = {};
+    noms.forEach(n => { const k = n.empleado_nombre || '—'; if (!porEmp[k]) porEmp[k] = { s: 0, b: 0, d: 0, f: 0, neto: 0, sem: 0 }; const e = porEmp[k]; e.s += Number(n.sueldo_fijo) || 0; e.b += Number(n.total_bonos) || 0; e.d += Number(n.total_deducciones) || 0; e.f += Number(n.fondo_ahorro) || 0; e.neto += Number(n.neto) || 0; e.sem++; });
+    const porCat = {};
+    gastos.forEach(g => { porCat[g.categoria || 'Otros'] = (porCat[g.categoria || 'Otros'] || 0) + (Number(g.monto) || 0); });
+    const totNom = noms.reduce((s, n) => s + (Number(n.neto) || 0), 0);
+    const totGas = gastos.reduce((s, g) => s + (Number(g.monto) || 0), 0);
+    const totFondo = noms.reduce((s, n) => s + (Number(n.fondo_ahorro) || 0), 0);
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    let y = _pdfHeaderEmpresa(docPDF, 'NÓMINA Y GASTOS', new Date().toLocaleDateString('es-MX'));
+    docPDF.setFontSize(16); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text('REPORTE DE NÓMINA Y GASTOS', 105, y + 4, { align: 'center' });
+    docPDF.setFontSize(9); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(`${etiqueta} · ${ini} a ${fin}`, 105, y + 10, { align: 'center' });
+    docPDF.setFontSize(8); docPDF.setTextColor(220, 38, 38); docPDF.setFont('helvetica', 'bold');
+    docPDF.text('CONFIDENCIAL — solo Capital Humano y Dirección General', 105, y + 15, { align: 'center' });
+    y += 20;
+
+    y = _pdfSeccionTitulo(docPDF, y, `NÓMINA (${Object.keys(porEmp).length} empleado(s) · ${noms.length} registro(s))`, _COL_VERDE);
+    docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]); docPDF.rect(14, y, 182, 6, 'F');
+    docPDF.setTextColor(255, 255, 255); docPDF.setFontSize(6.5); docPDF.setFont('helvetica', 'bold');
+    docPDF.text('EMPLEADO', 16, y + 4); docPDF.text('SEM.', 84, y + 4, { align: 'right' }); docPDF.text('SUELDO', 106, y + 4, { align: 'right' });
+    docPDF.text('BONOS', 128, y + 4, { align: 'right' }); docPDF.text('DEDUCC.', 150, y + 4, { align: 'right' }); docPDF.text('FONDO', 170, y + 4, { align: 'right' }); docPDF.text('NETO', 194, y + 4, { align: 'right' });
+    y += 6;
+    Object.keys(porEmp).sort().forEach((k, i) => {
+      if (y > 250) { docPDF.addPage(); y = 20; }
+      const e = porEmp[k];
+      if (i % 2 === 0) { docPDF.setFillColor(248, 250, 252); docPDF.rect(14, y, 182, 6, 'F'); }
+      docPDF.setFontSize(7.5); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(30, 41, 59);
+      docPDF.text(docPDF.splitTextToSize(k, 62)[0], 16, y + 4);
+      docPDF.text(String(e.sem), 84, y + 4, { align: 'right' });
+      docPDF.text('$' + fmtNum(e.s.toFixed(2)), 106, y + 4, { align: 'right' });
+      docPDF.text('$' + fmtNum(e.b.toFixed(2)), 128, y + 4, { align: 'right' });
+      docPDF.text('$' + fmtNum(e.d.toFixed(2)), 150, y + 4, { align: 'right' });
+      docPDF.text('$' + fmtNum(e.f.toFixed(2)), 170, y + 4, { align: 'right' });
+      docPDF.setFont('helvetica', 'bold'); docPDF.text('$' + fmtNum(e.neto.toFixed(2)), 194, y + 4, { align: 'right' });
+      y += 6;
+    });
+    y += 6;
+    if (y > 235) { docPDF.addPage(); y = 20; }
+    y = _pdfSeccionTitulo(docPDF, y, 'GASTOS POR CATEGORÍA', _COL_AZUL);
+    Object.keys(porCat).sort().forEach(k => {
+      docPDF.setFontSize(8); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(71, 85, 105);
+      docPDF.text(k, 16, y + 4); docPDF.setFont('helvetica', 'bold'); docPDF.text('$' + fmtNum(porCat[k].toFixed(2)), 194, y + 4, { align: 'right' });
+      y += 6;
+    });
+    if (!Object.keys(porCat).length) { docPDF.setFontSize(8); docPDF.setTextColor(148, 163, 184); docPDF.text('Sin gastos registrados en el período', 16, y + 4); y += 6; }
+    y += 6;
+    docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.roundedRect(96, y, 100, 20, 2, 2, 'F');
+    docPDF.setTextColor(255, 255, 255); docPDF.setFontSize(8); docPDF.setFont('helvetica', 'bold');
+    docPDF.text(`Nómina neta: $${fmtNum(totNom.toFixed(2))}   ·   Gastos: $${fmtNum(totGas.toFixed(2))}`, 146, y + 7, { align: 'center' });
+    docPDF.setFontSize(11);
+    docPDF.text(`COSTO TOTAL DEL PERÍODO: $${fmtNum((totNom + totGas).toFixed(2))}`, 146, y + 15, { align: 'center' });
+    docPDF.setTextColor(100, 116, 139); docPDF.setFontSize(7); docPDF.setFont('helvetica', 'normal');
+    docPDF.text(`Fondo de ahorro retenido en el período: $${fmtNum(totFondo.toFixed(2))}`, 16, y + 12);
+    _pdfPiePagina(docPDF);
+    const filename = `NominaGastos_${ini}_${fin}.pdf`;
+    if (typeof _mostrarVistaPreviaPDF === 'function') _mostrarVistaPreviaPDF(docPDF, filename, `Nómina y gastos · ${etiqueta}`);
+    else docPDF.save(filename);
+    window.logAccion('rh_reporte', etiqueta, `nómina $${fmtNum(totNom.toFixed(2))} + gastos $${fmtNum(totGas.toFixed(2))}`);
+  } catch (e) { console.error(e); toast('Error generando reporte: ' + e.message, 'error'); }
 };
 
 // 🔐 Captura de nómina con DESGLOSE: sueldo fijo + bonos − deducciones − fondo de ahorro
@@ -24501,7 +24805,65 @@ function renderRH() {
   const bajas = (state.empleados || []).filter(e => e.activo === false);
 
   let cuerpo = '';
-  if (tab === 'prestamos') {
+  if (tab === 'gastos') {
+    if (!nominaOK) {
+      cuerpo = '<div style="padding:50px;text-align:center;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:40px;">🔐</div><div style="font-weight:800;color:#dc2626;margin-top:8px;">Gastos y números es información RESERVADA (RH y Dirección General)</div></div>';
+    } else {
+      // 💸 GASTOS + 📊 NÚMEROS DEL PERÍODO
+      const gf = state.rhGastoForm || (state.rhGastoForm = { fecha: new Date().toLocaleDateString('en-CA'), categoria: 'Renta', monto: '', nota: '' });
+      const [rIni, rFin, rEtiq] = window._rhRangoFechas();
+      const rango = state.rhRango || 'semana';
+      const nomsR = (state.nominas || []).filter(n => { const f2 = n.semana_inicio || ''; return f2 >= rIni && f2 <= rFin; });
+      const gastosR = (state.gastos_rh || []).filter(g => (g.fecha || '') >= rIni && (g.fecha || '') <= rFin).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+      const totNomR = nomsR.reduce((s, n) => s + (Number(n.neto) || 0), 0);
+      const totGasR = gastosR.reduce((s, g) => s + (Number(g.monto) || 0), 0);
+      const totFonR = nomsR.reduce((s, n) => s + (Number(n.fondo_ahorro) || 0), 0);
+      const porCatR = {};
+      gastosR.forEach(g => { porCatR[g.categoria || 'Otros'] = (porCatR[g.categoria || 'Otros'] || 0) + (Number(g.monto) || 0); });
+      const btnR = (k, lbl) => `<button onclick="window.rhNumRango('${k}')" style="padding:6px 13px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${rango === k ? '#be185d' : '#e2e8f0'};background:${rango === k ? '#be185d' : '#fff'};color:${rango === k ? '#fff' : '#475569'};">${lbl}</button>`;
+      cuerpo = `
+        <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:13px 16px;margin-bottom:12px;">
+          <div style="font-weight:900;font-size:13px;color:#be185d;margin-bottom:10px;">💸 Registrar gasto</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:10px;">
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Fecha</label>
+              <input class="input" type="date" value="${gf.fecha || ''}" onchange="window.rhGastoSet('fecha', this.value)" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Categoría</label>
+              <select class="input" onchange="window.rhGastoSet('categoria', this.value)">${window._rhGastoCats().map(c => `<option value="${c}" ${gf.categoria === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Monto $ *</label>
+              <input class="input" id="gas-mon" type="text" inputmode="decimal" value="${gf.monto || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhGastoSet('monto', this.value, 'gas-mon')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Nota</label>
+              <input class="input" id="gas-not" type="text" value="${(gf.nota || '').replace(/"/g, '&quot;')}" oninput="window.rhGastoSet('nota', this.value, 'gas-not')" /></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button onclick="window.rhGastoGuardar()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Registrar gasto</button>
+            <button onclick="window.rhGastoCatCrear()" style="padding:9px 14px;background:#fff;color:#be185d;border:1px solid #be185d;border-radius:10px;cursor:pointer;font-weight:800;font-size:12px;">➕ Nueva categoría</button>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:13px 16px;margin-bottom:12px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+            <span style="font-weight:900;font-size:13px;">📊 Números:</span>
+            ${btnR('semana', 'Semana')} ${btnR('mes', 'Mes')} ${btnR('bimestre', 'Bimestre')} ${btnR('año', 'Año')}
+            <span style="font-size:11px;color:#94a3b8;">${rEtiq} · ${rIni} → ${rFin}</span>
+            <span style="flex:1;"></span>
+            <button onclick="window.pdfNominaGastos()" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📄 Documento formal PDF</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+            <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border-left:4px solid #be185d;"><div style="font-size:10px;font-weight:700;color:#64748b;">NÓMINA NETA</div><div style="font-size:19px;font-weight:900;">$${fmtNum(totNomR.toFixed(2))}</div><div style="font-size:10px;color:#94a3b8;">${nomsR.length} registro(s)</div></div>
+            <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border-left:4px solid #f59e0b;"><div style="font-size:10px;font-weight:700;color:#64748b;">GASTOS</div><div style="font-size:19px;font-weight:900;">$${fmtNum(totGasR.toFixed(2))}</div><div style="font-size:10px;color:#94a3b8;">${Object.keys(porCatR).map(k => `${k} $${fmtNum(porCatR[k].toFixed(0))}`).join(' · ') || 'sin gastos'}</div></div>
+            <div style="background:#fdf2f8;border-radius:10px;padding:10px 12px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">COSTO TOTAL</div><div style="font-size:19px;font-weight:900;color:#be185d;">$${fmtNum((totNomR + totGasR).toFixed(2))}</div></div>
+            <div style="background:#f8fafc;border-radius:10px;padding:10px 12px;border-left:4px solid #16a34a;"><div style="font-size:10px;font-weight:700;color:#64748b;">🏦 FONDO RETENIDO</div><div style="font-size:19px;font-weight:900;">$${fmtNum(totFonR.toFixed(2))}</div></div>
+          </div>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+          <div style="font-weight:800;font-size:13px;margin-bottom:8px;">Gastos del período (${gastosR.length})</div>
+          ${gastosR.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin gastos en el período</div>' : gastosR.map(g => `
+            <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px dashed #f1f5f9;">
+              <span>${g.fecha} · <strong>${g.categoria}</strong>${g.nota ? ` · ${g.nota}` : ''} <span style="color:#94a3b8;">(${g.registrado_por || ''})</span></span>
+              <span><strong>$${fmtNum((Number(g.monto) || 0).toFixed(2))}</strong> <button onclick="window.rhGastoBorrar('${g.id}')" style="margin-left:6px;padding:2px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">✕</button></span>
+            </div>`).join('')}
+        </div>`;
+    }
+  } else if (tab === 'prestamos') {
     if (!nominaOK) {
       cuerpo = '<div style="padding:50px;text-align:center;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:40px;">🔐</div><div style="font-weight:800;color:#dc2626;margin-top:8px;">Préstamos es información RESERVADA (RH y Dirección General)</div></div>';
     } else {
@@ -24520,11 +24882,20 @@ function renderRH() {
               </select></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Monto del préstamo $ *</label>
               <input class="input" id="pres-mon" type="text" inputmode="decimal" value="${pf.monto || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhPresSet('monto', this.value, 'pres-mon')" /></div>
-            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Abono por período $ *</label>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Abono $ *</label>
               <input class="input" id="pres-abo" type="text" inputmode="decimal" value="${pf.abono || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhPresSet('abono', this.value, 'pres-abo')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Frecuencia de descuento</label>
+              <select class="input" onchange="window.rhPresSet('frecuencia', this.value)">
+                <option value="semanal" ${(pf.frecuencia || 'semanal') === 'semanal' ? 'selected' : ''}>Semanal (cada nómina)</option>
+                <option value="quincenal" ${pf.frecuencia === 'quincenal' ? 'selected' : ''}>Quincenal (semanas alternas)</option>
+                <option value="mensual" ${pf.frecuencia === 'mensual' ? 'selected' : ''}>Mensual (1a semana del mes)</option>
+              </select></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Primer descuento</label>
+              <input class="input" type="date" value="${pf.primer_descuento || new Date().toLocaleDateString('en-CA')}" onchange="window.rhPresSet('primer_descuento', this.value)" /></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Motivo</label>
               <input class="input" id="pres-mot" type="text" value="${(pf.motivo || '').replace(/"/g, '&quot;')}" oninput="window.rhPresSet('motivo', this.value, 'pres-mot')" /></div>
           </div>
+          ${(Number(pf.monto) > 0 && Number(pf.abono) > 0) ? `<div style="font-size:12px;font-weight:800;color:#be185d;margin-bottom:8px;">Plan: ${Math.ceil(Number(pf.monto) / Number(pf.abono))} pago(s) ${pf.frecuencia || 'semanal'}es de $${fmtNum(Number(pf.abono).toFixed(2))} (el último ajusta al saldo)</div>` : ''}
           <button onclick="window.rhPrestamoCrear()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💳 Otorgar</button>
         </div>
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
@@ -24533,9 +24904,10 @@ function renderRH() {
             <div style="font-size:12px;padding:6px 0;border-bottom:1px dashed #f1f5f9;">
               <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
                 <span><strong>${p.empleado_nombre}</strong> · prestado $${fmtNum((Number(p.monto) || 0).toFixed(2))} el ${p.fecha}${p.motivo ? ` · ${p.motivo}` : ''}</span>
-                <span>saldo <strong style="color:#be185d;">$${fmtNum((Number(p.saldo) || 0).toFixed(2))}</strong> · abono/período $${fmtNum((Number(p.abono_periodo) || 0).toFixed(2))}
+                <span>saldo <strong style="color:#be185d;">$${fmtNum((Number(p.saldo) || 0).toFixed(2))}</strong> · $${fmtNum((Number(p.abono_periodo) || 0).toFixed(2))} ${p.frecuencia || 'semanal'}${p.num_pagos_plan ? ` · plan ${p.num_pagos_plan} pago(s)` : ''}
                   <button onclick="window.rhPrestamoAbonoManual('${p.id}')" style="margin-left:6px;padding:4px 10px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">💵 Abono manual</button></span>
               </div>
+              <div style="margin-top:4px;background:#f1f5f9;border-radius:6px;height:6px;overflow:hidden;max-width:420px;"><div style="height:100%;background:#be185d;width:${Math.min(100, Math.round(100 * (1 - (Number(p.saldo) || 0) / (Number(p.monto) || 1))))}%;"></div></div>
               ${(p.abonos || []).length ? `<details style="margin-top:2px;"><summary style="font-size:11px;color:#475569;cursor:pointer;font-weight:700;">Abonos (${p.abonos.length})</summary><div style="font-size:11px;color:#64748b;">${p.abonos.slice().reverse().map(a => `<div>${a.fecha} · $${fmtNum(Number(a.monto).toFixed(2))} · ${a.via}${a.periodo ? ` (${a.periodo})` : ''}</div>`).join('')}</div></details>` : ''}
             </div>`).join('')}
           ${pLiq.length ? `<details style="margin-top:8px;"><summary style="font-size:12px;color:#64748b;font-weight:700;cursor:pointer;">✅ Liquidados (${pLiq.length})</summary>${pLiq.map(p => `<div style="font-size:11px;color:#94a3b8;padding:3px 0;">${p.empleado_nombre} · $${fmtNum((Number(p.monto) || 0).toFixed(2))} · ${p.fecha}</div>`).join('')}</details>` : ''}
@@ -24545,6 +24917,84 @@ function renderRH() {
     if (!nominaOK) {
       cuerpo = '<div style="padding:50px;text-align:center;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:40px;">🔐</div><div style="font-weight:800;color:#dc2626;margin-top:8px;">Nómina es información RESERVADA</div><div style="font-size:12px;color:#64748b;margin-top:4px;">Solo la ven Capital Humano y Dirección General — ni siquiera administradores del sistema.</div></div>';
     } else {
+      // 📋 TABLA DE RAYA SEMANAL — todos los empleados en una pantalla, un solo registro
+      const semIni = state.raya?.semIni ? new Date(state.raya.semIni) : window._rhSemanaDe(new Date());
+      const R = window._rhRayaInit(semIni);
+      const conceptos = (state.nomina_conceptos || []).filter(c => c.activo !== false && ['bono', 'deduccion'].includes(c.tipo));
+      const cBonos = conceptos.filter(c => c.tipo === 'bono');
+      const cDeds = conceptos.filter(c => c.tipo === 'deduccion');
+      const ids = Object.keys(R.rows);
+      const incl = ids.filter(id => R.rows[id].incluir && Number(R.rows[id].sueldo) > 0);
+      const totNeto = incl.reduce((s, id) => s + window._rhRowNeto(R.rows[id]).neto, 0);
+      const regsSem = (state.nominas || []).filter(n => n.periodo === R.semKey);
+      const rayaHTML = `
+        <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:13px 16px;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+            <button onclick="window.rayaNav(-1)" style="padding:6px 12px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;">‹</button>
+            <span style="font-weight:900;font-size:14px;">📋 Semana ${window._rhSemLabel(new Date(R.semIni))}</span>
+            <button onclick="window.rayaNav(1)" style="padding:6px 12px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;">›</button>
+            <button onclick="window.rhConfigDiaSemana()" title="Configurar el día en que inicia la semana de pago" style="padding:6px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:700;font-size:11px;">⚙ corte</button>
+            <span style="flex:1;"></span>
+            <span style="font-size:13px;font-weight:900;color:#be185d;">Neto total: $${fmtNum(totNeto.toFixed(2))} (${incl.length})</span>
+          </div>
+          ${ids.length === 0 ? `<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">${regsSem.length ? '✅ Todos los empleados ya tienen nómina registrada esta semana' : 'Sin empleados activos — da de alta en la pestaña Empleados'}</div>` : `
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:680px;">
+              <thead><tr style="color:#64748b;font-size:10px;text-transform:uppercase;border-bottom:1px solid #e2e8f0;text-align:right;">
+                <th style="text-align:center;padding:6px 4px;">✓</th><th style="text-align:left;">Empleado</th><th>Sueldo</th><th>Bonos</th><th>Deducc.</th><th>Préstamo</th><th>Fondo</th><th>Neto</th><th></th>
+              </tr></thead>
+              <tbody>
+              ${ids.map(id => {
+                const r = R.rows[id]; const c = window._rhRowNeto(r);
+                const exp = state.rayaExpId === id;
+                return `
+                <tr style="border-bottom:1px solid #f1f5f9;text-align:right;${r.incluir ? '' : 'opacity:0.45;'}">
+                  <td style="text-align:center;"><input type="checkbox" ${r.incluir ? 'checked' : ''} onchange="window.rayaToggle('${id}')" style="width:16px;height:16px;cursor:pointer;" /></td>
+                  <td style="text-align:left;padding:6px 4px;"><strong>${r.nombre}</strong> <span style="color:#94a3b8;font-size:10px;">${r.depto}</span>${r.sinCond ? ' <span style="color:#dc2626;font-size:10px;font-weight:800;">⚠ sin condiciones</span>' : ''}</td>
+                  <td><input class="input" id="ry-s-${id}" type="text" inputmode="decimal" value="${r.sueldo}" style="width:78px;text-align:right;padding:3px 5px;font-size:12px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rayaSet('${id}','sueldo',this.value,'ry-s-${id}')" /></td>
+                  <td style="color:#0F6E56;font-weight:700;">+${fmtNum(c.tb.toFixed(0))}</td>
+                  <td style="color:#993C1D;font-weight:700;">−${fmtNum(c.td.toFixed(0))}</td>
+                  <td style="color:#be185d;font-weight:700;">${c.tp > 0 ? '−' + fmtNum(c.tp.toFixed(0)) : '—'}</td>
+                  <td><input class="input" id="ry-f-${id}" type="text" inputmode="decimal" value="${r.fondo}" style="width:64px;text-align:right;padding:3px 5px;font-size:12px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rayaSet('${id}','fondo',this.value,'ry-f-${id}')" /></td>
+                  <td style="font-weight:900;">$${fmtNum(c.neto.toFixed(2))}</td>
+                  <td><button onclick="window.rayaExp('${id}')" style="padding:3px 9px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">${exp ? '▲' : '▼'}</button></td>
+                </tr>
+                ${exp ? `<tr style="background:#fdf2f8;"><td colspan="9" style="padding:8px 12px;">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;">
+                    <div><strong style="color:#166534;font-size:11px;">➕ Bonos de la semana</strong>
+                      <select class="input" style="width:auto;display:inline-block;padding:2px 5px;font-size:11px;margin-left:6px;" onchange="window.rayaAdd('${id}','bono',this.value);this.value='';"><option value="">agregar…</option>${cBonos.map(cc => `<option value="${cc.id}">${cc.nombre}</option>`).join('')}</select>
+                      ${(r.bonos || []).map((b, i) => `<div style="display:flex;gap:6px;align-items:center;padding:2px 0;"><span style="flex:1;">${b.nombre}</span><input class="input" id="ryb-${id}-${i}" type="text" inputmode="decimal" value="${b.monto}" style="width:80px;text-align:right;padding:2px 5px;font-size:11px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rayaItem('${id}','bono',${i},this.value,'ryb-${id}-${i}')" /><button onclick="window.rayaDel('${id}','bono',${i})" style="padding:1px 6px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:10px;font-weight:800;">✕</button></div>`).join('') || '<div style="color:#94a3b8;font-size:11px;">sin bonos</div>'}
+                    </div>
+                    <div><strong style="color:#991b1b;font-size:11px;">➖ Deducciones de la semana</strong>
+                      <select class="input" style="width:auto;display:inline-block;padding:2px 5px;font-size:11px;margin-left:6px;" onchange="window.rayaAdd('${id}','ded',this.value);this.value='';"><option value="">agregar…</option>${cDeds.map(cc => `<option value="${cc.id}">${cc.nombre}</option>`).join('')}</select>
+                      ${(r.deds || []).map((d2, i) => `<div style="display:flex;gap:6px;align-items:center;padding:2px 0;"><span style="flex:1;">${d2.nombre}</span><input class="input" id="ryd-${id}-${i}" type="text" inputmode="decimal" value="${d2.monto}" style="width:80px;text-align:right;padding:2px 5px;font-size:11px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rayaItem('${id}','ded',${i},this.value,'ryd-${id}-${i}')" /><button onclick="window.rayaDel('${id}','ded',${i})" style="padding:1px 6px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:10px;font-weight:800;">✕</button></div>`).join('') || '<div style="color:#94a3b8;font-size:11px;">sin deducciones</div>'}
+                      ${(r.prestamos || []).map((p, i) => `<div style="display:flex;gap:6px;align-items:center;padding:2px 0;color:#be185d;"><span style="flex:1;">💳 Préstamo (abono)</span><input class="input" id="ryp-${id}-${i}" type="text" inputmode="decimal" value="${p.monto}" style="width:80px;text-align:right;padding:2px 5px;font-size:11px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rayaItem('${id}','prestamo',${i},this.value,'ryp-${id}-${i}')" /><button onclick="window.rayaDel('${id}','prestamo',${i})" title="Saltar el abono esta semana" style="padding:1px 6px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:10px;font-weight:800;">✕</button></div>`).join('')}
+                    </div>
+                  </div>
+                </td></tr>` : ''}`;
+              }).join('')}
+              </tbody>
+            </table>
+          </div>`}
+          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+            <button onclick="window.rayaRegistrar()" ${state.loadingAccion || !incl.length ? 'disabled' : ''} style="padding:11px 20px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;${!incl.length ? 'opacity:0.5;' : ''}">🔐 Registrar semana completa (${incl.length})</button>
+            <span style="font-size:11px;color:#94a3b8;">prellenado con condiciones de pago + préstamos · ajusta solo lo excepcional · ▼ abre bonos/deducciones de la semana</span>
+          </div>
+          <div style="font-size:10.5px;color:#94a3b8;margin-top:8px;">Catálogo de conceptos: <button onclick="window.rhConceptoCrear()" style="padding:4px 10px;background:#fff;color:#be185d;border:1px solid #be185d;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">➕ Nuevo bono/deducción</button>
+          ${conceptos.map(c => ` <span style="background:${c.tipo === 'bono' ? '#f0fdf4' : '#fef2f2'};padding:2px 7px;border-radius:6px;">${c.nombre} <a onclick="window.rhConceptoBaja('${c.id}')" style="cursor:pointer;color:#dc2626;font-weight:800;">×</a></span>`).join('')}</div>
+        </div>`;
+      const regsHTML = `
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+          <div style="display:flex;justify-content:space-between;font-weight:800;font-size:13px;margin-bottom:8px;flex-wrap:wrap;gap:8px;"><span>✅ Registradas esta semana (${regsSem.length})</span><span style="color:#be185d;">Neto: $${fmtNum(regsSem.reduce((s, n) => s + (Number(n.neto) || 0), 0).toFixed(2))} · 🏦 Fondo: $${fmtNum(regsSem.reduce((s, n) => s + (Number(n.fondo_ahorro) || 0), 0).toFixed(2))}</span></div>
+          ${regsSem.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Aún sin registros esta semana</div>' : regsSem.map(n => `
+            <div style="font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+              <span><strong>${n.empleado_nombre}</strong> · sueldo $${fmtNum((Number(n.sueldo_fijo) || 0).toFixed(2))}${Number(n.total_bonos) > 0 ? ` +$${fmtNum(Number(n.total_bonos).toFixed(2))}` : ''}${Number(n.total_deducciones) > 0 ? ` −$${fmtNum(Number(n.total_deducciones).toFixed(2))}` : ''}${Number(n.fondo_ahorro) > 0 ? ` · 🏦 $${fmtNum(Number(n.fondo_ahorro).toFixed(2))}` : ''}</span>
+              <span>neto <strong>$${fmtNum((Number(n.neto) || 0).toFixed(2))}</strong> <button onclick="window.rhNominaBorrar('${n.id}')" style="margin-left:6px;padding:3px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">✕</button></span>
+            </div>`).join('')}
+        </div>`;
+      cuerpo = rayaHTML + regsHTML;
+    }
+    if (false) {
       const nf = window._rhNomForm();
       const periodo = nf.periodo || new Date().toLocaleDateString('en-CA').slice(0, 7);
       const calcN = window._rhNomCalc(nf);
@@ -24621,7 +25071,42 @@ function renderRH() {
     const inpR = (id, campo, label, ph) => `
       <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${label}</label>
       <input class="input" id="${id}" type="text" value="${(f[campo] || '').replace(/"/g, '&quot;')}" placeholder="${ph || ''}" autocomplete="off" oninput="window.rhSet('${campo}', this.value, '${id}')" /></div>`;
-    cuerpo = `
+    // 💰 Editor de condiciones de pago (solo RH/CEO)
+    let condHTML = '';
+    if (nominaOK && state.rhCondForm) {
+      const cf = state.rhCondForm;
+      const empC = (state.empleados || []).find(e => e.id === cf.empleado_id);
+      const condPrev = window._rhCondDe(cf.empleado_id);
+      const conceptosC = (state.nomina_conceptos || []).filter(c => c.activo !== false && ['bono', 'deduccion'].includes(c.tipo));
+      const listaFija = (tipo, items) => items.map((it, i) => `
+        <div style="display:flex;gap:6px;align-items:center;font-size:12px;padding:2px 0;"><span style="flex:1;">${it.nombre}</span>
+        <input class="input" id="cf-${tipo}-${i}" type="text" inputmode="decimal" value="${it.monto}" style="width:84px;text-align:right;padding:2px 5px;font-size:11px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhCondItem('${tipo}',${i},this.value,'cf-${tipo}-${i}')" />
+        <button onclick="window.rhCondDel('${tipo}',${i})" style="padding:1px 6px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:10px;font-weight:800;">✕</button></div>`).join('');
+      condHTML = `
+      <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:13px 16px;margin-bottom:12px;">
+        <div style="font-weight:900;font-size:13px;color:#be185d;margin-bottom:10px;">💰 Condiciones de pago · ${empC?.nombre || ''} <span style="font-weight:600;color:#94a3b8;font-size:11px;">(se captura una vez — la tabla de raya se prellena con esto)</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:10px;">
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">💵 Sueldo SEMANAL base *</label>
+            <input class="input" id="cf-sue" type="text" inputmode="decimal" value="${cf.sueldo_semanal || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhCondSet('sueldo_semanal', this.value, 'cf-sue')" /></div>
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">🏦 Fondo de ahorro semanal $</label>
+            <input class="input" id="cf-fon" type="text" inputmode="decimal" value="${cf.fondo_semanal || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhCondSet('fondo_semanal', this.value, 'cf-fon')" /></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;">
+          <div style="background:#f0fdf4;border-radius:10px;padding:8px 11px;"><div style="font-size:11px;font-weight:800;color:#166534;">➕ Bonos FIJOS
+            <select class="input" style="width:auto;display:inline-block;padding:2px 5px;font-size:11px;margin-left:6px;" onchange="window.rhCondAdd('bono', this.value); this.value='';"><option value="">agregar…</option>${conceptosC.filter(c => c.tipo === 'bono').map(c => `<option value="${c.id}">${c.nombre}</option>`).join('')}</select></div>
+            ${listaFija('bono', cf.bonos_fijos || []) || '<div style="font-size:11px;color:#94a3b8;">sin bonos fijos</div>'}</div>
+          <div style="background:#fef2f2;border-radius:10px;padding:8px 11px;"><div style="font-size:11px;font-weight:800;color:#991b1b;">➖ Deducciones FIJAS
+            <select class="input" style="width:auto;display:inline-block;padding:2px 5px;font-size:11px;margin-left:6px;" onchange="window.rhCondAdd('ded', this.value); this.value='';"><option value="">agregar…</option>${conceptosC.filter(c => c.tipo === 'deduccion').map(c => `<option value="${c.id}">${c.nombre}</option>`).join('')}</select></div>
+            ${listaFija('ded', cf.deducciones_fijas || []) || '<div style="font-size:11px;color:#94a3b8;">sin deducciones fijas</div>'}</div>
+        </div>
+        ${(condPrev?.historial_aumentos || []).length ? `<div style="font-size:11px;color:#64748b;margin-bottom:8px;">📈 Historial: ${condPrev.historial_aumentos.slice().reverse().map(h => `$${fmtNum(h.anterior)} → $${fmtNum(h.nuevo)} (${h.fecha} · ${h.motivo})`).join(' · ')}</div>` : ''}
+        <div style="display:flex;gap:8px;">
+          <button onclick="window.rhCondGuardar()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Guardar condiciones</button>
+          <button onclick="state.rhCondForm=null;render();" style="padding:10px 14px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-weight:800;">Cancelar</button>
+        </div>
+      </div>`;
+    }
+    cuerpo = condHTML + `
       ${state.rhFormAbierto ? `
       <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:14px 16px;margin-bottom:12px;">
         <div style="font-weight:900;font-size:13px;margin-bottom:10px;">${f.id ? '✏️ Editar expediente' : '➕ Alta de empleado'}</div>
@@ -24654,7 +25139,9 @@ function renderRH() {
               <div style="font-size:11px;color:#94a3b8;">Ingreso: ${e.fecha_ingreso || '—'}${e.rfc ? ` · RFC ${e.rfc}` : ''}${e.nss ? ` · NSS ${e.nss}` : ''}${e.telefono ? ` · 📞 ${e.telefono}` : ''}</div>
               ${e.notas ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">📝 ${e.notas}</div>` : ''}
             </div>
-            <div style="display:flex;gap:6px;">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              ${nominaOK ? `<button onclick="window.rhCondAbrir('${e.id}')" title="Condiciones de pago: sueldo semanal, bonos y deducciones fijas" style="padding:7px 13px;background:#be185d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💰 ${window._rhCondDe(e.id) ? '$' + fmtNum(Number(window._rhCondDe(e.id).sueldo_semanal || 0)) + '/sem' : 'Condiciones'}</button>
+              <button onclick="window.rhAumento('${e.id}')" title="Registrar aumento (con motivo e historial)" style="padding:7px 13px;background:#fff;color:#be185d;border:1.5px solid #be185d;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📈</button>` : ''}
               <button onclick="window.rhEditar('${e.id}')" style="padding:7px 13px;background:#fff;color:#1e40af;border:1.5px solid #93c5fd;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">✏️ Editar</button>
               <button onclick="window.rhBaja('${e.id}')" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">Baja</button>
             </div>
@@ -24668,6 +25155,7 @@ function renderRH() {
       <button class="tab-btn ${tab === 'empleados' ? 'active' : ''}" onclick="window.rhTab('empleados')">👥 Empleados (${activos.length})</button>
       <button class="tab-btn ${tab === 'nomina' ? 'active' : ''}" onclick="window.rhTab('nomina')" style="${nominaOK ? '' : 'opacity:0.5;'}">🔐 Nómina${nominaOK ? '' : ' (reservada)'}</button>
       <button class="tab-btn ${tab === 'prestamos' ? 'active' : ''}" onclick="window.rhTab('prestamos')" style="${nominaOK ? '' : 'opacity:0.5;'}">💳 Préstamos${nominaOK ? ` (${(state.prestamos_rh || []).filter(p => p.estado === 'activo').length})` : ' (reservado)'}</button>
+      <button class="tab-btn ${tab === 'gastos' ? 'active' : ''}" onclick="window.rhTab('gastos')" style="${nominaOK ? '' : 'opacity:0.5;'}">💸 Gastos y números${nominaOK ? '' : ' (reservado)'}</button>
     </div>
     ${cuerpo}
   `;
