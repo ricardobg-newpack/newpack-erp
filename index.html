@@ -240,6 +240,9 @@ const state = {
   no_conformidades: [],
   // 📜 Certificados de calidad emitidos (registro con folio único)
   certificados_calidad: [],
+  // 🧾 Facturación y 💵 Cobranza
+  facturas: [],
+  cobros: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3629,6 +3632,15 @@ async function cargarTodo() {
       onSnapshot(query(collection(db, 'certificados_calidad'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
         state.certificados_calidad = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
+      // 🧾 Facturas y 💵 cobros (FAC/CYC — el flujo remisión → factura → cobro)
+      onSnapshot(query(collection(db, 'facturas'), orderBy('created_at', 'desc'), limit(1000)), (snap) => {
+        state.facturas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
+      onSnapshot(query(collection(db, 'cobros'), orderBy('created_at', 'desc'), limit(1000)), (snap) => {
+        state.cobros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
       })
     );
   } catch (err) {
@@ -3643,6 +3655,14 @@ async function cargarTodo() {
 // HELPERS DE DATOS
 // ============================================================
 window.getCliente = (codigo) => state.clientes.find(c => c.codigo === codigo);
+// 🕐 Fecha real de inicio de producción de una ODP (unifica iniciada_at / inicio_real_at)
+window._odpInicioReal = (o) => {
+  const ts = o?.iniciada_at || o?.inicio_real_at;
+  if (!ts) return '';
+  const ms = ts.seconds ? ts.seconds * 1000 : (ts.toDate ? ts.toDate().getTime() : new Date(ts).getTime());
+  if (!ms || isNaN(ms)) return '';
+  return new Date(ms).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: '2-digit' });
+};
 window.getProductoPT = (codigo) => state.productos_pt.find(p => p.codigo === codigo);
 window.productosDeCliente = (clienteCod) => 
   state.cliente_productos
@@ -4014,6 +4034,7 @@ function renderApp() {
   const esCEDMTY = u.depto === 'CEDMTY' || esCEO;
   const esCEDMEX = u.depto === 'CEDMEX' || esCEO;
   const esFAC = u.depto === 'FAC' || esCEO;
+  const esCYC = u.depto === 'CYC' || esCEO;
   const esCOMP = u.depto === 'COMP' || esCEO;
   const esMTTO = u.depto === 'MTTO' || esCEO;
   const esADMIN = u.depto === 'ADMIN' || esCEO || u.rol === 'admin';
@@ -4040,7 +4061,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B27-cuarentena</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B29-operacion</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4099,6 +4120,10 @@ function renderApp() {
         ` : ''}
         ${(esCS || esKAM || esCAL || esFAC || esCEDMTY || esCEDMEX || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas</button>
+        ` : ''}
+        ${(esFAC || esCYC || esCS || esKAM || esADMIN) ? `
+          <div class="sidebar-section">Administración</div>
+          <button class="nav-item ${state.vista === 'facturacion' ? 'active' : ''}" data-vista="facturacion">🧾 Facturación y Cobranza</button>
         ` : ''}
         
         ${esALP ? `
@@ -4327,6 +4352,7 @@ function tituloVista() {
     recall: '🚨 Recall — Trazabilidad bidireccional MP ↔ Cliente',
     bitacora: '📜 Bitácora de Auditoría — quién hizo qué',
     nc: '🧯 No Conformidades y Acciones Correctivas (CAPA)',
+    facturacion: '🧾 Facturación y Cobranza — remisión → factura → cobro',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -4368,6 +4394,7 @@ function renderVista() {
   if (v === 'recall') return renderRecall();
   if (v === 'bitacora') return renderBitacora();
   if (v === 'nc') return renderNoConformidades();
+  if (v === 'facturacion') return renderFacturacion();
   if (v === 'devoluciones') return renderDevoluciones();
   if (v === 'logistica_rutas') return renderLogisticaRutas();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -11127,6 +11154,13 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
       updates.pausa_iniciada_at = null;
     }
     
+    // 🕐 Fecha de INICIO DE PRODUCCIÓN unificada: se sella cuando arranca el
+    //    PRIMER proceso, sin importar por qué camino se inició (trazabilidad)
+    if (!odp.iniciada_at) {
+      updates.iniciada_at = serverTimestamp();
+      updates.iniciada_por = state.user?.id || '';
+      updates.iniciada_por_nombre = state.user?.nombre || state.user?.email || '';
+    }
     if (esProgramada && !odp.inicio_real_at) {
       updates.inicio_real_at = serverTimestamp();
       updates.inicio_real_por = state.user?.nombre || state.user?.email || 'sistema';
@@ -11859,45 +11893,88 @@ window.reiniciarCapturasProduccion = async () => {
   }
 };
 
-// 🆕 ELIMINAR ODP PERMANENTE — la borra de la base. NO se recupera.
-//    Doble confirmación + escribir el folio para evitar accidentes.
+// 🧹 ELIMINAR ODP COMPLETA (CASCADA) — para limpiar PRUEBAS de arranque.
+//    Borra la ODP y TODO lo que generó: capturas, rollos, tarimas, lotes, PKLs,
+//    certificados, salidas parciales y (opcional) sus OVs. NO se recupera.
+//    Solo dirección. El kardex de MP NO se toca (se avisa para regularizar).
 window.eliminarODPPermanente = async (odpId) => {
   const u = state.user || {};
-  if (!(['PLN','CEO','ADMIN'].includes(u.depto) || u.rol === 'admin')) {
-    toast(`🔒 Solo Planeación, CEO o Admin pueden eliminar. Tu depto: ${u.depto || '?'}`, 'error'); return;
+  if (!(['CEO', 'ADMIN'].includes(u.depto) || u.rol === 'admin')) {
+    toast(`🔒 Solo dirección (CEO/Admin) puede eliminar en cascada. Tu depto: ${u.depto || '?'}`, 'error'); return;
   }
   const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
-  
-  // Advertir si tiene producción registrada (no perder datos sin querer)
-  const tieneProd = Number(odp.cantidad_producida_final_kg) > 0 || 
-    (state.rollos_extrusion || []).some(r => r.odp_id === odpId && !r.anulado) ||
-    capturasValidas(state.capturas_produccion).some(c => c.odp_id === odpId);
-  
-  if (!confirm(
-    `🗑️ ELIMINAR PERMANENTE ${odp.folio}\n\n` +
-    `${odp.producto_codigo} · ${odp.cliente_nombre || 'STOCK'}\n\n` +
-    `⚠️ Esto BORRA la orden de la base de datos. NO se puede recuperar.\n` +
-    (tieneProd ? `\n⚠️⚠️ Esta orden TIENE producción registrada (rollos/capturas). Si solo quieres ordenar, mejor ARCHÍVALA.\n` : '') +
-    `\nSi solo quieres limpiarla de la vista, usa "Archivar" en su lugar.\n\n` +
-    `¿Eliminar permanentemente?`
-  )) return;
-  
-  // Segunda confirmación: escribir el folio
-  const conf = prompt(`Para confirmar la ELIMINACIÓN PERMANENTE, escribe el folio exacto:\n\n${odp.folio}`);
-  if (conf === null) return;
-  if (conf.trim().toUpperCase() !== (odp.folio || '').toUpperCase()) {
-    toast('El folio no coincide. Eliminación cancelada.', 'info'); return;
-  }
-  
+
   try {
-    state.loadingAccion = true;
-    window.logAccion('eliminar_odp', (state.ordenes_produccion.find(o => o.id === odpId)?.folio) || odpId, 'BORRADO DEFINITIVO de la ODP');
-    await deleteDoc(doc(db, 'ordenes_produccion', odpId));
-    // Quitar del state local de inmediato
-    state.ordenes_produccion = state.ordenes_produccion.filter(o => o.id !== odpId);
+    state.loadingAccion = true; window.forzarRender();
+    // 1) Juntar TODO lo ligado (consulta DIRECTA a Firestore — no depende de los límites del state)
+    const _q = async (col) => {
+      try { const s = await getDocs(query(collection(db, col), where('odp_id', '==', odpId))); return s.docs.map(d => ({ id: d.id, col })); }
+      catch (e) { return []; }
+    };
+    const [caps, rollos, tars, lots, pkls, certs, salidasP] = await Promise.all([
+      _q('capturas_produccion'), _q('rollos_extrusion'), _q('tarimas'), _q('lotes'), _q('packing_lists'), _q('certificados_calidad'), _q('salidas_parciales')
+    ]);
+    let ovsLig = [];
+    try { const sOv = await getDocs(query(collection(db, 'ordenes_venta'), where('odp_id', '==', odpId))); ovsLig = sOv.docs.map(d => ({ id: d.id, ...d.data() })); } catch (e) {}
+    const ovsBorrables = ovsLig.filter(o => !['entregada', 'completada'].includes(o.estatus));
+    const tarEntregadas = tars.length && (state.tarimas || []).some(t => t.odp_id === odpId && t.estatus === 'entregada');
+    state.loadingAccion = false; window.forzarRender();
+
+    // 2) Confirmación con el inventario REAL de lo que se va a borrar
+    if (!confirm(
+      `🗑️ ELIMINAR COMPLETA ${odp.folio} (limpieza de pruebas)\n\n` +
+      `${odp.producto_codigo} · ${odp.cliente_nombre || 'STOCK'}\n\n` +
+      `Se BORRARÁ PERMANENTEMENTE:\n` +
+      `• ${caps.length} captura(s) de producción\n` +
+      `• ${rollos.length} rollo(s)\n` +
+      `• ${tars.length} tarima(s) y ${lots.length} lote(s)\n` +
+      `• ${pkls.length} packing list(s) y ${certs.length} certificado(s)\n` +
+      `• ${salidasP.length} salida(s) parcial(es)\n` +
+      (ovsBorrables.length ? `• (te preguntaré por sus ${ovsBorrables.length} OV(s) ligadas)\n` : '') +
+      (tarEntregadas ? `\n⚠️⚠️ HAY TARIMAS ENTREGADAS A CLIENTE — si esto NO es una prueba, CANCELA.\n` : '') +
+      `\n⚠️ NO se puede recuperar. Si solo quieres limpiar la vista, usa "Archivar".\n\n¿Continuar?`
+    )) { return; }
+
+    const conf = prompt(`Para confirmar la ELIMINACIÓN COMPLETA, escribe el folio exacto:\n\n${odp.folio}`);
+    if (conf === null) return;
+    if (conf.trim().toUpperCase() !== (odp.folio || '').toUpperCase()) {
+      toast('El folio no coincide. Eliminación cancelada.', 'info'); return;
+    }
+    let borrarOVs = false;
+    if (ovsBorrables.length) {
+      borrarOVs = confirm(`¿Eliminar TAMBIÉN sus ${ovsBorrables.length} OV(s) ligadas?\n\n${ovsBorrables.map(o => `• ${o.folio} (${o.estatus})`).join('\n')}\n\nACEPTAR = borrarlas (prueba completa) · CANCELAR = conservarlas`);
+    }
+
+    state.loadingAccion = true; window.forzarRender();
+    const resumen = `capturas ${caps.length} · rollos ${rollos.length} · tarimas ${tars.length} · lotes ${lots.length} · PKL ${pkls.length} · certs ${certs.length} · salidas ${salidasP.length} · OVs ${borrarOVs ? ovsBorrables.length : 0}`;
+    // 3) Huella INDELEBLE antes de borrar (la bitácora sobrevive)
+    window.logAccion('eliminar_odp_completa', odp.folio, `BORRADO EN CASCADA · ${resumen} · ${odp.producto_codigo} · ${odp.cliente_nombre || 'STOCK'}`);
+
+    // 4) Borrar en lotes de 400 (límite de batch de Firestore es 500)
+    const todo = [...caps, ...rollos, ...tars, ...lots, ...pkls, ...certs, ...salidasP];
+    let loteB = writeBatch(db), nB = 0;
+    const flushB = async () => { if (nB > 0) { await loteB.commit(); loteB = writeBatch(db); nB = 0; } };
+    for (const d0 of todo) { loteB.delete(doc(db, d0.col, d0.id)); if (++nB >= 400) await flushB(); }
+    if (borrarOVs) { for (const o of ovsBorrables) { loteB.delete(doc(db, 'ordenes_venta', o.id)); if (++nB >= 400) await flushB(); } }
+    loteB.delete(doc(db, 'ordenes_produccion', odpId)); nB++;
+    await flushB();
+
+    // 5) Limpiar el state local de inmediato
+    state.ordenes_produccion = (state.ordenes_produccion || []).filter(o => o.id !== odpId);
+    state.tarimas = (state.tarimas || []).filter(t => t.odp_id !== odpId);
+    state.lotes = (state.lotes || []).filter(l => l.odp_id !== odpId);
+    state.capturas_produccion = (state.capturas_produccion || []).filter(c => c.odp_id !== odpId);
+    state.rollos_extrusion = (state.rollos_extrusion || []).filter(r => r.odp_id !== odpId);
+    state.packing_lists = (state.packing_lists || []).filter(p => p.odp_id !== odpId);
+    if (borrarOVs) { const idsOv = new Set(ovsBorrables.map(o => o.id)); state.ordenes_venta = (state.ordenes_venta || []).filter(o => !idsOv.has(o.id)); }
+
     cerrarModal();
-    toast(`🗑️ ${odp.folio} eliminada permanentemente`, 'success');
+    toast(`🗑️ ${odp.folio} eliminada COMPLETA · ${resumen}`, 'success');
+    // Si la prueba consumió MP real, el kardex NO se borra: avisar para regularizar
+    if ((odp.procesos_completados || []).some(pc => (pc.consumos_mp || []) && (pc.consumos_mp || []).length)) {
+      setTimeout(() => toast('⚠ Esta ODP consumió MP real. El kardex NO se borra — si hace falta, regulariza el stock con "Ajuste de inventario" en Almacén MP.', 'info'), 1400);
+    }
   } catch (e) {
     toast('Error al eliminar: ' + e.message, 'error');
   } finally {
@@ -13788,7 +13865,7 @@ function renderTarjetaODP(o, contexto) {
               `;
             }).join('')}
           </div>
-          ${o.fecha_inicio_programada ? `<div style="font-size:11px;color:#475569;margin-top:8px;">📅 Inicio plan: ${o.fecha_inicio_programada}${o.fecha_entrega_programada ? ` • 🎯 Entrega: ${o.fecha_entrega_programada}` : ''}</div>` : ''}
+          ${(o.fecha_inicio_programada || window._odpInicioReal(o) || o.fecha_entrega_programada) ? `<div style="font-size:11px;color:#475569;margin-top:8px;">${o.fecha_inicio_programada ? `📅 Inicio plan: ${o.fecha_inicio_programada}` : ''}${window._odpInicioReal(o) ? ` • 🏁 Inició producción: <strong>${window._odpInicioReal(o)}</strong>` : ''}${o.fecha_entrega_programada ? ` • 🎯 Entrega solicitada: <strong>${o.fecha_entrega_programada}</strong>` : ''}</div>` : ''}
         </div>
       ` : ''}
       
@@ -21381,10 +21458,74 @@ window.setInvProducto = (cod) => { state.invProductoSel = (state.invProductoSel 
 //    Una fila por material · columnas Planta / CEDIS-MTY / CEDIS-MEX / Total · Libre vs Comprometido.
 // 🆕 Inventario de PRODUCTO TERMINADO bloqueado a UN almacén (PLANTA / CEDIS-MTY / CEDIS-MEX).
 //    Cada depto ve el suyo; no hay opción de ver el de otro almacén.
+// ⚖️ REAJUSTE FÍSICO DE INVENTARIO CEDIS (herramienta TEMPORAL de arranque):
+//    alinear el sistema con lo que físicamente existe. Ajusta cantidad/peso de una
+//    tarima o la da de baja — siempre con motivo, quién y bitácora.
+window.invReajusteToggle = (prod) => { state.invReajusteProd = state.invReajusteProd === prod ? null : prod; render(); };
+
+window.tarimaReajustar = async (tarimaId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CEDMTY', 'CEDMEX', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo CEDIS/dirección reajustan inventario', 'error'); return; }
+  const t = (state.tarimas || []).find(x => x.id === tarimaId); if (!t) return;
+  const cantAct = Number(t.cantidad_actual ?? t.cantidad) || 0;
+  const cantStr = prompt(`⚖️ REAJUSTE FÍSICO · ${t.codigo}\n\nSistema: ${fmtNum(cantAct)} ${t.um || 'kg'} · ${fmtNum(Number(t.peso_neto_kg || t.peso_neto) || 0)} kg\n\n¿Cuánto hay FÍSICAMENTE? (0 = ya no existe, se da de baja)`, String(cantAct));
+  if (cantStr === null) return;
+  const cantReal = Number(cantStr);
+  if (isNaN(cantReal) || cantReal < 0) { toast('Cantidad inválida', 'error'); return; }
+  if (cantReal === 0) { window.tarimaBajaInventario(tarimaId); return; }
+  const pesoAct = Number(t.peso_neto_kg || t.peso_neto) || 0;
+  const pesoProp = cantAct > 0 ? (pesoAct * cantReal / cantAct) : pesoAct;
+  const pesoStr = prompt(`Peso neto real en kg (sugerido proporcional):`, pesoProp.toFixed(2));
+  if (pesoStr === null) return;
+  const pesoReal = Number(pesoStr);
+  if (isNaN(pesoReal) || pesoReal < 0) { toast('Peso inválido', 'error'); return; }
+  const motivo = prompt('Motivo del reajuste (obligatorio — conteo físico, merma, error de captura...):');
+  if (!motivo || !motivo.trim()) { toast('Motivo obligatorio', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'tarimas', tarimaId), {
+      cantidad: cantReal, cantidad_actual: cantReal,
+      peso_neto_kg: pesoReal, peso_neto: pesoReal,
+      reajuste_fisico: {
+        antes_cantidad: cantAct, antes_peso: pesoAct,
+        motivo: motivo.trim(), por: u.nombre || u.email || '', fecha: new Date().toISOString()
+      },
+      updated_at: serverTimestamp()
+    });
+    const tl = (state.tarimas || []).find(x => x.id === tarimaId);
+    if (tl) { tl.cantidad = cantReal; tl.cantidad_actual = cantReal; tl.peso_neto_kg = pesoReal; tl.peso_neto = pesoReal; }
+    toast(`⚖️ ${t.codigo}: ${fmtNum(cantAct)} → ${fmtNum(cantReal)} ${t.um || 'kg'}`);
+    window.logAccion('reajuste_tarima', t.codigo, `${fmtNum(cantAct)} → ${fmtNum(cantReal)} ${t.um || 'kg'} · ${fmtNum(pesoAct)} → ${fmtNum(pesoReal)} kg · ${motivo.trim()}`);
+    render();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.tarimaBajaInventario = async (tarimaId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CEDMTY', 'CEDMEX', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo CEDIS/dirección dan de baja', 'error'); return; }
+  const t = (state.tarimas || []).find(x => x.id === tarimaId); if (!t) return;
+  const motivo = prompt(`🗑 DAR DE BAJA la tarima ${t.codigo}\n\n${fmtNum(Number(t.cantidad) || 0)} ${t.um || 'kg'} · ${t.cliente_nombre || 'STOCK'}\n\nYa no existe físicamente. Motivo (obligatorio):`);
+  if (!motivo || !motivo.trim()) return;
+  if (!confirm(`¿Confirmar BAJA de ${t.codigo}?\n\nDesaparece del inventario (queda en bitácora, no se borra el registro).`)) return;
+  try {
+    await updateDoc(doc(db, 'tarimas', tarimaId), {
+      estatus: 'baja_inventario', activo: false,
+      baja_motivo: motivo.trim(), baja_por: u.nombre || u.email || '', baja_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    const tl = (state.tarimas || []).find(x => x.id === tarimaId);
+    if (tl) { tl.estatus = 'baja_inventario'; tl.activo = false; }
+    toast(`🗑 ${t.codigo} dada de baja del inventario`);
+    window.logAccion('baja_tarima_inventario', t.codigo, `${fmtNum(Number(t.cantidad) || 0)} ${t.um || 'kg'} · ${t.cliente_nombre || 'STOCK'} · ${motivo.trim()}`);
+    render();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
 function renderInventarioAlmacen(almFijo) {
   const filtro = (state.filtros.stock_pt || '').toLowerCase();
   const _u = state.user || {};
   const puedeGenerarOV = _u.rol === 'admin' || ['CS', 'KAM', 'CEDMTY', 'CEDMEX', 'ALP', 'CEO', 'ADMIN'].includes(_u.depto);
+  // ⚖️ Reajuste físico: solo en vistas CEDIS y solo CEDIS/dirección (herramienta temporal)
+  const puedeReajustar = (almFijo === 'CEDIS-MTY' || almFijo === 'CEDIS-MEX') && (_u.rol === 'admin' || ['CEDMTY', 'CEDMEX', 'CEO', 'ADMIN'].includes(_u.depto));
   const ESTATUS_STOCK = ['en_almacen_planta', 'en_cedis_mty', 'en_cedis_mex'];
   const almDeEstatus = (est) => est === 'en_almacen_planta' ? 'PLANTA' : (est === 'en_cedis_mty' ? 'CEDIS-MTY' : 'CEDIS-MEX');
   const almSel = almFijo;  // vista bloqueada a un solo almacén (sin tabs)
@@ -21509,10 +21650,25 @@ function renderInventarioAlmacen(almFijo) {
                     ${p.enOVCant > 0 ? `<span style="font-size:10.5px;font-weight:700;color:#1e40af;background:#dbeafe;padding:2px 8px;border-radius:6px;">🔵 ${fmtNum(p.enOVCant)} en OV</span>` : ''}
                     ${p.porAsignarCant > 0 ? `<span style="font-size:10.5px;font-weight:700;color:#b45309;background:#fef3c7;padding:2px 8px;border-radius:6px;">⏳ ${fmtNum(p.porAsignarCant)} por asignar</span>` : ''}
                     ${p.atoradoCant > 0 && puedeGenerarOV ? `<button onclick="generarOVsPendientesProducto('${p.producto_codigo}')" style="font-size:10px;font-weight:800;color:#fff;background:#b45309;border:none;padding:4px 9px;border-radius:6px;cursor:pointer;">➕ Generar OV</button>` : ''}
+                    ${puedeReajustar ? `<button onclick="window.invReajusteToggle('${p.producto_codigo}')" title="Herramienta temporal de arranque: alinear sistema con el conteo físico" style="font-size:10px;font-weight:800;color:${state.invReajusteProd === p.producto_codigo ? '#fff' : '#7c3aed'};background:${state.invReajusteProd === p.producto_codigo ? '#7c3aed' : '#fff'};border:1.5px solid #7c3aed;padding:4px 9px;border-radius:6px;cursor:pointer;">⚖️ Reajuste ${state.invReajusteProd === p.producto_codigo ? '▲' : '▼'}</button>` : ''}
                   </div>
                 </td>
                 <td style="padding:10px 12px;text-align:right;font-size:11px;color:#64748b;">${fmtNum(Math.round(p.totalKg))}</td>
               </tr>
+              ${puedeReajustar && state.invReajusteProd === p.producto_codigo ? `
+              <tr style="background:#faf5ff;border-bottom:1px solid #e9d5ff;">
+                <td colspan="7" style="padding:10px 14px;">
+                  <div style="font-size:11px;font-weight:800;color:#7c3aed;margin-bottom:6px;">⚖️ Reajuste físico por tarima (${almSel}) — herramienta temporal de arranque · todo queda en bitácora</div>
+                  ${tarimas.filter(t => t.producto_codigo === p.producto_codigo).map(t => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed #e9d5ff;flex-wrap:wrap;font-size:12px;">
+                      <span><strong class="text-mono">${t.codigo}</strong> · lote ${t.lote_codigo || '—'} · ${t.cliente_codigo || 'STOCK'} · <strong>${fmtNum(Number(t.cantidad_actual ?? t.cantidad) || 0)} ${t.um || 'kg'}</strong> · ${fmtNum(Number(t.peso_neto_kg || t.peso_neto) || 0)} kg${t.retenida ? ' · 🔒 retenida' : ''}${t.reajuste_fisico ? ` · <span style="color:#7c3aed;">⚖ ya reajustada (${t.reajuste_fisico.por || ''})</span>` : ''}</span>
+                      <span style="display:flex;gap:6px;">
+                        <button onclick="window.tarimaReajustar('${t.id}')" style="padding:5px 11px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">⚖️ Ajustar</button>
+                        <button onclick="window.tarimaBajaInventario('${t.id}')" style="padding:5px 11px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">🗑 Baja</button>
+                      </span>
+                    </div>`).join('') || '<div style="font-size:11px;color:#94a3b8;">Sin tarimas de este producto aquí</div>'}
+                </td>
+              </tr>` : ''}
             `).join('')}
           </tbody>
         </table>
@@ -23259,6 +23415,320 @@ function renderNoConformidades() {
           </div>`;
         }).join('')}
       </div>`}
+  `;
+}
+
+// ============================================================
+// 🧾 FACTURACIÓN Y 💵 COBRANZA — la torre de control de FAC/CYC
+//    Flujo real NewPack: CS/KAM generan la REMISIÓN → con ella se
+//    programa el ENVÍO y en paralelo FAC emite la FACTURA (CFDI).
+//    FAC también coordina envíos → su panel ve ambos en vivo.
+//    remisión → factura (folio+UUID) → vencimiento por días de
+//    crédito del cliente → cobros → pagada. CyC ve la cartera.
+// ============================================================
+window._facDeRemision = (rem) => (state.facturas || []).find(f => f.estado !== 'cancelada' && (f.remision_id === rem.id || (rem.folio && f.remision_folio === rem.folio)));
+window._facCobros = (f) => (state.cobros || []).filter(c => c.factura_id === f.id);
+window._facSaldo = (f) => Math.max(0, (Number(f.monto) || 0) - window._facCobros(f).reduce((s, c) => s + (Number(c.monto) || 0), 0));
+window._facEstadoPago = (f) => {
+  if (f.estado === 'cancelada') return 'cancelada';
+  if (f.estado === 'pagada' || window._facSaldo(f) <= 0.01) return 'pagada';
+  const hoy = new Date().toLocaleDateString('en-CA');
+  if (f.vence && f.vence < hoy) return 'vencida';
+  const en7 = new Date(Date.now() + 7 * 86400000).toLocaleDateString('en-CA');
+  if (f.vence && f.vence <= en7) return 'por_vencer';
+  return 'vigente';
+};
+// Remisiones FACTURABLES: a cliente (las de traslado interno planta→CEDIS traen oti_id)
+window._remFacturables = () => (state.remisiones || []).filter(r => !r.oti_id && !r.oti_folio && r.estatus !== 'cancelada');
+window._sumaPorMoneda = (facs, montoFn) => {
+  const out = {};
+  facs.forEach(f => { const m = f.moneda || 'MXN'; out[m] = (out[m] || 0) + montoFn(f); });
+  return Object.keys(out).filter(m => out[m] > 0.01).map(m => `$${fmtNum(out[m].toFixed(2))} ${m}`).join(' · ') || '$0.00';
+};
+// Facturas vencidas con saldo de un cliente (para el candado de crédito)
+window._carteraVencidaCliente = (clienteCodigo) => {
+  const hoy = new Date().toLocaleDateString('en-CA');
+  return (state.facturas || []).filter(f => f.cliente_codigo === clienteCodigo && f.estado !== 'cancelada' && f.estado !== 'pagada' && window._facSaldo(f) > 0.01 && f.vence && f.vence < hoy);
+};
+
+window.facTab = (t) => { state.facSubtab = t; render(); };
+window.facFiltro = (v) => { state.filtros.facturacion = v; window.forzarRender(); window._cotFoco('fac-filtro'); };
+window.facSet = (campo, v, focusId) => { if (!state.facForm) return; state.facForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.facAbrirForm = (remisionId) => {
+  const rem = (state.remisiones || []).find(r => r.id === remisionId); if (!rem) return;
+  state.facForm = { remision_id: rem.id, folio: '', uuid: '', monto: '', moneda: 'MXN', fecha: new Date().toLocaleDateString('en-CA') };
+  state.facSubtab = 'por_facturar';
+  render();
+  window._cotFoco('fac-folio');
+};
+window.facCerrarForm = () => { state.facForm = null; render(); };
+
+window.facGuardar = async () => {
+  const f = state.facForm || {};
+  const rem = (state.remisiones || []).find(r => r.id === f.remision_id);
+  if (!rem) { toast('Remisión no encontrada', 'error'); return; }
+  if (!String(f.folio || '').trim()) { toast('Captura el folio de la factura', 'error'); return; }
+  if (!(Number(f.monto) > 0)) { toast('Captura el monto total (con IVA)', 'error'); return; }
+  const uuid = String(f.uuid || '').trim();
+  if (uuid && !/^[0-9a-fA-F-]{32,36}$/.test(uuid)) { toast('El UUID del CFDI no se ve válido (32-36 caracteres hex)', 'error'); return; }
+  if (!uuid && !confirm('¿Guardar la factura SIN UUID del CFDI?\n\n(Lo puedes capturar después, pero sin él no hay conciliación fiscal)')) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const ov = (state.ordenes_venta || []).find(o => o.id === rem.ov_id) || null;
+    const cli = ov ? (state.clientes || []).find(c => c.codigo === ov.cliente_codigo) : (state.clientes || []).find(c => c.nombre === rem.cliente);
+    const diasCred = Number(cli?.dias_credito) || 0;
+    const fecha = f.fecha || new Date().toLocaleDateString('en-CA');
+    const vence = new Date(new Date(fecha + 'T12:00:00').getTime() + diasCred * 86400000).toLocaleDateString('en-CA');
+    const u = state.user || {};
+    const ref = await addDoc(collection(db, 'facturas'), {
+      folio: String(f.folio).trim().toUpperCase(),
+      uuid,
+      fecha, monto: Number(f.monto), moneda: f.moneda || 'MXN',
+      dias_credito: diasCred, vence,
+      estado: 'emitida',
+      remision_id: rem.id, remision_folio: rem.folio || '',
+      ov_id: rem.ov_id || '', ov_folio: rem.ov_folio || '',
+      pedido_folio: rem.pedido_folio || ov?.pedido_folio || '',
+      cliente_codigo: cli?.codigo || ov?.cliente_codigo || '',
+      cliente_nombre: rem.cliente || ov?.cliente_nombre || '',
+      creado_por: u.id || '', creado_por_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp(), updated_at: serverTimestamp()
+    });
+    // Estampar en la OV y en la remisión (la referencia cruzada que faltaba)
+    if (rem.ov_id) { try { await updateDoc(doc(db, 'ordenes_venta', rem.ov_id), { factura: String(f.folio).trim().toUpperCase(), factura_uuid: uuid, factura_id: ref.id, updated_at: serverTimestamp() }); } catch (e) {} }
+    try { await updateDoc(doc(db, 'remisiones', rem.id), { factura_folio: String(f.folio).trim().toUpperCase(), factura_id: ref.id, updated_at: serverTimestamp() }); const rl = (state.remisiones || []).find(x => x.id === rem.id); if (rl) rl.factura_folio = String(f.folio).trim().toUpperCase(); } catch (e) {}
+    window.logAccion('factura_emitida', String(f.folio).trim().toUpperCase(), `${rem.folio || ''} · ${rem.cliente || ''} · $${fmtNum(Number(f.monto).toFixed(2))} ${f.moneda || 'MXN'} · vence ${vence}`);
+    addDoc(collection(db, 'notificaciones'), { titulo: `🧾 Factura ${String(f.folio).trim().toUpperCase()} emitida`, mensaje: `${rem.cliente || ''} · remisión ${rem.folio || ''} · $${fmtNum(Number(f.monto).toFixed(2))} ${f.moneda || 'MXN'} · vence ${vence}`, depto_destino: 'CYC', tipo: 'info', folio_ref: rem.folio || '', leida: false, created_at: serverTimestamp() }).catch(() => {});
+    state.facForm = null;
+    toast(`🧾 Factura registrada · vence ${vence}${diasCred ? ` (${diasCred} días de crédito)` : ' (contado)'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+window.facCobro = async (facturaId) => {
+  const fa = (state.facturas || []).find(x => x.id === facturaId); if (!fa) return;
+  const saldo = window._facSaldo(fa);
+  const montoStr = prompt(`💵 Registrar cobro de ${fa.folio} · ${fa.cliente_nombre}\n\nSaldo pendiente: $${fmtNum(saldo.toFixed(2))} ${fa.moneda || 'MXN'}\n\nMonto cobrado:`, saldo.toFixed(2));
+  if (montoStr === null) return;
+  const monto = Number(montoStr);
+  if (!(monto > 0)) { toast('Monto inválido', 'error'); return; }
+  if (monto > saldo + 0.01 && !confirm(`El monto ($${fmtNum(monto.toFixed(2))}) es MAYOR al saldo ($${fmtNum(saldo.toFixed(2))}). ¿Registrar de todos modos?`)) return;
+  const referencia = prompt('Referencia del pago (transferencia, cheque, complemento...):') || '';
+  try {
+    const u = state.user || {};
+    await addDoc(collection(db, 'cobros'), {
+      factura_id: fa.id, factura_folio: fa.folio,
+      cliente_codigo: fa.cliente_codigo || '', cliente_nombre: fa.cliente_nombre || '',
+      monto, moneda: fa.moneda || 'MXN', referencia,
+      fecha: new Date().toLocaleDateString('en-CA'),
+      registrado_por: u.id || '', registrado_por_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp()
+    });
+    const nuevoSaldo = saldo - monto;
+    if (nuevoSaldo <= 0.01) {
+      await updateDoc(doc(db, 'facturas', fa.id), { estado: 'pagada', pagada_at: serverTimestamp(), updated_at: serverTimestamp() });
+      toast(`✅ ${fa.folio} PAGADA por completo`);
+    } else {
+      toast(`💵 Cobro registrado · saldo restante $${fmtNum(nuevoSaldo.toFixed(2))}`);
+    }
+    window.logAccion('cobro_registrado', fa.folio, `$${fmtNum(monto.toFixed(2))} ${fa.moneda || 'MXN'} · ref: ${referencia || '—'}${nuevoSaldo <= 0.01 ? ' · LIQUIDADA' : ` · saldo $${fmtNum(nuevoSaldo.toFixed(2))}`}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.facCancelar = async (facturaId) => {
+  const fa = (state.facturas || []).find(x => x.id === facturaId); if (!fa) return;
+  const motivo = prompt(`❌ CANCELAR factura ${fa.folio}\n\nMotivo (obligatorio — también cancélala en tu sistema de CFDI):`);
+  if (!motivo || !motivo.trim()) return;
+  try {
+    await updateDoc(doc(db, 'facturas', facturaId), { estado: 'cancelada', cancelada_motivo: motivo.trim(), cancelada_por: state.user?.nombre || '', cancelada_at: serverTimestamp(), updated_at: serverTimestamp() });
+    if (fa.ov_id) { try { await updateDoc(doc(db, 'ordenes_venta', fa.ov_id), { factura: '', factura_uuid: '', factura_id: '', updated_at: serverTimestamp() }); } catch (e) {} }
+    if (fa.remision_id) { try { await updateDoc(doc(db, 'remisiones', fa.remision_id), { factura_folio: '', factura_id: '', updated_at: serverTimestamp() }); const rl = (state.remisiones || []).find(x => x.id === fa.remision_id); if (rl) rl.factura_folio = ''; } catch (e) {} }
+    toast(`❌ Factura ${fa.folio} cancelada — la remisión vuelve a "por facturar"`);
+    window.logAccion('factura_cancelada', fa.folio, motivo.trim());
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function renderFacturacion() {
+  const u = state.user || {};
+  const esFACv = u.rol === 'admin' || ['FAC', 'CEO', 'ADMIN'].includes(u.depto);
+  const esCYCv = u.rol === 'admin' || ['CYC', 'FAC', 'CEO', 'ADMIN'].includes(u.depto);
+  const hoy = new Date().toLocaleDateString('en-CA');
+  const subtab = state.facSubtab || 'por_facturar';
+  const filtro = (state.filtros.facturacion || '').toLowerCase().trim();
+  const pasa = (txt) => !filtro || txt.toLowerCase().includes(filtro);
+
+  const rems = window._remFacturables();
+  const porFacturar = rems.filter(r => !window._facDeRemision(r));
+  const facturas = (state.facturas || []).slice().sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+  const cartera = facturas.filter(f => f.estado !== 'cancelada' && window._facEstadoPago(f) !== 'pagada');
+  const vencidas = cartera.filter(f => window._facEstadoPago(f) === 'vencida');
+  const enCamino = rems.filter(r => ['en_transito', 'por_cargar'].includes(r.estatus));
+
+  const chipEnvio = (r) => {
+    const m = { por_cargar: ['#fef3c7', '#92400e', '📄 Por cargar'], en_transito: ['#dbeafe', '#1e40af', '🚚 En camino'], entregada: ['#dcfce7', '#166534', '✅ Entregada'] };
+    const [bg, col, lbl] = m[r.estatus] || ['#f1f5f9', '#475569', r.estatus || '—'];
+    return `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:${bg};color:${col};">${lbl}</span>`;
+  };
+  const chipPago = (f) => {
+    const e = window._facEstadoPago(f);
+    const m = { pagada: ['#dcfce7', '#166534', '✅ PAGADA'], vencida: ['#fee2e2', '#991b1b', '⏰ VENCIDA'], por_vencer: ['#fef3c7', '#92400e', '⏳ POR VENCER'], vigente: ['#dbeafe', '#1e40af', '📄 VIGENTE'], cancelada: ['#f1f5f9', '#94a3b8', '❌ CANCELADA'] };
+    const [bg, col, lbl] = m[e];
+    return `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:${bg};color:${col};">${lbl}</span>`;
+  };
+  const ff = state.facForm;
+
+  // ── Tarjeta de remisión (cola por facturar / envíos)
+  const cardRem = (r, conFacturar) => {
+    const fac = window._facDeRemision(r);
+    const ov = (state.ordenes_venta || []).find(o => o.id === r.ov_id);
+    return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div style="min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-weight:900;font-size:13.5px;" class="text-mono">${r.folio || '—'}</span>
+              ${chipEnvio(r)}
+              ${fac ? `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#dcfce7;color:#166534;">🧾 ${fac.folio}</span>` : '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#fee2e2;color:#991b1b;">SIN FACTURA</span>'}
+            </div>
+            <div style="font-size:13px;font-weight:700;color:#0f172a;margin-top:3px;">${r.cliente || '—'}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">
+              OV <span class="text-mono">${r.ov_folio || '—'}</span> · PI ${r.pedido_folio || '—'} · ${r.num_tarimas || (r.tarimas_ids || []).length || 0} tarima(s) · ${fmtNum(Number(r.kg_total || 0).toFixed(0))} kg
+              · ${ov?.modo_envio === 'tercero' ? `🚛 Tercero${r.transportista ? ' · ' + r.transportista : ''}` : ov?.modo_envio === 'cliente' ? '🚗 Cliente recoge' : `🚚 New Pack${r.operador ? ' · ' + r.operador : ''}`}
+              ${r.entregada_at?.seconds ? ` · entregada ${new Date(r.entregada_at.seconds * 1000).toLocaleDateString('es-MX')}${r.entrega_recibio ? ` (recibió: ${r.entrega_recibio})` : ''}` : ''}
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${conFacturar && !fac && esFACv ? `<button onclick="window.facAbrirForm('${r.id}')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🧾 Facturar</button>` : ''}
+            ${!conFacturar && r.estatus === 'en_transito' && r.ov_id && esFACv ? `<button onclick="window.confirmarEntregaSalida('${r.ov_id}')" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✅ Confirmar entrega</button>` : ''}
+          </div>
+        </div>
+      </div>`;
+  };
+
+  // ── Tarjeta de factura (facturadas / cartera)
+  const cardFac = (f) => {
+    const saldo = window._facSaldo(f);
+    const cobros = window._facCobros(f);
+    return `
+      <div style="background:#fff;border:1px solid ${window._facEstadoPago(f) === 'vencida' ? '#fca5a5' : '#e2e8f0'};border-radius:12px;padding:12px 15px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div style="min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-weight:900;font-size:13.5px;" class="text-mono">${f.folio}</span>
+              ${chipPago(f)}
+              ${f.uuid ? '' : '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#fef3c7;color:#92400e;">⚠ sin UUID</span>'}
+            </div>
+            <div style="font-size:13px;font-weight:700;color:#0f172a;margin-top:3px;">${f.cliente_nombre || '—'}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">
+              Remisión <span class="text-mono">${f.remision_folio || '—'}</span> · OV ${f.ov_folio || '—'} · emitida ${f.fecha || '—'} · vence <strong>${f.vence || '—'}</strong>${f.dias_credito ? ` (${f.dias_credito}d)` : ' (contado)'}
+              ${f.uuid ? ` · UUID <span class="text-mono" style="font-size:10px;">${String(f.uuid).slice(0, 13)}…</span>` : ''}
+              ${f.cancelada_motivo ? ` · ❌ ${f.cancelada_motivo}` : ''}
+            </div>
+            ${cobros.length ? `
+            <details style="margin-top:4px;"><summary style="font-size:11px;color:#475569;font-weight:700;cursor:pointer;">💵 Cobros (${cobros.length})</summary>
+              <div style="font-size:11px;color:#64748b;margin-top:3px;padding-left:10px;border-left:2px solid #e2e8f0;">${cobros.map(c => `<div>${c.fecha} · $${fmtNum(Number(c.monto).toFixed(2))} · ${c.referencia || 'sin ref'} · ${c.registrado_por_nombre || ''}</div>`).join('')}</div>
+            </details>` : ''}
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:10px;color:#64748b;font-weight:700;">TOTAL</div>
+            <div style="font-size:17px;font-weight:900;color:#0f172a;">$${fmtNum((Number(f.monto) || 0).toFixed(2))} <span style="font-size:10px;color:#64748b;">${f.moneda || 'MXN'}</span></div>
+            ${saldo > 0.01 && f.estado !== 'cancelada' ? `<div style="font-size:11px;color:#dc2626;font-weight:800;">saldo $${fmtNum(saldo.toFixed(2))}</div>` : ''}
+            <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
+              ${saldo > 0.01 && f.estado !== 'cancelada' && esCYCv ? `<button onclick="window.facCobro('${f.id}')" style="padding:7px 13px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💵 Cobro</button>` : ''}
+              ${f.estado !== 'cancelada' && esFACv ? `<button onclick="window.facCancelar('${f.id}')" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">❌</button>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>`;
+  };
+
+  // ── Cuerpo por pestaña
+  let cuerpo = '';
+  if (subtab === 'por_facturar') {
+    const lista = porFacturar.filter(r => pasa((r.folio || '') + ' ' + (r.cliente || '') + ' ' + (r.ov_folio || ''))).sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+    cuerpo = `
+      ${ff ? (() => {
+        const remF = (state.remisiones || []).find(r => r.id === ff.remision_id) || {};
+        return `
+        <div style="background:#fff;border:2px solid #16a34a;border-radius:14px;padding:14px 16px;margin-bottom:12px;">
+          <div style="font-weight:900;font-size:14px;margin-bottom:10px;">🧾 Facturar remisión <span class="text-mono">${remF.folio || ''}</span> · ${remF.cliente || ''}</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Folio factura *</label>
+              <input class="input" id="fac-folio" type="text" value="${(ff.folio || '').replace(/"/g, '&quot;')}" placeholder="A-1234" autocomplete="off" oninput="window.facSet('folio', this.value, 'fac-folio')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">UUID del CFDI</label>
+              <input class="input" id="fac-uuid" type="text" value="${(ff.uuid || '').replace(/"/g, '&quot;')}" placeholder="folio fiscal (36 caracteres)" autocomplete="off" oninput="window.facSet('uuid', this.value, 'fac-uuid')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Monto total (con IVA) *</label>
+              <input class="input" id="fac-monto" type="text" inputmode="decimal" value="${ff.monto || ''}" placeholder="0.00" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.facSet('monto', this.value, 'fac-monto')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Moneda</label>
+              <select class="input" onchange="window.facSet('moneda', this.value)"><option value="MXN" ${ff.moneda === 'MXN' ? 'selected' : ''}>MXN</option><option value="USD" ${ff.moneda === 'USD' ? 'selected' : ''}>USD</option></select></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Fecha emisión</label>
+              <input class="input" type="date" value="${ff.fecha || ''}" onchange="window.facSet('fecha', this.value)" /></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button onclick="window.facGuardar()" ${state.loadingAccion ? 'disabled' : ''} style="padding:11px 20px;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Registrar factura</button>
+            <button onclick="window.facCerrarForm()" style="padding:11px 16px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-weight:800;">Cancelar</button>
+          </div>
+          <div style="font-size:10.5px;color:#94a3b8;margin-top:8px;">El vencimiento se calcula solo: fecha de emisión + días de crédito del cliente (su ficha). Sin días de crédito = contado.</div>
+        </div>`;
+      })() : ''}
+      ${lista.length === 0 ? '<div style="padding:45px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:38px;">🧾</div><div style="font-weight:700;color:#475569;margin-top:6px;">Nada pendiente de facturar — al día ✅</div></div>'
+        : `<div style="display:flex;flex-direction:column;gap:9px;">${lista.map(r => cardRem(r, true)).join('')}</div>`}`;
+  } else if (subtab === 'facturadas') {
+    const lista = facturas.filter(f => pasa((f.folio || '') + ' ' + (f.cliente_nombre || '') + ' ' + (f.remision_folio || '') + ' ' + (f.uuid || '')));
+    cuerpo = lista.length === 0 ? '<div style="padding:45px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">Sin facturas registradas aún</div>'
+      : `<div style="display:flex;flex-direction:column;gap:9px;">${lista.map(cardFac).join('')}</div>`;
+  } else if (subtab === 'envios') {
+    // 🚚 Panel de coordinación de envíos para FAC — la "comunicación continua"
+    const activos = rems.filter(r => pasa((r.folio || '') + ' ' + (r.cliente || '')));
+    const porCargar = activos.filter(r => r.estatus === 'por_cargar');
+    const camino = activos.filter(r => r.estatus === 'en_transito');
+    const hoyIni = Date.now() - 7 * 86400000;
+    const entregadas = activos.filter(r => r.estatus === 'entregada' && (r.entregada_at?.seconds || 0) * 1000 >= hoyIni);
+    const bloque = (titulo, arr2) => `
+      <div style="font-weight:900;font-size:13px;margin:14px 0 8px;">${titulo} (${arr2.length})</div>
+      ${arr2.length === 0 ? '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">— nada aquí —</div>' : `<div style="display:flex;flex-direction:column;gap:8px;">${arr2.map(r => cardRem(r, false)).join('')}</div>`}`;
+    cuerpo = bloque('📄 Por cargar en almacén', porCargar) + bloque('🚚 En camino', camino) + bloque('✅ Entregadas (últimos 7 días)', entregadas);
+  } else {
+    // 💵 CARTERA (CyC)
+    const abiertas = cartera.filter(f => pasa((f.folio || '') + ' ' + (f.cliente_nombre || ''))).sort((a, b) => (a.vence || '9999').localeCompare(b.vence || '9999'));
+    const porCliente = {};
+    cartera.forEach(f => { const k = f.cliente_nombre || '—'; (porCliente[k] = porCliente[k] || []).push(f); });
+    cuerpo = `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:12px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">👥 Saldo por cliente</div>
+        ${Object.keys(porCliente).length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Cartera limpia 🎉</div>' :
+          Object.keys(porCliente).map(k => {
+            const fs = porCliente[k];
+            const venc = fs.filter(x => window._facEstadoPago(x) === 'vencida');
+            return `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;">
+              <span style="font-weight:700;">${k} <span style="color:#94a3b8;font-weight:600;">(${fs.length} fact.)</span></span>
+              <span>abierto: <strong>${window._sumaPorMoneda(fs, window._facSaldo)}</strong>${venc.length ? ` · <span style="color:#dc2626;font-weight:800;">vencido: ${window._sumaPorMoneda(venc, window._facSaldo)}</span>` : ''}</span>
+            </div>`;
+          }).join('')}
+      </div>
+      ${abiertas.length === 0 ? '' : `<div style="display:flex;flex-direction:column;gap:9px;">${abiertas.map(cardFac).join('')}</div>`}`;
+  }
+
+  return `
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #dc2626;"><div style="font-size:10px;font-weight:700;color:#64748b;">🧾 POR FACTURAR</div><div style="font-size:21px;font-weight:800;color:#dc2626;">${porFacturar.length}</div><div style="font-size:10px;color:#94a3b8;">remisión(es) a cliente</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #3b82f6;"><div style="font-size:10px;font-weight:700;color:#64748b;">🚚 ENVÍOS ACTIVOS</div><div style="font-size:21px;font-weight:800;color:#3b82f6;">${enCamino.length}</div><div style="font-size:10px;color:#94a3b8;">por cargar + en camino</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">💰 CARTERA ABIERTA</div><div style="font-size:15px;font-weight:800;color:#7c3aed;">${window._sumaPorMoneda(cartera, window._facSaldo)}</div><div style="font-size:10px;color:#94a3b8;">${cartera.length} factura(s)</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #f59e0b;"><div style="font-size:10px;font-weight:700;color:#64748b;">⏰ VENCIDO</div><div style="font-size:15px;font-weight:800;color:${vencidas.length ? '#dc2626' : '#16a34a'};">${window._sumaPorMoneda(vencidas, window._facSaldo)}</div><div style="font-size:10px;color:#94a3b8;">${vencidas.length} factura(s)</div></div>
+    </div>
+
+    <!-- Tabs + filtro -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
+      <button class="tab-btn ${subtab === 'por_facturar' ? 'active' : ''}" onclick="window.facTab('por_facturar')">🧾 Por facturar (${porFacturar.length})</button>
+      <button class="tab-btn ${subtab === 'facturadas' ? 'active' : ''}" onclick="window.facTab('facturadas')">📋 Facturadas (${facturas.filter(f => f.estado !== 'cancelada').length})</button>
+      <button class="tab-btn ${subtab === 'envios' ? 'active' : ''}" onclick="window.facTab('envios')">🚚 Envíos</button>
+      <button class="tab-btn ${subtab === 'cartera' ? 'active' : ''}" onclick="window.facTab('cartera')">💵 Cartera (${cartera.length})</button>
+      <span style="flex:1;"></span>
+      <input class="input" id="fac-filtro" style="max-width:280px;" placeholder="🔍 Folio, cliente, remisión, UUID..." autocomplete="off" value="${(state.filtros.facturacion || '').replace(/"/g, '&quot;')}" oninput="window.facFiltro(this.value)" />
+    </div>
+    ${cuerpo}
   `;
 }
 
@@ -35630,19 +36100,17 @@ window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.text('CLIENTE', x + 10, yi + 5);
     
-    docPDF.setFontSize(12);
+    // 🔒 CONFIDENCIALIDAD: la etiqueta física lleva SOLO el CÓDIGO del cliente
+    //    (quien vea la tarima no debe poder identificar de qué cliente es)
+    docPDF.setFontSize(20);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
-    const cliNom = pi?.cliente_nombre || odp.cliente_nombre || '—';
-    // 🆕 Wrap a 2 líneas máx (ancho disponible ~70mm)
-    const lCliEt = docPDF.splitTextToSize(cliNom, 70);
-    const lCliEtAlta = lCliEt.length === 1 ? 11 : 10;
-    lCliEt.slice(0, 2).forEach((line, i) => docPDF.text(line, x + 10, yi + lCliEtAlta + (i * 4)));
-    
-    docPDF.setFontSize(8);
+    docPDF.text(String(pi?.cliente_codigo || odp.cliente_codigo || '—'), x + 10, yi + 12);
+
+    docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    docPDF.text(`Código: ${pi?.cliente_codigo || odp.cliente_codigo || '—'}`, x + 10, yi + 15.5);
+    docPDF.text('Código interno de cliente', x + 10, yi + 16);
     
     // PRODUCTO - mitad derecha
     const colDx = x + (etiqW / 2) + 2;
@@ -38558,26 +39026,25 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
         doc.addImage(d.cliente_logo_base64, formato, x + 3, y + 2, w - 6, logoH - 2, undefined, 'FAST');
       } catch (e) {
         console.error('Error cargando logo cliente:', e);
-        // Fallback: nombre del cliente como texto
+        // 🔒 Fallback: solo CÓDIGO del cliente (la etiqueta física no revela el nombre)
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(11);
-        doc.text((d.cliente_nombre || 'CLIENTE').substring(0, 35), x + w/2, y + 8, { align: 'center' });
+        doc.setFontSize(13);
+        doc.text(String(d.codigo_cliente || '—'), x + w/2, y + 8, { align: 'center' });
       }
     } else {
-      // Sin logo subido: cuadro placeholder con nombre del cliente
+      // 🔒 Sin logo subido: solo CÓDIGO del cliente (no exponer el nombre en la tarima)
       doc.setFillColor(245, 245, 245);
       doc.rect(x + 2, y + 2, w - 4, logoH - 2, 'F');
       doc.setDrawColor(150, 150, 150);
       doc.rect(x + 2, y + 2, w - 4, logoH - 2);
       doc.setDrawColor(0, 0, 0);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      const cliente = (d.cliente_nombre || 'CLIENTE').substring(0, 35);
-      doc.text(cliente, x + w/2, y + 6, { align: 'center' });
+      doc.setFontSize(13);
+      doc.text(String(d.codigo_cliente || '—'), x + w/2, y + 6, { align: 'center' });
       doc.setFont('helvetica', 'italic');
       doc.setFontSize(6);
       doc.setTextColor(120, 120, 120);
-      doc.text('(sube el logo del cliente en su ficha)', x + w/2, y + 10, { align: 'center' });
+      doc.text('(código interno · sube el logo del cliente en su ficha)', x + w/2, y + 10, { align: 'center' });
       doc.setTextColor(0, 0, 0);
     }
   } else {
@@ -44506,8 +44973,10 @@ function modalDetalleODP() {
               <div><strong>Cantidad:</strong> ${fmtCantidadUM(odp.cantidad, odp.um)}</div>
               <div><strong>Máquina:</strong> ${odp.maquina_asignada || '—'}</div>
               <div><strong>Turno:</strong> ${odp.turno_asignado || '—'}</div>
-              <div><strong>Inicio:</strong> ${odp.fecha_inicio_programada || '—'}</div>
-              <div><strong>Entrega:</strong> ${odp.fecha_entrega_programada || '—'}</div>
+              <div><strong>Inicio plan:</strong> ${odp.fecha_inicio_programada || '—'}</div>
+              <div><strong>🏁 Inició producción:</strong> ${window._odpInicioReal(odp) || '— (aún no arranca)'}</div>
+              <div><strong>🎯 Entrega solicitada:</strong> ${odp.fecha_entrega_programada || '—'}</div>
+              <div><strong>Iniciada por:</strong> ${odp.iniciada_por_nombre || odp.inicio_real_por || '—'}</div>
             </div>
             ${odp.descripcion ? `<div style="margin-top:8px;"><strong>Descripción:</strong> ${odp.descripcion}</div>` : ''}
             ${odp.planeacion_notas ? `<div style="margin-top:8px;padding:8px;background:#fffbeb;border-radius:6px;"><strong>Notas:</strong> ${odp.planeacion_notas}</div>` : ''}
@@ -49518,6 +49987,18 @@ window.aprobarPedido = async (pedidoId, folio) => {
   const pedidoCheck = state.pedidos.find(p => p.id === pedidoId);
   const esStockInterno = pedidoCheck?.tipo_pi === 'stock_interno';
   const esComercializadoPI = pedidoCheck?.tipo_pi === 'comercializado';
+
+  // 💳 FE: candado de crédito — si el cliente tiene facturas VENCIDAS con saldo,
+  //    quien aprueba lo ve ANTES de comprometer producción (y queda en bitácora)
+  if (pedidoCheck?.cliente_codigo && pedidoCheck.cliente_codigo !== 'STOCK' && !esStockInterno) {
+    const _vencidas = (window._carteraVencidaCliente ? window._carteraVencidaCliente(pedidoCheck.cliente_codigo) : []);
+    if (_vencidas.length) {
+      const _total = window._sumaPorMoneda(_vencidas, window._facSaldo);
+      const _masVieja = _vencidas.reduce((m, f) => ((f.vence || '9999') < m ? f.vence : m), '9999-12-31');
+      if (!confirm(`💳 ⚠ CARTERA VENCIDA — ${pedidoCheck.cliente_nombre}\n\n${_vencidas.length} factura(s) vencida(s) con saldo: ${_total}\nLa más antigua venció el ${_masVieja}.\n\n¿Aprobar el pedido DE TODOS MODOS?\n(La decisión queda registrada en la bitácora)`)) { toast('Aprobación detenida por cartera vencida — revisa con CyC', 'error'); return; }
+      window.logAccion('aprobado_con_cartera_vencida', folio, `${pedidoCheck.cliente_nombre} · ${_vencidas.length} factura(s) vencida(s) · ${_total} · más antigua ${_masVieja}`);
+    }
+  }
   
   const mensaje = esStockInterno 
     ? '¿Aprobar PI de PRODUCCIÓN PARA STOCK ' + folio + '?\n\nSe generarán solo ODPs (NO se generan OVs).\nLas tarimas quedarán en stock disponible para futuros clientes.'
