@@ -3142,6 +3142,7 @@ window.stockLibreProducto = (productoCodigo) => {
     if (t.producto_codigo !== productoCodigo) return false;
     if (t.activo === false) return false;
     if (t.reservada) return false;
+    if (t.retenida) return false;   // 🔒 FD: hold de Calidad — no es stock disponible
     // Debe estar físicamente disponible (no embarcada/entregada/en empaque)
     const enStock = ['en_cedis_mty', 'en_cedis_mex', 'en_almacen_planta'].includes(t.estatus);
     if (!enStock) return false;
@@ -4039,7 +4040,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B26-nccapa</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B27-cuarentena</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -22705,7 +22706,42 @@ const _RECALL_UBI = {
   en_transito_cedis_mex: '🚚 Tránsito → CEDIS MEX', en_cedis_mex: '🏬 CEDIS MEX',
   embarcada: '📦 Embarcada', entregada: '🔴 ENTREGADA AL CLIENTE', rechazada: '⛔ Rechazada', devuelta: '🔄 Devuelta',
 };
-window._recallUbi = (t) => _RECALL_UBI[t?.estatus] || (t?.estatus || '—');
+window._recallUbi = (t) => (t?.retenida ? '🔒 RETENIDA · ' : '') + (_RECALL_UBI[t?.estatus] || (t?.estatus || '—'));
+
+// 🔒 FD: HOLD / RETENCIÓN de tarimas (distinto de rechazar — ISO §8.7 producto en investigación).
+//    Una tarima retenida NO aparece como stock libre ni se puede asignar a OV/embarque.
+window.tarimaHold = async (tarimaId, retener) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CAL', 'ALP', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Calidad/dirección retienen tarimas', 'error'); return; }
+  const t = (state.tarimas || []).find(x => x.id === tarimaId) || (state.recallRes?.modo === 'pt' && state.recallRes.tarima?.id === tarimaId ? state.recallRes.tarima : null);
+  const codigo = t?.codigo || tarimaId;
+  let motivo = '';
+  if (retener) {
+    motivo = prompt(`🔒 RETENER tarima ${codigo}\n\nMotivo de la retención (obligatorio — queja, sospecha, investigación...):`);
+    if (!motivo || !motivo.trim()) { toast('Motivo obligatorio para retener', 'error'); return; }
+  } else if (!confirm(`🔓 ¿Quitar la retención de ${codigo}?\n\nVolverá a estar disponible para asignar/embarcar.`)) return;
+  try {
+    await updateDoc(doc(db, 'tarimas', tarimaId), retener ? {
+      retenida: true, retenida_motivo: motivo.trim(),
+      retenida_por: u.nombre || u.email || '', retenida_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    } : {
+      retenida: false, liberada_hold_por: u.nombre || u.email || '', liberada_hold_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    const tl = (state.tarimas || []).find(x => x.id === tarimaId); if (tl) tl.retenida = !!retener;
+    if (state.recallRes?.modo === 'pt') {
+      if (state.recallRes.tarima?.id === tarimaId) state.recallRes.tarima.retenida = !!retener;
+      const h = (state.recallRes.hermanas || []).find(x => x.id === tarimaId); if (h) h.retenida = !!retener;
+    }
+    toast(retener ? `🔒 ${codigo} RETENIDA — fuera de stock/asignación` : `🔓 ${codigo} liberada de retención`);
+    window.logAccion(retener ? 'tarima_retenida' : 'tarima_liberada_hold', codigo, retener ? motivo.trim() : '');
+    if (retener) {
+      addDoc(collection(db, 'notificaciones'), { titulo: `🔒 Tarima ${codigo} RETENIDA por Calidad`, mensaje: `${t?.producto_codigo || ''} · ${t?.cliente_nombre || ''} · ${motivo.trim()}`, depto_destino: 'CS', tipo: 'warning', folio_ref: t?.odp_folio || '', leida: false, created_at: serverTimestamp() }).catch(() => {});
+    }
+    window.forzarRender();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
 
 // ODP → resumen de huecos de trazabilidad MP (procesos de extrusión sin consumos)
 window._recallHuecosODP = (o) => (o?.procesos_completados || [])
@@ -22934,8 +22970,14 @@ function renderRecall() {
           <div>
             <div style="font-size:15px;font-weight:900;">Tarima <span class="text-mono">${r.tarima.codigo}</span> · ${r.tarima.producto_codigo}</div>
             <div style="font-size:12px;color:#475569;margin-top:2px;">Lote PT: ${r.tarima.lote_codigo || '—'} · Cliente: <strong>${r.tarima.cliente_nombre || 'stock'}</strong> · Ubicación: <strong>${window._recallUbi(r.tarima)}</strong> · ODP: <strong class="text-mono">${r.odp?.folio || '⚠ no localizada'}</strong></div>
+            ${r.tarima.retenida ? `<div style="font-size:11.5px;color:#92400e;font-weight:700;margin-top:3px;">🔒 Retenida por ${r.tarima.retenida_por || '—'}: ${r.tarima.retenida_motivo || ''}</div>` : ''}
           </div>
-          <button onclick="window.recallCopiar()" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Copiar reporte</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${!['entregada', 'embarcada'].includes(r.tarima.estatus) ? (r.tarima.retenida
+              ? `<button onclick="window.tarimaHold('${r.tarima.id}', false)" style="padding:9px 16px;background:#fff;color:#16a34a;border:1.5px solid #16a34a;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔓 Quitar retención</button>`
+              : `<button onclick="window.tarimaHold('${r.tarima.id}', true)" style="padding:9px 16px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔒 Retener (hold)</button>`) : ''}
+            <button onclick="window.recallCopiar()" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📋 Copiar reporte</button>
+          </div>
         </div>
         ${r.huecos.length ? `<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:12px;color:#92400e;"><strong>⚠ Esta ODP cerró extrusión SIN descuento de MP:</strong><br>${r.huecos.map(h => `· ${h}`).join('<br>')}</div>` : ''}
         ${r.lotesMP.length ? `
@@ -30158,11 +30200,16 @@ function modalRecibirOC() {
                         <input class="input" type="date" value="${l.certificado_fecha || ''}" oninput="window.actualizarRecepcionLinea(${idx},'certificado_fecha',this.value)" />
                       </div>
                       <div class="field" style="margin:0;">
-                        <label class="field-label" style="font-size:11px;">¿Cumple?</label>
-                        <div style="display:flex;gap:6px;">
-                          <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','si');render()" type="button" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'si' ? '#16a34a' : '#cbd5e1'};background:${l.cumple_calidad === 'si' ? '#16a34a' : '#fff'};color:${l.cumple_calidad === 'si' ? '#fff' : '#16a34a'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">✓ Sí</button>
-                          <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','no');render()" type="button" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'no' ? '#dc2626' : '#cbd5e1'};background:${l.cumple_calidad === 'no' ? '#dc2626' : '#fff'};color:${l.cumple_calidad === 'no' ? '#fff' : '#dc2626'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">✗ No</button>
-                        </div>
+                        <label class="field-label" style="font-size:11px;">🗓 Caducidad (si aplica)</label>
+                        <input class="input" type="date" value="${l.fecha_caducidad || ''}" oninput="window.actualizarRecepcionLinea(${idx},'fecha_caducidad',this.value)" title="Pigmentos, masterbatch y aditivos con vida útil — el FIFO bloquea lotes vencidos" />
+                      </div>
+                    </div>
+                    <div class="field" style="margin-top:8px;margin-bottom:0;">
+                      <label class="field-label" style="font-size:11px;">¿Cumple calidad?</label>
+                      <div style="display:flex;gap:6px;">
+                        <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','si');render()" type="button" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'si' ? '#16a34a' : '#cbd5e1'};background:${l.cumple_calidad === 'si' ? '#16a34a' : '#fff'};color:${l.cumple_calidad === 'si' ? '#fff' : '#16a34a'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">✓ Sí</button>
+                        <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','cuarentena');render()" type="button" title="Entra al almacén pero BLOQUEADO hasta que Calidad lo libere" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'cuarentena' ? '#f59e0b' : '#cbd5e1'};background:${l.cumple_calidad === 'cuarentena' ? '#f59e0b' : '#fff'};color:${l.cumple_calidad === 'cuarentena' ? '#fff' : '#b45309'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">🔬 Cuarentena</button>
+                        <button onclick="window.actualizarRecepcionLinea(${idx},'cumple_calidad','no');render()" type="button" style="flex:1;padding:7px;border:2px solid ${l.cumple_calidad === 'no' ? '#dc2626' : '#cbd5e1'};background:${l.cumple_calidad === 'no' ? '#dc2626' : '#fff'};color:${l.cumple_calidad === 'no' ? '#fff' : '#dc2626'};border-radius:6px;font-weight:700;font-size:11px;cursor:pointer;">✗ No</button>
                       </div>
                     </div>
                     
@@ -30467,7 +30514,10 @@ window.confirmarRecepcionOC = async (ocId) => {
       const loteFolio = `${año2dig}-${docCorto}-${l.mp_codigo}`;
       
       // Si NO cumple calidad: estatus diferente y NO suma al stock
+      // 🔬 FD: cuarentena = el material físico ENTRA (con stock) pero queda BLOQUEADO
+      //    para FIFO/salidas hasta que Calidad lo libere (_mpDisponible lo excluye)
       const noPasaCalidad = l.cumple_calidad === 'no';
+      const enCuarentena = l.cumple_calidad === 'cuarentena';
       
       const loteData = {
         lote_folio: loteFolio,
@@ -30479,6 +30529,7 @@ window.confirmarRecepcionOC = async (ocId) => {
         lote_proveedor: (l.lote_proveedor || '').trim(),
         certificado_numero: (l.certificado_numero || '').trim(),
         certificado_fecha: l.certificado_fecha || '',
+        fecha_caducidad: l.fecha_caducidad || '',   // 🗓 FD: vida útil (FIFO bloquea vencidos)
         cumple_calidad: l.cumple_calidad || 'si',
         observaciones_calidad: (l.observaciones_calidad || '').trim(),
         // Documento
@@ -30492,7 +30543,7 @@ window.confirmarRecepcionOC = async (ocId) => {
         rc_folio: oc.rc_folio || '',
         // Cantidades
         cantidad_inicial: cantRecibida,
-        stock_actual: noPasaCalidad ? 0 : cantRecibida, // si no cumple, no entra a stock
+        stock_actual: noPasaCalidad ? 0 : cantRecibida, // si no cumple, no entra a stock (cuarentena SÍ tiene stock, pero bloqueado)
         um: l.um || 'Kg',
         costo_unitario: costoUnit,
         costo_total: cantRecibida * costoUnit,
@@ -30503,7 +30554,7 @@ window.confirmarRecepcionOC = async (ocId) => {
         recibido_por_id: state.user.id || '',
         recibido_por_nombre: state.user.nombre || state.user.email || 'Usuario',
         // Estatus
-        estatus: noPasaCalidad ? 'rechazado_calidad' : 'activo',
+        estatus: noPasaCalidad ? 'rechazado_calidad' : (enCuarentena ? 'cuarentena' : 'activo'),
         created_at: serverTimestamp(),
         updated_at: serverTimestamp()
       };
@@ -30584,7 +30635,17 @@ window.confirmarRecepcionOC = async (ocId) => {
     
     // Hay líneas rechazadas?
     const hayRechazo = lineasARecibir.some(l => l.cumple_calidad === 'no');
-    
+    // 🔬 FD: material en cuarentena → Calidad debe liberarlo (queda bloqueado para FIFO)
+    const hayCuarentena = lineasARecibir.some(l => l.cumple_calidad === 'cuarentena');
+    if (hayCuarentena) {
+      batch.set(doc(collection(db, 'notificaciones')), {
+        titulo: `🔬 MP en CUARENTENA · ${oc.folio}`,
+        mensaje: `${oc.proveedor} · ${lineasARecibir.filter(l => l.cumple_calidad === 'cuarentena').map(l => l.mp_codigo).join(', ')} · bloqueada para producción hasta que Calidad la libere (Almacén MP)`,
+        depto_destino: 'CAL', tipo: 'warning', folio_ref: oc.folio,
+        vista_destino: 'almacen_mp', leida: false, created_at: serverTimestamp()
+      });
+    }
+
     batch.update(doc(db, 'ordenes_compra', ocId), {
       lineas: lineasActualizadas,
       estatus: todaCompleta ? 'recibida' : 'recepcion_parcial',
@@ -32660,9 +32721,21 @@ window._almacenMPActivo = () => {
 
 // Stock de un MP. Con `almacen` cuenta SOLO los lotes de ese almacén físico
 // (sin él suma todos — para reportes globales, no para validar salidas).
+// 🔬 FD: DISPONIBILIDAD REAL de un lote de MP.
+//    Un lote NO está disponible si: está en cuarentena (pendiente de liberación
+//    de Calidad), fue rechazado, se agotó, o su fecha de caducidad ya pasó.
+//    Legacy: lotes viejos sin estatus se tratan como activos.
+window._mpVencido = (l) => !!(l && l.fecha_caducidad && l.fecha_caducidad < new Date().toLocaleDateString('en-CA'));
+window._mpPorVencer = (l, dias) => {
+  if (!l || !l.fecha_caducidad || window._mpVencido(l)) return false;
+  const lim = new Date(Date.now() + (dias || 30) * 86400000).toLocaleDateString('en-CA');
+  return l.fecha_caducidad <= lim;
+};
+window._mpDisponible = (l) => !!(l && (!l.estatus || l.estatus === 'activo') && !window._mpVencido(l));
+
 window._stockMP = (mpCodigo, almacen) => {
   return (state.lotes_mp || [])
-    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado'
+    .filter(l => l.mp_codigo === mpCodigo && window._mpDisponible(l)
       && (!almacen || window._almacenDeLoteMP(l) === almacen))
     .reduce((s, l) => s + (Number(l.stock_actual) || 0), 0);
 };
@@ -32778,8 +32851,10 @@ window._fifoLoteOrden = (a, b) => {
 };
 async function _descontarLotesMP(batch, mpCodigo, cantidad, almacen) {
   let restante = cantidad;
+  // 🔬 FD: solo lotes DISPONIBLES — excluye cuarentena, rechazados y VENCIDOS
+  //    (antes un lote en cuarentena o caducado podía salir por FIFO)
   const lotes = (state.lotes_mp || [])
-    .filter(l => l.mp_codigo === mpCodigo && l.estatus !== 'agotado' && (Number(l.stock_actual)||0) > 0
+    .filter(l => l.mp_codigo === mpCodigo && window._mpDisponible(l) && (Number(l.stock_actual)||0) > 0
       && (!almacen || window._almacenDeLoteMP(l) === almacen))
     .sort(window._fifoLoteOrden); // FIFO
   const afectados = [];
@@ -33647,6 +33722,8 @@ function renderKardexMP(mpCodigo) {
     if (!lotesAgotados.includes(l)) lotesAgotados.push(l);
   });
   const lotesRechazados = lotes.filter(l => l.estatus === 'rechazado_calidad');
+  // 🔬 FD: lotes en cuarentena (bloqueados hasta liberación de Calidad)
+  const lotesCuarentena = lotes.filter(l => l.estatus === 'cuarentena');
   
   // Movimientos de este MP
   const movimientos = (state.movimientos_mp || []).filter(m => m.mp_codigo === mpCodigo);
@@ -33726,25 +33803,71 @@ function renderKardexMP(mpCodigo) {
       <button class="tab-btn ${tab === 'lotes' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','lotes')">📦 Lotes activos (${lotesActivos.length})</button>
       <button class="tab-btn ${tab === 'movimientos' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','movimientos')">📜 Movimientos (${movimientos.length})</button>
       <button class="tab-btn ${tab === 'agotados' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','agotados')">🔴 Agotados (${lotesAgotados.length})</button>
+      ${lotesCuarentena.length > 0 ? `
+        <button class="tab-btn ${tab === 'cuarentena' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','cuarentena')" style="border-color:#f59e0b;">🔬 Cuarentena (${lotesCuarentena.length})</button>
+      ` : ''}
       ${lotesRechazados.length > 0 ? `
         <button class="tab-btn ${tab === 'rechazados' ? 'active' : ''}" onclick="cambiarTab('kardex_mp','rechazados')">⚠ Rechazados (${lotesRechazados.length})</button>
       ` : ''}
     </div>
-    
+    ${lotesCuarentena.length > 0 && tab !== 'cuarentena' ? `<div style="margin-bottom:10px;padding:9px 13px;background:#fffbeb;border:1px solid #f59e0b;border-radius:8px;font-size:12px;color:#92400e;font-weight:700;">🔬 Hay ${lotesCuarentena.length} lote(s) en CUARENTENA bloqueados para producción — Calidad debe liberarlos o rechazarlos.</div>` : ''}
+
     ${tab === 'lotes' ? renderLotesKardex(lotesActivos, mp, false, false, puedeVerCostos) :
       tab === 'movimientos' ? renderMovimientosKardex(movimientosMostrar, mp, puedeVerCostos) :
       tab === 'agotados' ? renderLotesKardex(lotesAgotados, mp, true, false, puedeVerCostos) :
+      tab === 'cuarentena' ? renderLotesKardex(lotesCuarentena, mp, false, false, puedeVerCostos, true) :
       tab === 'rechazados' ? renderLotesKardex(lotesRechazados, mp, false, true, puedeVerCostos) : ''}
   `;
 }
 
-function renderLotesKardex(lotes, mp, agotados, rechazados, puedeVerCostos) {
+// 🔬 FD: liberar / rechazar lotes de MP en cuarentena (solo Calidad/dirección)
+window.mpLiberarCuarentena = async (loteId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CAL', 'ALP', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Calidad/dirección liberan cuarentenas', 'error'); return; }
+  const l = (state.lotes_mp || []).find(x => x.id === loteId); if (!l) return;
+  if (!confirm(`🔬 ¿LIBERAR el lote ${l.lote_folio} de cuarentena?\n\n${fmtNum(l.stock_actual)} ${l.um || 'Kg'} quedarán DISPONIBLES para producción (entra al FIFO).`)) return;
+  try {
+    await updateDoc(doc(db, 'lotes_mp', loteId), {
+      estatus: 'activo',
+      cuarentena_liberada_at: serverTimestamp(),
+      cuarentena_liberada_por: u.nombre || u.email || '',
+      updated_at: serverTimestamp()
+    });
+    const ll = (state.lotes_mp || []).find(x => x.id === loteId); if (ll) ll.estatus = 'activo';
+    toast(`✅ ${l.lote_folio} liberado de cuarentena — disponible en FIFO`);
+    window.logAccion('mp_liberada_cuarentena', l.lote_folio, `${l.mp_codigo} · ${fmtNum(l.stock_actual)} ${l.um || 'Kg'} · ${l.proveedor || ''}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.mpRechazarCuarentena = async (loteId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CAL', 'ALP', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Calidad/dirección rechazan cuarentenas', 'error'); return; }
+  const l = (state.lotes_mp || []).find(x => x.id === loteId); if (!l) return;
+  const motivo = prompt(`⛔ RECHAZAR el lote ${l.lote_folio} (${fmtNum(l.stock_actual)} ${l.um || 'Kg'})\n\nMotivo del rechazo (obligatorio) — se devolverá/desechará con el proveedor:`);
+  if (!motivo || !motivo.trim()) { toast('Motivo obligatorio', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'lotes_mp', loteId), {
+      estatus: 'rechazado_calidad',
+      kg_rechazados_cuarentena: Number(l.stock_actual) || 0,
+      stock_actual: 0,
+      observaciones_calidad: ((l.observaciones_calidad || '') + ` · Rechazado desde cuarentena: ${motivo.trim()}`).trim(),
+      cuarentena_rechazada_at: serverTimestamp(),
+      cuarentena_rechazada_por: u.nombre || u.email || '',
+      updated_at: serverTimestamp()
+    });
+    const ll = (state.lotes_mp || []).find(x => x.id === loteId); if (ll) { ll.estatus = 'rechazado_calidad'; ll.stock_actual = 0; }
+    toast(`⛔ ${l.lote_folio} rechazado — notifica a Compras para la devolución`);
+    window.logAccion('mp_rechazada_cuarentena', l.lote_folio, `${l.mp_codigo} · ${motivo.trim()}`);
+    addDoc(collection(db, 'notificaciones'), { titulo: `⛔ Lote ${l.lote_folio} rechazado desde cuarentena`, mensaje: `${l.mp_codigo} · ${l.proveedor || ''} · ${motivo.trim()} · gestionar devolución con el proveedor`, depto_destino: 'COMP', tipo: 'error', folio_ref: l.oc_folio || '', leida: false, created_at: serverTimestamp() }).catch(() => {});
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function renderLotesKardex(lotes, mp, agotados, rechazados, puedeVerCostos, cuarentena) {
   if (lotes.length === 0) {
     return `
       <div style="padding:60px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
-        <div style="font-size:48px;margin-bottom:12px;">${rechazados ? '⚠' : agotados ? '🔴' : '📦'}</div>
-        <div style="font-weight:700;color:#475569;">${rechazados ? 'No hay lotes rechazados' : agotados ? 'No hay lotes agotados' : 'No hay lotes activos'}</div>
-        ${!agotados && !rechazados ? `<div style="font-size:11px;margin-top:6px;">Los lotes aparecen aquí cuando ALP captura una recepción de OC</div>` : ''}
+        <div style="font-size:48px;margin-bottom:12px;">${cuarentena ? '🔬' : rechazados ? '⚠' : agotados ? '🔴' : '📦'}</div>
+        <div style="font-weight:700;color:#475569;">${cuarentena ? 'No hay lotes en cuarentena' : rechazados ? 'No hay lotes rechazados' : agotados ? 'No hay lotes agotados' : 'No hay lotes activos'}</div>
+        ${!agotados && !rechazados && !cuarentena ? `<div style="font-size:11px;margin-top:6px;">Los lotes aparecen aquí cuando ALP captura una recepción de OC</div>` : ''}
       </div>
     `;
   }
@@ -33762,9 +33885,14 @@ function renderLotesKardex(lotes, mp, agotados, rechazados, puedeVerCostos) {
         const consumido = (Number(l.cantidad_inicial) || 0) - (Number(l.stock_actual) || 0);
         const pctConsumido = l.cantidad_inicial > 0 ? Math.min(100, Math.max(0, (consumido / l.cantidad_inicial) * 100)) : 0;
         const rechazadoLote = l.estatus === 'rechazado_calidad';
-        const colorPrincipal = rechazadoLote ? '#dc2626' : agotados ? '#94a3b8' : '#16a34a';
+        const enCuarentena = l.estatus === 'cuarentena';
+        const vencidoLote = window._mpVencido(l);
+        const porVencerLote = window._mpPorVencer(l, 30);
+        const colorPrincipal = enCuarentena ? '#f59e0b' : rechazadoLote ? '#dc2626' : vencidoLote ? '#7c2d12' : agotados ? '#94a3b8' : '#16a34a';
         const colorBg = rechazadoLote ? '#fef2f2' : agotados ? '#f8fafc' : '#f0fdf4';
-        
+        const _uK = state.user || {};
+        const puedeCAL = _uK.rol === 'admin' || ['CAL', 'ALP', 'CEO', 'ADMIN'].includes(_uK.depto);
+
         return `
           <div class="panel" style="border-left:4px solid ${colorPrincipal};${rechazadoLote ? 'opacity:0.85;' : ''}">
             <div style="padding:14px 18px;">
@@ -33772,9 +33900,14 @@ function renderLotesKardex(lotes, mp, agotados, rechazados, puedeVerCostos) {
               <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
                 <div>
                   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    ${!agotados && !rechazados ? `<span style="background:${idx === 0 ? '#16a34a' : '#94a3b8'};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:800;">${idx === 0 ? 'FIFO #1 (próximo a usar)' : 'FIFO #' + (idx + 1)}</span>` : ''}
+                    ${!agotados && !rechazados && !cuarentena ? `<span style="background:${idx === 0 ? '#16a34a' : '#94a3b8'};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:800;">${idx === 0 ? 'FIFO #1 (próximo a usar)' : 'FIFO #' + (idx + 1)}</span>` : ''}
                     <span class="text-mono" style="font-weight:800;font-size:14px;color:#1e293b;">${l.lote_folio}</span>
-                    ${rechazadoLote ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">⚠ RECHAZADO</span>' : agotados ? '<span style="background:#e2e8f0;color:#475569;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">AGOTADO</span>' : '<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">ACTIVO</span>'}
+                    ${enCuarentena ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">🔬 CUARENTENA — bloqueado</span>' : rechazadoLote ? '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">⚠ RECHAZADO</span>' : agotados ? '<span style="background:#e2e8f0;color:#475569;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">AGOTADO</span>' : '<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">ACTIVO</span>'}
+                    ${vencidoLote ? `<span style="background:#7c2d12;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:800;">💀 VENCIDO ${l.fecha_caducidad} — fuera de FIFO</span>` : (porVencerLote ? `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">⏳ vence ${l.fecha_caducidad}</span>` : '')}
+                    ${enCuarentena && puedeCAL ? `
+                      <button onclick="window.mpLiberarCuarentena('${l.id}')" style="padding:5px 11px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">✅ Liberar</button>
+                      <button onclick="window.mpRechazarCuarentena('${l.id}')" style="padding:5px 11px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">⛔ Rechazar</button>
+                    ` : ''}
                   </div>
                   <div style="font-size:12px;color:#475569;margin-top:6px;">
                     <strong>🏭 ${l.proveedor || '—'}</strong>
@@ -42424,6 +42557,8 @@ function modalAsignarTarimasOV() {
   const disponibles = state.tarimas.filter(t => {
     // Mismo producto SIEMPRE
     if (t.producto_codigo !== ov.producto_codigo) return false;
+    // 🔒 FD: tarima RETENIDA por Calidad no se puede asignar/embarcar
+    if (t.retenida) return false;
     // Sin OV ACTIVA asignada (una OV cancelada libera la tarima para reasignar)
     const _ovAct = window.ovActivaDeTarima(t);
     if (_ovAct && _ovAct.id !== ov.id) return false;
@@ -50363,9 +50498,9 @@ window.confirmarCompletarProceso = async (odpId) => {
         
         // Verificar stock
         for (const desc of Object.values(necesariosPorMP)) {
-          const lotesActivos = (state.lotes_mp || []).filter(l => 
-            l.mp_codigo === desc.mp_codigo && 
-            l.estatus === 'activo' && 
+          const lotesActivos = (state.lotes_mp || []).filter(l =>
+            l.mp_codigo === desc.mp_codigo &&
+            window._mpDisponible(l) &&   // 🔬 FD: excluye cuarentena y vencidos
             (Number(l.stock_actual) || 0) > 0
           );
           const stockTotal = lotesActivos.reduce((s, l) => s + (Number(l.stock_actual) || 0), 0);
@@ -50388,7 +50523,7 @@ window.confirmarCompletarProceso = async (odpId) => {
         // Calcular consumos FIFO por MP
         for (const desc of Object.values(necesariosPorMP)) {
           const lotesActivos = (state.lotes_mp || [])
-            .filter(l => l.mp_codigo === desc.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
+            .filter(l => l.mp_codigo === desc.mp_codigo && window._mpDisponible(l) && (Number(l.stock_actual) || 0) > 0
               && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
             .sort(window._fifoLoteOrden);
           
@@ -52101,8 +52236,8 @@ window.aplicarConsumoMPYCerrarProceso = async () => {
     // Si cambió de MP, hay que buscar lotes del nuevo MP
     if (c.es_sustitucion) {
       const lotesActivos = (state.lotes_mp || [])
-        .filter(l => l.mp_codigo === c.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
-          && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+        .filter(l => l.mp_codigo === c.mp_codigo && window._mpDisponible(l) && (Number(l.stock_actual) || 0) > 0
+          && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta · 🔬 FD: sin cuarentena/vencidos
         .sort(window._fifoLoteOrden);
       
       let restante = Number(c.kg_ajustados);
@@ -52150,8 +52285,8 @@ window.aplicarConsumoMPYCerrarProceso = async () => {
       } else {
         // Recalcular lotes FIFO con el nuevo kg
         const lotesActivos = (state.lotes_mp || [])
-          .filter(l => l.mp_codigo === c.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
-            && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+          .filter(l => l.mp_codigo === c.mp_codigo && window._mpDisponible(l) && (Number(l.stock_actual) || 0) > 0
+            && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta · 🔬 FD: sin cuarentena/vencidos
           .sort(window._fifoLoteOrden);
         
         let restante = kgAj;
@@ -52191,8 +52326,8 @@ window.aplicarConsumoMPYCerrarProceso = async () => {
   // Agregar MP extras
   for (const e of (f.consumosAgregados || [])) {
     const lotesActivos = (state.lotes_mp || [])
-      .filter(l => l.mp_codigo === e.mp_codigo && l.estatus === 'activo' && (Number(l.stock_actual) || 0) > 0
-        && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta
+      .filter(l => l.mp_codigo === e.mp_codigo && window._mpDisponible(l) && (Number(l.stock_actual) || 0) > 0
+        && window._almacenDeLoteMP(l) === 'ALMACEN-PLANTA-MTY')   // 🔧 FIX C2: produccion consume SOLO lotes en Planta · 🔬 FD: sin cuarentena/vencidos
       .sort(window._fifoLoteOrden);
     
     let restante = Number(e.kg);
