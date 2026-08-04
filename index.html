@@ -4085,7 +4085,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B35-nominafull</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B36-faclogistica</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4171,7 +4171,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Embarques del día</button>
           <button class="nav-item ${state.vista === 'embarques_mex' ? 'active' : ''}" data-vista="embarques_mex">🚚 Embarques MEX (al cliente)</button>
         ` : ''}
-        ${(esCEO || esADMIN || esCS || esKAM || esPLN || esCOMP) && !esALP && !esCEDMTY && !esCEDMEX ? `
+        ${(esCEO || esADMIN || esCS || esKAM || esPLN || esCOMP || esFAC || esCYC) && !esALP && !esCEDMTY && !esCEDMEX ? `
           <div class="sidebar-section">📊 Inventarios (Producto Terminado)</div>
           <button class="nav-item ${state.vista === 'inv_mty' ? 'active' : ''}" data-vista="inv_mty">📦 Inventario CEDIS-MTY</button>
           <button class="nav-item ${state.vista === 'inv_mex' ? 'active' : ''}" data-vista="inv_mex">🇲🇽 Inventario CEDIS-MEX</button>
@@ -24010,6 +24010,7 @@ function renderFacturacion() {
             ${!fac && r.estatus === 'por_cargar' && r.ov_id && esFACv ? (ov?.salida_sin_factura_aut
               ? '<span style="font-size:10px;font-weight:800;padding:6px 10px;border-radius:8px;background:#fef3c7;color:#92400e;align-self:center;">🔓 Salida con remisión AUTORIZADA</span>'
               : `<button onclick="window.facAutorizarSinFactura('${r.id}')" title="Excepción: dejar salir sin factura (con motivo)" style="padding:9px 16px;background:#fff;color:#b45309;border:1.5px solid #f59e0b;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔓 Autorizar salida con remisión</button>`) : ''}
+            ${!conFacturar && r.estatus === 'por_cargar' && r.ov_id && esFACv ? `<button onclick="window.confirmarCargadoEnviado('${r.ov_id}')" title="FAC también opera logística: marcar que el material ya se cargó y salió" style="padding:9px 16px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🚚 Cargado y enviado</button>` : ''}
             ${!conFacturar && r.estatus === 'en_transito' && r.ov_id && esFACv ? `<button onclick="window.confirmarEntregaSalida('${r.ov_id}')" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✅ Confirmar entrega</button>` : ''}
           </div>
         </div>
@@ -24955,6 +24956,12 @@ window.confirmarCargadoEnviado = async (ovId) => {
   state.loadingAccion = true; render();
   try {
     const batch = writeBatch(db);
+    // 🔗 Sincronizar también la REMISIÓN a "en camino" (la pestaña Envíos de FAC agrupa por remisión)
+    const _remCarga = (state.remisiones || []).find(r => r.ov_id === ov.id && r.estatus !== 'entregada' && r.estatus !== 'cancelada');
+    if (_remCarga) {
+      batch.update(doc(db, 'remisiones', _remCarga.id), { estatus: 'en_transito', enviada_at: serverTimestamp(), updated_at: serverTimestamp() });
+      _remCarga.estatus = 'en_transito';
+    }
     batch.update(doc(db, 'ordenes_venta', ov.id), {
       estatus: 'enviada', enviada_at: serverTimestamp(),
       cargado_por: state.user.id, cargado_por_nombre: state.user.nombre, updated_at: serverTimestamp()
