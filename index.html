@@ -247,6 +247,7 @@ const state = {
   empleados: [],
   nominas: [],
   nomina_conceptos: [],
+  prestamos_rh: [],
   comisiones_vendedores: [],
   modal: null,
   modalData: null,
@@ -3661,6 +3662,10 @@ async function cargarTodo() {
         state.nomina_conceptos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      onSnapshot(collection(db, 'prestamos_rh'), (snap) => {
+        state.prestamos_rh = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4085,7 +4090,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B36-faclogistica</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B37-prestamos</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -24365,6 +24370,56 @@ window.rhConceptoBaja = async (id) => {
   try { await updateDoc(doc(db, 'nomina_conceptos', id), { activo: false }); toast('Concepto desactivado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// 💳 PRÉSTAMOS a empleados — saldo vivo, abonos por NÓMINA (automático) o manuales
+window.rhPrestamoCrear = async () => {
+  if (!window._esNominaOK()) { toast('🔒 Solo RH/CEO', 'error'); return; }
+  const f = state.rhPresForm || {};
+  const emp = (state.empleados || []).find(x => x.id === f.empleado_id);
+  if (!emp) { toast('Elige el empleado', 'error'); return; }
+  const monto = Number(f.monto) || 0, abono = Number(f.abono) || 0;
+  if (!(monto > 0)) { toast('Captura el monto del préstamo', 'error'); return; }
+  if (!(abono > 0)) { toast('Captura el abono por período (lo que se le descontará en cada nómina)', 'error'); return; }
+  try {
+    await addDoc(collection(db, 'prestamos_rh'), {
+      empleado_id: emp.id, empleado_nombre: emp.nombre,
+      monto, saldo: monto, abono_periodo: abono,
+      motivo: (f.motivo || '').trim(),
+      fecha: new Date().toLocaleDateString('en-CA'),
+      estado: 'activo', abonos: [],
+      otorgado_por: state.user?.nombre || '', created_at: serverTimestamp()
+    });
+    window.logAccion('rh_prestamo', emp.nombre, `$${fmtNum(monto.toFixed(2))} · abono/período $${fmtNum(abono.toFixed(2))} · ${(f.motivo || '').trim()}`);
+    state.rhPresForm = null;
+    toast(`💳 Préstamo a ${emp.nombre} registrado — se descontará solo en su nómina`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.rhPresSet = (campo, v, focusId) => { if (!state.rhPresForm) state.rhPresForm = {}; state.rhPresForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rhPrestamoAbonoManual = async (id) => {
+  if (!window._esNominaOK()) return;
+  const p = (state.prestamos_rh || []).find(x => x.id === id); if (!p) return;
+  const m = Number(prompt(`Abono MANUAL al préstamo de ${p.empleado_nombre}\n\nSaldo: $${fmtNum((Number(p.saldo) || 0).toFixed(2))}\n\nMonto del abono:`, String(Math.min(Number(p.abono_periodo) || 0, Number(p.saldo) || 0))));
+  if (!(m > 0)) return;
+  await window._rhAbonarPrestamo(id, m, '', 'manual');
+};
+// Núcleo del abono (lo usan nómina y el abono manual)
+window._rhAbonarPrestamo = async (prestamoId, monto, periodo, via) => {
+  const p = (state.prestamos_rh || []).find(x => x.id === prestamoId); if (!p) return;
+  const nuevoSaldo = Math.max(0, (Number(p.saldo) || 0) - monto);
+  const abonos = (p.abonos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), periodo: periodo || '', monto, via: via || 'nomina', por: state.user?.nombre || '' }]);
+  try {
+    await updateDoc(doc(db, 'prestamos_rh', prestamoId), {
+      saldo: nuevoSaldo, abonos,
+      estado: nuevoSaldo <= 0.01 ? 'liquidado' : 'activo',
+      liquidado_at: nuevoSaldo <= 0.01 ? serverTimestamp() : null,
+      updated_at: serverTimestamp()
+    });
+    const pl = (state.prestamos_rh || []).find(x => x.id === prestamoId);
+    if (pl) { pl.saldo = nuevoSaldo; pl.abonos = abonos; pl.estado = nuevoSaldo <= 0.01 ? 'liquidado' : 'activo'; }
+    window.logAccion('rh_prestamo_abono', p.empleado_nombre, `$${fmtNum(monto.toFixed(2))} vía ${via || 'nómina'} · saldo $${fmtNum(nuevoSaldo.toFixed(2))}${nuevoSaldo <= 0.01 ? ' · LIQUIDADO ✅' : ''}`);
+    if (nuevoSaldo <= 0.01) toast(`✅ Préstamo de ${p.empleado_nombre} LIQUIDADO`);
+  } catch (e) { toast('Error abonando préstamo: ' + e.message, 'error'); }
+};
+
 // 🔐 Captura de nómina con DESGLOSE: sueldo fijo + bonos − deducciones − fondo de ahorro
 window._rhNomForm = () => state.rhNomForm || (state.rhNomForm = { periodo: new Date().toLocaleDateString('en-CA').slice(0, 7), empleado_id: '', sueldo: '', bonos: [], deducciones: [], fondo: '', notas: '' });
 window.rhNomSet = (campo, v, focusId) => { window._rhNomForm()[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
@@ -24374,6 +24429,12 @@ window.rhNomEmpleado = (id) => {
   // Prefill con el ÚLTIMO registro de nómina de ese empleado (sueldo y fondo)
   const prev = (state.nominas || []).filter(n => n.empleado_id === id).sort((a, b) => (b.periodo || '').localeCompare(a.periodo || ''))[0];
   if (prev) { f.sueldo = String(prev.sueldo_fijo ?? prev.percepciones ?? ''); f.fondo = String(prev.fondo_ahorro ?? ''); }
+  // 💳 Préstamo activo → auto-agregar la deducción del abono (editable o eliminable)
+  f.deducciones = (f.deducciones || []).filter(d => !d.prestamo_id);
+  (state.prestamos_rh || []).filter(p => p.empleado_id === id && p.estado === 'activo' && (Number(p.saldo) || 0) > 0.01).forEach(p => {
+    const abono = Math.min(Number(p.abono_periodo) || 0, Number(p.saldo) || 0);
+    if (abono > 0) f.deducciones.push({ nombre: `💳 Préstamo (abono · saldo $${fmtNum((Number(p.saldo) || 0).toFixed(2))})`, monto: Number(abono.toFixed(2)), prestamo_id: p.id });
+  });
   render();
 };
 window.rhNomAdd = (tipo, conceptoId) => {
@@ -24409,13 +24470,17 @@ window.rhNominaGuardar = async () => {
       sueldo_fijo: c.sueldo,
       bonos: (f.bonos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 })),
       total_bonos: c.tb,
-      deducciones: (f.deducciones || []).map(d => ({ nombre: d.nombre, monto: Number(d.monto) || 0 })),
+      deducciones: (f.deducciones || []).map(d => ({ nombre: d.nombre, monto: Number(d.monto) || 0, prestamo_id: d.prestamo_id || '' })),
       total_deducciones: c.td,
       fondo_ahorro: c.fondo,
       neto: c.neto,
       notas: (f.notas || '').trim(),
       capturado_por: state.user?.nombre || '', created_at: serverTimestamp()
     });
+    // 💳 Aplicar automáticamente los abonos de préstamo incluidos como deducción
+    for (const d of (f.deducciones || [])) {
+      if (d.prestamo_id && Number(d.monto) > 0) await window._rhAbonarPrestamo(d.prestamo_id, Number(d.monto), periodo, 'nomina');
+    }
     state.rhNomForm = { periodo, empleado_id: '', sueldo: '', bonos: [], deducciones: [], fondo: '', notas: '' };
     toast(`🔐 Nómina de ${emp.nombre} registrada (${periodo}) · neto $${fmtNum(c.neto.toFixed(2))}`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
@@ -24436,7 +24501,47 @@ function renderRH() {
   const bajas = (state.empleados || []).filter(e => e.activo === false);
 
   let cuerpo = '';
-  if (tab === 'nomina') {
+  if (tab === 'prestamos') {
+    if (!nominaOK) {
+      cuerpo = '<div style="padding:50px;text-align:center;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:40px;">🔐</div><div style="font-weight:800;color:#dc2626;margin-top:8px;">Préstamos es información RESERVADA (RH y Dirección General)</div></div>';
+    } else {
+      const pf = state.rhPresForm || {};
+      const pAct = (state.prestamos_rh || []).filter(p => p.estado === 'activo').sort((a, b) => (a.empleado_nombre || '').localeCompare(b.empleado_nombre || ''));
+      const pLiq = (state.prestamos_rh || []).filter(p => p.estado === 'liquidado');
+      const totSaldo = pAct.reduce((s, p) => s + (Number(p.saldo) || 0), 0);
+      cuerpo = `
+        <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:14px 16px;margin-bottom:12px;">
+          <div style="font-weight:900;font-size:13px;color:#be185d;margin-bottom:10px;">💳 Otorgar préstamo <span style="font-weight:600;color:#94a3b8;font-size:11px;">(el abono se descuenta SOLO en cada nómina hasta liquidar)</span></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:10px;">
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Empleado *</label>
+              <select class="input" onchange="window.rhPresSet('empleado_id', this.value)">
+                <option value="">— elige —</option>
+                ${activos.map(e => `<option value="${e.id}" ${pf.empleado_id === e.id ? 'selected' : ''}>${e.nombre}</option>`).join('')}
+              </select></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Monto del préstamo $ *</label>
+              <input class="input" id="pres-mon" type="text" inputmode="decimal" value="${pf.monto || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhPresSet('monto', this.value, 'pres-mon')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Abono por período $ *</label>
+              <input class="input" id="pres-abo" type="text" inputmode="decimal" value="${pf.abono || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhPresSet('abono', this.value, 'pres-abo')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Motivo</label>
+              <input class="input" id="pres-mot" type="text" value="${(pf.motivo || '').replace(/"/g, '&quot;')}" oninput="window.rhPresSet('motivo', this.value, 'pres-mot')" /></div>
+          </div>
+          <button onclick="window.rhPrestamoCrear()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💳 Otorgar</button>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+          <div style="display:flex;justify-content:space-between;font-weight:800;font-size:13px;margin-bottom:8px;"><span>Préstamos activos (${pAct.length})</span><span style="color:#be185d;">Saldo total prestado: $${fmtNum(totSaldo.toFixed(2))}</span></div>
+          ${pAct.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin préstamos activos</div>' : pAct.map(p => `
+            <div style="font-size:12px;padding:6px 0;border-bottom:1px dashed #f1f5f9;">
+              <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                <span><strong>${p.empleado_nombre}</strong> · prestado $${fmtNum((Number(p.monto) || 0).toFixed(2))} el ${p.fecha}${p.motivo ? ` · ${p.motivo}` : ''}</span>
+                <span>saldo <strong style="color:#be185d;">$${fmtNum((Number(p.saldo) || 0).toFixed(2))}</strong> · abono/período $${fmtNum((Number(p.abono_periodo) || 0).toFixed(2))}
+                  <button onclick="window.rhPrestamoAbonoManual('${p.id}')" style="margin-left:6px;padding:4px 10px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">💵 Abono manual</button></span>
+              </div>
+              ${(p.abonos || []).length ? `<details style="margin-top:2px;"><summary style="font-size:11px;color:#475569;cursor:pointer;font-weight:700;">Abonos (${p.abonos.length})</summary><div style="font-size:11px;color:#64748b;">${p.abonos.slice().reverse().map(a => `<div>${a.fecha} · $${fmtNum(Number(a.monto).toFixed(2))} · ${a.via}${a.periodo ? ` (${a.periodo})` : ''}</div>`).join('')}</div></details>` : ''}
+            </div>`).join('')}
+          ${pLiq.length ? `<details style="margin-top:8px;"><summary style="font-size:12px;color:#64748b;font-weight:700;cursor:pointer;">✅ Liquidados (${pLiq.length})</summary>${pLiq.map(p => `<div style="font-size:11px;color:#94a3b8;padding:3px 0;">${p.empleado_nombre} · $${fmtNum((Number(p.monto) || 0).toFixed(2))} · ${p.fecha}</div>`).join('')}</details>` : ''}
+        </div>`;
+    }
+  } else if (tab === 'nomina') {
     if (!nominaOK) {
       cuerpo = '<div style="padding:50px;text-align:center;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:40px;">🔐</div><div style="font-weight:800;color:#dc2626;margin-top:8px;">Nómina es información RESERVADA</div><div style="font-size:12px;color:#64748b;margin-top:4px;">Solo la ven Capital Humano y Dirección General — ni siquiera administradores del sistema.</div></div>';
     } else {
@@ -24562,6 +24667,7 @@ function renderRH() {
     <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
       <button class="tab-btn ${tab === 'empleados' ? 'active' : ''}" onclick="window.rhTab('empleados')">👥 Empleados (${activos.length})</button>
       <button class="tab-btn ${tab === 'nomina' ? 'active' : ''}" onclick="window.rhTab('nomina')" style="${nominaOK ? '' : 'opacity:0.5;'}">🔐 Nómina${nominaOK ? '' : ' (reservada)'}</button>
+      <button class="tab-btn ${tab === 'prestamos' ? 'active' : ''}" onclick="window.rhTab('prestamos')" style="${nominaOK ? '' : 'opacity:0.5;'}">💳 Préstamos${nominaOK ? ` (${(state.prestamos_rh || []).filter(p => p.estado === 'activo').length})` : ' (reservado)'}</button>
     </div>
     ${cuerpo}
   `;
