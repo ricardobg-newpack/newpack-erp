@@ -243,6 +243,11 @@ const state = {
   // 🧾 Facturación y 💵 Cobranza
   facturas: [],
   cobros: [],
+  // 👥 Capital Humano (expedientes) y 🔐 nómina (ultra sensible) + 💰 comisiones
+  empleados: [],
+  nominas: [],
+  nomina_conceptos: [],
+  comisiones_vendedores: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3641,7 +3646,25 @@ async function cargarTodo() {
       onSnapshot(query(collection(db, 'cobros'), orderBy('created_at', 'desc'), limit(1000)), (snap) => {
         state.cobros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
-      })
+      }),
+      // 👥 RH: expedientes (RH/CEO/ADMIN) · 🔐 nóminas (SOLO RH y CEO — ni admin) ·
+      //    💰 comisiones (solo usuarios con permiso personal). Errores de permiso ignorados.
+      onSnapshot(collection(db, 'empleados'), (snap) => {
+        state.empleados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
+      onSnapshot(collection(db, 'nominas'), (snap) => {
+        state.nominas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
+      onSnapshot(collection(db, 'nomina_conceptos'), (snap) => {
+        state.nomina_conceptos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
+      onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
+        state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {})
     );
   } catch (err) {
     console.error('Error:', err);
@@ -4035,6 +4058,7 @@ function renderApp() {
   const esCEDMEX = u.depto === 'CEDMEX' || esCEO;
   const esFAC = u.depto === 'FAC' || esCEO;
   const esCYC = u.depto === 'CYC' || esCEO;
+  const esRH = u.depto === 'RH' || esCEO;
   const esCOMP = u.depto === 'COMP' || esCEO;
   const esMTTO = u.depto === 'MTTO' || esCEO;
   const esADMIN = u.depto === 'ADMIN' || esCEO || u.rol === 'admin';
@@ -4061,7 +4085,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B33-auditoriafinal</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B35-nominafull</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4080,7 +4104,7 @@ function renderApp() {
         ` : ''}
         
         <div class="sidebar-section">Comercial</div>
-        ${(['CS','KAM','CEO','ADMIN','COMP'].includes(u.depto) || esAdmin) ? `
+        ${(['CS','KAM','CEO','ADMIN','COMP','FAC','CYC'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'clientes' ? 'active' : ''}" data-vista="clientes">${ICONS.users} Clientes</button>
           <button class="nav-item ${state.vista === 'cotizador' ? 'active' : ''}" data-vista="cotizador">🧮 Cotizador</button>
         ` : ''}
@@ -4118,12 +4142,13 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'recall' ? 'active' : ''}" data-vista="recall">🚨 Recall / Trazabilidad</button>
           <button class="nav-item ${state.vista === 'nc' ? 'active' : ''}" data-vista="nc">🧯 No Conformidades (CAPA)</button>
         ` : ''}
-        ${(esCS || esKAM || esCAL || esFAC || esCEDMTY || esCEDMEX || esCEO || esADMIN) ? `
-          <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas</button>
+        ${(esCEO || esADMIN) ? `
+          <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas (legado)</button>
         ` : ''}
-        ${(esFAC || esCYC || esCS || esKAM || esADMIN) ? `
+        ${(esFAC || esCYC || esCS || esKAM || esADMIN || esRH) ? `
           <div class="sidebar-section">Administración</div>
-          <button class="nav-item ${state.vista === 'facturacion' ? 'active' : ''}" data-vista="facturacion">🧾 Facturación y Cobranza</button>
+          ${(esFAC || esCYC || esCS || esKAM || esADMIN) ? `<button class="nav-item ${state.vista === 'facturacion' ? 'active' : ''}" data-vista="facturacion">🧾 Facturación y Cobranza</button>` : ''}
+          ${(esRH || esADMIN) ? `<button class="nav-item ${state.vista === 'rh' ? 'active' : ''}" data-vista="rh">👥 Capital Humano</button>` : ''}
         ` : ''}
         
         ${esALP ? `
@@ -4353,6 +4378,7 @@ function tituloVista() {
     bitacora: '📜 Bitácora de Auditoría — quién hizo qué',
     nc: '🧯 No Conformidades y Acciones Correctivas (CAPA)',
     facturacion: '🧾 Facturación y Cobranza — remisión → factura → cobro',
+    rh: '👥 Capital Humano — expedientes y nómina',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -4395,6 +4421,7 @@ function renderVista() {
   if (v === 'bitacora') return renderBitacora();
   if (v === 'nc') return renderNoConformidades();
   if (v === 'facturacion') return renderFacturacion();
+  if (v === 'rh') return renderRH();
   if (v === 'devoluciones') return renderDevoluciones();
   if (v === 'logistica_rutas') return renderLogisticaRutas();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -23643,6 +23670,8 @@ window.facGuardar = async () => {
       folio: String(f.folio).trim().toUpperCase(),
       uuid,
       fecha, monto: Number(f.monto), moneda: f.moneda || 'MXN',
+      // 💰 Subtotal (sin IVA) — base de COMISIONES. Si no lo capturan: monto ÷ 1.16
+      subtotal: Number(f.subtotal) > 0 ? Number(f.subtotal) : Number((Number(f.monto) / 1.16).toFixed(2)),
       dias_credito: diasCred, vence,
       estado: 'emitida',
       remision_id: rem.id, remision_folio: rem.folio || '',
@@ -23691,6 +23720,91 @@ window.facCobro = async (facturaId) => {
       toast(`💵 Cobro registrado · saldo restante $${fmtNum(nuevoSaldo.toFixed(2))}`);
     }
     window.logAccion('cobro_registrado', fa.folio, `$${fmtNum(monto.toFixed(2))} ${fa.moneda || 'MXN'} · ref: ${referencia || '—'}${nuevoSaldo <= 0.01 ? ' · LIQUIDADA' : ` · saldo $${fmtNum(nuevoSaldo.toFixed(2))}`}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// ============================================================
+// 💰 COMISIONES DE VENDEDORES — permiso POR PERSONA (ve_comisiones
+//    en su usuario), no por departamento. La comisión se causa cuando
+//    el cliente PAGÓ (factura en estado 'pagada'), sobre el TOTAL de
+//    la factura × % del vendedor. % variable por persona; cada vendedor
+//    tiene SUS clientes asignados.
+// ============================================================
+window._veComisiones = () => state.user?.ve_comisiones === true || ['CEO', 'RH'].includes(state.user?.depto);
+window.comSet = (campo, v, focusId) => { if (!state.comForm) state.comForm = {}; state.comForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.comNuevo = () => { state.comForm = { id: '', vendedor: '', pct: '', clientes: '' }; render(); };
+window.comEditar = (id) => { const c = (state.comisiones_vendedores || []).find(x => x.id === id); if (!c) return; state.comForm = { id: c.id, vendedor: c.vendedor || '', pct: String(c.pct || ''), clientes: (c.clientes || []).join(', ') }; render(); };
+window.comCerrar = () => { state.comForm = null; render(); };
+window.comGuardar = async () => {
+  if (!window._veComisiones()) { toast('🔒 Sin permiso de comisiones', 'error'); return; }
+  const f = state.comForm || {};
+  if (!String(f.vendedor || '').trim()) { toast('Nombre del vendedor obligatorio', 'error'); return; }
+  const pct = Number(f.pct);
+  if (!(pct > 0 && pct <= 20)) { toast('% de comisión entre 0.1 y 20', 'error'); return; }
+  const clientes = String(f.clientes || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  if (!clientes.length) { toast('Asigna al menos un código de cliente (separados por coma)', 'error'); return; }
+  try {
+    const data = { vendedor: f.vendedor.trim(), pct, clientes, activo: true, actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp() };
+    if (f.id) { await updateDoc(doc(db, 'comisiones_vendedores', f.id), data); }
+    else { await addDoc(collection(db, 'comisiones_vendedores'), { ...data, created_at: serverTimestamp() }); }
+    window.logAccion('comision_config', f.vendedor.trim(), `${pct}% · clientes: ${clientes.join(', ')}`);
+    state.comForm = null;
+    toast('💰 Esquema de comisión guardado');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.comEliminar = async (id) => {
+  if (!['CEO', 'RH'].includes(state.user?.depto)) { toast('🔒 Solo dirección/RH eliminan esquemas', 'error'); return; }
+  const c = (state.comisiones_vendedores || []).find(x => x.id === id); if (!c) return;
+  if (!confirm(`¿Eliminar el esquema de comisión de ${c.vendedor}?`)) return;
+  try { await deleteDoc(doc(db, 'comisiones_vendedores', id)); window.logAccion('comision_eliminada', c.vendedor, ''); toast('Esquema eliminado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+// Otorgar/quitar el permiso PERSONAL (solo dirección) — se guarda en el usuario
+window.comToggleAcceso = async (usuarioId, valor) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo dirección otorga este permiso', 'error'); return; }
+  const usr = (state.usuarios_sistema || []).find(x => x.id === usuarioId); if (!usr) return;
+  try {
+    await updateDoc(doc(db, 'usuarios', usuarioId), { ve_comisiones: !!valor });
+    window.logAccion('permiso_comisiones', usr.nombre || usr.email || usuarioId, valor ? 'OTORGADO' : 'RETIRADO');
+    toast(`${usr.nombre || ''}: acceso a comisiones ${valor ? 'OTORGADO' : 'retirado'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.comMes = (v) => { state.comMesSel = v; render(); };
+
+// 💵 CxP: marcar una OC como PAGADA al proveedor (para que Cuentas por Pagar sea real)
+window.ocMarcarPagada = async (ocId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['FAC', 'CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Facturación/Cobranza/dirección', 'error'); return; }
+  const oc = (state.ordenes_compra || []).find(x => x.id === ocId); if (!oc) return;
+  const ref = prompt(`💵 Marcar PAGADA la ${oc.folio} · ${oc.proveedor}\n\nTotal: $${fmtNum((Number(oc.costo_total) || 0).toFixed(2))} ${oc.moneda || 'MXN'}\n\nReferencia del pago (opcional):`);
+  if (ref === null) return;
+  try {
+    await updateDoc(doc(db, 'ordenes_compra', ocId), { pagada: true, pagada_at: serverTimestamp(), pagada_por: u.nombre || u.email || '', pago_referencia: (ref || '').trim(), updated_at: serverTimestamp() });
+    const ol = (state.ordenes_compra || []).find(x => x.id === ocId); if (ol) ol.pagada = true;
+    toast(`💵 ${oc.folio} marcada como pagada`);
+    window.logAccion('oc_pagada', oc.folio, `${oc.proveedor || ''} · $${fmtNum((Number(oc.costo_total) || 0).toFixed(2))} ${oc.moneda || 'MXN'} · ref: ${(ref || '').trim() || '—'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 🔓 AUTORIZAR salida SIN factura (excepción a la política "todo sale facturado").
+//    Solo Facturación; con motivo; queda en la OV y en bitácora.
+window.facAutorizarSinFactura = async (remisionId) => {
+  const rem = (state.remisiones || []).find(r => r.id === remisionId);
+  if (!rem || !rem.ov_id) { toast('Remisión sin OV ligada', 'error'); return; }
+  const motivo = prompt(`🔓 AUTORIZAR SALIDA SIN FACTURA\n\nRemisión ${rem.folio} · ${rem.cliente}\n\nLa política es que todo envío salga FACTURADO. Motivo de la excepción (obligatorio):`);
+  if (!motivo || !motivo.trim()) return;
+  try {
+    await updateDoc(doc(db, 'ordenes_venta', rem.ov_id), {
+      salida_sin_factura_aut: true,
+      salida_sin_factura_por: state.user?.nombre || state.user?.email || '',
+      salida_sin_factura_motivo: motivo.trim(),
+      salida_sin_factura_at: serverTimestamp(),
+      updated_at: serverTimestamp()
+    });
+    const ovL = (state.ordenes_venta || []).find(o => o.id === rem.ov_id);
+    if (ovL) ovL.salida_sin_factura_aut = true;
+    toast(`🔓 ${rem.folio}: salida con remisión AUTORIZADA — el almacén ya puede enviar`);
+    window.logAccion('salida_sin_factura_autorizada', rem.folio, `${rem.cliente || ''} · ${motivo.trim()}`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
@@ -23893,6 +24007,9 @@ function renderFacturacion() {
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             ${conFacturar && !fac && esFACv ? `<button onclick="window.facAbrirForm('${r.id}')" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🧾 Facturar</button>` : ''}
+            ${!fac && r.estatus === 'por_cargar' && r.ov_id && esFACv ? (ov?.salida_sin_factura_aut
+              ? '<span style="font-size:10px;font-weight:800;padding:6px 10px;border-radius:8px;background:#fef3c7;color:#92400e;align-self:center;">🔓 Salida con remisión AUTORIZADA</span>'
+              : `<button onclick="window.facAutorizarSinFactura('${r.id}')" title="Excepción: dejar salir sin factura (con motivo)" style="padding:9px 16px;background:#fff;color:#b45309;border:1.5px solid #f59e0b;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔓 Autorizar salida con remisión</button>`) : ''}
             ${!conFacturar && r.estatus === 'en_transito' && r.ov_id && esFACv ? `<button onclick="window.confirmarEntregaSalida('${r.ov_id}')" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✅ Confirmar entrega</button>` : ''}
           </div>
         </div>
@@ -23958,6 +24075,8 @@ function renderFacturacion() {
               <input class="input" id="fac-uuid" type="text" value="${(ff.uuid || '').replace(/"/g, '&quot;')}" placeholder="folio fiscal (36 caracteres)" autocomplete="off" oninput="window.facSet('uuid', this.value, 'fac-uuid')" /></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Monto total (con IVA) *</label>
               <input class="input" id="fac-monto" type="text" inputmode="decimal" value="${ff.monto || ''}" placeholder="0.00" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.facSet('monto', this.value, 'fac-monto')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Subtotal sin IVA <span style="color:#94a3b8;">(base comisiones)</span></label>
+              <input class="input" id="fac-sub" type="text" inputmode="decimal" value="${ff.subtotal || ''}" placeholder="${Number(ff.monto) > 0 ? (Number(ff.monto) / 1.16).toFixed(2) : 'auto: total ÷ 1.16'}" autocomplete="off" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.facSet('subtotal', this.value, 'fac-sub')" /></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Moneda</label>
               <select class="input" onchange="window.facSet('moneda', this.value)"><option value="MXN" ${ff.moneda === 'MXN' ? 'selected' : ''}>MXN</option><option value="USD" ${ff.moneda === 'USD' ? 'selected' : ''}>USD</option></select></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Fecha emisión</label>
@@ -23987,6 +24106,143 @@ function renderFacturacion() {
       <div style="font-weight:900;font-size:13px;margin:14px 0 8px;">${titulo} (${arr2.length})</div>
       ${arr2.length === 0 ? '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">— nada aquí —</div>' : `<div style="display:flex;flex-direction:column;gap:8px;">${arr2.map(r => cardRem(r, false)).join('')}</div>`}`;
     cuerpo = bloque('📄 Por cargar en almacén', porCargar) + bloque('🚚 En camino', camino) + bloque('✅ Entregadas (últimos 7 días)', entregadas);
+  } else if (subtab === 'panel') {
+    // 📊 PANEL FINANCIERO — CxC / CxP por moneda + KPIs de decisión
+    const mesAct = new Date().toLocaleDateString('en-CA').slice(0, 7);
+    const hace90 = new Date(Date.now() - 90 * 86400000).toLocaleDateString('en-CA');
+    const facsVivas = facturas.filter(f => f.estado !== 'cancelada');
+    const facMes = facsVivas.filter(f => (f.fecha || '').startsWith(mesAct));
+    const cobrosAll = state.cobros || [];
+    const cobMes = cobrosAll.filter(c => (c.fecha || '').startsWith(mesAct));
+    const porVencer7 = cartera.filter(f => window._facEstadoPago(f) === 'por_vencer');
+    // DSO aproximado (solo MXN): cartera MXN / (cobrado MXN últimos 90 días / 90)
+    const cxcMXN = cartera.filter(f => (f.moneda || 'MXN') === 'MXN').reduce((s, f) => s + window._facSaldo(f), 0);
+    const cob90MXN = cobrosAll.filter(c => (c.fecha || '') >= hace90 && (c.moneda || 'MXN') === 'MXN').reduce((s, c) => s + (Number(c.monto) || 0), 0);
+    const dso = cob90MXN > 0 ? Math.round(cxcMXN / (cob90MXN / 90)) : null;
+    // Aging global
+    const hoyP = hoy;
+    const _diasV = (f) => f.vence && f.vence < hoyP ? Math.round((new Date(hoyP) - new Date(f.vence)) / 86400000) : 0;
+    const agingG = { vigente: 0, d30: 0, d60: 0, mas60: 0 };
+    cartera.forEach(f => { const s = window._facSaldo(f); const d = _diasV(f); if (d <= 0) agingG.vigente += s; else if (d <= 30) agingG.d30 += s; else if (d <= 60) agingG.d60 += s; else agingG.mas60 += s; });
+    // Top 5 deudores
+    const deudores = {};
+    cartera.forEach(f => { const k = f.cliente_nombre || '—'; deudores[k] = (deudores[k] || []).concat(f); });
+    const top5 = Object.keys(deudores).map(k => ({ k, fs: deudores[k], venc: deudores[k].some(x => window._facEstadoPago(x) === 'vencida') }))
+      .sort((a, b) => b.fs.reduce((s, f) => s + window._facSaldo(f), 0) - a.fs.reduce((s, f) => s + window._facSaldo(f), 0)).slice(0, 5);
+    // CxP: OCs recibidas/en tránsito NO pagadas
+    const ocsPend = (state.ordenes_compra || []).filter(o => !o.archivada && !o.pagada && ['en_transito', 'recepcion_parcial', 'recibida'].includes(o.estatus));
+    const cxpRecibidas = ocsPend.filter(o => o.estatus === 'recibida' || o.estatus === 'recepcion_parcial');
+    const _sumaOC = (arr2) => { const out = {}; arr2.forEach(o => { const m = o.moneda || 'MXN'; out[m] = (out[m] || 0) + (Number(o.costo_total) || 0); }); return Object.keys(out).filter(m => out[m] > 0.01).map(m => `$${fmtNum(out[m].toFixed(2))} ${m}`).join(' · ') || '$0.00'; };
+    const kpi = (lbl, val, sub, color) => `<div style="background:#fff;padding:12px 14px;border-radius:10px;border-left:4px solid ${color};"><div style="font-size:10px;font-weight:700;color:#64748b;">${lbl}</div><div style="font-size:16px;font-weight:900;color:${color};">${val}</div>${sub ? `<div style="font-size:10px;color:#94a3b8;">${sub}</div>` : ''}</div>`;
+    cuerpo = `
+      <div style="font-weight:900;font-size:14px;margin:2px 0 8px;">💰 CUENTAS POR COBRAR (clientes)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px;">
+        ${kpi('CARTERA ABIERTA', window._sumaPorMoneda(cartera, window._facSaldo), `${cartera.length} factura(s)`, '#7c3aed')}
+        ${kpi('⏰ VENCIDO', window._sumaPorMoneda(vencidas, window._facSaldo), `${vencidas.length} factura(s)`, vencidas.length ? '#dc2626' : '#16a34a')}
+        ${kpi('⏳ POR VENCER (7 días)', window._sumaPorMoneda(porVencer7, window._facSaldo), `${porVencer7.length} factura(s)`, '#f59e0b')}
+        ${kpi('📈 DSO (días de cobro, MXN)', dso === null ? '—' : dso + ' días', 'cartera ÷ cobro diario prom. 90d', dso !== null && dso > 45 ? '#dc2626' : '#16a34a')}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px;">
+        ${kpi('🧾 FACTURADO ESTE MES', window._sumaPorMoneda(facMes, f => Number(f.monto) || 0), `${facMes.length} factura(s)`, '#0f172a')}
+        ${kpi('💵 COBRADO ESTE MES', (() => { const out = {}; cobMes.forEach(c => { const m = c.moneda || 'MXN'; out[m] = (out[m] || 0) + (Number(c.monto) || 0); }); return Object.keys(out).filter(m => out[m] > 0.01).map(m => `$${fmtNum(out[m].toFixed(2))} ${m}`).join(' · ') || '$0.00'; })(), `${cobMes.length} cobro(s)`, '#16a34a')}
+        ${kpi('SIN FACTURAR (riesgo)', String(porFacturar.length) + ' remisión(es)', 'material que ya salió o va a salir', porFacturar.length ? '#dc2626' : '#16a34a')}
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:14px;">
+        <div style="font-weight:800;font-size:12.5px;margin-bottom:8px;">Antigüedad de la cartera (todas las monedas sumadas por bucket)</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+          ${[['VIGENTE', agingG.vigente, '#16a34a'], ['1-30 DÍAS', agingG.d30, '#f59e0b'], ['31-60', agingG.d60, '#ea580c'], ['+60', agingG.mas60, '#dc2626']].map(b => `<div style="text-align:center;padding:8px;background:#f8fafc;border-radius:8px;border-top:3px solid ${b[2]};"><div style="font-size:10px;font-weight:700;color:#64748b;">${b[0]}</div><div style="font-size:14px;font-weight:900;color:${b[2]};">$${fmtNum(b[1].toFixed(0))}</div></div>`).join('')}
+        </div>
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:16px;">
+        <div style="font-weight:800;font-size:12.5px;margin-bottom:8px;">👥 Top 5 deudores</div>
+        ${top5.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Cartera limpia 🎉</div>' : top5.map(d => `
+          <div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:4px 0;border-bottom:1px dashed #f1f5f9;">
+            <span style="font-weight:700;">${d.k}${d.venc ? ' <span style="color:#dc2626;font-weight:800;">· con vencido</span>' : ''}</span>
+            <span><strong>${window._sumaPorMoneda(d.fs, window._facSaldo)}</strong> <button onclick="window.pdfEstadoCuenta('${(d.fs[0].cliente_codigo || d.k).replace(/'/g, "\\'")}')" style="margin-left:8px;padding:4px 9px;background:#0f172a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">📄 Edo. cta.</button></span>
+          </div>`).join('')}
+      </div>
+
+      <div style="font-weight:900;font-size:14px;margin:2px 0 8px;">🏭 CUENTAS POR PAGAR (proveedores — compras)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px;">
+        ${kpi('POR PAGAR (recibido no pagado)', _sumaOC(cxpRecibidas), `${cxpRecibidas.length} OC(s)`, '#dc2626')}
+        ${kpi('COMPROMETIDO EN TRÁNSITO', _sumaOC(ocsPend.filter(o => o.estatus === 'en_transito')), 'OCs aún no recibidas', '#f59e0b')}
+        ${kpi('TOTAL COMPROMISO COMPRAS', _sumaOC(ocsPend), `${ocsPend.length} OC(s) abiertas`, '#7c2d12')}
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="font-weight:800;font-size:12.5px;margin-bottom:8px;">OCs pendientes de pago (marca 💵 cuando pagues al proveedor — así CxP es real)</div>
+        ${ocsPend.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin pendientes con proveedores 🎉</div>' : ocsPend.slice(0, 10).map(o => `
+          <div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:4px 0;border-bottom:1px dashed #f1f5f9;align-items:center;flex-wrap:wrap;">
+            <span><strong class="text-mono">${o.folio}</strong> · ${o.proveedor || ''} · <span style="color:#64748b;">${o.estatus === 'recibida' ? '✅ recibida' : o.estatus === 'recepcion_parcial' ? '📦 parcial' : '🚚 en tránsito'}${o.fecha_promesa ? ` · promesa ${o.fecha_promesa}` : ''}</span></span>
+            <span><strong>$${fmtNum((Number(o.costo_total) || 0).toFixed(2))} ${o.moneda || 'MXN'}</strong> ${esFACv ? `<button onclick="window.ocMarcarPagada('${o.id}')" style="margin-left:8px;padding:4px 10px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">💵 Pagada</button>` : ''}</span>
+          </div>`).join('')}
+        ${ocsPend.length > 10 ? `<div style="font-size:10px;color:#94a3b8;margin-top:6px;">Mostrando 10 de ${ocsPend.length} — el resto en Órdenes de Compra</div>` : ''}
+      </div>
+    `;
+  } else if (subtab === 'comisiones' && window._veComisiones()) {
+    // 💰 COMISIONES — config + reporte del mes (facturas PAGADAS)
+    const esDir = state.user?.rol === 'admin' || ['CEO', 'ADMIN'].includes(state.user?.depto);
+    const cf = state.comForm;
+    const mesSel = state.comMesSel || new Date().toLocaleDateString('en-CA').slice(0, 7);
+    const esquemas = (state.comisiones_vendedores || []).filter(c => c.activo !== false);
+    const pagadasMes = facturas.filter(f => f.estado === 'pagada' && f.pagada_at?.seconds && new Date(f.pagada_at.seconds * 1000).toLocaleDateString('en-CA').slice(0, 7) === mesSel);
+    // 💰 Base de comisión = SUBTOTAL sin IVA (facturas viejas sin subtotal: total ÷ 1.16)
+    const _baseCom = (f) => Number(f.subtotal) > 0 ? Number(f.subtotal) : (Number(f.monto) || 0) / 1.16;
+    const reporte = esquemas.map(esq => {
+      const fs = pagadasMes.filter(f => (esq.clientes || []).includes(String(f.cliente_codigo || '').toUpperCase()));
+      const porMon = {};
+      fs.forEach(f => { const m = f.moneda || 'MXN'; porMon[m] = (porMon[m] || 0) + _baseCom(f); });
+      const comStr = Object.keys(porMon).map(m => `$${fmtNum((porMon[m] * esq.pct / 100).toFixed(2))} ${m}`).join(' · ') || '$0.00';
+      const baseStr = Object.keys(porMon).map(m => `$${fmtNum(porMon[m].toFixed(2))} ${m}`).join(' · ') || '$0.00';
+      return { esq, fs, baseStr, comStr };
+    });
+    cuerpo = `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:12px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">💰 Reporte de comisiones — mes de PAGO <input class="input" type="month" value="${mesSel}" onchange="window.comMes(this.value)" style="width:150px;display:inline-block;padding:4px 8px;" /></div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">La comisión se causa cuando el cliente PAGÓ (factura liquidada en el mes) · % sobre el TOTAL de la factura · solo clientes asignados a cada vendedor.</div>
+        ${reporte.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin esquemas configurados — agrega vendedores abajo</div>' : reporte.map(r => `
+          <div style="border:1px solid #f1f5f9;border-radius:10px;padding:9px 12px;margin-bottom:7px;">
+            <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+              <span style="font-weight:800;">${r.esq.vendedor} <span style="color:#94a3b8;font-weight:600;">(${r.esq.pct}% sobre SUBTOTAL sin IVA · ${(r.esq.clientes || []).length} cliente(s))</span></span>
+              <span>base pagada (subtotal): <strong>${r.baseStr}</strong> → comisión: <strong style="color:#be185d;">${r.comStr}</strong></span>
+            </div>
+            ${r.fs.length ? `<details style="margin-top:4px;"><summary style="font-size:11px;color:#475569;cursor:pointer;font-weight:700;">${r.fs.length} factura(s) pagadas</summary><div style="font-size:11px;color:#64748b;margin-top:3px;">${r.fs.map(f => `<div>${f.folio} · ${f.cliente_nombre} · $${fmtNum((Number(f.monto) || 0).toFixed(2))} ${f.moneda || 'MXN'}</div>`).join('')}</div></details>` : '<div style="font-size:11px;color:#cbd5e1;">sin pagos de sus clientes este mes</div>'}
+          </div>`).join('')}
+      </div>
+      <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:13px 16px;margin-bottom:12px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">⚙️ Esquemas por vendedor</div>
+        ${esquemas.map(c => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;align-items:center;">
+            <span><strong>${c.vendedor}</strong> · ${c.pct}% · <span class="text-mono" style="color:#64748b;">${(c.clientes || []).join(', ')}</span></span>
+            <span style="display:flex;gap:6px;">
+              <button onclick="window.comEditar('${c.id}')" style="padding:5px 11px;background:#fff;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">✏️</button>
+              ${['CEO', 'RH'].includes(state.user?.depto) ? `<button onclick="window.comEliminar('${c.id}')" style="padding:5px 11px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">🗑</button>` : ''}
+            </span>
+          </div>`).join('') || '<div style="font-size:12px;color:#94a3b8;">Sin esquemas aún</div>'}
+        ${cf ? `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:10px;">
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Vendedor *</label>
+            <input class="input" id="com-ven" type="text" value="${(cf.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.comSet('vendedor', this.value, 'com-ven')" /></div>
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">% comisión *</label>
+            <input class="input" id="com-pct" type="text" inputmode="decimal" value="${cf.pct || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.comSet('pct', this.value, 'com-pct')" placeholder="Ej: 2.5" /></div>
+          <div style="grid-column:1/-1;"><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Códigos de clientes asignados (separados por coma) *</label>
+            <input class="input" id="com-cli" type="text" value="${(cf.clientes || '').replace(/"/g, '&quot;')}" oninput="window.comSet('clientes', this.value, 'com-cli')" placeholder="A001, M021, B003" /></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button onclick="window.comGuardar()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Guardar esquema</button>
+          <button onclick="window.comCerrar()" style="padding:10px 14px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-weight:800;">Cancelar</button>
+        </div>` : `<button onclick="window.comNuevo()" style="margin-top:10px;padding:9px 16px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:12px;">➕ Agregar vendedor</button>`}
+      </div>
+      ${esDir ? `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="font-weight:800;font-size:12.5px;margin-bottom:6px;">🔑 Quién puede ver este módulo (permiso por PERSONA — solo dirección lo otorga)</div>
+        ${(state.usuarios_sistema || []).filter(x => x.activo !== false).map(x => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;border-bottom:1px dashed #f8fafc;">
+            <span>${x.nombre || x.email || x.id} <span style="color:#94a3b8;">(${x.depto || '—'})</span></span>
+            <button onclick="window.comToggleAcceso('${x.id}', ${x.ve_comisiones ? 'false' : 'true'})" style="padding:4px 11px;background:${x.ve_comisiones ? '#be185d' : '#fff'};color:${x.ve_comisiones ? '#fff' : '#64748b'};border:1.5px solid ${x.ve_comisiones ? '#be185d' : '#cbd5e1'};border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">${x.ve_comisiones ? '✓ TIENE ACCESO' : 'dar acceso'}</button>
+          </div>`).join('')}
+        <div style="font-size:10px;color:#94a3b8;margin-top:6px;">El usuario debe cerrar sesión y volver a entrar para que aplique.</div>
+      </div>` : ''}
+    `;
   } else {
     // 💵 CARTERA (CyC)
     const abiertas = cartera.filter(f => pasa((f.folio || '') + ' ' + (f.cliente_nombre || ''))).sort((a, b) => (a.vence || '9999').localeCompare(b.vence || '9999'));
@@ -24023,12 +24279,288 @@ function renderFacturacion() {
 
     <!-- Tabs + filtro -->
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
+      <button class="tab-btn ${subtab === 'panel' ? 'active' : ''}" onclick="window.facTab('panel')" style="border-color:#7c3aed;">📊 Panel</button>
       <button class="tab-btn ${subtab === 'por_facturar' ? 'active' : ''}" onclick="window.facTab('por_facturar')">🧾 Por facturar (${porFacturar.length})</button>
       <button class="tab-btn ${subtab === 'facturadas' ? 'active' : ''}" onclick="window.facTab('facturadas')">📋 Facturadas (${facturas.filter(f => f.estado !== 'cancelada').length})</button>
       <button class="tab-btn ${subtab === 'envios' ? 'active' : ''}" onclick="window.facTab('envios')">🚚 Envíos</button>
       <button class="tab-btn ${subtab === 'cartera' ? 'active' : ''}" onclick="window.facTab('cartera')">💵 Cartera (${cartera.length})</button>
+      ${window._veComisiones() ? `<button class="tab-btn ${subtab === 'comisiones' ? 'active' : ''}" onclick="window.facTab('comisiones')" style="border-color:#be185d;">💰 Comisiones</button>` : ''}
       <span style="flex:1;"></span>
       <input class="input" id="fac-filtro" style="max-width:280px;" placeholder="🔍 Folio, cliente, remisión, UUID..." autocomplete="off" value="${(state.filtros.facturacion || '').replace(/"/g, '&quot;')}" oninput="window.facFiltro(this.value)" />
+    </div>
+    ${cuerpo}
+  `;
+}
+
+// ============================================================
+// 👥 CAPITAL HUMANO — expedientes de empleados + 🔐 NÓMINA
+//    Nómina: SOLO deptos RH y CEO (ni rol admin ni depto ADMIN
+//    la ven — blindado también en las rules de Firestore).
+// ============================================================
+window._esNominaOK = () => ['RH', 'CEO'].includes(state.user?.depto);
+window._esRHOK = () => ['RH', 'CEO', 'ADMIN'].includes(state.user?.depto) || state.user?.rol === 'admin';
+window.rhTab = (t) => { state.rhTab = t; render(); };
+window.rhSet = (campo, v, focusId) => { if (!state.rhForm) state.rhForm = {}; state.rhForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rhNuevo = () => { state.rhForm = { id: '', nombre: '', puesto: '', depto: 'PRO', fecha_ingreso: '', rfc: '', nss: '', curp: '', telefono: '', emergencia: '', notas: '' }; state.rhFormAbierto = true; render(); };
+window.rhEditar = (id) => { const e = (state.empleados || []).find(x => x.id === id); if (!e) return; state.rhForm = { id: e.id, nombre: e.nombre || '', puesto: e.puesto || '', depto: e.depto || 'PRO', fecha_ingreso: e.fecha_ingreso || '', rfc: e.rfc || '', nss: e.nss || '', curp: e.curp || '', telefono: e.telefono || '', emergencia: e.emergencia || '', notas: e.notas || '' }; state.rhFormAbierto = true; render(); };
+window.rhCerrarForm = () => { state.rhForm = null; state.rhFormAbierto = false; render(); };
+
+window.rhGuardarEmpleado = async () => {
+  if (!window._esRHOK()) { toast('🔒 Solo Capital Humano/dirección', 'error'); return; }
+  const f = state.rhForm || {};
+  if (!String(f.nombre || '').trim()) { toast('El nombre es obligatorio', 'error'); return; }
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const data = {
+      nombre: f.nombre.trim(), puesto: (f.puesto || '').trim(), depto: f.depto || '',
+      fecha_ingreso: f.fecha_ingreso || '', rfc: (f.rfc || '').trim().toUpperCase(), nss: (f.nss || '').trim(),
+      curp: (f.curp || '').trim().toUpperCase(), telefono: (f.telefono || '').trim(),
+      emergencia: (f.emergencia || '').trim(), notas: (f.notas || '').trim(),
+      updated_at: serverTimestamp(), actualizado_por: state.user?.nombre || ''
+    };
+    if (f.id) {
+      await updateDoc(doc(db, 'empleados', f.id), data);
+      window.logAccion('rh_empleado_editado', f.nombre.trim(), `puesto: ${data.puesto} · depto: ${data.depto}`);
+      toast('✏️ Expediente actualizado');
+    } else {
+      await addDoc(collection(db, 'empleados'), { ...data, activo: true, creado_por: state.user?.nombre || '', created_at: serverTimestamp() });
+      window.logAccion('rh_empleado_alta', f.nombre.trim(), `puesto: ${data.puesto} · depto: ${data.depto}`);
+      toast('✅ Empleado dado de alta');
+    }
+    state.rhForm = null; state.rhFormAbierto = false;
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+window.rhBaja = async (id) => {
+  if (!window._esRHOK()) return;
+  const e = (state.empleados || []).find(x => x.id === id); if (!e) return;
+  const motivo = prompt(`Baja de ${e.nombre}\n\nMotivo (renuncia, término de contrato...):`);
+  if (motivo === null) return;
+  try {
+    await updateDoc(doc(db, 'empleados', id), { activo: false, baja_at: serverTimestamp(), baja_motivo: (motivo || '').trim(), baja_por: state.user?.nombre || '', updated_at: serverTimestamp() });
+    window.logAccion('rh_empleado_baja', e.nombre, (motivo || '').trim());
+    toast(`${e.nombre}: baja registrada. RECUERDA desactivar también su USUARIO del sistema (Usuarios).`);
+  } catch (er) { toast('Error: ' + er.message, 'error'); }
+};
+
+// 🔐 CATÁLOGO DE CONCEPTOS de nómina (los crea Capital Humano): bonos y deducciones
+window.rhConceptoCrear = async () => {
+  if (!window._esNominaOK()) { toast('🔒 Solo RH/CEO', 'error'); return; }
+  const nombre = prompt('Nombre del concepto (ej: Bono de puntualidad, Descuento IMSS, Préstamo...):');
+  if (!nombre || !nombre.trim()) return;
+  const t = prompt('Tipo:\n1 = BONO (suma)\n2 = DEDUCCIÓN / descuento (resta)\n\nEscribe 1 o 2:');
+  if (t === null) return;
+  const tipo = String(t).trim() === '2' ? 'deduccion' : 'bono';
+  const valor = Number(prompt('Valor por default en $ (editable al capturar):', '0')) || 0;
+  try {
+    await addDoc(collection(db, 'nomina_conceptos'), { nombre: nombre.trim(), tipo, valor_default: valor, activo: true, creado_por: state.user?.nombre || '', created_at: serverTimestamp() });
+    toast(`✅ Concepto "${nombre.trim()}" (${tipo}) creado`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.rhConceptoBaja = async (id) => {
+  if (!window._esNominaOK()) return;
+  try { await updateDoc(doc(db, 'nomina_conceptos', id), { activo: false }); toast('Concepto desactivado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 🔐 Captura de nómina con DESGLOSE: sueldo fijo + bonos − deducciones − fondo de ahorro
+window._rhNomForm = () => state.rhNomForm || (state.rhNomForm = { periodo: new Date().toLocaleDateString('en-CA').slice(0, 7), empleado_id: '', sueldo: '', bonos: [], deducciones: [], fondo: '', notas: '' });
+window.rhNomSet = (campo, v, focusId) => { window._rhNomForm()[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.rhNomEmpleado = (id) => {
+  const f = window._rhNomForm();
+  f.empleado_id = id;
+  // Prefill con el ÚLTIMO registro de nómina de ese empleado (sueldo y fondo)
+  const prev = (state.nominas || []).filter(n => n.empleado_id === id).sort((a, b) => (b.periodo || '').localeCompare(a.periodo || ''))[0];
+  if (prev) { f.sueldo = String(prev.sueldo_fijo ?? prev.percepciones ?? ''); f.fondo = String(prev.fondo_ahorro ?? ''); }
+  render();
+};
+window.rhNomAdd = (tipo, conceptoId) => {
+  if (!conceptoId) return;
+  const c = (state.nomina_conceptos || []).find(x => x.id === conceptoId); if (!c) return;
+  const f = window._rhNomForm();
+  const lista = tipo === 'bono' ? f.bonos : f.deducciones;
+  lista.push({ nombre: c.nombre, monto: Number(c.valor_default) || 0 });
+  render();
+};
+window.rhNomDel = (tipo, idx) => { const f = window._rhNomForm(); (tipo === 'bono' ? f.bonos : f.deducciones).splice(idx, 1); render(); };
+window.rhNomMonto = (tipo, idx, v, focusId) => { const f = window._rhNomForm(); const it = (tipo === 'bono' ? f.bonos : f.deducciones)[idx]; if (it) it.monto = v; window.forzarRender(); window._cotFoco(focusId); };
+window._rhNomCalc = (f) => {
+  const sueldo = Number(f.sueldo) || 0;
+  const tb = (f.bonos || []).reduce((s, b) => s + (Number(b.monto) || 0), 0);
+  const td = (f.deducciones || []).reduce((s, d) => s + (Number(d.monto) || 0), 0);
+  const fondo = Number(f.fondo) || 0;
+  return { sueldo, tb, td, fondo, neto: sueldo + tb - td - fondo };
+};
+
+window.rhNominaGuardar = async () => {
+  if (!window._esNominaOK()) { toast('🔒 Nómina: solo Capital Humano y Dirección General', 'error'); return; }
+  const f = window._rhNomForm();
+  const emp = (state.empleados || []).find(x => x.id === f.empleado_id);
+  if (!emp) { toast('Elige el empleado', 'error'); return; }
+  const c = window._rhNomCalc(f);
+  if (!(c.sueldo > 0)) { toast('Captura el sueldo fijo del período', 'error'); return; }
+  if (c.neto < 0 && !confirm(`El NETO queda NEGATIVO ($${fmtNum(c.neto.toFixed(2))}). ¿Registrar de todos modos?`)) return;
+  const periodo = f.periodo || new Date().toLocaleDateString('en-CA').slice(0, 7);
+  try {
+    await addDoc(collection(db, 'nominas'), {
+      periodo, empleado_id: emp.id, empleado_nombre: emp.nombre, puesto: emp.puesto || '', depto: emp.depto || '',
+      sueldo_fijo: c.sueldo,
+      bonos: (f.bonos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 })),
+      total_bonos: c.tb,
+      deducciones: (f.deducciones || []).map(d => ({ nombre: d.nombre, monto: Number(d.monto) || 0 })),
+      total_deducciones: c.td,
+      fondo_ahorro: c.fondo,
+      neto: c.neto,
+      notas: (f.notas || '').trim(),
+      capturado_por: state.user?.nombre || '', created_at: serverTimestamp()
+    });
+    state.rhNomForm = { periodo, empleado_id: '', sueldo: '', bonos: [], deducciones: [], fondo: '', notas: '' };
+    toast(`🔐 Nómina de ${emp.nombre} registrada (${periodo}) · neto $${fmtNum(c.neto.toFixed(2))}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.rhNominaBorrar = async (id) => {
+  if (!window._esNominaOK()) return;
+  const n = (state.nominas || []).find(x => x.id === id); if (!n) return;
+  if (!confirm(`¿Eliminar el registro de nómina de ${n.empleado_nombre} (${n.periodo})?`)) return;
+  try { await deleteDoc(doc(db, 'nominas', id)); toast('Registro eliminado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function renderRH() {
+  if (!window._esRHOK()) return '<div style="padding:50px;text-align:center;color:#94a3b8;">🔒 Solo Capital Humano y dirección.</div>';
+  const tab = state.rhTab || 'empleados';
+  const nominaOK = window._esNominaOK();
+  const f = state.rhForm || {};
+  const activos = (state.empleados || []).filter(e => e.activo !== false);
+  const bajas = (state.empleados || []).filter(e => e.activo === false);
+
+  let cuerpo = '';
+  if (tab === 'nomina') {
+    if (!nominaOK) {
+      cuerpo = '<div style="padding:50px;text-align:center;background:#fff;border-radius:14px;border:1px solid #e2e8f0;"><div style="font-size:40px;">🔐</div><div style="font-weight:800;color:#dc2626;margin-top:8px;">Nómina es información RESERVADA</div><div style="font-size:12px;color:#64748b;margin-top:4px;">Solo la ven Capital Humano y Dirección General — ni siquiera administradores del sistema.</div></div>';
+    } else {
+      const nf = window._rhNomForm();
+      const periodo = nf.periodo || new Date().toLocaleDateString('en-CA').slice(0, 7);
+      const calcN = window._rhNomCalc(nf);
+      const conceptos = (state.nomina_conceptos || []).filter(c => c.activo !== false);
+      const cBonos = conceptos.filter(c => c.tipo === 'bono');
+      const cDeds = conceptos.filter(c => c.tipo === 'deduccion');
+      const regs = (state.nominas || []).filter(n => n.periodo === periodo).sort((a, b) => (a.empleado_nombre || '').localeCompare(b.empleado_nombre || ''));
+      const totNeto = regs.reduce((s, n) => s + (Number(n.neto) || 0), 0);
+      const totFondo = regs.reduce((s, n) => s + (Number(n.fondo_ahorro) || 0), 0);
+      const _listaC = (tipo, items) => items.map((it, i) => `
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0;">
+          <span style="flex:1;">${tipo === 'bono' ? '➕' : '➖'} ${it.nombre}</span>
+          <input class="input" id="nomi-${tipo}-${i}" type="text" inputmode="decimal" value="${it.monto}" style="width:90px;text-align:right;padding:3px 6px;font-size:12px;"
+            oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhNomMonto('${tipo}',${i},this.value,'nomi-${tipo}-${i}')" />
+          <button onclick="window.rhNomDel('${tipo}',${i})" style="padding:2px 7px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-weight:800;font-size:10px;">✕</button>
+        </div>`).join('');
+      cuerpo = `
+        <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:14px 16px;margin-bottom:12px;">
+          <div style="font-weight:900;font-size:13px;color:#be185d;margin-bottom:10px;">🔐 Captura de nómina — período <input class="input" type="month" value="${periodo}" onchange="window.rhNomSet('periodo', this.value)" style="width:150px;display:inline-block;padding:4px 8px;" /></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px;">
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Empleado *</label>
+              <select class="input" onchange="window.rhNomEmpleado(this.value)">
+                <option value="">— elige —</option>
+                ${activos.map(e => `<option value="${e.id}" ${nf.empleado_id === e.id ? 'selected' : ''}>${e.nombre} (${e.depto || '—'})</option>`).join('')}
+              </select></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">💵 Sueldo fijo del período *</label>
+              <input class="input" id="nom-sue" type="text" inputmode="decimal" value="${nf.sueldo || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhNomSet('sueldo', this.value, 'nom-sue')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">🏦 Fondo de ahorro $</label>
+              <input class="input" id="nom-fon" type="text" inputmode="decimal" value="${nf.fondo || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhNomSet('fondo', this.value, 'nom-fon')" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Notas</label>
+              <input class="input" id="nom-not" type="text" value="${(nf.notas || '').replace(/"/g, '&quot;')}" oninput="window.rhNomSet('notas', this.value, 'nom-not')" /></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;">
+            <div style="background:#f0fdf4;border-radius:10px;padding:9px 12px;">
+              <div style="font-size:11px;font-weight:800;color:#166534;margin-bottom:4px;">➕ BONOS
+                <select class="input" style="width:auto;display:inline-block;padding:3px 6px;font-size:11px;margin-left:6px;" onchange="window.rhNomAdd('bono', this.value); this.value='';">
+                  <option value="">agregar…</option>
+                  ${cBonos.map(c => `<option value="${c.id}">${c.nombre} ($${fmtNum(c.valor_default || 0)})</option>`).join('')}
+                </select>
+              </div>
+              ${_listaC('bono', nf.bonos || []) || '<div style="font-size:11px;color:#94a3b8;">sin bonos</div>'}
+            </div>
+            <div style="background:#fef2f2;border-radius:10px;padding:9px 12px;">
+              <div style="font-size:11px;font-weight:800;color:#991b1b;margin-bottom:4px;">➖ DEDUCCIONES / DESCUENTOS
+                <select class="input" style="width:auto;display:inline-block;padding:3px 6px;font-size:11px;margin-left:6px;" onchange="window.rhNomAdd('deduccion', this.value); this.value='';">
+                  <option value="">agregar…</option>
+                  ${cDeds.map(c => `<option value="${c.id}">${c.nombre} ($${fmtNum(c.valor_default || 0)})</option>`).join('')}
+                </select>
+              </div>
+              ${_listaC('deduccion', nf.deducciones || []) || '<div style="font-size:11px;color:#94a3b8;">sin deducciones</div>'}
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div style="font-size:12.5px;color:#475569;">Sueldo $${fmtNum(calcN.sueldo.toFixed(2))} + bonos $${fmtNum(calcN.tb.toFixed(2))} − deducciones $${fmtNum(calcN.td.toFixed(2))} − fondo $${fmtNum(calcN.fondo.toFixed(2))} = <strong style="color:#be185d;font-size:15px;">NETO $${fmtNum(calcN.neto.toFixed(2))}</strong></div>
+            <button onclick="window.rhNominaGuardar()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">🔐 Registrar</button>
+          </div>
+          <div style="font-size:10.5px;color:#94a3b8;margin-top:8px;">Catálogo de conceptos: <button onclick="window.rhConceptoCrear()" style="padding:4px 10px;background:#fff;color:#be185d;border:1px solid #be185d;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">➕ Nuevo bono/deducción</button>
+          ${conceptos.map(c => ` <span style="background:${c.tipo === 'bono' ? '#f0fdf4' : '#fef2f2'};padding:2px 7px;border-radius:6px;">${c.nombre} <a onclick="window.rhConceptoBaja('${c.id}')" style="cursor:pointer;color:#dc2626;font-weight:800;">×</a></span>`).join('')}</div>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+          <div style="display:flex;justify-content:space-between;font-weight:800;font-size:13px;margin-bottom:8px;flex-wrap:wrap;gap:8px;"><span>Nómina de ${periodo} · ${regs.length} registro(s)</span><span style="color:#be185d;">Neto total: $${fmtNum(totNeto.toFixed(2))} · 🏦 Fondo del período: $${fmtNum(totFondo.toFixed(2))}</span></div>
+          ${regs.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin registros en este período</div>' : regs.map(n => `
+            <div style="font-size:12px;padding:6px 0;border-bottom:1px dashed #f1f5f9;">
+              <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                <span><strong>${n.empleado_nombre}</strong> <span style="color:#94a3b8;">(${n.depto || '—'})</span></span>
+                <span>neto <strong>$${fmtNum((Number(n.neto) || 0).toFixed(2))}</strong>
+                  <button onclick="window.rhNominaBorrar('${n.id}')" style="margin-left:6px;padding:3px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">✕</button></span>
+              </div>
+              <div style="font-size:11px;color:#64748b;">sueldo $${fmtNum((Number(n.sueldo_fijo ?? n.percepciones) || 0).toFixed(2))}${(n.bonos || []).length ? ` · bonos: ${n.bonos.map(b => `${b.nombre} $${fmtNum(b.monto)}`).join(', ')}` : ''}${(n.deducciones || []).length && Array.isArray(n.deducciones) ? ` · deducciones: ${n.deducciones.map(d => `${d.nombre} $${fmtNum(d.monto)}`).join(', ')}` : ''}${Number(n.fondo_ahorro) > 0 ? ` · 🏦 fondo $${fmtNum(Number(n.fondo_ahorro).toFixed(2))}` : ''}${n.notas ? ` · ${n.notas}` : ''}</div>
+            </div>`).join('')}
+        </div>`;
+    }
+  } else {
+    const inpR = (id, campo, label, ph) => `
+      <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${label}</label>
+      <input class="input" id="${id}" type="text" value="${(f[campo] || '').replace(/"/g, '&quot;')}" placeholder="${ph || ''}" autocomplete="off" oninput="window.rhSet('${campo}', this.value, '${id}')" /></div>`;
+    cuerpo = `
+      ${state.rhFormAbierto ? `
+      <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:14px 16px;margin-bottom:12px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:10px;">${f.id ? '✏️ Editar expediente' : '➕ Alta de empleado'}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px;">
+          ${inpR('rh-nom', 'nombre', 'Nombre completo *', '')}
+          ${inpR('rh-pue', 'puesto', 'Puesto', 'Ej: Operador de extrusión')}
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Departamento</label>
+            <select class="input" onchange="window.rhSet('depto', this.value)">
+              ${(window.DEPARTAMENTOS || []).filter(d => !d.deprecated).map(d => `<option value="${d.codigo}" ${f.depto === d.codigo ? 'selected' : ''}>${d.nombre}</option>`).join('')}
+            </select></div>
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Fecha de ingreso</label>
+            <input class="input" type="date" value="${f.fecha_ingreso || ''}" onchange="window.rhSet('fecha_ingreso', this.value)" /></div>
+          ${inpR('rh-rfc', 'rfc', 'RFC', '')}
+          ${inpR('rh-nss', 'nss', 'NSS (IMSS)', '')}
+          ${inpR('rh-curp', 'curp', 'CURP', '')}
+          ${inpR('rh-tel', 'telefono', 'Teléfono', '')}
+          ${inpR('rh-eme', 'emergencia', 'Contacto de emergencia', 'nombre y teléfono')}
+        </div>
+        <div style="margin-bottom:10px;">${inpR('rh-not', 'notas', 'Notas (capacitaciones, certificaciones internas...)', '')}</div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="window.rhGuardarEmpleado()" ${state.loadingAccion ? 'disabled' : ''} style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Guardar</button>
+          <button onclick="window.rhCerrarForm()" style="padding:10px 14px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-weight:800;">Cancelar</button>
+        </div>
+      </div>` : `<button onclick="window.rhNuevo()" style="padding:11px 20px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;margin-bottom:12px;">➕ Alta de empleado</button>`}
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${activos.length === 0 ? '<div style="padding:40px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">Sin empleados registrados — usa ➕ Alta</div>' : activos.map(e => `
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:11px 15px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;">
+            <div>
+              <div style="font-weight:800;font-size:13.5px;">${e.nombre} <span style="font-size:11px;color:#64748b;font-weight:600;">· ${e.puesto || '—'} · ${e.depto || '—'}</span></div>
+              <div style="font-size:11px;color:#94a3b8;">Ingreso: ${e.fecha_ingreso || '—'}${e.rfc ? ` · RFC ${e.rfc}` : ''}${e.nss ? ` · NSS ${e.nss}` : ''}${e.telefono ? ` · 📞 ${e.telefono}` : ''}</div>
+              ${e.notas ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">📝 ${e.notas}</div>` : ''}
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button onclick="window.rhEditar('${e.id}')" style="padding:7px 13px;background:#fff;color:#1e40af;border:1.5px solid #93c5fd;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">✏️ Editar</button>
+              <button onclick="window.rhBaja('${e.id}')" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">Baja</button>
+            </div>
+          </div>`).join('')}
+        ${bajas.length ? `<details style="margin-top:6px;"><summary style="font-size:12px;color:#64748b;font-weight:700;cursor:pointer;">🗄 Bajas (${bajas.length})</summary>${bajas.map(e => `<div style="font-size:12px;color:#94a3b8;padding:4px 0;">${e.nombre} · ${e.puesto || ''} · baja: ${e.baja_motivo || '—'} (${e.baja_por || ''})</div>`).join('')}</details>` : ''}
+      </div>`;
+  }
+
+  return `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
+      <button class="tab-btn ${tab === 'empleados' ? 'active' : ''}" onclick="window.rhTab('empleados')">👥 Empleados (${activos.length})</button>
+      <button class="tab-btn ${tab === 'nomina' ? 'active' : ''}" onclick="window.rhTab('nomina')" style="${nominaOK ? '' : 'opacity:0.5;'}">🔐 Nómina${nominaOK ? '' : ' (reservada)'}</button>
     </div>
     ${cuerpo}
   `;
@@ -24412,8 +24944,14 @@ window.confirmarDespacho = async () => {
 window.confirmarCargadoEnviado = async (ovId) => {
   const ov = state.ordenes_venta.find(x => x.id === ovId);
   if (!ov) return;
+  // 🔒 POLÍTICA: TODO envío sale con FACTURA. Si aún no hay factura, solo puede
+  //    salir "con remisión" si Facturación lo AUTORIZÓ (botón en su pestaña Envíos).
+  if (!ov.factura && !ov.salida_sin_factura_aut) {
+    toast(`🔒 ${ov.folio} no tiene FACTURA. Facturación debe facturar la remisión ${ov.remision || ''} o autorizar la salida con remisión (módulo 🧾 → Envíos).`, 'error');
+    return;
+  }
   const transp = ov.transportista_nombre || ov.transportista || '—';
-  if (!confirm(`¿Confirmar que ${ov.folio} · ${ov.cliente_nombre} ya se CARGÓ y SALIÓ?\n\nRemisión: ${ov.remision || '—'} · ${transp}`)) return;
+  if (!confirm(`¿Confirmar que ${ov.folio} · ${ov.cliente_nombre} ya se CARGÓ y SALIÓ?\n\nRemisión: ${ov.remision || '—'} · Factura: ${ov.factura || `⚠ sin factura (autorizado por ${ov.salida_sin_factura_por || 'FAC'})`} · ${transp}`)) return;
   state.loadingAccion = true; render();
   try {
     const batch = writeBatch(db);
@@ -27214,7 +27752,8 @@ const DEPARTAMENTOS = [
   { codigo: 'CEDMEX',  nombre: 'CEDIS México',              color: '#c026d3' },
   { codigo: 'CPH',     nombre: 'Coordinador Planta/Hub',    color: '#0284c7' },
   { codigo: 'FAC',     nombre: 'Facturación y Cobranza (acceso completo)', color: '#65a30d' },
-  { codigo: 'CYC',     nombre: 'Cobranza y Crédito (solo cobros)',         color: '#a16207' }
+  { codigo: 'CYC',     nombre: 'Cobranza y Crédito (solo cobros)',         color: '#a16207' },
+  { codigo: 'RH',      nombre: 'Capital Humano (RH)',                      color: '#be185d' }
 ];
 window.DEPARTAMENTOS = DEPARTAMENTOS;
 
