@@ -4061,7 +4061,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B29-operacion</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B30-altainicial</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -21520,6 +21520,95 @@ window.tarimaBajaInventario = async (tarimaId) => {
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// ➕ ALTA INICIAL DE INVENTARIO FÍSICO (herramienta temporal de arranque):
+//    dar de alta tarimas que YA existen físicamente en CEDIS, SIN PI ni ODP,
+//    para poder asignarlas a pedidos de stock y darles salida. Usa el mismo
+//    formato de lote/tarima que la liberación (L-AAAA-#####-Tnn) → etiquetas,
+//    asignación y recall funcionan idéntico. Todo queda en bitácora.
+window.invAltaToggle = () => {
+  state.invAltaAbierto = !state.invAltaAbierto;
+  if (!state.invAltaForm) state.invAltaForm = { producto_codigo: '', busq: '', num_tarimas: '1', cantidad_tarima: '', um: 'kg', peso_tarima: '', cliente_codigo: 'STOCK', cli_busq: '', referencia: 'Inventario inicial (conteo físico)' };
+  render();
+};
+window.invAltaSet = (campo, v, focusId) => { if (!state.invAltaForm) return; state.invAltaForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.invAltaProd = (cod) => {
+  const f = state.invAltaForm; if (!f) return;
+  f.producto_codigo = cod; f.busq = '';
+  const p = (state.productos_pt || []).find(x => x.codigo === cod);
+  if (p && p.um) f.um = String(p.um).toLowerCase();
+  render();
+};
+window.invAltaCli = (cod) => { const f = state.invAltaForm; if (!f) return; f.cliente_codigo = cod; f.cli_busq = ''; render(); };
+
+window.invAltaGuardar = async (almFijo) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CEDMTY', 'CEDMEX', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo CEDIS/dirección dan altas iniciales', 'error'); return; }
+  const f = state.invAltaForm || {};
+  const p = (state.productos_pt || []).find(x => x.codigo === f.producto_codigo);
+  if (!p) { toast('Selecciona el producto', 'error'); return; }
+  const numT = Math.round(Number(f.num_tarimas) || 0);
+  const cantT = Number(f.cantidad_tarima) || 0;
+  const pesoT = Number(f.peso_tarima) || 0;
+  if (!(numT >= 1 && numT <= 60)) { toast('Número de tarimas: entre 1 y 60', 'error'); return; }
+  if (!(cantT > 0)) { toast('Captura la cantidad por tarima', 'error'); return; }
+  if (!(pesoT > 0)) { toast('Captura el peso neto por tarima (kg)', 'error'); return; }
+  const esStock = !f.cliente_codigo || f.cliente_codigo === 'STOCK';
+  const cli = esStock ? null : (state.clientes || []).find(c => c.codigo === f.cliente_codigo);
+  if (!esStock && !cli) { toast('Cliente no válido — usa STOCK o elige uno del catálogo', 'error'); return; }
+  const estatus = almFijo === 'CEDIS-MEX' ? 'en_cedis_mex' : 'en_cedis_mty';
+  if (!confirm(`➕ ALTA INICIAL en ${almFijo}\n\n${p.codigo}\n${numT} tarima(s) × ${fmtNum(cantT)} ${f.um} · ${fmtNum(pesoT)} kg c/u\nPropietario: ${esStock ? 'STOCK (libre para vender)' : cli.nombre}\n\nTotal: ${fmtNum(numT * cantT)} ${f.um} · ${fmtNum(numT * pesoT)} kg\n\n¿Confirmar?`)) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const year = new Date().getFullYear();
+    const loteNum = await siguienteFolio('lote');
+    const codigoLote = `L-${year}-${String(loteNum).padStart(5, '0')}`;
+    const altaMeta = { referencia: (f.referencia || '').trim(), por: u.nombre || u.email || '', fecha: new Date().toISOString(), almacen: almFijo };
+    const batch = writeBatch(db);
+    const loteRef = doc(collection(db, 'lotes'));
+    batch.set(loteRef, {
+      codigo: codigoLote,
+      odp_id: '', odp_folio: '', packing_list: '', pedido_id: '', pedido_folio: '',
+      cliente: esStock ? 'STOCK' : (cli.nombre || cli.codigo),
+      producto_codigo: p.codigo, descripcion: p.descripcion || '',
+      um: f.um, cantidad_total: numT * cantT, peso_neto_total: numT * pesoT,
+      es_alta_inicial: true, alta_inicial: altaMeta,
+      creado_por: u.id || '', creado_por_nombre: u.nombre || u.email || '',
+      activo: true, created_at: serverTimestamp()
+    });
+    const codigos = [];
+    for (let i = 0; i < numT; i++) {
+      const codigoTarima = `${codigoLote}-T${String(i + 1).padStart(2, '0')}`;
+      codigos.push(codigoTarima);
+      const qrData = JSON.stringify({ tarima: codigoTarima, lote: codigoLote, odp: '', pkl: '', producto: p.codigo, cliente: esStock ? 'STOCK' : cli.codigo, cantidad: cantT, um: f.um, peso_neto: pesoT, alta_inicial: true });
+      batch.set(doc(collection(db, 'tarimas')), {
+        codigo: codigoTarima,
+        lote_id: loteRef.id, lote_codigo: codigoLote,
+        packing_list: '', odp_id: '', odp_folio: '', pedido_id: '', pedido_folio: '',
+        numero_tarima: i + 1, total_tarimas: numT,
+        producto_codigo: p.codigo, descripcion: p.descripcion || '',
+        cliente_codigo: esStock ? 'STOCK' : cli.codigo,
+        cliente_nombre: esStock ? 'STOCK' : (cli.nombre || cli.codigo),
+        cantidad: cantT, cantidad_actual: cantT, um: f.um,
+        peso_neto: pesoT, peso_neto_kg: pesoT, peso_bruto: pesoT, peso_tarima_vacia: 0,
+        paquetes: 0, sueltos: 0, rollos_ids: [],
+        cedis_destino: almFijo,
+        estatus, almacen_actual: almFijo,
+        qr_data: qrData,
+        es_alta_inicial: true, alta_inicial: altaMeta,
+        activo: true,
+        creado_por: u.id || '', creado_por_nombre: u.nombre || u.email || '',
+        created_at: serverTimestamp()
+      });
+    }
+    await batch.commit();
+    window.logAccion('alta_inicial_inventario', codigoLote, `${almFijo} · ${p.codigo} · ${numT} tarima(s) × ${fmtNum(cantT)} ${f.um} (${fmtNum(numT * pesoT)} kg) · ${esStock ? 'STOCK' : cli.nombre} · ${altaMeta.referencia}`);
+    state.invAltaForm = null; state.invAltaAbierto = false;
+    toast(`➕ ${numT} tarima(s) dadas de alta en ${almFijo} · lote ${codigoLote} · ${esStock ? '🟢 stock libre vendible' : `de ${cli.nombre} (usa "Generar OV" para asignarlas)`}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
 function renderInventarioAlmacen(almFijo) {
   const filtro = (state.filtros.stock_pt || '').toLowerCase();
   const _u = state.user || {};
@@ -21592,7 +21681,76 @@ function renderInventarioAlmacen(almFijo) {
     ? `<span style="font-weight:700;">${fmtNum(cant)}</span> <span style="font-size:10px;color:#94a3b8;">${UM_LABELS[(um||'kg').toLowerCase()] || um}</span>`
     : `<span style="color:#cbd5e1;">—</span>`;
 
-  return _tabBar + `
+  // ➕ Panel de ALTA INICIAL (temporal de arranque — solo CEDIS/dirección)
+  let altaPanel = '';
+  if (puedeReajustar) {
+    const fA = state.invAltaForm || {};
+    const prodSel = (state.productos_pt || []).find(x => x.codigo === fA.producto_codigo);
+    const qP = (fA.busq || '').toLowerCase().trim();
+    const prods = (state.productos_pt || []).filter(x => x.activo !== false && (!qP || ((x.codigo || '') + ' ' + (x.descripcion || '')).toLowerCase().includes(qP)));
+    const cliSelA = fA.cliente_codigo && fA.cliente_codigo !== 'STOCK' ? (state.clientes || []).find(c => c.codigo === fA.cliente_codigo) : null;
+    const qC = (fA.cli_busq || '').toLowerCase().trim();
+    const clis = (state.clientes || []).filter(c => !qC || ((c.codigo || '') + ' ' + (c.nombre || '')).toLowerCase().includes(qC));
+    altaPanel = `
+    <div style="background:#fff;border:2px solid #7c3aed;border-radius:14px;padding:13px 16px;margin-bottom:14px;">
+      <div onclick="window.invAltaToggle()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-weight:900;font-size:14px;">➕ Alta inicial de inventario físico <span style="font-weight:600;color:#94a3b8;font-size:11px;">(temporal de arranque: material que YA existe, sin PI ni ODP — queda listo para vender/asignar)</span></div>
+        <span style="color:#94a3b8;font-weight:800;">${state.invAltaAbierto ? '▲' : '▼'}</span>
+      </div>
+      ${state.invAltaAbierto ? `
+      <div style="margin-top:12px;">
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Producto *</label>
+          ${prodSel ? `
+            <div style="display:flex;align-items:center;gap:10px;background:#7c3aed12;border:2px solid #7c3aed;border-radius:10px;padding:8px 12px;max-width:640px;">
+              <div style="flex:1;min-width:0;"><strong class="text-mono">${prodSel.codigo}</strong> <span style="color:#475569;font-size:12px;">— ${prodSel.descripcion || ''}</span></div>
+              <button type="button" onclick="window.invAltaProd('')" style="padding:6px 10px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✕</button>
+            </div>` : `
+            <input class="input" id="inv-alta-busq" type="text" placeholder="🔍 Código o descripción del producto..." autocomplete="off" value="${(fA.busq || '').replace(/"/g, '&quot;')}" oninput="window.invAltaSet('busq', this.value, 'inv-alta-busq')" style="max-width:640px;margin-bottom:6px;border-color:#7c3aed;" />
+            <div style="max-height:160px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;background:#fff;max-width:640px;">
+              ${prods.slice(0, 12).map(x => `<div onclick="window.invAltaProd('${x.codigo}')" style="padding:7px 11px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12px;" onmouseover="this.style.background='#faf5ff'" onmouseout="this.style.background='#fff'"><strong class="text-mono">${x.codigo}</strong> <span style="color:#475569;">— ${x.descripcion || ''}</span></div>`).join('') || '<div style="padding:12px;text-align:center;color:#94a3b8;font-size:12px;">Sin coincidencias — si es producto nuevo, dale de alta el código primero (Pedidos → Productos)</div>'}
+            </div>`}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:10px;max-width:900px;">
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">No. de tarimas</label>
+            <input class="input" id="inv-alta-numt" type="text" inputmode="decimal" value="${fA.num_tarimas || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.invAltaSet('num_tarimas', this.value, 'inv-alta-numt')" /></div>
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Cantidad POR tarima *</label>
+            <input class="input" id="inv-alta-cant" type="text" inputmode="decimal" value="${fA.cantidad_tarima || ''}" placeholder="0" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.invAltaSet('cantidad_tarima', this.value, 'inv-alta-cant')" /></div>
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">UM</label>
+            <select class="input" onchange="window.invAltaSet('um', this.value)">
+              ${['kg', 'millares', 'piezas', 'rollos', 'paquetes'].map(um => `<option value="${um}" ${fA.um === um ? 'selected' : ''}>${um}</option>`).join('')}
+            </select></div>
+          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Peso neto POR tarima (kg) *</label>
+            <input class="input" id="inv-alta-peso" type="text" inputmode="decimal" value="${fA.peso_tarima || ''}" placeholder="0.00" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.invAltaSet('peso_tarima', this.value, 'inv-alta-peso')" /></div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Propietario del material</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start;">
+            <button type="button" onclick="window.invAltaCli('STOCK')" style="padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;border:2px solid ${(!fA.cliente_codigo || fA.cliente_codigo === 'STOCK') ? '#16a34a' : '#e2e8f0'};background:${(!fA.cliente_codigo || fA.cliente_codigo === 'STOCK') ? '#16a34a' : '#fff'};color:${(!fA.cliente_codigo || fA.cliente_codigo === 'STOCK') ? '#fff' : '#475569'};">🟢 STOCK (libre para vender)</button>
+            ${cliSelA ? `
+              <div style="display:flex;align-items:center;gap:8px;background:#7c3aed12;border:2px solid #7c3aed;border-radius:8px;padding:6px 10px;">
+                <span style="font-size:12px;"><strong class="text-mono">${cliSelA.codigo}</strong> — ${cliSelA.nombre || ''}</span>
+                <button type="button" onclick="window.invAltaCli('STOCK')" style="padding:4px 8px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">✕</button>
+              </div>` : `
+              <div style="min-width:260px;">
+                <input class="input" id="inv-alta-cli" type="text" placeholder="…o busca un cliente (material apartado)" autocomplete="off" value="${(fA.cli_busq || '').replace(/"/g, '&quot;')}" oninput="window.invAltaSet('cli_busq', this.value, 'inv-alta-cli')" style="margin-bottom:4px;" />
+                ${qC ? `<div style="max-height:130px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:8px;background:#fff;">
+                  ${clis.slice(0, 10).map(c => `<div onclick="window.invAltaCli('${c.codigo}')" style="padding:6px 10px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:12px;" onmouseover="this.style.background='#faf5ff'" onmouseout="this.style.background='#fff'"><strong class="text-mono">${c.codigo}</strong> — ${c.nombre || ''}</div>`).join('')}
+                </div>` : ''}
+              </div>`}
+          </div>
+        </div>
+        <div style="margin-bottom:12px;max-width:640px;">
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Referencia del alta</label>
+          <input class="input" id="inv-alta-ref" type="text" value="${(fA.referencia || '').replace(/"/g, '&quot;')}" oninput="window.invAltaSet('referencia', this.value, 'inv-alta-ref')" />
+        </div>
+        ${(Number(fA.num_tarimas) > 0 && Number(fA.cantidad_tarima) > 0) ? `<div style="font-size:12px;font-weight:800;color:#7c3aed;margin-bottom:10px;">Total del alta: ${fmtNum(Number(fA.num_tarimas) * Number(fA.cantidad_tarima))} ${fA.um} · ${fmtNum((Number(fA.num_tarimas) || 0) * (Number(fA.peso_tarima) || 0))} kg</div>` : ''}
+        <button onclick="window.invAltaGuardar('${almFijo}')" ${state.loadingAccion ? 'disabled' : ''} style="padding:11px 20px;background:#7c3aed;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">➕ Dar de alta en ${almFijo}</button>
+      </div>` : ''}
+    </div>`;
+  }
+
+  return _tabBar + altaPanel + `
     <div style="padding:14px;background:#fff;border:2px solid #16a34a;border-radius:14px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:20px;">🔍</span>
@@ -36089,65 +36247,67 @@ window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
     // ===== ZONA CONTENIDO: distribución horizontal =====
     let yi = y + 53;
     
-    // CLIENTE - mitad izquierda
+    // CLIENTE - mitad izquierda (caja 84×20 mm)
     docPDF.setFillColor(_COL_GRIS_CLARO[0], _COL_GRIS_CLARO[1], _COL_GRIS_CLARO[2]);
-    docPDF.roundedRect(x + 4, yi, (etiqW - 12) / 2, 18, 2, 2, 'F');
+    docPDF.roundedRect(x + 4, yi, (etiqW - 12) / 2, 20, 2, 2, 'F');
     docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-    docPDF.rect(x + 4, yi, 3, 18, 'F');
-    
+    docPDF.rect(x + 4, yi, 3, 20, 'F');
+
     docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
     docPDF.text('CLIENTE', x + 10, yi + 5);
-    
+
     // 🔒 CONFIDENCIALIDAD: la etiqueta física lleva SOLO el CÓDIGO del cliente
     //    (quien vea la tarima no debe poder identificar de qué cliente es)
     docPDF.setFontSize(20);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
-    docPDF.text(String(pi?.cliente_codigo || odp.cliente_codigo || '—'), x + 10, yi + 12);
+    docPDF.text(String(pi?.cliente_codigo || odp.cliente_codigo || '—'), x + 10, yi + 13);
 
     docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'normal');
     docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-    docPDF.text('Código interno de cliente', x + 10, yi + 16);
-    
-    // PRODUCTO - mitad derecha
+    docPDF.text('Código interno de cliente', x + 10, yi + 17.5);
+
+    // PRODUCTO - mitad derecha (caja 84×20 mm · área útil de texto 74 mm)
     const colDx = x + (etiqW / 2) + 2;
     docPDF.setFillColor(239, 246, 255);
-    docPDF.roundedRect(colDx, yi, (etiqW - 12) / 2, 18, 2, 2, 'F');
+    docPDF.roundedRect(colDx, yi, (etiqW - 12) / 2, 20, 2, 2, 'F');
     docPDF.setFillColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]);
-    docPDF.rect(colDx, yi, 3, 18, 'F');
-    
+    docPDF.rect(colDx, yi, 3, 20, 'F');
+
     docPDF.setFontSize(7);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
     docPDF.text('PRODUCTO', colDx + 6, yi + 5);
-    
+
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(0, 0, 0);
     const prodCod = odp.producto_codigo || '—';
-    // 🔧 FIX DOC: auto-encoger fuente para que el código COMPLETO quepa (antes se cortaba sin aviso)
+    // 🔧 FIX DOC: auto-encoger fuente para que el código COMPLETO quepa DENTRO de la caja
+    //    (área útil real: 84 − 6 de sangría − 4 de margen = 74 mm)
     let _fzProd = 10;
     docPDF.setFontSize(_fzProd);
-    while (_fzProd > 6 && docPDF.getTextWidth(prodCod) > 78) { _fzProd -= 0.5; docPDF.setFontSize(_fzProd); }
+    while (_fzProd > 6 && docPDF.getTextWidth(prodCod) > 74) { _fzProd -= 0.5; docPDF.setFontSize(_fzProd); }
     docPDF.text(prodCod, colDx + 6, yi + 10);
-    
-    // 🆕 Descripción del producto en línea siguiente
+
+    // 🆕 Descripción hasta 2 líneas, SIN salirse de la caja (con … si se corta)
     if (odp.descripcion) {
-      docPDF.setFontSize(7);
+      docPDF.setFontSize(6.5);
       docPDF.setFont('helvetica', 'normal');
       docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
-      const lDescEt = docPDF.splitTextToSize(odp.descripcion, 78);
-      docPDF.text(lDescEt[0] || '', colDx + 6, yi + 14.5);
+      const lDescEt = docPDF.splitTextToSize(odp.descripcion, 74);
+      docPDF.text(lDescEt[0] || '', colDx + 6, yi + 14);
+      if (lDescEt.length > 1) docPDF.text(lDescEt[1] + (lDescEt.length > 2 ? '…' : ''), colDx + 6, yi + 17.5);
     }
-    
-    yi += 22;
+
+    yi += 24;
     
     // ===== DATOS CLAVE EN GRID 3 columnas × 2 filas =====
     const colsDatos = 3;
     const dataW2 = (etiqW - 12) / colsDatos;
-    const dataH2 = 14;
+    const dataH2 = 16;
     const datos = [
       ['LOTE', t.lote_codigo || '—', _COL_AZUL_OSCURO],
       ['CANTIDAD', `${fmtNum(t.cantidad || 0)} ${(t.um || '').toUpperCase()}`, _COL_VERDE],
@@ -36187,20 +36347,20 @@ window.imprimirEtiquetasTarimasPDF = (odpId, pklFilter = null) => {
       const valStr = String(d[1] || '—');
       let _fzVal = 11;
       docPDF.setFontSize(_fzVal);
-      while (_fzVal > 6 && docPDF.getTextWidth(valStr) > dataW2 - 8) { _fzVal -= 0.5; docPDF.setFontSize(_fzVal); }
-      docPDF.text(valStr, xd + 5, yd + 11);
+      while (_fzVal > 6 && docPDF.getTextWidth(valStr) > dataW2 - 9) { _fzVal -= 0.5; docPDF.setFontSize(_fzVal); }
+      docPDF.text(valStr, xd + 5, yd + 12);
     });
-    
+
     yi += 2 * (dataH2 + 2) + 2;
-    
+
     // ===== FOOTER GRANDE: CALIDAD LIBERADO =====
     docPDF.setFillColor(_COL_VERDE[0], _COL_VERDE[1], _COL_VERDE[2]);
-    docPDF.roundedRect(x + 4, yi, etiqW - 8, 10, 2, 2, 'F');
-    
-    docPDF.setFontSize(12);
+    docPDF.roundedRect(x + 4, yi, etiqW - 8, 12, 2, 2, 'F');
+
+    docPDF.setFontSize(13);
     docPDF.setFont('helvetica', 'bold');
     docPDF.setTextColor(255, 255, 255);
-    docPDF.text('CALIDAD: LIBERADO', x + etiqW/2, yi + 7, { align: 'center' });
+    docPDF.text('CALIDAD: LIBERADO', x + etiqW/2, yi + 8, { align: 'center' });
   });
   
   const filename = `Etiquetas_${odp.folio}_${odp.cliente_codigo || ''}.pdf`;
