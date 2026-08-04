@@ -236,6 +236,10 @@ const state = {
   cotizaciones: [],
   // 📜 Bitácora de auditoría (inmutable)
   auditoria: [],
+  // 🧯 No conformidades / CAPA
+  no_conformidades: [],
+  // 📜 Certificados de calidad emitidos (registro con folio único)
+  certificados_calidad: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3614,7 +3618,17 @@ async function cargarTodo() {
       onSnapshot(query(collection(db, 'auditoria'), orderBy('created_at', 'desc'), limit(300)), (snap) => {
         state.auditoria = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
-      }, () => { /* sin permiso de lectura: no es CEO/ADMIN */ })
+      }, () => { /* sin permiso de lectura: no es CEO/ADMIN */ }),
+      // 🧯 No conformidades / CAPA
+      onSnapshot(collection(db, 'no_conformidades'), (snap) => {
+        state.no_conformidades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
+      // 📜 Certificados de calidad emitidos (folio único por ODP/PKL)
+      onSnapshot(query(collection(db, 'certificados_calidad'), orderBy('created_at', 'desc'), limit(500)), (snap) => {
+        state.certificados_calidad = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      })
     );
   } catch (err) {
     console.error('Error:', err);
@@ -4025,7 +4039,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B25-bitacora</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B26-nccapa</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4080,6 +4094,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'certificados_calidad' ? 'active' : ''}" data-vista="certificados_calidad">📜 Certificados de Calidad</button>
           <button class="nav-item ${state.vista === 'devoluciones' ? 'active' : ''}" data-vista="devoluciones">🔄 Devoluciones (RMA)</button>
           <button class="nav-item ${state.vista === 'recall' ? 'active' : ''}" data-vista="recall">🚨 Recall / Trazabilidad</button>
+          <button class="nav-item ${state.vista === 'nc' ? 'active' : ''}" data-vista="nc">🧯 No Conformidades (CAPA)</button>
         ` : ''}
         ${(esCS || esKAM || esCAL || esFAC || esCEDMTY || esCEDMEX || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'logistica_rutas' ? 'active' : ''}" data-vista="logistica_rutas">🚛 Logística / Rutas</button>
@@ -4310,6 +4325,7 @@ function tituloVista() {
     cotizador: '🧮 Cotizador — Área Comercial',
     recall: '🚨 Recall — Trazabilidad bidireccional MP ↔ Cliente',
     bitacora: '📜 Bitácora de Auditoría — quién hizo qué',
+    nc: '🧯 No Conformidades y Acciones Correctivas (CAPA)',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
     seguimiento_parcialidades: '🔗 Seguimiento de Parcialidades',
@@ -4350,6 +4366,7 @@ function renderVista() {
   if (v === 'certificados_calidad') return renderCertificadosCalidad();
   if (v === 'recall') return renderRecall();
   if (v === 'bitacora') return renderBitacora();
+  if (v === 'nc') return renderNoConformidades();
   if (v === 'devoluciones') return renderDevoluciones();
   if (v === 'logistica_rutas') return renderLogisticaRutas();
   if (v === 'seguimiento') return renderSeguimiento();
@@ -22967,6 +22984,242 @@ function renderRecall() {
   `;
 }
 
+// ============================================================
+// 🧯 NO CONFORMIDADES / CAPA (ISO 9001 §10.2 · BRCGS 3.7)
+//    Registro → contención → causa raíz + acción correctiva →
+//    verificación de eficacia → cierre. Nada se borra.
+//    Flujo: abierta → en_accion → verificacion → cerrada
+// ============================================================
+const NC_ORIGENES = { interna: '🏭 Interna (planta)', cliente: '👤 Queja de cliente', proveedor: '🚚 Proveedor / MP', auditoria: '📋 Auditoría' };
+const NC_TIPOS = { producto: 'Producto', proceso: 'Proceso', documental: 'Documental' };
+
+window._ncSeg = (nc, nota) => (nc.seguimientos || []).concat([{ fecha: new Date().toLocaleDateString('en-CA'), usuario: state.user?.nombre || state.user?.email || '', nota }]);
+window.ncSet = (campo, v, focusId) => { if (!state.ncForm) state.ncForm = {}; state.ncForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
+window.ncToggleForm = () => { state.ncFormAbierto = !state.ncFormAbierto; if (!state.ncForm) state.ncForm = { origen: 'interna', tipo: 'producto', referencia: '', descripcion: '', accion_inmediata: '', responsable: '', fecha_compromiso: '' }; render(); };
+window.ncFiltro = (v) => { state.filtros.nc = v; window.forzarRender(); window._cotFoco('nc-filtro'); };
+window.ncTab = (t) => { state.ncSubtab = t; render(); };
+
+window.ncCrear = async () => {
+  const f = state.ncForm || {};
+  if (!String(f.descripcion || '').trim()) { toast('Describe la no conformidad', 'error'); return; }
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const año = new Date().getFullYear();
+    const n = await siguienteFolio(`nc_${año}`);
+    const folio = `NC-${año}-${String(n).padStart(4, '0')}`;
+    const u = state.user || {};
+    await addDoc(collection(db, 'no_conformidades'), {
+      folio,
+      estado: 'abierta',
+      origen: f.origen || 'interna',
+      tipo: f.tipo || 'producto',
+      referencia: (f.referencia || '').trim(),        // ODP/tarima/lote MP/RMA/cliente
+      descripcion: f.descripcion.trim(),
+      accion_inmediata: (f.accion_inmediata || '').trim(),   // contención
+      responsable: (f.responsable || '').trim(),
+      fecha_compromiso: f.fecha_compromiso || '',
+      causa_raiz: '', accion_correctiva: '',
+      eficaz: null, verificado_por: '',
+      seguimientos: [{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota: 'NC registrada' }],
+      creado_por: u.id || '', creado_por_nombre: u.nombre || u.email || '', depto_origen: u.depto || '',
+      created_at: serverTimestamp(), updated_at: serverTimestamp()
+    });
+    state.ncForm = null; state.ncFormAbierto = false;
+    toast(`🧯 ${folio} registrada — Calidad dará seguimiento`);
+    window.logAccion('nc_creada', folio, f.descripcion.trim().slice(0, 200));
+    // Avisar a Calidad
+    addDoc(collection(db, 'notificaciones'), { titulo: `🧯 Nueva NC ${folio}`, mensaje: `${NC_ORIGENES[f.origen] || f.origen} · ${f.descripcion.trim().slice(0, 120)}`, depto_destino: 'CAL', tipo: 'warning', folio_ref: folio, leida: false, created_at: serverTimestamp() }).catch(() => {});
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Capturar causa raíz + acción correctiva → pasa a "en acción"
+window.ncCausaAccion = async (id) => {
+  const nc = (state.no_conformidades || []).find(x => x.id === id); if (!nc) return;
+  const causa = prompt(`🧯 ${nc.folio} — CAUSA RAÍZ\n\n¿Por qué ocurrió realmente? (los 5 porqués)`, nc.causa_raiz || '');
+  if (causa === null) return;
+  const accion = prompt(`🧯 ${nc.folio} — ACCIÓN CORRECTIVA\n\n¿Qué se hará para que NO se repita?`, nc.accion_correctiva || '');
+  if (accion === null) return;
+  if (!causa.trim() || !accion.trim()) { toast('Causa y acción son obligatorias para avanzar', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'no_conformidades', id), {
+      causa_raiz: causa.trim(), accion_correctiva: accion.trim(), estado: 'en_accion',
+      seguimientos: window._ncSeg(nc, `Causa raíz y acción correctiva definidas`),
+      updated_at: serverTimestamp()
+    });
+    toast('📝 Causa y acción registradas — en ejecución');
+    window.logAccion('nc_accion', nc.folio, `Causa: ${causa.trim().slice(0, 120)}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.ncAVerificacion = async (id) => {
+  const nc = (state.no_conformidades || []).find(x => x.id === id); if (!nc) return;
+  try {
+    await updateDoc(doc(db, 'no_conformidades', id), { estado: 'verificacion', seguimientos: window._ncSeg(nc, 'Acción implementada — pendiente verificar eficacia'), updated_at: serverTimestamp() });
+    toast('🔍 En verificación de eficacia');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// Verificación de eficacia: cerrar eficaz, o reabrir si no funcionó
+window.ncVerificar = async (id, eficaz) => {
+  const nc = (state.no_conformidades || []).find(x => x.id === id); if (!nc) return;
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CAL', 'ALP', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Calidad/dirección verifican eficacia', 'error'); return; }
+  const nota = prompt(eficaz ? `✅ ${nc.folio} — evidencia de que la acción FUNCIONÓ:` : `❌ ${nc.folio} — ¿por qué NO fue eficaz? (se reabre)`);
+  if (nota === null) return;
+  try {
+    if (eficaz) {
+      await updateDoc(doc(db, 'no_conformidades', id), { estado: 'cerrada', eficaz: true, verificado_por: u.nombre || u.email || '', cerrada_at: serverTimestamp(), seguimientos: window._ncSeg(nc, `✅ Cerrada EFICAZ · ${nota || ''}`), updated_at: serverTimestamp() });
+      toast(`✅ ${nc.folio} cerrada como eficaz`);
+    } else {
+      await updateDoc(doc(db, 'no_conformidades', id), { estado: 'en_accion', eficaz: false, seguimientos: window._ncSeg(nc, `❌ NO eficaz — se reabre · ${nota || ''}`), updated_at: serverTimestamp() });
+      toast(`🔁 ${nc.folio} reabierta — la acción no funcionó`);
+    }
+    window.logAccion('nc_verificada', nc.folio, eficaz ? 'EFICAZ · cerrada' : 'NO eficaz · reabierta');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.ncNota = async (id) => {
+  const nc = (state.no_conformidades || []).find(x => x.id === id); if (!nc) return;
+  const nota = prompt('Nota de seguimiento:'); if (!nota) return;
+  try { await updateDoc(doc(db, 'no_conformidades', id), { seguimientos: window._ncSeg(nc, nota), updated_at: serverTimestamp() }); toast('📝 Nota guardada'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function renderNoConformidades() {
+  const u = state.user || {};
+  const esCAL = u.rol === 'admin' || ['CAL', 'ALP', 'CEO', 'ADMIN'].includes(u.depto);
+  const hoy = new Date().toLocaleDateString('en-CA');
+  const subtab = state.ncSubtab || 'abiertas';
+  const filtro = (state.filtros.nc || '').toLowerCase().trim();
+  const f = state.ncForm || {};
+
+  let all = (state.no_conformidades || []).slice();
+  const abiertas = all.filter(x => x.estado !== 'cerrada');
+  const cerradas = all.filter(x => x.estado === 'cerrada');
+  const vencidas = abiertas.filter(x => x.fecha_compromiso && x.fecha_compromiso < hoy);
+  const eficaces = cerradas.filter(x => x.eficaz === true).length;
+
+  let arr = subtab === 'cerradas' ? cerradas : abiertas;
+  if (filtro) arr = arr.filter(x => ((x.folio || '') + ' ' + (x.descripcion || '') + ' ' + (x.referencia || '') + ' ' + (x.responsable || '') + ' ' + (x.origen || '')).toLowerCase().includes(filtro));
+  arr.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
+
+  const chipEstado = (x) => {
+    const m = { abierta: ['#fee2e2', '#991b1b', '🔴 ABIERTA'], en_accion: ['#fef3c7', '#92400e', '🛠 EN ACCIÓN'], verificacion: ['#dbeafe', '#1e40af', '🔍 VERIFICACIÓN'], cerrada: ['#dcfce7', '#166534', '✅ CERRADA'] };
+    const [bg, col, lbl] = m[x.estado] || m.abierta;
+    return `<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:${bg};color:${col};">${lbl}</span>${x.eficaz === false ? ' <span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#fee2e2;color:#991b1b;">↩ REABIERTA</span>' : ''}`;
+  };
+  const inpF = (id, campo, label, ph) => `
+    <div>
+      <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${label}</label>
+      <input class="input" id="${id}" type="text" value="${(f[campo] || '').replace(/"/g, '&quot;')}" placeholder="${ph}" autocomplete="off" oninput="window.ncSet('${campo}', this.value, '${id}')" />
+    </div>`;
+
+  return `
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #dc2626;"><div style="font-size:10px;font-weight:700;color:#64748b;">🔴 ABIERTAS</div><div style="font-size:21px;font-weight:800;color:#dc2626;">${abiertas.length}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #f59e0b;"><div style="font-size:10px;font-weight:700;color:#64748b;">⏰ VENCIDAS</div><div style="font-size:21px;font-weight:800;color:#f59e0b;">${vencidas.length}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #16a34a;"><div style="font-size:10px;font-weight:700;color:#64748b;">✅ CERRADAS</div><div style="font-size:21px;font-weight:800;color:#16a34a;">${cerradas.length}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">📈 EFICACIA</div><div style="font-size:21px;font-weight:800;color:#7c3aed;">${cerradas.length ? Math.round(eficaces * 100 / cerradas.length) + '%' : '—'}</div></div>
+    </div>
+
+    <!-- Alta rápida -->
+    <div style="background:#fff;border:2px solid #dc2626;border-radius:14px;padding:14px 16px;margin-bottom:14px;">
+      <div onclick="window.ncToggleForm()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-weight:900;font-size:14px;">➕ Reportar no conformidad <span style="font-weight:600;color:#94a3b8;font-size:11px;">(cualquier depto puede reportar — Calidad gestiona)</span></div>
+        <span style="color:#94a3b8;font-weight:800;">${state.ncFormAbierto ? '▲' : '▼'}</span>
+      </div>
+      ${state.ncFormAbierto ? `
+      <div style="margin-top:12px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:10px;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Origen</label>
+            <select class="input" onchange="window.ncSet('origen', this.value)">
+              ${Object.keys(NC_ORIGENES).map(k => `<option value="${k}" ${f.origen === k ? 'selected' : ''}>${NC_ORIGENES[k]}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Tipo</label>
+            <select class="input" onchange="window.ncSet('tipo', this.value)">
+              ${Object.keys(NC_TIPOS).map(k => `<option value="${k}" ${f.tipo === k ? 'selected' : ''}>${NC_TIPOS[k]}</option>`).join('')}
+            </select>
+          </div>
+          ${inpF('nc-ref', 'referencia', 'Referencia (ODP / tarima / lote MP / RMA / cliente)', 'Ej: ODP-00123 · TAR-000456')}
+          ${inpF('nc-resp', 'responsable', 'Responsable de la acción', 'Nombre')}
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Fecha compromiso</label>
+            <input class="input" id="nc-fecha" type="date" value="${f.fecha_compromiso || ''}" onchange="window.ncSet('fecha_compromiso', this.value)" />
+          </div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">¿Qué pasó? *</label>
+          <textarea class="input" id="nc-desc" rows="2" style="resize:vertical;" placeholder="Describe el problema con hechos: qué, dónde, cuánto..." oninput="window.ncSet('descripcion', this.value, 'nc-desc')">${f.descripcion || ''}</textarea>
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Acción inmediata / contención (qué se hizo YA)</label>
+          <input class="input" id="nc-cont" type="text" value="${(f.accion_inmediata || '').replace(/"/g, '&quot;')}" placeholder="Ej: se retuvo la tarima, se avisó al cliente..." oninput="window.ncSet('accion_inmediata', this.value, 'nc-cont')" />
+        </div>
+        <button onclick="window.ncCrear()" ${state.loadingAccion ? 'disabled' : ''} style="padding:11px 20px;background:#dc2626;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">🧯 Registrar NC</button>
+      </div>` : ''}
+    </div>
+
+    <!-- Tabs + filtro -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
+      <button class="tab-btn ${subtab === 'abiertas' ? 'active' : ''}" onclick="window.ncTab('abiertas')">🔴 Abiertas (${abiertas.length})</button>
+      <button class="tab-btn ${subtab === 'cerradas' ? 'active' : ''}" onclick="window.ncTab('cerradas')">✅ Cerradas (${cerradas.length})</button>
+      <span style="flex:1;"></span>
+      <input class="input" id="nc-filtro" style="max-width:280px;" placeholder="🔍 Folio, descripción, referencia..." autocomplete="off" value="${(state.filtros.nc || '').replace(/"/g, '&quot;')}" oninput="window.ncFiltro(this.value)" />
+    </div>
+
+    ${arr.length === 0 ? `
+      <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
+        <div style="font-size:40px;">🧯</div>
+        <div style="font-weight:700;color:#475569;margin-top:8px;">${subtab === 'abiertas' ? 'Sin no conformidades abiertas' : 'Sin cerradas aún'}</div>
+      </div>` : `
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        ${arr.map(x => {
+          const vencida = x.estado !== 'cerrada' && x.fecha_compromiso && x.fecha_compromiso < hoy;
+          const acc = [];
+          if (esCAL && x.estado !== 'cerrada') {
+            if (['abierta', 'en_accion'].includes(x.estado)) acc.push(`<button onclick="window.ncCausaAccion('${x.id}')" style="padding:8px 13px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📝 Causa y acción</button>`);
+            if (x.estado === 'en_accion' && x.causa_raiz) acc.push(`<button onclick="window.ncAVerificacion('${x.id}')" style="padding:8px 13px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔍 A verificación</button>`);
+            if (x.estado === 'verificacion') {
+              acc.push(`<button onclick="window.ncVerificar('${x.id}', true)" style="padding:8px 13px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✅ Eficaz — cerrar</button>`);
+              acc.push(`<button onclick="window.ncVerificar('${x.id}', false)" style="padding:8px 13px;background:#fff;color:#dc2626;border:1.5px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">❌ No eficaz — reabrir</button>`);
+            }
+          }
+          if (x.estado !== 'cerrada') acc.push(`<button onclick="window.ncNota('${x.id}')" style="padding:8px 13px;background:#fff;color:#475569;border:1.5px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📝 Nota</button>`);
+          return `
+          <div style="background:#fff;border:1px solid ${vencida ? '#f59e0b' : '#e2e8f0'};border-radius:12px;padding:13px 16px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-weight:900;font-size:14px;" class="text-mono">${x.folio}</span>
+              ${chipEstado(x)}
+              <span style="font-size:11px;color:#64748b;">${NC_ORIGENES[x.origen] || x.origen} · ${NC_TIPOS[x.tipo] || x.tipo}${x.referencia ? ` · <strong class="text-mono">${x.referencia}</strong>` : ''}</span>
+              ${vencida ? '<span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;background:#fef3c7;color:#92400e;">⏰ COMPROMISO VENCIDO</span>' : ''}
+            </div>
+            <div style="font-size:13px;color:#0f172a;margin-top:6px;">${x.descripcion || ''}</div>
+            <div style="font-size:11.5px;color:#64748b;margin-top:4px;">
+              ${x.accion_inmediata ? `🚧 Contención: ${x.accion_inmediata}<br>` : ''}
+              ${x.causa_raiz ? `🎯 Causa raíz: ${x.causa_raiz}<br>` : ''}
+              ${x.accion_correctiva ? `🛠 Acción correctiva: ${x.accion_correctiva}<br>` : ''}
+              Responsable: <strong>${x.responsable || '—'}</strong> · Compromiso: <strong>${x.fecha_compromiso || '—'}</strong> · Reportó: ${x.creado_por_nombre || ''} (${x.depto_origen || '—'})${x.estado === 'cerrada' ? ` · Verificó: ${x.verificado_por || '—'}` : ''}
+            </div>
+            ${(x.seguimientos || []).length ? `
+            <details style="margin-top:5px;">
+              <summary style="font-size:11px;color:#475569;font-weight:700;cursor:pointer;">📒 Seguimiento (${x.seguimientos.length})</summary>
+              <div style="font-size:11px;color:#64748b;margin-top:4px;padding-left:10px;border-left:2px solid #e2e8f0;">
+                ${x.seguimientos.slice().reverse().map(s => `<div style="margin-bottom:2px;"><strong>${s.fecha}</strong> · ${s.usuario}: ${s.nota}</div>`).join('')}
+              </div>
+            </details>` : ''}
+            ${acc.length ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">${acc.join('')}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>`}
+  `;
+}
+
 // 📜 BITÁCORA DE AUDITORÍA — visor (solo CEO/ADMIN; la colección es inmutable)
 window.bitFiltro = (v) => { state.filtros.bitacora = v; window.forzarRender(); window._cotFoco('bit-filtro'); };
 
@@ -39044,11 +39297,36 @@ window.imprimirFichaTecnicaPDF = (productoCodigo, clienteCodigo) => {
 // Argumentos:
 //   odpId: ID de la ODP liberada
 //   factura: (opcional) número de factura para anotar en el certificado
-window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
+window.imprimirCertificadoCalidadPDF = async (odpId, factura, pklFilter = null) => {
   try {
     const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
     if (!odp) { toast('ODP no encontrada', 'error'); return; }
     if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+
+    // 📜 FD: REGISTRO DEL CERTIFICADO con folio único (ISO §7.5.3 — control de registros).
+    //    Primera emisión: genera CERT-AAAA-#### y lo persiste; reimpresión: reutiliza
+    //    el MISMO folio (así se puede demostrar qué certificado se entregó a quién).
+    let folioCert = '';
+    try {
+      const _pklKey = pklFilter || '';
+      const certPrevio = (state.certificados_calidad || []).find(c => c.odp_id === odpId && (c.pkl || '') === _pklKey);
+      if (certPrevio) {
+        folioCert = certPrevio.folio;
+        updateDoc(doc(db, 'certificados_calidad', certPrevio.id), { reimpresiones: (Number(certPrevio.reimpresiones) || 0) + 1, ultima_reimpresion_at: serverTimestamp(), ultima_reimpresion_por: state.user?.nombre || '' }).catch(() => {});
+      } else {
+        const añoCert = new Date().getFullYear();
+        const nCert = await siguienteFolio(`cert_${añoCert}`);
+        folioCert = `CERT-${añoCert}-${String(nCert).padStart(4, '0')}`;
+        addDoc(collection(db, 'certificados_calidad'), {
+          folio: folioCert, odp_id: odpId, odp_folio: odp.folio || '', pkl: _pklKey,
+          producto_codigo: odp.producto_codigo || '', cliente_codigo: odp.cliente_codigo || '', cliente_nombre: odp.cliente_nombre || '',
+          formato: 'NPA-CAL-FR-02', reimpresiones: 0,
+          emitido_por: state.user?.id || '', emitido_por_nombre: state.user?.nombre || state.user?.email || '',
+          created_at: serverTimestamp()
+        }).catch(() => {});
+        window.logAccion('certificado_emitido', folioCert, `${odp.folio || ''} · ${odp.producto_codigo || ''} · ${odp.cliente_nombre || ''}`);
+      }
+    } catch (eCert) { console.error('Registro de certificado:', eCert); }
 
     let med = odp.liberacion_calidad && odp.liberacion_calidad.mediciones_calidad;
     if (!med) {
@@ -39174,7 +39452,12 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
     const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
 
     // ====== HEADER ======
-    _pdfHeaderEmpresa(docPDF, 'CERTIFICADO DE CALIDAD', 'NPA-CAL-FR-02');
+    // 📜 FD: el recuadro lleva el FOLIO ÚNICO del certificado; el código de formato va debajo
+    _pdfHeaderEmpresa(docPDF, 'CERTIFICADO DE CALIDAD', folioCert || 'NPA-CAL-FR-02');
+    docPDF.setFontSize(6.5);
+    docPDF.setTextColor(120, 120, 120);
+    docPDF.text('Formato NPA-CAL-FR-02', 177, 39, { align: 'center' });
+    docPDF.setTextColor(0, 0, 0);
 
     let y = 50;
 
@@ -39327,12 +39610,14 @@ window.imprimirCertificadoCalidadPDF = (odpId, factura, pklFilter = null) => {
     docPDF.autoTable({
       startY: y,
       head: [],
+      // 📌 FD: lo NO evaluado se declara "NO EVALUADO" — el certificado ya no
+      //    afirma conformidad por default (integridad de registros BRCGS)
       body: [
-        ['Tipo de resina', resinaDesc, med.resultado_resina || 'Cumple con la especificación'],
-        ['Aditivo', aditivo, med.resultado_aditivo || 'N/A'],
-        ['Pigmento', pigmento, med.resultado_pigmento || 'N/A'],
-        ['Limpieza', 'Libre de contaminantes', med.resultado_limpieza || 'Libre'],
-        ['Inocuidad', 'Material fabricado exclusivamente con medios fisiológicamente inocuos y exentos de sustancias peligrosas para la salud.', med.resultado_inocuidad || 'Cumple'],
+        ['Tipo de resina', resinaDesc, med.resultado_resina || 'NO EVALUADO'],
+        ['Aditivo', aditivo, med.resultado_aditivo || (aditivo === 'N/A' ? 'N/A' : 'NO EVALUADO')],
+        ['Pigmento', pigmento, med.resultado_pigmento || (pigmento === 'N/A' ? 'N/A' : 'NO EVALUADO')],
+        ['Limpieza', 'Libre de contaminantes', med.resultado_limpieza || 'NO EVALUADO'],
+        ['Inocuidad', 'Material fabricado exclusivamente con medios fisiológicamente inocuos y exentos de sustancias peligrosas para la salud.', med.resultado_inocuidad || 'NO EVALUADO'],
       ],
       theme: 'grid',
       styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200,200,200], lineWidth: 0.2, textColor: [0,0,0] },
@@ -43140,11 +43425,14 @@ function modalLiberarCalidad() {
         calibre_moda: '',
         calibre_min: '',
         piezas_por_paq: aplicaEmpaque ? cantEmpaqueStd : '',
-        resultado_resina: 'Cumple con la especificación',
-        resultado_aditivo: 'Cumple con la especificación',
-        resultado_pigmento: 'N/A',
-        resultado_limpieza: 'Libre',
-        resultado_inocuidad: 'Cumple',
+        // 📌 FD: SIN pre-selección — Calidad debe evaluar cada punto explícitamente.
+        //    Lo que quede vacío sale como "NO EVALUADO" en el certificado (ya no
+        //    se afirma conformidad por default).
+        resultado_resina: '',
+        resultado_aditivo: '',
+        resultado_pigmento: '',
+        resultado_limpieza: '',
+        resultado_inocuidad: '',
         caracteristicas_cliente: 'N/A',
       },
     };
@@ -52651,16 +52939,25 @@ window.confirmarLiberarCalidad = async (odpId) => {
       }, 1100);
     } else {
       // RECHAZADO
+      // 🧯 FD: DISPOSICIÓN estructurada del material rechazado (ISO §8.7) — antes el
+      //    rechazo no documentaba qué se hace con el material físico
+      let _disp = prompt(`❌ RECHAZO de ${odp.folio}\n\n¿Qué DISPOSICIÓN tendrá el material rechazado?\n\n1 = Retrabajo (se reprocesa)\n2 = Merma / desecho (a peletizado)\n3 = Concesión (se libera con desviación autorizada por dirección)\n\nEscribe 1, 2 o 3:`);
+      if (_disp === null) return;
+      const _dispMap = { '1': 'retrabajo', '2': 'merma', '3': 'concesion' };
+      const disposicion = _dispMap[String(_disp).trim()] || 'sin_definir';
       await updateDoc(doc(db, 'ordenes_produccion', odpId), esParcialLib ? {
         estatus: 'en_produccion', updated_at: serverTimestamp()
       } : {
         estatus: 'rechazada',
         liberacion_calidad: liberacionData,
+        rechazo_disposicion: disposicion,
+        rechazo_disposicion_por: state.user?.nombre || state.user?.email || '',
         rechazada_at: serverTimestamp(),
         updated_at: serverTimestamp()
       });
-      
-      if (!esParcialLib) await generarPIDesdeRechazo(odp, cantidadOriginal, `RECHAZADA por calidad - ODP ${odp.folio}: ${pctCalidad.toFixed(1)}% calidad (regla 90%). Reposición completa requerida.`);
+      window.logAccion('rechazo_calidad', odp.folio, `${pctCalidad.toFixed(1)}% calidad · disposición: ${disposicion.toUpperCase()}`);
+
+      if (!esParcialLib) await generarPIDesdeRechazo(odp, cantidadOriginal, `RECHAZADA por calidad - ODP ${odp.folio}: ${pctCalidad.toFixed(1)}% calidad (regla 90%). Disposición: ${disposicion.toUpperCase()}. Reposición completa requerida.`);
       
       const batchNotif = writeBatch(db);
       ['CS', 'CEO', 'KAM', 'PRO', 'PLN'].forEach(depto => {
