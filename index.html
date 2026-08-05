@@ -4100,7 +4100,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0804-B41-vendedores</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0804-B42-pct-cliente</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -23744,6 +23744,103 @@ window.facCobro = async (facturaId) => {
 };
 
 // ============================================================
+// 🧹 LIMPIEZA DE PRUEBAS EN FACTURACIÓN — SOLO DIRECCIÓN.
+//    Para borrar facturas/remisiones de EJEMPLO sin ensuciar la operación
+//    real. Mismo patrón que eliminarODPPermanente: confirmación con folio
+//    exacto + huella indeleble en bitácora ANTES de borrar.
+// ============================================================
+window._esDireccionLimpieza = () => { const u = state.user || {}; return u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto); };
+
+// Elimina UNA factura de prueba: factura + sus cobros; la remisión vuelve a POR FACTURAR
+window.facEliminarFacturaPrueba = async (facturaId) => {
+  if (!window._esDireccionLimpieza()) { toast('🔒 Solo dirección (CEO/Admin) puede eliminar pruebas', 'error'); return; }
+  const fa = (state.facturas || []).find(x => x.id === facturaId);
+  if (!fa) { toast('Factura no encontrada', 'error'); return; }
+  try {
+    state.loadingAccion = true; window.forzarRender();
+    // Cobros ligados: consulta DIRECTA (no depende de límites del state)
+    let cobrosLig = [];
+    try { const s = await getDocs(query(collection(db, 'cobros'), where('factura_id', '==', facturaId))); cobrosLig = s.docs.map(d => ({ id: d.id })); } catch (e) {}
+    state.loadingAccion = false; window.forzarRender();
+
+    if (!confirm(
+      `🗑️ ELIMINAR FACTURA ${fa.folio} (limpieza de pruebas)\n\n` +
+      `${fa.cliente_nombre || ''} · $${fmtNum((Number(fa.monto) || 0).toFixed(2))} ${fa.moneda || 'MXN'}\n\n` +
+      `Se BORRARÁ PERMANENTEMENTE:\n` +
+      `• la factura y sus ${cobrosLig.length} cobro(s)\n` +
+      `• la remisión ${fa.remision_folio || '—'} se desliga y REGRESA a "Por facturar"\n` +
+      `• la OV ${fa.ov_folio || '—'} queda sin factura\n\n` +
+      `⚠️ NO se puede recuperar. Si es una factura REAL mal capturada, mejor corrígela.\n\n¿Continuar?`
+    )) return;
+    const conf = prompt(`Para confirmar, escribe el folio exacto de la factura:\n\n${fa.folio}`);
+    if (conf === null) return;
+    if (conf.trim().toUpperCase() !== String(fa.folio || '').toUpperCase()) { toast('El folio no coincide. Eliminación cancelada.', 'info'); return; }
+
+    state.loadingAccion = true; window.forzarRender();
+    window.logAccion('eliminar_factura_prueba', fa.folio, `BORRADO (prueba) · ${fa.cliente_nombre || ''} · $${fmtNum((Number(fa.monto) || 0).toFixed(2))} ${fa.moneda || 'MXN'} · ${cobrosLig.length} cobro(s) · rem ${fa.remision_folio || '—'}`);
+    const batch = writeBatch(db);
+    cobrosLig.forEach(c => batch.delete(doc(db, 'cobros', c.id)));
+    batch.delete(doc(db, 'facturas', fa.id));
+    if (fa.remision_id) batch.update(doc(db, 'remisiones', fa.remision_id), { factura_folio: '', factura_id: '', updated_at: serverTimestamp() });
+    if (fa.ov_id) batch.update(doc(db, 'ordenes_venta', fa.ov_id), { factura: '', factura_id: '', factura_uuid: '', updated_at: serverTimestamp() });
+    await batch.commit();
+    toast(`🗑 Factura ${fa.folio} eliminada · ${fa.remision_folio ? `la remisión ${fa.remision_folio} volvió a Por facturar` : 'sin remisión ligada'}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// Elimina UNA remisión de prueba EN CASCADA: remisión + factura(s) ligada(s) + cobros.
+// Opcional: regresar la OV a LISTA EMBARCAR (para re-despachar o cancelarla limpia).
+window.facEliminarRemisionPrueba = async (remisionId) => {
+  if (!window._esDireccionLimpieza()) { toast('🔒 Solo dirección (CEO/Admin) puede eliminar pruebas', 'error'); return; }
+  const rem = (state.remisiones || []).find(r => r.id === remisionId);
+  if (!rem) { toast('Remisión no encontrada', 'error'); return; }
+  try {
+    state.loadingAccion = true; window.forzarRender();
+    const facsLig = (state.facturas || []).filter(f => f.remision_id === rem.id || (rem.folio && f.remision_folio === rem.folio));
+    let cobrosLig = [];
+    try {
+      const ss = await Promise.all(facsLig.map(f => getDocs(query(collection(db, 'cobros'), where('factura_id', '==', f.id)))));
+      ss.forEach(s => s.docs.forEach(d => cobrosLig.push({ id: d.id })));
+    } catch (e) {}
+    const ov = (state.ordenes_venta || []).find(o => o.id === rem.ov_id) || null;
+    state.loadingAccion = false; window.forzarRender();
+
+    if (!confirm(
+      `🗑️ ELIMINAR REMISIÓN ${rem.folio} (limpieza de pruebas)\n\n` +
+      `${rem.cliente_nombre || rem.cliente || ''} · OV ${rem.ov_folio || '—'} · PI ${rem.pedido_folio || '—'}\n\n` +
+      `Se BORRARÁ PERMANENTEMENTE:\n` +
+      `• la remisión\n` +
+      `• ${facsLig.length} factura(s) ligada(s): ${facsLig.map(f => f.folio).join(', ') || '—'}\n` +
+      `• ${cobrosLig.length} cobro(s)\n\n` +
+      `Las tarimas NO se tocan (para borrar el material de prueba usa la eliminación de ODP en cascada).\n\n` +
+      `⚠️ NO se puede recuperar.\n\n¿Continuar?`
+    )) return;
+    const conf = prompt(`Para confirmar, escribe el folio exacto de la remisión:\n\n${rem.folio}`);
+    if (conf === null) return;
+    if (conf.trim().toUpperCase() !== String(rem.folio || '').toUpperCase()) { toast('El folio no coincide. Eliminación cancelada.', 'info'); return; }
+    let regresarOV = false;
+    if (ov) regresarOV = confirm(`La OV ${ov.folio} está "${ov.estatus}".\n\n¿REGRESARLA a LISTA EMBARCAR sin remisión ni factura?\n\nACEPTAR = regresa a lista embarcar (podrás re-despachar o cancelarla)\nCANCELAR = la OV se queda como está, solo se desliga la remisión`);
+
+    state.loadingAccion = true; window.forzarRender();
+    window.logAccion('eliminar_remision_prueba', rem.folio, `BORRADO (prueba) · ${rem.cliente_nombre || rem.cliente || ''} · ${facsLig.length} factura(s) · ${cobrosLig.length} cobro(s)${ov ? ` · OV ${ov.folio}${regresarOV ? ' regresada a lista_embarcar' : ' desligada'}` : ''}`);
+    const batch = writeBatch(db);
+    cobrosLig.forEach(c => batch.delete(doc(db, 'cobros', c.id)));
+    facsLig.forEach(f => batch.delete(doc(db, 'facturas', f.id)));
+    batch.delete(doc(db, 'remisiones', rem.id));
+    if (ov) {
+      const limpio = { remision: '', remision_folio: '', factura: '', factura_id: '', factura_uuid: '', salida_sin_factura_aut: null, updated_at: serverTimestamp() };
+      batch.update(doc(db, 'ordenes_venta', ov.id), regresarOV ? { ...limpio, estatus: 'lista_embarcar' } : limpio);
+      // Tarimas de la OV: solo se les quita el folio de remisión (el físico no se toca)
+      (ov.tarimas_ids || []).forEach(tid => batch.update(doc(db, 'tarimas', tid), { remision_folio: '', updated_at: serverTimestamp() }));
+    }
+    await batch.commit();
+    toast(`🗑 Remisión ${rem.folio} eliminada${facsLig.length ? ` con ${facsLig.length} factura(s)` : ''}${ov && regresarOV ? ` · OV ${ov.folio} en lista embarcar` : ''}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// ============================================================
 // 💰 COMISIONES DE VENDEDORES — permiso POR PERSONA (ve_comisiones
 //    en su usuario), no por departamento. La comisión se causa cuando
 //    el cliente PAGÓ (factura en estado 'pagada'), sobre el TOTAL de
@@ -23752,38 +23849,57 @@ window.facCobro = async (facturaId) => {
 // ============================================================
 window._veComisiones = () => state.user?.ve_comisiones === true || ['CEO', 'RH'].includes(state.user?.depto);
 window.comSet = (campo, v, focusId) => { if (!state.comForm) state.comForm = {}; state.comForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
-const _COM_FORM_VACIO = { id: '', vendedor: '', pct: '', clientes: [], busca_cli: '', forma_pago: 'transferencia', banco: '', cuenta: '', titular: '', telefono: '', email: '', notas: '' };
-window.comNuevo = () => { state.comForm = { ..._COM_FORM_VACIO, clientes: [] }; render(); };
+const _COM_FORM_VACIO = { id: '', vendedor: '', pct: '', clientes: [], pcts: {}, busca_cli: '', forma_pago: 'transferencia', banco: '', cuenta: '', titular: '', telefono: '', email: '', notas: '' };
+window.comNuevo = () => { state.comForm = { ..._COM_FORM_VACIO, clientes: [], pcts: {} }; render(); };
 window.comEditar = (id) => {
   const c = (state.comisiones_vendedores || []).find(x => x.id === id); if (!c) return;
   state.comForm = {
     ..._COM_FORM_VACIO, id: c.id, vendedor: c.vendedor || '', pct: String(c.pct || ''),
-    clientes: [...(c.clientes || [])], forma_pago: c.forma_pago || 'transferencia',
+    clientes: [...(c.clientes || [])], pcts: Object.fromEntries(Object.entries(c.pcts || {}).map(([k, v]) => [k, String(v)])),
+    forma_pago: c.forma_pago || 'transferencia',
     banco: c.banco || '', cuenta: c.cuenta || '', titular: c.titular || '',
     telefono: c.telefono || '', email: c.email || '', notas: c.notas || ''
   };
   render();
 };
 window.comCerrar = () => { state.comForm = null; render(); };
+// % que aplica a un cliente dentro de un esquema: su % propio o, si no tiene, el % base
+window._comPctDe = (esq, cod) => { const p = Number(esq?.pcts?.[String(cod || '').toUpperCase()]); return p > 0 ? p : (Number(esq?.pct) || 0); };
 // Agregar/quitar cliente del esquema (selector con buscador — sustituye la captura por comas)
 window.comCliToggle = (cod) => {
   const f = state.comForm; if (!f) return;
   cod = String(cod || '').toUpperCase(); if (!cod) return;
-  f.clientes = f.clientes || [];
+  f.clientes = f.clientes || []; f.pcts = f.pcts || {};
   const i = f.clientes.indexOf(cod);
-  if (i >= 0) f.clientes.splice(i, 1); else { f.clientes.push(cod); f.busca_cli = ''; }
+  if (i >= 0) { f.clientes.splice(i, 1); delete f.pcts[cod]; }
+  else { f.clientes.push(cod); if (f.pcts[cod] === undefined && Number(f.pct) > 0) f.pcts[cod] = String(f.pct); f.busca_cli = ''; }
   window.forzarRender();
   const inp = document.getElementById('com-buscacli');
   if (inp) { inp.focus(); const p = inp.value.length; inp.setSelectionRange(p, p); }
+};
+// % individual por cliente (editable en el chip)
+window.comCliPct = (cod, v) => {
+  const f = state.comForm; if (!f) return;
+  f.pcts = f.pcts || {};
+  f.pcts[String(cod).toUpperCase()] = String(v).replace(/[^0-9.]/g, '');
+  window.forzarRender(); window._cotFoco('com-pct-' + cod);
 };
 window.comGuardar = async () => {
   if (!window._veComisiones()) { toast('🔒 Sin permiso de comisiones', 'error'); return; }
   const f = state.comForm || {};
   if (!String(f.vendedor || '').trim()) { toast('Nombre del vendedor obligatorio', 'error'); return; }
   const pct = Number(f.pct);
-  if (!(pct > 0 && pct <= 20)) { toast('% de comisión entre 0.1 y 20', 'error'); return; }
+  if (!(pct > 0 && pct <= 20)) { toast('% base entre 0.1 y 20 (se usa para clientes sin % propio)', 'error'); return; }
   const clientes = (f.clientes || []).map(s => String(s).trim().toUpperCase()).filter(Boolean);
   if (!clientes.length) { toast('Asigna al menos un cliente (usa el buscador)', 'error'); return; }
+  // % por CLIENTE: cada uno puede tener el suyo (2.5, 4.5, 1.5...); sin % propio usa el base
+  const pcts = {};
+  for (const cod of clientes) {
+    const raw = f.pcts?.[cod];
+    const p = raw === undefined || raw === '' ? pct : Number(raw);
+    if (!(p > 0 && p <= 20)) { toast(`% de ${cod} inválido (${raw}) — entre 0.1 y 20`, 'error'); return; }
+    pcts[cod] = p;
+  }
   const formaPago = f.forma_pago || 'transferencia';
   const cuenta = String(f.cuenta || '').replace(/[^0-9]/g, '');
   if (formaPago === 'transferencia' && !cuenta) { toast('Para pago por transferencia captura la cuenta o CLABE', 'error'); return; }
@@ -23792,7 +23908,7 @@ window.comGuardar = async () => {
   }
   try {
     const data = {
-      vendedor: f.vendedor.trim(), pct, clientes, activo: true,
+      vendedor: f.vendedor.trim(), pct, pcts, clientes, activo: true,
       forma_pago: formaPago, banco: String(f.banco || '').trim(), cuenta,
       titular: String(f.titular || '').trim() || f.vendedor.trim(),
       telefono: String(f.telefono || '').trim(), email: String(f.email || '').trim(),
@@ -23801,7 +23917,7 @@ window.comGuardar = async () => {
     };
     if (f.id) { await updateDoc(doc(db, 'comisiones_vendedores', f.id), data); }
     else { await addDoc(collection(db, 'comisiones_vendedores'), { ...data, created_at: serverTimestamp() }); }
-    window.logAccion('comision_config', f.vendedor.trim(), `${pct}% · ${formaPago}${data.banco ? ' ' + data.banco : ''} · clientes: ${clientes.join(', ')}`);
+    window.logAccion('comision_config', f.vendedor.trim(), `${formaPago}${data.banco ? ' ' + data.banco : ''} · ${clientes.map(c => `${c}:${pcts[c]}%`).join(', ')}`);
     state.comForm = null;
     toast('💰 Esquema de comisión guardado');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
@@ -24066,6 +24182,7 @@ function renderFacturacion() {
               : `<button onclick="window.facAutorizarSinFactura('${r.id}')" title="Excepción: dejar salir sin factura (con motivo)" style="padding:9px 16px;background:#fff;color:#b45309;border:1.5px solid #f59e0b;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🔓 Autorizar salida con remisión</button>`) : ''}
             ${!conFacturar && r.estatus === 'por_cargar' && r.ov_id && esFACv ? `<button onclick="window.confirmarCargadoEnviado('${r.ov_id}')" title="FAC también opera logística: marcar que el material ya se cargó y salió" style="padding:9px 16px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🚚 Cargado y enviado</button>` : ''}
             ${!conFacturar && r.estatus === 'en_transito' && r.ov_id && esFACv ? `<button onclick="window.confirmarEntregaSalida('${r.ov_id}')" style="padding:9px 16px;background:#0f172a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✅ Confirmar entrega</button>` : ''}
+            ${window._esDireccionLimpieza() ? `<button onclick="window.facEliminarRemisionPrueba('${r.id}')" title="Limpieza de PRUEBAS (solo dirección): borra la remisión con su factura y cobros" style="padding:9px 12px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🗑</button>` : ''}
           </div>
         </div>
       </div>`;
@@ -24107,6 +24224,7 @@ function renderFacturacion() {
               ${saldo > 0.01 && f.estado !== 'cancelada' && esCYCv ? `<button onclick="window.facCobro('${f.id}')" style="padding:7px 13px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💵 Cobro</button>` : ''}
               ${saldo > 0.01 && f.estado !== 'cancelada' && esCYCv ? `<button onclick="window.facGestion('${f.id}')" title="Registrar llamada / promesa de pago" style="padding:7px 13px;background:#fff;color:#475569;border:1.5px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📝</button>` : ''}
               ${f.estado !== 'cancelada' && esFACv ? `<button onclick="window.facCancelar('${f.id}')" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">❌</button>` : ''}
+              ${window._esDireccionLimpieza() ? `<button onclick="window.facEliminarFacturaPrueba('${f.id}')" title="Limpieza de PRUEBAS (solo dirección): borra la factura y sus cobros; la remisión vuelve a Por facturar" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">🗑</button>` : ''}
             </div>
           </div>
         </div>
@@ -24244,11 +24362,19 @@ function renderFacturacion() {
     const _baseCom = (f) => Number(f.subtotal) > 0 ? Number(f.subtotal) : (Number(f.monto) || 0) / 1.16;
     const reporte = esquemas.map(esq => {
       const fs = pagadasMes.filter(f => (esq.clientes || []).includes(String(f.cliente_codigo || '').toUpperCase()));
-      const porMon = {};
-      fs.forEach(f => { const m = f.moneda || 'MXN'; porMon[m] = (porMon[m] || 0) + _baseCom(f); });
-      const comStr = Object.keys(porMon).map(m => `$${fmtNum((porMon[m] * esq.pct / 100).toFixed(2))} ${m}`).join(' · ') || '$0.00';
+      // 💰 % VARIABLE POR CLIENTE: cada factura comisiona con el % de SU cliente
+      const porMon = {}, comMon = {};
+      fs.forEach(f => {
+        const m = f.moneda || 'MXN';
+        const base = _baseCom(f);
+        porMon[m] = (porMon[m] || 0) + base;
+        comMon[m] = (comMon[m] || 0) + base * window._comPctDe(esq, f.cliente_codigo) / 100;
+      });
+      const comStr = Object.keys(comMon).map(m => `$${fmtNum(comMon[m].toFixed(2))} ${m}`).join(' · ') || '$0.00';
       const baseStr = Object.keys(porMon).map(m => `$${fmtNum(porMon[m].toFixed(2))} ${m}`).join(' · ') || '$0.00';
-      return { esq, fs, baseStr, comStr };
+      const pctsUnicos = [...new Set((esq.clientes || []).map(c => window._comPctDe(esq, c)))].sort((a, b) => a - b);
+      const pctLabel = pctsUnicos.length > 1 ? `${pctsUnicos[0]}–${pctsUnicos[pctsUnicos.length - 1]}% según cliente` : `${pctsUnicos[0] || esq.pct}%`;
+      return { esq, fs, baseStr, comStr, pctLabel };
     });
     cuerpo = `
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:12px;">
@@ -24257,10 +24383,10 @@ function renderFacturacion() {
         ${reporte.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin esquemas configurados — agrega vendedores abajo</div>' : reporte.map(r => `
           <div style="border:1px solid #f1f5f9;border-radius:10px;padding:9px 12px;margin-bottom:7px;">
             <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-              <span style="font-weight:800;">${r.esq.vendedor} <span style="color:#94a3b8;font-weight:600;">(${r.esq.pct}% sobre SUBTOTAL sin IVA · ${(r.esq.clientes || []).length} cliente(s))</span></span>
+              <span style="font-weight:800;">${r.esq.vendedor} <span style="color:#94a3b8;font-weight:600;">(${r.pctLabel} sobre SUBTOTAL sin IVA · ${(r.esq.clientes || []).length} cliente(s))</span></span>
               <span>base pagada (subtotal): <strong>${r.baseStr}</strong> → comisión: <strong style="color:#be185d;">${r.comStr}</strong></span>
             </div>
-            ${r.fs.length ? `<details style="margin-top:4px;"><summary style="font-size:11px;color:#475569;cursor:pointer;font-weight:700;">${r.fs.length} factura(s) pagadas</summary><div style="font-size:11px;color:#64748b;margin-top:3px;">${r.fs.map(f => `<div>${f.folio} · ${f.cliente_nombre} · $${fmtNum((Number(f.monto) || 0).toFixed(2))} ${f.moneda || 'MXN'}</div>`).join('')}</div></details>` : '<div style="font-size:11px;color:#cbd5e1;">sin pagos de sus clientes este mes</div>'}
+            ${r.fs.length ? `<details style="margin-top:4px;"><summary style="font-size:11px;color:#475569;cursor:pointer;font-weight:700;">${r.fs.length} factura(s) pagadas</summary><div style="font-size:11px;color:#64748b;margin-top:3px;">${r.fs.map(f => `<div>${f.folio} · ${f.cliente_nombre} · $${fmtNum((Number(f.monto) || 0).toFixed(2))} ${f.moneda || 'MXN'} · <span style="color:#be185d;font-weight:700;">${window._comPctDe(r.esq, f.cliente_codigo)}%</span></div>`).join('')}</div></details>` : '<div style="font-size:11px;color:#cbd5e1;">sin pagos de sus clientes este mes</div>'}
           </div>`).join('')}
       </div>
       <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:13px 16px;margin-bottom:12px;">
@@ -24274,7 +24400,7 @@ function renderFacturacion() {
               <strong>${c.vendedor}</strong> · <strong style="color:#be185d;">${c.pct}%</strong>
               <span style="color:#64748b;"> · ${fp}${c.banco ? ` ${c.banco}` : ''}${cta}</span>
               ${c.telefono || c.email ? `<span style="color:#94a3b8;"> · ${[c.telefono, c.email].filter(Boolean).join(' · ')}</span>` : ''}
-              <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;">${(c.clientes || []).map(cod => { const cl = (state.clientes || []).find(x => String(x.codigo || '').toUpperCase() === cod); return `<span class="text-mono" style="background:#fdf2f8;border:1px solid #fbcfe8;color:#9d174d;border-radius:99px;padding:1px 8px;font-size:10.5px;" title="${(cl?.nombre || '').replace(/"/g, '&quot;')}">${cod}${cl ? ` · ${String(cl.nombre || '').slice(0, 18)}` : ''}</span>`; }).join('')}</div>
+              <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;">${(c.clientes || []).map(cod => { const cl = (state.clientes || []).find(x => String(x.codigo || '').toUpperCase() === cod); return `<span class="text-mono" style="background:#fdf2f8;border:1px solid #fbcfe8;color:#9d174d;border-radius:99px;padding:1px 8px;font-size:10.5px;" title="${(cl?.nombre || '').replace(/"/g, '&quot;')}">${cod}${cl ? ` · ${String(cl.nombre || '').slice(0, 18)}` : ''} · <strong>${window._comPctDe(c, cod)}%</strong></span>`; }).join('')}</div>
             </span>
             <span style="display:flex;gap:6px;">
               <button onclick="window.comEditar('${c.id}')" style="padding:5px 11px;background:#fff;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">✏️</button>
@@ -24298,7 +24424,7 @@ function renderFacturacion() {
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Vendedor *</label>
               <input class="input" id="com-ven" type="text" list="com-dl-vendedores" value="${(cf.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.comSet('vendedor', this.value, 'com-ven')" placeholder="Nombre completo" />
               <datalist id="com-dl-vendedores">${(state.usuarios_sistema || []).filter(x => x.activo !== false).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
-            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">% comisión *</label>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">% base * <span style="font-weight:600;color:#94a3b8;">(cada cliente puede llevar el suyo)</span></label>
               <input class="input" id="com-pct" type="text" inputmode="decimal" value="${cf.pct || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.comSet('pct', this.value, 'com-pct')" placeholder="Ej: 2.5" /></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Teléfono</label>
               <input class="input" id="com-tel" type="text" inputmode="tel" value="${(cf.telefono || '').replace(/"/g, '&quot;')}" oninput="this.value=this.value.replace(/[^0-9+ -]/g,'');window.comSet('telefono', this.value, 'com-tel')" placeholder="81 0000 0000" /></div>
@@ -24322,11 +24448,14 @@ function renderFacturacion() {
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Titular de la cuenta</label>
               <input class="input" id="com-tit" type="text" value="${(cf.titular || '').replace(/"/g, '&quot;')}" oninput="window.comSet('titular', this.value, 'com-tit')" placeholder="Si es distinto al vendedor" /></div>` : ''}
           </div>
-          <div style="font-weight:800;font-size:12px;color:#9d174d;margin:12px 0 6px;">🏷 Clientes asignados * <span style="font-weight:600;color:#94a3b8;">(sus comisiones se calculan SOLO de estos clientes)</span></div>
+          <div style="font-weight:800;font-size:12px;color:#9d174d;margin:12px 0 6px;">🏷 Clientes asignados y su % * <span style="font-weight:600;color:#94a3b8;">(el % es POR CLIENTE — edítalo en cada tarjeta; comisiona solo de estos clientes)</span></div>
           <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">
             ${sel.length ? sel.map(cod => { const cl = (state.clientes || []).find(x => String(x.codigo || '').toUpperCase() === cod); return `
               <span style="display:inline-flex;align-items:center;gap:6px;background:#be185d;color:#fff;border-radius:99px;padding:4px 6px 4px 12px;font-size:11.5px;font-weight:800;">
                 ${cod}${cl ? ` · ${String(cl.nombre || '').slice(0, 22)}` : ''}
+                <span style="display:inline-flex;align-items:center;gap:2px;background:#fff;border-radius:99px;padding:2px 7px;">
+                  <input id="com-pct-${cod}" type="text" inputmode="decimal" value="${cf.pcts?.[cod] ?? ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.comCliPct('${cod.replace(/'/g, "\\'")}', this.value)" placeholder="${cf.pct || '%'}" style="width:38px;border:none;outline:none;font-weight:900;font-size:11.5px;color:#9d174d;text-align:right;background:transparent;" /><span style="color:#9d174d;font-weight:900;font-size:11px;">%</span>
+                </span>
                 <button onclick="window.comCliToggle('${cod.replace(/'/g, "\\'")}')" style="background:#9d174d;color:#fff;border:none;border-radius:99px;width:18px;height:18px;cursor:pointer;font-weight:900;font-size:11px;line-height:1;">×</button>
               </span>`; }).join('') : '<span style="font-size:11.5px;color:#94a3b8;">Aún sin clientes — búscalos abajo y da clic para agregarlos</span>'}
           </div>
