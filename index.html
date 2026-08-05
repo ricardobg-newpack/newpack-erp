@@ -1867,9 +1867,9 @@ window.notificarEvento = async ({ evento, folio = '', mensaje_personalizado = ''
   try {
     const u = state.user || {};
     const eventos = {
-      pi_creado: { 
-        titulo: '🆕 PI creado', 
-        depto_destino: 'CS',  // CS lo aprueba
+      pi_creado: {
+        titulo: '🆕 PI creado',
+        depto_destino: 'PLN',  // ✅ PLANEACIÓN lo aprueba (corregido: antes avisaba a CS)
         tipo: 'info' 
       },
       pi_aprobado: { 
@@ -4100,7 +4100,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0803-B38-tablaraya</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0804-B41-vendedores</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4113,7 +4113,9 @@ function renderApp() {
         ` : `
         <div class="sidebar-section">General</div>
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
+        ${(esCEO || esADMIN || esPLN) ? `
         <button class="nav-item ${state.vista === 'centro_control' ? 'active' : ''}" data-vista="centro_control" style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;font-weight:800;">📊 Centro de Control</button>
+        ` : ''}
         ${(['CEO', 'ADMIN'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'bitacora' ? 'active' : ''}" data-vista="bitacora">📜 Bitácora de Auditoría</button>
         ` : ''}
@@ -4123,7 +4125,9 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'clientes' ? 'active' : ''}" data-vista="clientes">${ICONS.users} Clientes</button>
           <button class="nav-item ${state.vista === 'cotizador' ? 'active' : ''}" data-vista="cotizador">🧮 Cotizador</button>
         ` : ''}
+        ${(esCS || esKAM || esPLN || esCOMP || esCEO || esADMIN) ? `
         <button class="nav-item ${state.vista === 'pedidos' ? 'active' : ''}" data-vista="pedidos">${ICONS.cart} Pedidos (PI/OV/ODP)</button>
+        ` : ''}
         ${esCS ? `
           <button class="nav-item ${state.vista === 'seguimiento' ? 'active' : ''}" data-vista="seguimiento">📊 Seguimiento Comercial</button>
         ` : ''}
@@ -7857,7 +7861,8 @@ function renderPedidos() {
   
   const ovsParaMi = state.user.almacen_asignado ? ovsPend.filter(o => o.cedis === state.user.almacen_asignado) : ovsPend;
   const puedeCrearPI = ['CS','KAM','CEO','ADMIN','COMP'].includes(state.user.depto) || state.user.rol === 'admin';
-  const puedeAprobar = ['CEO','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
+  // ✅ PLANEACIÓN aprueba los PI (dirección también puede, pero el dueño del paso es PLN)
+  const puedeAprobar = ['PLN','CEO','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
   // 🆕 CS/KAM pueden editar y cancelar PIs antes de ser aprobados
   const puedeModificarBorrador = ['CS','KAM','CEO','ADMIN'].includes(state.user.depto) || state.user.rol === 'admin';
   
@@ -23747,22 +23752,56 @@ window.facCobro = async (facturaId) => {
 // ============================================================
 window._veComisiones = () => state.user?.ve_comisiones === true || ['CEO', 'RH'].includes(state.user?.depto);
 window.comSet = (campo, v, focusId) => { if (!state.comForm) state.comForm = {}; state.comForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
-window.comNuevo = () => { state.comForm = { id: '', vendedor: '', pct: '', clientes: '' }; render(); };
-window.comEditar = (id) => { const c = (state.comisiones_vendedores || []).find(x => x.id === id); if (!c) return; state.comForm = { id: c.id, vendedor: c.vendedor || '', pct: String(c.pct || ''), clientes: (c.clientes || []).join(', ') }; render(); };
+const _COM_FORM_VACIO = { id: '', vendedor: '', pct: '', clientes: [], busca_cli: '', forma_pago: 'transferencia', banco: '', cuenta: '', titular: '', telefono: '', email: '', notas: '' };
+window.comNuevo = () => { state.comForm = { ..._COM_FORM_VACIO, clientes: [] }; render(); };
+window.comEditar = (id) => {
+  const c = (state.comisiones_vendedores || []).find(x => x.id === id); if (!c) return;
+  state.comForm = {
+    ..._COM_FORM_VACIO, id: c.id, vendedor: c.vendedor || '', pct: String(c.pct || ''),
+    clientes: [...(c.clientes || [])], forma_pago: c.forma_pago || 'transferencia',
+    banco: c.banco || '', cuenta: c.cuenta || '', titular: c.titular || '',
+    telefono: c.telefono || '', email: c.email || '', notas: c.notas || ''
+  };
+  render();
+};
 window.comCerrar = () => { state.comForm = null; render(); };
+// Agregar/quitar cliente del esquema (selector con buscador — sustituye la captura por comas)
+window.comCliToggle = (cod) => {
+  const f = state.comForm; if (!f) return;
+  cod = String(cod || '').toUpperCase(); if (!cod) return;
+  f.clientes = f.clientes || [];
+  const i = f.clientes.indexOf(cod);
+  if (i >= 0) f.clientes.splice(i, 1); else { f.clientes.push(cod); f.busca_cli = ''; }
+  window.forzarRender();
+  const inp = document.getElementById('com-buscacli');
+  if (inp) { inp.focus(); const p = inp.value.length; inp.setSelectionRange(p, p); }
+};
 window.comGuardar = async () => {
   if (!window._veComisiones()) { toast('🔒 Sin permiso de comisiones', 'error'); return; }
   const f = state.comForm || {};
   if (!String(f.vendedor || '').trim()) { toast('Nombre del vendedor obligatorio', 'error'); return; }
   const pct = Number(f.pct);
   if (!(pct > 0 && pct <= 20)) { toast('% de comisión entre 0.1 y 20', 'error'); return; }
-  const clientes = String(f.clientes || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  if (!clientes.length) { toast('Asigna al menos un código de cliente (separados por coma)', 'error'); return; }
+  const clientes = (f.clientes || []).map(s => String(s).trim().toUpperCase()).filter(Boolean);
+  if (!clientes.length) { toast('Asigna al menos un cliente (usa el buscador)', 'error'); return; }
+  const formaPago = f.forma_pago || 'transferencia';
+  const cuenta = String(f.cuenta || '').replace(/[^0-9]/g, '');
+  if (formaPago === 'transferencia' && !cuenta) { toast('Para pago por transferencia captura la cuenta o CLABE', 'error'); return; }
+  if (cuenta && ![10, 11, 16, 18].includes(cuenta.length)) {
+    if (!confirm(`La cuenta tiene ${cuenta.length} dígitos (lo usual: cuenta 10-11, tarjeta 16, CLABE 18).\n\n¿Guardar así?`)) return;
+  }
   try {
-    const data = { vendedor: f.vendedor.trim(), pct, clientes, activo: true, actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp() };
+    const data = {
+      vendedor: f.vendedor.trim(), pct, clientes, activo: true,
+      forma_pago: formaPago, banco: String(f.banco || '').trim(), cuenta,
+      titular: String(f.titular || '').trim() || f.vendedor.trim(),
+      telefono: String(f.telefono || '').trim(), email: String(f.email || '').trim(),
+      notas: String(f.notas || '').trim(),
+      actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp()
+    };
     if (f.id) { await updateDoc(doc(db, 'comisiones_vendedores', f.id), data); }
     else { await addDoc(collection(db, 'comisiones_vendedores'), { ...data, created_at: serverTimestamp() }); }
-    window.logAccion('comision_config', f.vendedor.trim(), `${pct}% · clientes: ${clientes.join(', ')}`);
+    window.logAccion('comision_config', f.vendedor.trim(), `${pct}% · ${formaPago}${data.banco ? ' ' + data.banco : ''} · clientes: ${clientes.join(', ')}`);
     state.comForm = null;
     toast('💰 Esquema de comisión guardado');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
@@ -24226,27 +24265,94 @@ function renderFacturacion() {
       </div>
       <div style="background:#fff;border:2px solid #be185d;border-radius:14px;padding:13px 16px;margin-bottom:12px;">
         <div style="font-weight:900;font-size:13px;margin-bottom:8px;">⚙️ Esquemas por vendedor</div>
-        ${esquemas.map(c => `
-          <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;align-items:center;">
-            <span><strong>${c.vendedor}</strong> · ${c.pct}% · <span class="text-mono" style="color:#64748b;">${(c.clientes || []).join(', ')}</span></span>
+        ${esquemas.map(c => {
+          const fp = { transferencia: '🏦 Transferencia', efectivo: '💵 Efectivo', cheque: '📝 Cheque' }[c.forma_pago || 'transferencia'];
+          const cta = c.cuenta ? ` ····${String(c.cuenta).slice(-4)}` : '';
+          return `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:7px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;align-items:center;">
+            <span style="flex:1;min-width:240px;">
+              <strong>${c.vendedor}</strong> · <strong style="color:#be185d;">${c.pct}%</strong>
+              <span style="color:#64748b;"> · ${fp}${c.banco ? ` ${c.banco}` : ''}${cta}</span>
+              ${c.telefono || c.email ? `<span style="color:#94a3b8;"> · ${[c.telefono, c.email].filter(Boolean).join(' · ')}</span>` : ''}
+              <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;">${(c.clientes || []).map(cod => { const cl = (state.clientes || []).find(x => String(x.codigo || '').toUpperCase() === cod); return `<span class="text-mono" style="background:#fdf2f8;border:1px solid #fbcfe8;color:#9d174d;border-radius:99px;padding:1px 8px;font-size:10.5px;" title="${(cl?.nombre || '').replace(/"/g, '&quot;')}">${cod}${cl ? ` · ${String(cl.nombre || '').slice(0, 18)}` : ''}</span>`; }).join('')}</div>
+            </span>
             <span style="display:flex;gap:6px;">
               <button onclick="window.comEditar('${c.id}')" style="padding:5px 11px;background:#fff;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">✏️</button>
               ${['CEO', 'RH'].includes(state.user?.depto) ? `<button onclick="window.comEliminar('${c.id}')" style="padding:5px 11px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:11px;">🗑</button>` : ''}
             </span>
-          </div>`).join('') || '<div style="font-size:12px;color:#94a3b8;">Sin esquemas aún</div>'}
-        ${cf ? `
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:10px;">
-          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Vendedor *</label>
-            <input class="input" id="com-ven" type="text" value="${(cf.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.comSet('vendedor', this.value, 'com-ven')" /></div>
-          <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">% comisión *</label>
-            <input class="input" id="com-pct" type="text" inputmode="decimal" value="${cf.pct || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.comSet('pct', this.value, 'com-pct')" placeholder="Ej: 2.5" /></div>
-          <div style="grid-column:1/-1;"><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Códigos de clientes asignados (separados por coma) *</label>
-            <input class="input" id="com-cli" type="text" value="${(cf.clientes || '').replace(/"/g, '&quot;')}" oninput="window.comSet('clientes', this.value, 'com-cli')" placeholder="A001, M021, B003" /></div>
+          </div>`;
+        }).join('') || '<div style="font-size:12px;color:#94a3b8;">Sin esquemas aún</div>'}
+        ${cf ? (() => {
+          // Mapa código→vendedor de OTROS esquemas (candado anti doble comisión)
+          const dueno = {};
+          esquemas.forEach(e => { if (e.id === cf.id) return; (e.clientes || []).forEach(cod => { dueno[String(cod).toUpperCase()] = e.vendedor; }); });
+          const sel = (cf.clientes || []).map(c => String(c).toUpperCase());
+          const q = String(cf.busca_cli || '').trim().toLowerCase();
+          const sugeridos = q ? (state.clientes || []).filter(c => c.activo !== false
+            && !sel.includes(String(c.codigo || '').toUpperCase())
+            && ((c.codigo || '') + ' ' + (c.nombre || '')).toLowerCase().includes(q)).slice(0, 12) : [];
+          return `
+        <div style="margin-top:12px;border-top:2px solid #fbcfe8;padding-top:10px;">
+          <div style="font-weight:800;font-size:12px;color:#9d174d;margin-bottom:6px;">👤 Datos del vendedor</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Vendedor *</label>
+              <input class="input" id="com-ven" type="text" list="com-dl-vendedores" value="${(cf.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.comSet('vendedor', this.value, 'com-ven')" placeholder="Nombre completo" />
+              <datalist id="com-dl-vendedores">${(state.usuarios_sistema || []).filter(x => x.activo !== false).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">% comisión *</label>
+              <input class="input" id="com-pct" type="text" inputmode="decimal" value="${cf.pct || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.comSet('pct', this.value, 'com-pct')" placeholder="Ej: 2.5" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Teléfono</label>
+              <input class="input" id="com-tel" type="text" inputmode="tel" value="${(cf.telefono || '').replace(/"/g, '&quot;')}" oninput="this.value=this.value.replace(/[^0-9+ -]/g,'');window.comSet('telefono', this.value, 'com-tel')" placeholder="81 0000 0000" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Email</label>
+              <input class="input" id="com-mail" type="text" inputmode="email" value="${(cf.email || '').replace(/"/g, '&quot;')}" oninput="window.comSet('email', this.value, 'com-mail')" placeholder="correo@..." /></div>
+          </div>
+          <div style="font-weight:800;font-size:12px;color:#9d174d;margin:12px 0 6px;">💳 Cómo se le paga la comisión</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Forma de pago *</label>
+              <select class="input" onchange="window.comSet('forma_pago', this.value)">
+                <option value="transferencia" ${(cf.forma_pago || 'transferencia') === 'transferencia' ? 'selected' : ''}>🏦 Transferencia</option>
+                <option value="efectivo" ${cf.forma_pago === 'efectivo' ? 'selected' : ''}>💵 Efectivo</option>
+                <option value="cheque" ${cf.forma_pago === 'cheque' ? 'selected' : ''}>📝 Cheque</option>
+              </select></div>
+            ${(cf.forma_pago || 'transferencia') !== 'efectivo' ? `
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Banco</label>
+              <input class="input" id="com-banco" type="text" list="com-dl-bancos" value="${(cf.banco || '').replace(/"/g, '&quot;')}" oninput="window.comSet('banco', this.value, 'com-banco')" placeholder="BBVA, Banorte..." />
+              <datalist id="com-dl-bancos">${['BBVA', 'Banorte', 'Santander', 'Citibanamex', 'HSBC', 'Scotiabank', 'Banregio', 'Afirme', 'Inbursa', 'Banco Azteca', 'BanBajío'].map(b => `<option value="${b}"></option>`).join('')}</datalist></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Cuenta / CLABE / tarjeta ${(cf.forma_pago || 'transferencia') === 'transferencia' ? '*' : ''}</label>
+              <input class="input" id="com-cta" type="text" inputmode="numeric" value="${cf.cuenta || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.comSet('cuenta', this.value, 'com-cta')" placeholder="18 dígitos CLABE" /></div>
+            <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Titular de la cuenta</label>
+              <input class="input" id="com-tit" type="text" value="${(cf.titular || '').replace(/"/g, '&quot;')}" oninput="window.comSet('titular', this.value, 'com-tit')" placeholder="Si es distinto al vendedor" /></div>` : ''}
+          </div>
+          <div style="font-weight:800;font-size:12px;color:#9d174d;margin:12px 0 6px;">🏷 Clientes asignados * <span style="font-weight:600;color:#94a3b8;">(sus comisiones se calculan SOLO de estos clientes)</span></div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">
+            ${sel.length ? sel.map(cod => { const cl = (state.clientes || []).find(x => String(x.codigo || '').toUpperCase() === cod); return `
+              <span style="display:inline-flex;align-items:center;gap:6px;background:#be185d;color:#fff;border-radius:99px;padding:4px 6px 4px 12px;font-size:11.5px;font-weight:800;">
+                ${cod}${cl ? ` · ${String(cl.nombre || '').slice(0, 22)}` : ''}
+                <button onclick="window.comCliToggle('${cod.replace(/'/g, "\\'")}')" style="background:#9d174d;color:#fff;border:none;border-radius:99px;width:18px;height:18px;cursor:pointer;font-weight:900;font-size:11px;line-height:1;">×</button>
+              </span>`; }).join('') : '<span style="font-size:11.5px;color:#94a3b8;">Aún sin clientes — búscalos abajo y da clic para agregarlos</span>'}
+          </div>
+          <input class="input" id="com-buscacli" type="text" value="${(cf.busca_cli || '').replace(/"/g, '&quot;')}" oninput="window.comSet('busca_cli', this.value, 'com-buscacli')" placeholder="🔍 Busca por código o nombre (ej: A001 o Empaques...)" />
+          ${q ? `
+          <div style="border:1px solid #fbcfe8;border-radius:10px;margin-top:5px;max-height:220px;overflow-y:auto;">
+            ${sugeridos.length ? sugeridos.map(c => {
+              const cod = String(c.codigo || '').toUpperCase();
+              const ocupado = dueno[cod];
+              return ocupado ? `
+              <div onclick="toast('⚠️ ${cod} ya está asignado a ${String(ocupado).replace(/'/g, "\\'")} — quítalo de su esquema primero (evita doble comisión)', 'error')" style="display:flex;justify-content:space-between;gap:8px;padding:7px 12px;font-size:12px;border-bottom:1px dashed #fdf2f8;cursor:not-allowed;background:#fafafa;color:#94a3b8;">
+                <span><strong class="text-mono">${cod}</strong> · ${c.nombre || ''}</span><span style="font-size:10.5px;font-weight:800;">🔒 ya con ${ocupado}</span>
+              </div>` : `
+              <div onclick="window.comCliToggle('${cod.replace(/'/g, "\\'")}')" style="display:flex;justify-content:space-between;gap:8px;padding:7px 12px;font-size:12px;border-bottom:1px dashed #fdf2f8;cursor:pointer;" onmouseover="this.style.background='#fdf2f8'" onmouseout="this.style.background='#fff'">
+                <span><strong class="text-mono">${cod}</strong> · ${c.nombre || ''}</span><span style="color:#be185d;font-weight:900;">➕</span>
+              </div>`;
+            }).join('') : '<div style="padding:9px 12px;font-size:12px;color:#94a3b8;">Sin resultados — revisa el código o el nombre</div>'}
+          </div>` : ''}
+          <div style="margin-top:10px;"><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Notas</label>
+            <input class="input" id="com-notas" type="text" value="${(cf.notas || '').replace(/"/g, '&quot;')}" oninput="window.comSet('notas', this.value, 'com-notas')" placeholder="Acuerdos especiales, vigencia, etc." /></div>
         </div>
         <div style="display:flex;gap:8px;margin-top:10px;">
           <button onclick="window.comGuardar()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Guardar esquema</button>
           <button onclick="window.comCerrar()" style="padding:10px 14px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;font-weight:800;">Cancelar</button>
-        </div>` : `<button onclick="window.comNuevo()" style="margin-top:10px;padding:9px 16px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:12px;">➕ Agregar vendedor</button>`}
+        </div>`;
+        })() : `<button onclick="window.comNuevo()" style="margin-top:10px;padding:9px 16px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;font-size:12px;">➕ Agregar vendedor</button>`}
       </div>
       ${esDir ? `
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
@@ -24403,7 +24509,8 @@ window.rhPrestamoCrear = async () => {
     });
     window.logAccion('rh_prestamo', emp.nombre, `$${fmtNum(monto.toFixed(2))} · abono/período $${fmtNum(abono.toFixed(2))} · ${(f.motivo || '').trim()}`);
     state.rhPresForm = null;
-    toast(`💳 Préstamo a ${emp.nombre} registrado — se descontará solo en su nómina`);
+    state.raya = null;   // 🔗 refrescar la tabla de raya para que el descuento aparezca YA
+    toast(`💳 Préstamo a ${emp.nombre} registrado — su abono ya aparece en la tabla de raya de la nómina`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 window.rhPresSet = (campo, v, focusId) => { if (!state.rhPresForm) state.rhPresForm = {}; state.rhPresForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
@@ -24428,6 +24535,7 @@ window._rhAbonarPrestamo = async (prestamoId, monto, periodo, via) => {
     });
     const pl = (state.prestamos_rh || []).find(x => x.id === prestamoId);
     if (pl) { pl.saldo = nuevoSaldo; pl.abonos = abonos; pl.estado = nuevoSaldo <= 0.01 ? 'liquidado' : 'activo'; }
+    if (via === 'manual') state.raya = null;   // 🔗 un abono manual cambia el saldo → refrescar raya
     window.logAccion('rh_prestamo_abono', p.empleado_nombre, `$${fmtNum(monto.toFixed(2))} vía ${via || 'nómina'} · saldo $${fmtNum(nuevoSaldo.toFixed(2))}${nuevoSaldo <= 0.01 ? ' · LIQUIDADO ✅' : ''}`);
     if (nuevoSaldo <= 0.01) toast(`✅ Préstamo de ${p.empleado_nombre} LIQUIDADO`);
   } catch (e) { toast('Error abonando préstamo: ' + e.message, 'error'); }
@@ -25202,6 +25310,101 @@ function renderBitacora() {
 //    Almacén ve QUÉ va a cargar por día y qué está ya programado en ruta.
 window.setSalidasCedis = (c) => { state.filtros.salidas_cedis = c; render(); };
 
+// 📝 POR PREPARAR (CEDIS): especificación COMPLETA del producto para preparar sin
+//    ir y venir a la computadora. Agrupado por Pedido Interno + PDF imprimible.
+window._specPreparacion = (prodCod) => {
+  const p = window.getProductoPT ? window.getProductoPT(prodCod) : null;
+  if (!p) return '';
+  const partes = [];
+  try { if (typeof descripcionTipoProducto === 'function') partes.push(descripcionTipoProducto(p)); } catch (e) {}
+  const med = `${p.ancho || '—'}${Number(p.fuelle) > 0 ? `+${p.fuelle}` : ''} x ${p.largo || '—'} cm`;
+  partes.push(med, `cal ${p.calibre || '—'}`);
+  partes.push(p.pigmento || p.color || 'Natural');
+  if (p.aditivo && p.aditivo !== 'NINGUNO') partes.push(`aditivo ${p.aditivo}`);
+  return partes.filter(Boolean).join(' · ');
+};
+
+window.pdfListaPreparacion = (cedis, pedidoFolio) => {
+  try {
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    const _norm2 = c => String(c || '').toUpperCase().includes('MEX') ? 'CEDIS-MEX' : 'CEDIS-MTY';
+    // Solo OVs en "preparando": CS/KAM ya les asignó material; CEDIS las prepara
+    const ovsP = (state.ordenes_venta || []).filter(o => !o.archivada
+      && o.estatus === 'preparando'
+      && _norm2(o.cedis) === cedis
+      && (!pedidoFolio || o.pedido_folio === pedidoFolio));
+    if (!ovsP.length) { toast('Nada por preparar con ese filtro (se listan OVs con material ya asignado)', 'error'); return; }
+    const grupos = {};
+    ovsP.forEach(o => { const k = o.pedido_folio || 'SIN PI'; (grupos[k] = grupos[k] || []).push(o); });
+
+    const { jsPDF } = window.jspdf;
+    const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+    let y = _pdfHeaderEmpresa(docPDF, 'LISTA PREPARACIÓN', cedis);
+    docPDF.setFontSize(16); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    docPDF.text(`LISTA DE PREPARACIÓN · ${cedis === 'CEDIS-MEX' ? 'CEDIS MÉXICO' : 'CEDIS MONTERREY'}`, 105, y + 4, { align: 'center' });
+    docPDF.setFontSize(8); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    docPDF.text(`${pedidoFolio ? `Pedido ${pedidoFolio}` : `${Object.keys(grupos).length} pedido(s)`} · ${ovsP.length} línea(s) · impreso ${new Date().toLocaleString('es-MX')}`, 105, y + 9, { align: 'center' });
+    y += 14;
+
+    Object.keys(grupos).sort().forEach(pi => {
+      const lineas = grupos[pi];
+      const o0 = lineas[0];
+      if (y > 240) { docPDF.addPage(); y = 20; }
+      // Banda del PI
+      docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+      docPDF.roundedRect(14, y, 182, 9, 1.5, 1.5, 'F');
+      docPDF.setTextColor(255, 255, 255); docPDF.setFontSize(9); docPDF.setFont('helvetica', 'bold');
+      docPDF.text(`${pi} · ${o0.cliente_nombre || ''}`, 17, y + 6);
+      if (o0.fecha_entrega_solicitada) docPDF.text(`Entrega: ${o0.fecha_entrega_solicitada}`, 193, y + 6, { align: 'right' });
+      y += 11;
+      lineas.forEach((o, i) => {
+        const spec = window._specPreparacion(o.producto_codigo);
+        const tars = (state.tarimas || []).filter(t => (o.tarimas_ids || []).includes(t.id));
+        const txtTars = tars.length ? 'Tomar tarima(s): ' + tars.map(t => `${t.codigo} (${fmtNum(t.cantidad_actual ?? t.cantidad)} ${t.um || ''})`).join(' / ') : '';
+        const lDesc = docPDF.splitTextToSize(o.descripcion || '', 118);
+        const lSpec = spec ? docPDF.splitTextToSize(spec, 118) : [];
+        const lTars = txtTars ? docPDF.splitTextToSize(txtTars, 118) : [];
+        const hRow = 6 + Math.min(lDesc.length, 2) * 3.4 + Math.min(lSpec.length, 2) * 3.2 + Math.min(lTars.length, 2) * 3.2 + 2;
+        if (y + hRow > 270) { docPDF.addPage(); y = 20; }
+        if (i % 2 === 0) { docPDF.setFillColor(248, 250, 252); docPDF.rect(14, y, 182, hRow, 'F'); }
+        // ☐ casilla para palomear al preparar
+        docPDF.setDrawColor(100, 116, 139); docPDF.setLineWidth(0.4); docPDF.rect(16, y + 2, 5, 5, 'S');
+        docPDF.setTextColor(30, 41, 59); docPDF.setFontSize(10); docPDF.setFont('helvetica', 'bold');
+        docPDF.text(`${fmtNum(o.cantidad_solicitada || o.cantidad || 0)} ${(o.um || '').toUpperCase()}`, 25, y + 5.5);
+        docPDF.setFontSize(8);
+        docPDF.text(String(o.producto_codigo || ''), 62, y + 5.5);
+        docPDF.setFont('helvetica', 'normal'); docPDF.setFontSize(7.5); docPDF.setTextColor(71, 85, 105);
+        lDesc.slice(0, 2).forEach((ln, j) => docPDF.text(ln, 62, y + 9 + j * 3.4));
+        let ySub = y + 9 + Math.min(lDesc.length, 2) * 3.4;
+        if (lSpec.length) {
+          docPDF.setTextColor(_COL_AZUL[0], _COL_AZUL[1], _COL_AZUL[2]); docPDF.setFontSize(7);
+          lSpec.slice(0, 2).forEach((ln, j) => docPDF.text(ln, 62, ySub + j * 3.2));
+          ySub += Math.min(lSpec.length, 2) * 3.2;
+        }
+        if (lTars.length) {
+          docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(124, 58, 237); docPDF.setFontSize(7);
+          lTars.slice(0, 2).forEach((ln, j) => docPDF.text(ln, 62, ySub + j * 3.2));
+          docPDF.setFont('helvetica', 'normal');
+        }
+        docPDF.setTextColor(100, 116, 139); docPDF.setFontSize(6.5);
+        docPDF.text(tars.length ? `${tars.length} TARIMA(S)` : 'PREPARANDO', 193, y + 5.5, { align: 'right' });
+        y += hRow;
+      });
+      y += 4;
+    });
+    // Firmas
+    if (y > 255) { docPDF.addPage(); y = 25; }
+    y += 10;
+    docPDF.setDrawColor(148, 163, 184); docPDF.line(24, y, 84, y); docPDF.line(122, y, 182, y);
+    docPDF.setFontSize(7.5); docPDF.setTextColor(71, 85, 105); docPDF.setFont('helvetica', 'bold');
+    docPDF.text('Preparó', 54, y + 4, { align: 'center' }); docPDF.text('Verificó', 152, y + 4, { align: 'center' });
+    _pdfPiePagina(docPDF);
+    const filename = `Preparacion_${cedis}_${pedidoFolio || 'TODO'}.pdf`;
+    if (typeof _mostrarVistaPreviaPDF === 'function') _mostrarVistaPreviaPDF(docPDF, filename, `Lista de preparación · ${cedis}`);
+    else docPDF.save(filename);
+  } catch (e) { console.error(e); toast('Error generando lista: ' + e.message, 'error'); }
+};
+
 function renderSalidasDia() {
   const u = state.user || {};
   const _norm = c => String(c || '').toUpperCase().includes('MEX') ? 'CEDIS-MEX' : 'CEDIS-MTY';
@@ -25254,6 +25457,43 @@ function renderSalidasDia() {
   const porDespachar = ovs.filter(o => o.estatus === 'lista_embarcar').length;                       // CS/KAM
   const porCargar = ovs.filter(o => o.estatus === 'por_cargar' && !o.ruta_codigo && !o.requiere_ruta).length; // Almacén
   const enCamino = ovs.filter(o => o.estatus === 'enviada').length;
+
+  // 📝 POR PREPARAR: OVs en "preparando" = CS/KAM YA les asignó material → CEDIS
+  //    prepara físicamente (al terminar las marca preparadas → lista_embarcar).
+  //    Agrupadas por Pedido Interno, con las TARIMAS asignadas y PDF imprimible.
+  const porPreparar = (state.ordenes_venta || []).filter(o => !o.archivada && o.estatus === 'preparando' && _norm(o.cedis) === cedis);
+  const gruposPrep = {};
+  porPreparar.forEach(o => { const k = o.pedido_folio || 'SIN PI'; (gruposPrep[k] = gruposPrep[k] || []).push(o); });
+  const _tarsDePrep = (o) => (state.tarimas || []).filter(t => (o.tarimas_ids || []).includes(t.id));
+  const porPrepararHTML = porPreparar.length ? `
+    <div style="background:#fff;border:2px solid #7c3aed;border-radius:14px;padding:13px 16px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="font-weight:900;font-size:14px;">📝 Por preparar (${porPreparar.length} línea(s) en ${Object.keys(gruposPrep).length} pedido(s)) <span style="font-weight:600;color:#94a3b8;font-size:11px;">· material ya asignado por CS/KAM — al terminar márcalo preparado</span></div>
+        <button onclick="window.pdfListaPreparacion('${cedis}', null)" style="padding:9px 16px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🖨 Imprimir TODO</button>
+      </div>
+      ${Object.keys(gruposPrep).sort().map(pi => {
+        const ls = gruposPrep[pi];
+        return `
+        <div style="border:1px solid #ede9fe;border-radius:10px;padding:9px 12px;margin-bottom:7px;background:#faf5ff;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-weight:800;font-size:13px;"><span class="text-mono">${pi}</span> · ${ls[0].cliente_nombre || ''} <span style="color:#94a3b8;font-weight:600;font-size:11px;">${ls[0].fecha_entrega_solicitada ? `· entrega ${ls[0].fecha_entrega_solicitada}` : ''}</span></span>
+            <button onclick="window.pdfListaPreparacion('${cedis}', '${pi}')" style="padding:6px 13px;background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">🖨 PDF de este pedido</button>
+          </div>
+          ${ls.map(o => {
+            const tars = _tarsDePrep(o);
+            return `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:3px 0;border-bottom:1px dashed #ede9fe;">
+              <div style="font-size:12px;color:#475569;flex:1;min-width:220px;">
+                <strong>${fmtNum(o.cantidad_solicitada || o.cantidad || 0)} ${(o.um || '').toUpperCase()}</strong> · <span class="text-mono">${o.producto_codigo || ''}</span> — ${o.descripcion || ''}
+                ${window._specPreparacion(o.producto_codigo) ? `<div style="font-size:11px;color:#1e40af;">📐 ${window._specPreparacion(o.producto_codigo)}</div>` : ''}
+                ${tars.length ? `<div style="font-size:11px;color:#7c3aed;">📦 Tomar: ${tars.map(t => `<strong class="text-mono">${t.codigo}</strong> (${fmtNum(t.cantidad_actual ?? t.cantidad)} ${t.um || ''})`).join(' · ')}</div>` : ''}
+              </div>
+              ${_esAlmd ? `<button onclick="marcarOVLista('${o.id}')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;white-space:nowrap;">✅ Preparada → lista embarcar</button>` : ''}
+            </div>`;
+          }).join('')}
+        </div>`;
+      }).join('')}
+    </div>` : '';
 
   // Resuelve estado visual + acción de cada pedido (una acción clara SIEMPRE que aplique)
   const cardOV = (o) => {
@@ -25329,6 +25569,8 @@ function renderSalidasDia() {
       <div class="stat-card"><div class="stat-icon">🛣️</div><div class="stat-value">${enCamino}</div><div class="stat-label">En camino</div></div>
       <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-value">${entregadosHoy.length}</div><div class="stat-label">Entregados hoy</div></div>
     </div>
+
+    ${porPrepararHTML}
 
     ${!hayActivos ? `
       <div style="padding:50px;text-align:center;color:#94a3b8;background:#fff;border-radius:14px;border:1px solid #e2e8f0;">
