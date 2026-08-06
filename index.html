@@ -254,6 +254,7 @@ const state = {
   crm_cuentas: [],
   crm_contactos: [],
   crm_oportunidades: [],
+  crm_actividades: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3692,6 +3693,10 @@ async function cargarTodo() {
         state.crm_oportunidades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      onSnapshot(query(collection(db, 'crm_actividades'), orderBy('created_at', 'desc'), limit(2000)), (snap) => {
+        state.crm_actividades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4116,7 +4121,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B47-crm-tabs</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B49-crm-actividades</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -22572,9 +22577,9 @@ window._pdfCotizacion = (cot) => {
 const CRM_INDUSTRIAS = ['Alimentos y bebidas', 'Industrial / Manufactura', 'Agroindustria', 'Retail / Comercio', 'Farmacéutica', 'Química', 'Construcción', 'Logística / Paquetería', 'Textil', 'Automotriz', 'Otro'];
 const CRM_ORIGENES = ['Referido', 'Página web', 'Prospección en frío', 'Feria / Expo', 'Llamada entrante', 'Redes sociales', 'Cliente existente', 'Otro'];
 const CRM_TAMANOS = ['Micro (<10 empleados)', 'Pequeña (10-50)', 'Mediana (51-250)', 'Grande (>250)'];
-const CRM_FACT_RANGOS = ['<10 MDP', '10-50 MDP', '50-250 MDP', '>250 MDP', 'No se sabe'];
+const CRM_FACT_RANGOS = ['Menos de $500 mil', '$500 mil – $1 millón', '$1 – $3 millones', '$3 – $5 millones', '$5 – $10 millones', '$10 – $30 millones', '$30 – $50 millones', '$50 – $100 millones', 'Más de $100 millones', 'No se sabe'];
 const CRM_INFLUENCIAS = ['Decisor', 'Comprador', 'Usuario', 'Prescriptor'];
-const CRM_CAMPOS_EXP = ['clasificacion', 'industria', 'tamano', 'num_empleados', 'fact_rango', 'web', 'ciudad', 'pais', 'territorio', 'origen_lead', 'prioridad', 'vendedor', 'vendedor_uid', 'potencial_anual', 'potencial_moneda', 'potencial_actualizado', 'drive_url', 'notas_crm'];
+const CRM_CAMPOS_EXP = ['clasificacion', 'industria', 'tamano', 'num_empleados', 'fact_rango', 'fact_periodo', 'web', 'ciudad', 'pais', 'territorio', 'origen_lead', 'prioridad', 'vendedor', 'vendedor_uid', 'potencial_anual', 'potencial_moneda', 'potencial_actualizado', 'drive_url', 'notas_crm'];
 
 window._crmPuede = () => { const u = state.user || {}; return u.rol === 'admin' || ['CS', 'KAM', 'CEO', 'ADMIN'].includes(u.depto); };
 // Unión de cuentas: prospectos (crm_cuentas) + clientes reales
@@ -22744,6 +22749,100 @@ window.oppArchivar = async (id) => {
   try { await updateDoc(doc(db, 'crm_oportunidades', id), { activo: false, updated_at: serverTimestamp() }); toast('📥 Archivada'); } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// ============================================================
+// 📞 CRM F3 — ACTIVIDAD COMERCIAL. Cada contacto (llamada/visita/correo/
+//    reunión/WhatsApp) se registra con PRÓXIMA ACCIÓN Y FECHA OBLIGATORIAS
+//    (acordado: es lo que mantiene vivo el CRM). "Mi día" = vencidas + hoy.
+//    Al registrar un contacto nuevo en la cuenta, la próxima acción anterior
+//    de esa cuenta se marca cumplida sola.
+// ============================================================
+const CRM_TIPOS_ACT = [
+  { id: 'llamada', nombre: '📞 Llamada' }, { id: 'visita', nombre: '🚗 Visita' },
+  { id: 'correo', nombre: '✉️ Correo' }, { id: 'reunion', nombre: '👥 Reunión' },
+  { id: 'whatsapp', nombre: '💬 WhatsApp' }, { id: 'otro', nombre: '📎 Otro' },
+];
+window._actTipoNombre = (id) => (CRM_TIPOS_ACT.find(t => t.id === id) || {}).nombre || id;
+window._actsVisibles = () => {
+  const arr = state.crm_actividades || [];
+  const esJefe = window.esJefeODireccion();
+  if (esJefe && state.crmVerTodas) return arr;
+  const u = state.user || {};
+  return arr.filter(a => (a.realizada_por_uid && a.realizada_por_uid === u.id) || (a.realizada_por && a.realizada_por === u.nombre));
+};
+// Último contacto de una cuenta (fecha ISO máxima entre TODAS las actividades de la cuenta)
+window._ultContactoDe = (key) => {
+  let max = '';
+  (state.crm_actividades || []).forEach(a => { if (a.cuenta_key === key && a.fecha && a.fecha > max) max = a.fecha; });
+  return max || null;
+};
+window._diasSinContacto = (key) => {
+  const f = window._ultContactoDe(key);
+  if (!f) return null;
+  return Math.floor((Date.now() - new Date(f + 'T12:00:00').getTime()) / 86400000);
+};
+// Acciones pendientes (próxima acción sin cumplir) del universo visible
+window._actsPendientes = () => window._actsVisibles().filter(a => a.proxima_accion && a.proxima_hecha !== true);
+
+window.actNueva = (cuentaKey, oppId) => {
+  const cta = cuentaKey ? window._crmCuentas().find(x => x.key === cuentaKey) : null;
+  state.actForm = {
+    cuenta_key: cta ? cta.key : '', cuenta_nombre: cta ? (cta.nombre || '') : '', busca_cta: '',
+    tipo: 'llamada', fecha: window.hoyLocalISO(), resumen: '',
+    opp_id: oppId || '', proxima_accion: '', proxima_fecha: '',
+  };
+  state.crmTab = 'actividades';
+  state.crmExpForm = null; state.crmContForm = null; state.oppForm = null;
+  render();
+};
+window.actSet = (campo, v, focusId) => { if (!state.actForm) return; state.actForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.actTipo = (t) => { if (state.actForm) { state.actForm.tipo = t; render(); } };
+window.actCerrar = () => { state.actForm = null; render(); };
+window.actCtaElegir = (key) => { const f = state.actForm; if (!f) return; const cta = window._crmCuentas().find(x => x.key === key); if (!cta) return; f.cuenta_key = cta.key; f.cuenta_nombre = cta.nombre || ''; f.busca_cta = ''; render(); };
+
+window.actGuardar = async () => {
+  if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
+  const f = state.actForm || {};
+  if (!f.cuenta_key) { toast('Elige la cuenta que contactaste', 'error'); return; }
+  if (!String(f.resumen || '').trim()) { toast('Escribe qué pasó en el contacto (resumen)', 'error'); return; }
+  // 🔒 P3 acordado: la PRÓXIMA ACCIÓN es OBLIGATORIA — sin siguiente paso no hay seguimiento
+  if (!String(f.proxima_accion || '').trim()) { toast('⛔ Falta la PRÓXIMA ACCIÓN — el CRM vive de saber qué sigue', 'error'); return; }
+  if (!f.proxima_fecha) { toast('⛔ Falta la FECHA de la próxima acción', 'error'); return; }
+  if (f.proxima_fecha < window.hoyLocalISO()) { toast('La próxima acción no puede ser en el pasado', 'error'); return; }
+  try {
+    const u = state.user || {};
+    // Las próximas acciones ANTERIORES de esta cuenta quedan cumplidas (ya hubo contacto)
+    const pendientesPrev = (state.crm_actividades || []).filter(a => a.cuenta_key === f.cuenta_key && a.proxima_accion && a.proxima_hecha !== true);
+    const batch = writeBatch(db);
+    pendientesPrev.forEach(a => batch.update(doc(db, 'crm_actividades', a.id), { proxima_hecha: true, hecha_at: serverTimestamp(), hecha_como: 'nuevo contacto', updated_at: serverTimestamp() }));
+    const ref = doc(collection(db, 'crm_actividades'));
+    batch.set(ref, {
+      cuenta_key: f.cuenta_key, cuenta_nombre: f.cuenta_nombre,
+      tipo: f.tipo || 'llamada', fecha: f.fecha || window.hoyLocalISO(),
+      resumen: String(f.resumen || '').trim(),
+      opp_id: f.opp_id || '',
+      opp_folio: f.opp_id ? ((state.crm_oportunidades || []).find(o => o.id === f.opp_id)?.folio || '') : '',
+      proxima_accion: String(f.proxima_accion || '').trim(), proxima_fecha: f.proxima_fecha,
+      proxima_hecha: false,
+      realizada_por: u.nombre || u.email || '', realizada_por_uid: u.id || '',
+      created_at: serverTimestamp(), updated_at: serverTimestamp(),
+    });
+    await batch.commit();
+    window.logAccion('crm_actividad', f.cuenta_nombre, `${window._actTipoNombre(f.tipo)} · ${String(f.resumen).trim().slice(0, 120)} · próx: ${String(f.proxima_accion).trim().slice(0, 80)} (${f.proxima_fecha})`);
+    state.actForm = null;
+    toast(`📞 Contacto registrado · siguiente: ${f.proxima_fecha}${pendientesPrev.length ? ` · ${pendientesPrev.length} pendiente(s) anteriores cumplidos` : ''}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+// Marcar una próxima acción como hecha SIN nuevo contacto (ej. era tarea interna)
+window.actHecha = async (id) => {
+  if (!window._crmPuede()) return;
+  const a = (state.crm_actividades || []).find(x => x.id === id); if (!a) return;
+  try {
+    await updateDoc(doc(db, 'crm_actividades', id), { proxima_hecha: true, hecha_at: serverTimestamp(), hecha_como: 'manual', updated_at: serverTimestamp() });
+    window.logAccion('crm_accion_hecha', a.cuenta_nombre || '', String(a.proxima_accion || '').slice(0, 100));
+    toast('✓ Acción marcada como hecha');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
 window.crmTabSet = (t) => { state.crmTab = t; render(); };
 window.crmFiltro = (v) => { state.filtros.crm = v; window.forzarRender(); window._cotFoco('crm-buscar'); };
 window.crmSet = (campo, v, focusId) => { if (!state.crmExpForm) return; state.crmExpForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
@@ -22757,7 +22856,7 @@ window.crmAbrirExp = (key) => {
     nombre: cta.nombre || '', codigo: cta.codigo || '',
     clasificacion: cta.clasificacion || (cta.esCliente ? 'cliente_final' : ''),
     industria: cta.industria || (cta.giro || ''), tamano: cta.tamano || '',
-    num_empleados: cta.num_empleados || '', fact_rango: cta.fact_rango || '',
+    num_empleados: cta.num_empleados || '', fact_rango: cta.fact_rango || '', fact_periodo: cta.fact_periodo || 'mensual',
     web: cta.web || '', ciudad: cta.ciudad || '', pais: cta.pais || 'México',
     territorio: cta.territorio || '', origen_lead: cta.origen_lead || '',
     prioridad: cta.prioridad || 'media',
@@ -22793,7 +22892,7 @@ window.crmGuardarExp = async () => {
   const hoyISO = new Date().toLocaleDateString('en-CA');
   const data = {
     clasificacion: f.clasificacion || '', industria: f.industria || '', tamano: f.tamano || '',
-    num_empleados: String(f.num_empleados || '').replace(/[^0-9]/g, ''), fact_rango: f.fact_rango || '',
+    num_empleados: String(f.num_empleados || '').replace(/[^0-9]/g, ''), fact_rango: f.fact_rango || '', fact_periodo: f.fact_periodo || 'mensual',
     web: String(f.web || '').trim(), ciudad: String(f.ciudad || '').trim(), pais: String(f.pais || '').trim() || 'México',
     territorio: String(f.territorio || '').trim(), origen_lead: f.origen_lead || '',
     prioridad: f.prioridad || 'media',
@@ -23116,6 +23215,149 @@ window._renderCRMPipeline = () => {
   `;
 };
 
+// 📞 Pestaña ACTIVIDADES: Mi día + registrar contacto + sin contacto 30/60/90 + historial
+window._renderCRMActividades = () => {
+  const u = state.user || {};
+  const esJefe = window.esJefeODireccion();
+  const hoy = window.hoyLocalISO();
+  const en7 = window.hoyLocalISO(7);
+  const pend = window._actsPendientes().sort((a, b) => (a.proxima_fecha || '9999').localeCompare(b.proxima_fecha || '9999'));
+  const vencidas = pend.filter(a => a.proxima_fecha < hoy);
+  const deHoy = pend.filter(a => a.proxima_fecha === hoy);
+  const proximas = pend.filter(a => a.proxima_fecha > hoy && a.proxima_fecha <= en7);
+  const hace7 = window.hoyLocalISO(-6);
+  const acts7 = window._actsVisibles().filter(a => (a.fecha || '') >= hace7);
+  const porTipo7 = {};
+  acts7.forEach(a => { porTipo7[a.tipo || 'otro'] = (porTipo7[a.tipo || 'otro'] || 0) + 1; });
+
+  // Cuentas sin contacto (del universo visible de cuentas)
+  let ctasVis = window._crmCuentas();
+  if (!esJefe || !state.crmVerTodas) ctasVis = ctasVis.filter(window._crmEsMia);
+  const conDias = ctasVis.map(c => ({ ...c, _dias: window._diasSinContacto(c.key) }));
+  const nunca = conDias.filter(c => c._dias === null);
+  const s30 = conDias.filter(c => c._dias !== null && c._dias >= 30 && c._dias < 60);
+  const s60 = conDias.filter(c => c._dias !== null && c._dias >= 60 && c._dias < 90);
+  const s90 = conDias.filter(c => c._dias !== null && c._dias >= 90);
+
+  const lbl = (t) => `<label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${t}</label>`;
+  const f = state.actForm;
+  let formHTML = '';
+  if (f) {
+    const q = String(f.busca_cta || '').trim().toLowerCase();
+    const sugCtas = q ? window._crmCuentas().filter(c => ((c.codigo || '') + ' ' + (c.nombre || '')).toLowerCase().includes(q)).slice(0, 8) : [];
+    const oppsCta = (state.crm_oportunidades || []).filter(o => o.activo !== false && o.cuenta_key === f.cuenta_key && !['ganada', 'perdida'].includes(o.etapa));
+    formHTML = `
+    <div style="background:#fff;border:2px solid #16a34a;border-radius:14px;padding:15px 18px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-weight:900;font-size:15px;">📝 Registrar contacto</div>
+        <div style="display:flex;gap:7px;">
+          <button onclick="window.actGuardar()" style="padding:8px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">💾 Guardar</button>
+          <button onclick="window.actCerrar()" style="padding:8px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Cerrar</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+        <div style="grid-column:1/-1;">
+          ${lbl('Cuenta contactada *')}
+          ${f.cuenta_key ? `<div style="display:flex;align-items:center;gap:8px;background:#f0fdf4;border:1.5px solid #16a34a;border-radius:8px;padding:8px 12px;">
+            <strong style="flex:1;">${f.cuenta_nombre}</strong>
+            <button onclick="window.actSet('cuenta_key','');window.actSet('cuenta_nombre','')" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:4px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">✗ Cambiar</button>
+          </div>` : `
+          <input class="input" id="act-cta" type="text" value="${(f.busca_cta || '').replace(/"/g, '&quot;')}" oninput="window.actSet('busca_cta', this.value, 'act-cta')" placeholder="🔍 Busca la cuenta..." />
+          ${sugCtas.length ? `<div style="border:1px solid #bbf7d0;border-radius:10px;margin-top:4px;max-height:180px;overflow-y:auto;">${sugCtas.map(c => `
+            <div onclick="window.actCtaElegir('${c.key}')" style="padding:7px 12px;font-size:12px;border-bottom:1px dashed #f0fdf4;cursor:pointer;" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='#fff'">
+              <strong>${c.nombre || ''}</strong> ${c.esCliente ? `<span class="text-mono" style="font-size:10px;color:#166534;">${c.codigo}</span>` : '<span style="font-size:10px;color:#92400e;">PROSPECTO</span>'}
+            </div>`).join('')}</div>` : ''}`}
+        </div>
+        <div style="grid-column:1/-1;">
+          ${lbl('Tipo de contacto')}
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${CRM_TIPOS_ACT.map(t => `<button onclick="window.actTipo('${t.id}')" style="padding:8px 13px;border:2px solid ${f.tipo === t.id ? '#16a34a' : '#cbd5e1'};background:${f.tipo === t.id ? '#16a34a' : '#fff'};color:${f.tipo === t.id ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${t.nombre}</button>`).join('')}
+          </div>
+        </div>
+        <div>${lbl('Fecha del contacto')}<input class="input" type="date" value="${f.fecha || ''}" onchange="window.actSet('fecha', this.value)" /></div>
+        ${oppsCta.length ? `<div>${lbl('Ligar a oportunidad (opcional)')}<select class="input" onchange="window.actSet('opp_id', this.value)"><option value="">—</option>${oppsCta.map(o => `<option value="${o.id}" ${f.opp_id === o.id ? 'selected' : ''}>${o.folio} · ${(o.titulo || '').slice(0, 40)}</option>`).join('')}</select></div>` : ''}
+        <div style="grid-column:1/-1;">${lbl('¿Qué pasó? (resumen) *')}<input class="input" id="act-res" type="text" value="${(f.resumen || '').replace(/"/g, '&quot;')}" oninput="window.actSet('resumen', this.value, 'act-res')" placeholder="Le presenté la muestra, pidió recotizar con 30% más volumen..." /></div>
+        <div style="grid-column:1/-1;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:10px;padding:10px 12px;">
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;">
+            <div>${lbl('⏭ PRÓXIMA ACCIÓN * (obligatoria — qué sigue)')}<input class="input" id="act-prox" type="text" value="${(f.proxima_accion || '').replace(/"/g, '&quot;')}" oninput="window.actSet('proxima_accion', this.value, 'act-prox')" placeholder="Llamar para cerrar precio, enviar muestra 25kg..." /></div>
+            <div>${lbl('📅 Fecha *')}<input class="input" type="date" min="${hoy}" value="${f.proxima_fecha || ''}" onchange="window.actSet('proxima_fecha', this.value)" /></div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const itemPend = (a, color) => `
+    <div style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;align-items:center;">
+      <span style="flex:1;min-width:240px;font-size:12.5px;">
+        <strong style="color:${color};">${a.proxima_fecha}</strong> · <strong>${a.cuenta_nombre || ''}</strong> — ${a.proxima_accion}
+        <div style="font-size:11px;color:#94a3b8;">viene de: ${window._actTipoNombre(a.tipo)} ${a.fecha} · ${(a.resumen || '').slice(0, 70)}${esJefe && state.crmVerTodas ? ` · ${a.realizada_por || ''}` : ''}</div>
+      </span>
+      <span style="display:flex;gap:6px;">
+        <button onclick="window.actNueva('${a.cuenta_key}')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">📝 Registrar contacto</button>
+        <button onclick="window.actHecha('${a.id}')" style="padding:6px 12px;background:#fff;color:#0891b2;border:1.5px solid #0891b2;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">✓ Hecha</button>
+      </span>
+    </div>`;
+
+  const bucketHTML = (arr, titulo, color) => arr.length ? `
+    <div style="margin-bottom:8px;">
+      <div style="font-weight:800;font-size:12px;color:${color};margin-bottom:3px;">${titulo} (${arr.length})</div>
+      ${arr.sort((a, b) => (b._dias || 0) - (a._dias || 0)).slice(0, 25).map(c => `
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px dashed #f8fafc;flex-wrap:wrap;align-items:center;">
+          <span><strong>${c.nombre}</strong> ${c.codigo ? `<span class="text-mono" style="font-size:10px;color:#94a3b8;">${c.codigo}</span>` : ''} · <span style="color:${color};font-weight:800;">${c._dias === null ? 'nunca contactada' : `${c._dias} días`}</span> <span style="color:#94a3b8;">· ${c.vendedor || 'sin vendedor'}</span></span>
+          <button onclick="window.actNueva('${c.key}')" style="padding:5px 11px;background:#fff;color:#16a34a;border:1.5px solid #16a34a;border-radius:8px;cursor:pointer;font-weight:800;font-size:10.5px;">📝 Contactar</button>
+        </div>`).join('')}
+      ${arr.length > 25 ? `<div style="font-size:10px;color:#94a3b8;">...y ${arr.length - 25} más</div>` : ''}
+    </div>` : '';
+
+  const hist = window._actsVisibles().slice(0, 30);
+
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #dc2626;"><div style="font-size:10px;font-weight:700;color:#64748b;">🔴 ACCIONES VENCIDAS</div><div style="font-size:21px;font-weight:800;color:${vencidas.length ? '#dc2626' : '#16a34a'};">${vencidas.length}</div><div style="font-size:10px;color:#94a3b8;">ya debían estar hechas</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #f59e0b;"><div style="font-size:10px;font-weight:700;color:#64748b;">📅 PARA HOY</div><div style="font-size:21px;font-weight:800;color:#f59e0b;">${deHoy.length}</div><div style="font-size:10px;color:#94a3b8;">${proximas.length} en los próximos 7 días</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #16a34a;"><div style="font-size:10px;font-weight:700;color:#64748b;">📞 ACTIVIDAD (7 días)</div><div style="font-size:21px;font-weight:800;color:#16a34a;">${acts7.length}</div><div style="font-size:10px;color:#94a3b8;">${Object.keys(porTipo7).map(t => `${window._actTipoNombre(t).split(' ')[0]}${porTipo7[t]}`).join(' ') || 'sin registros'}</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">😴 SIN CONTACTO 30+</div><div style="font-size:21px;font-weight:800;color:${(s30.length + s60.length + s90.length) ? '#7c3aed' : '#16a34a'};">${s30.length + s60.length + s90.length}</div><div style="font-size:10px;color:#94a3b8;">30-60: ${s30.length} · 60-90: ${s60.length} · +90: ${s90.length}</div></div>
+    </div>
+
+    ${formHTML}
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+      ${esJefe ? `<button onclick="state.crmVerTodas=!state.crmVerTodas;render();" style="padding:9px 14px;background:${state.crmVerTodas ? '#0891b2' : '#fff'};color:${state.crmVerTodas ? '#fff' : '#475569'};border:1.5px solid ${state.crmVerTodas ? '#0891b2' : '#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">${state.crmVerTodas ? '👁 Viendo TODAS' : '👤 Solo mías'}</button>` : ''}
+      <span style="flex:1;"></span>
+      ${!f ? `<button onclick="window.actNueva()" style="padding:9px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📝 Registrar contacto</button>` : ''}
+    </div>
+
+    <div style="background:#fff;border:2px solid #0891b2;border-radius:14px;padding:13px 16px;margin-bottom:14px;">
+      <div style="font-weight:900;font-size:14px;margin-bottom:8px;">☀️ Mi día — próximas acciones</div>
+      ${vencidas.length ? `<div style="font-weight:800;font-size:12px;color:#dc2626;margin-bottom:2px;">🔴 VENCIDAS</div>${vencidas.map(a => itemPend(a, '#dc2626')).join('')}` : ''}
+      ${deHoy.length ? `<div style="font-weight:800;font-size:12px;color:#f59e0b;margin:8px 0 2px;">📅 HOY</div>${deHoy.map(a => itemPend(a, '#f59e0b')).join('')}` : ''}
+      ${proximas.length ? `<details style="margin-top:8px;"><summary style="font-weight:800;font-size:12px;color:#0891b2;cursor:pointer;">⏭ Próximos 7 días (${proximas.length})</summary>${proximas.map(a => itemPend(a, '#0891b2')).join('')}</details>` : ''}
+      ${!vencidas.length && !deHoy.length && !proximas.length ? '<div style="font-size:12px;color:#94a3b8;">Nada pendiente por ahora — registra contactos y aquí aparecerá qué sigue cada día.</div>' : ''}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;">
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">😴 Cuentas sin contacto</div>
+        ${bucketHTML(s90, '🔥 Más de 90 días', '#dc2626')}
+        ${bucketHTML(s60, '⚠️ 60-90 días', '#ea580c')}
+        ${bucketHTML(s30, '⏰ 30-60 días', '#f59e0b')}
+        ${nunca.length ? `<details><summary style="font-size:11.5px;color:#64748b;cursor:pointer;font-weight:700;">😶 Nunca contactadas en el CRM (${nunca.length})</summary>${bucketHTML(nunca.slice(0, 40), 'Sin registro de contacto', '#94a3b8')}</details>` : ''}
+        ${!s30.length && !s60.length && !s90.length && !nunca.length ? '<div style="font-size:12px;color:#16a34a;font-weight:700;">✅ Todas las cuentas con contacto en los últimos 30 días</div>' : ''}
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">🕓 Últimos contactos registrados</div>
+        ${hist.map(a => `
+          <div style="font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;">
+            <strong>${a.fecha || ''}</strong> · ${window._actTipoNombre(a.tipo)} · <strong>${a.cuenta_nombre || ''}</strong>${a.opp_folio ? ` <span class="text-mono" style="font-size:10px;color:#b45309;">${a.opp_folio}</span>` : ''}
+            <div style="color:#64748b;font-size:11.5px;">${(a.resumen || '').slice(0, 110)}</div>
+            <div style="color:#94a3b8;font-size:10.5px;">${a.realizada_por || ''} · próx: ${(a.proxima_accion || '').slice(0, 60)} (${a.proxima_fecha || '—'}) ${a.proxima_hecha ? '✓' : '⏳'}</div>
+          </div>`).join('') || '<div style="font-size:12px;color:#94a3b8;">Aún no hay actividades registradas</div>'}
+      </div>
+    </div>
+  `;
+};
+
 function renderCRM() {
   if (!window._crmPuede()) return '<div style="padding:40px;color:#94a3b8;">Sin acceso al CRM</div>';
   const u = state.user || {};
@@ -23124,12 +23366,18 @@ function renderCRM() {
   // Pestañas del CRM: 📋 Cuentas (F1) · 🎯 Pipeline (F2)
   const crmTab = state.crmTab || 'cuentas';
   const nOppAb = window._oppsVisibles().filter(o => !['ganada', 'perdida'].includes(o.etapa)).length;
+  const _hoyAct = window.hoyLocalISO();
+  const _pendAct = window._actsPendientes();
+  const nVencidas = _pendAct.filter(a => a.proxima_fecha < _hoyAct).length;
+  const nHoyAct = _pendAct.filter(a => a.proxima_fecha === _hoyAct).length;
   const tabsBar = `
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
       <button class="tab-btn ${crmTab === 'cuentas' ? 'active' : ''}" onclick="window.crmTabSet('cuentas')">📋 Cuentas</button>
       <button class="tab-btn ${crmTab === 'pipeline' ? 'active' : ''}" onclick="window.crmTabSet('pipeline')" style="border-color:#b45309;">🎯 Pipeline (${nOppAb})</button>
+      <button class="tab-btn ${crmTab === 'actividades' ? 'active' : ''}" onclick="window.crmTabSet('actividades')" style="border-color:#16a34a;">📞 Actividades${nVencidas ? ` <span style="background:#dc2626;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:900;">${nVencidas}</span>` : nHoyAct ? ` <span style="background:#f59e0b;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:900;">${nHoyAct}</span>` : ''}</button>
     </div>`;
   if (crmTab === 'pipeline') return tabsBar + window._renderCRMPipeline();
+  if (crmTab === 'actividades') return tabsBar + window._renderCRMActividades();
   const filtro = (state.filtros.crm || '').toLowerCase();
   const fTipo = state.crmFiltroTipo || 'todas';
   const fPrio = state.crmFiltroPrio || 'todas';
@@ -23170,6 +23418,7 @@ function renderCRM() {
         </div>
         <div style="display:flex;gap:7px;flex-wrap:wrap;">
           ${f.drive_url ? `<a href="${f.drive_url.replace(/"/g, '&quot;')}" target="_blank" style="padding:8px 14px;background:#fff;color:#0891b2;border:1.5px solid #0891b2;border-radius:8px;font-weight:800;font-size:12px;text-decoration:none;">📁 Drive</a>` : ''}
+          ${f.key !== 'NUEVO' ? `<button onclick="window.actNueva('${f.key}')" style="padding:8px 14px;background:#fff;color:#16a34a;border:1.5px solid #16a34a;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📞 Registrar contacto</button>` : ''}
           ${f.key !== 'NUEVO' ? `<button onclick="window.oppNueva('${f.key}')" style="padding:8px 14px;background:#fff;color:#b45309;border:1.5px solid #b45309;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🎯 Nueva oportunidad</button>` : ''}
           ${!f.esCliente && f.key !== 'NUEVO' ? `<button onclick="window.crmConvertir('${f._docId}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✨ Convertir a cliente</button>` : ''}
           <button onclick="window.crmGuardarExp()" style="padding:8px 16px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">💾 Guardar</button>
@@ -23182,7 +23431,11 @@ function renderCRM() {
         <div>${lbl('Industria / sector')}<select class="input" onchange="window.crmSet('industria', this.value)"><option value="">—</option>${selOpts(CRM_INDUSTRIAS, f.industria)}</select></div>
         <div>${lbl('Tamaño')}<select class="input" onchange="window.crmSet('tamano', this.value)"><option value="">—</option>${selOpts(CRM_TAMANOS, f.tamano)}</select></div>
         <div>${lbl('# empleados (aprox)')}<input class="input" id="crm-emp" type="text" inputmode="numeric" value="${f.num_empleados || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.crmSet('num_empleados', this.value, 'crm-emp')" /></div>
-        <div>${lbl('Facturación estimada')}<select class="input" onchange="window.crmSet('fact_rango', this.value)"><option value="">—</option>${selOpts(CRM_FACT_RANGOS, f.fact_rango)}</select></div>
+        <div>${lbl('Facturación estimada (MXN)')}
+          <div style="display:flex;gap:6px;">
+            <select class="input" style="flex:1;" onchange="window.crmSet('fact_rango', this.value)"><option value="">—</option>${selOpts(CRM_FACT_RANGOS, f.fact_rango)}${f.fact_rango && !CRM_FACT_RANGOS.includes(f.fact_rango) ? `<option value="${f.fact_rango.replace(/"/g, '&quot;')}" selected>${f.fact_rango} (escala anterior)</option>` : ''}</select>
+            <select class="input" style="width:105px;" onchange="window.crmSet('fact_periodo', this.value)"><option value="mensual" ${(f.fact_periodo || 'mensual') === 'mensual' ? 'selected' : ''}>Mensual</option><option value="anual" ${f.fact_periodo === 'anual' ? 'selected' : ''}>Anual</option></select>
+          </div></div>
         <div>${lbl('Página web')}<input class="input" id="crm-web" type="text" value="${(f.web || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('web', this.value, 'crm-web')" placeholder="www..." /></div>
         <div>${lbl('Ciudad')}<input class="input" id="crm-ciu" type="text" value="${(f.ciudad || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('ciudad', this.value, 'crm-ciu')" /></div>
         <div>${lbl('País')}<input class="input" id="crm-pais" type="text" value="${(f.pais || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('pais', this.value, 'crm-pais')" /></div>
@@ -23283,9 +23536,9 @@ function renderCRM() {
     <!-- Lista de cuentas -->
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Cuenta</th><th>Tipo</th><th>Industria</th><th>Ciudad</th><th>Prioridad</th><th>Vendedor</th><th style="text-align:right;">Potencial anual</th><th>Contactos</th><th></th></tr></thead>
+        <thead><tr><th>Cuenta</th><th>Tipo</th><th>Industria</th><th>Ciudad</th><th>Prioridad</th><th>Vendedor</th><th style="text-align:right;">Potencial anual</th><th>Últ. contacto</th><th>Contactos</th><th></th></tr></thead>
         <tbody>
-          ${cuentas.length === 0 ? '<tr><td colspan="9" style="padding:40px;text-align:center;color:#94a3b8;">Sin cuentas con este filtro — agrega un prospecto o migra los del cotizador</td></tr>' :
+          ${cuentas.length === 0 ? '<tr><td colspan="10" style="padding:40px;text-align:center;color:#94a3b8;">Sin cuentas con este filtro — agrega un prospecto o migra los del cotizador</td></tr>' :
             cuentas.slice(0, 200).map(c => {
               const nCt = window._crmContactosDe(c.key).length;
               const dias = window._crmDiasRev(c);
@@ -23299,6 +23552,7 @@ function renderCRM() {
                 <td>${prioBadge(c.prioridad || 'media')}</td>
                 <td style="font-size:12px;">${c.vendedor || '<span style="color:#dc2626;font-weight:700;">sin asignar</span>'}</td>
                 <td style="text-align:right;font-weight:700;">${potTxt}${alertaRev}</td>
+                <td>${(() => { const dc = window._diasSinContacto(c.key); if (dc === null) return '<span style="font-size:11px;color:#cbd5e1;">nunca</span>'; const col = dc < 30 ? '#16a34a' : dc < 60 ? '#f59e0b' : '#dc2626'; return `<span style="font-size:11.5px;font-weight:800;color:${col};">${dc === 0 ? 'hoy' : `hace ${dc}d`}</span>`; })()}</td>
                 <td style="text-align:center;">${nCt ? `<span style="font-weight:800;color:#0891b2;">👥 ${nCt}</span>` : '<span style="color:#cbd5e1;">—</span>'}</td>
                 <td><button class="icon-btn" onclick="event.stopPropagation();window.crmAbrirExp('${c.key}')" title="Abrir expediente">📂</button></td>
               </tr>`;
