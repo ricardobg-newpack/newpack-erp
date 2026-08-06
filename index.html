@@ -253,6 +253,7 @@ const state = {
   comisiones_vendedores: [],
   crm_cuentas: [],
   crm_contactos: [],
+  crm_oportunidades: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3687,6 +3688,10 @@ async function cargarTodo() {
         state.crm_contactos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      onSnapshot(collection(db, 'crm_oportunidades'), (snap) => {
+        state.crm_oportunidades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4111,7 +4116,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B45-crm-guardar</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B46-crm-pipeline</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -22591,6 +22596,154 @@ window._crmDiasRev = (cta) => {
 };
 window._crmContactosDe = (key) => (state.crm_contactos || []).filter(x => x.cuenta_key === key && x.activo !== false);
 
+// ============================================================
+// 🎯 CRM F2 — OPORTUNIDADES + PIPELINE (6 etapas acordadas):
+//    Lead → Contactado → Muestra/Desarrollo → Cotizada → Negociación → Ganada/Perdida.
+//    La oportunidad es el NEGOCIO (separada de la cotización): una OPP puede
+//    agrupar N cotizaciones. Probabilidad sugerida por etapa, editable.
+// ============================================================
+const CRM_ETAPAS = [
+  { id: 'lead', nombre: '🌱 Lead', prob: 10, color: '#64748b' },
+  { id: 'contactado', nombre: '📞 Contactado', prob: 20, color: '#0891b2' },
+  { id: 'muestra', nombre: '🧪 Muestra/Desarrollo', prob: 40, color: '#7c3aed' },
+  { id: 'cotizada', nombre: '🧮 Cotizada', prob: 60, color: '#1e40af' },
+  { id: 'negociacion', nombre: '🤝 Negociación', prob: 80, color: '#b45309' },
+];
+const CRM_MOTIVOS_PERDIDA = ['Precio', 'Tiempo de entrega', 'Competencia', 'Especificación técnica', 'Sin respuesta del cliente', 'Proyecto cancelado', 'Otro'];
+window._oppEtapaInfo = (id) => CRM_ETAPAS.find(e => e.id === id) || null;
+window._oppMs = (ts) => ts && ts.seconds ? ts.seconds * 1000 : (ts && ts.toDate ? ts.toDate().getTime() : 0);
+window._oppDiasEnEtapa = (o) => { const t = window._oppMs(o.etapa_actualizada_at) || window._oppMs(o.created_at); return t ? Math.floor((Date.now() - t) / 86400000) : null; };
+// Visibilidad: mismo criterio que cuentas (cada vendedor lo suyo; jefes según toggle)
+window._oppsVisibles = () => {
+  const arr = (state.crm_oportunidades || []).filter(o => o.activo !== false);
+  const esJefe = window.esJefeODireccion();
+  return (esJefe && state.crmVerTodas) ? arr : arr.filter(window._crmEsMia);
+};
+
+window.oppNueva = (cuentaKey) => {
+  const u = state.user || {};
+  const cta = cuentaKey ? window._crmCuentas().find(x => x.key === cuentaKey) : null;
+  state.oppForm = {
+    id: '', cuenta_key: cta ? cta.key : '', cuenta_nombre: cta ? (cta.nombre || '') : '', busca_cta: '',
+    titulo: '', descripcion: '', etapa: 'lead',
+    importe: '', moneda: 'MXN', probabilidad: '10', prob_manual: false,
+    fecha_cierre: '', urgencia: 'media', competidores: '', hitos: '', notas: '',
+    vendedor: u.nombre || '', vendedor_uid: u.id || '',
+    cot_folios: [], busca_cot: '', motivo_perdida: '',
+  };
+  state.crmTab = 'pipeline';
+  state.crmExpForm = null; state.crmContForm = null;
+  render();
+};
+window.oppAbrir = (id) => {
+  const o = (state.crm_oportunidades || []).find(x => x.id === id); if (!o) return;
+  state.oppForm = {
+    id: o.id, folio: o.folio || '', cuenta_key: o.cuenta_key || '', cuenta_nombre: o.cuenta_nombre || '', busca_cta: '',
+    titulo: o.titulo || '', descripcion: o.descripcion || '', etapa: o.etapa || 'lead',
+    importe: o.importe ? String(o.importe) : '', moneda: o.moneda || 'MXN',
+    probabilidad: String(o.probabilidad ?? ''), prob_manual: o.prob_manual === true,
+    fecha_cierre: o.fecha_cierre || '', urgencia: o.urgencia || 'media',
+    competidores: o.competidores || '', hitos: o.hitos || '', notas: o.notas || '',
+    vendedor: o.vendedor || '', vendedor_uid: o.vendedor_uid || '',
+    cot_folios: [...(o.cot_folios || [])], busca_cot: '', motivo_perdida: o.motivo_perdida || '',
+  };
+  render();
+};
+window.oppSet = (campo, v, focusId) => { if (!state.oppForm) return; state.oppForm[campo] = v; if (campo === 'probabilidad') state.oppForm.prob_manual = true; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.oppCerrar = () => { state.oppForm = null; render(); };
+window.oppUrgencia = (u2) => { if (state.oppForm) { state.oppForm.urgencia = u2; render(); } };
+window.oppCtaElegir = (key) => { const f = state.oppForm; if (!f) return; const cta = window._crmCuentas().find(x => x.key === key); if (!cta) return; f.cuenta_key = cta.key; f.cuenta_nombre = cta.nombre || ''; f.busca_cta = ''; render(); };
+// Cotizaciones ligables: las de la MISMA cuenta (por código de cliente o nombre de prospecto)
+window._oppCotsDeCuenta = (f) => {
+  const cod = String(f.cuenta_key || '').startsWith('C:') ? f.cuenta_key.slice(2) : '';
+  const nomU = String(f.cuenta_nombre || '').trim().toUpperCase();
+  return (state.cotizaciones || []).filter(c =>
+    (cod && String(c.cliente_codigo || '').toUpperCase() === cod.toUpperCase()) ||
+    (!cod && nomU && String(c.cliente_nombre || '').trim().toUpperCase() === nomU));
+};
+window.oppCotToggle = (folio) => { const f = state.oppForm; if (!f) return; f.cot_folios = f.cot_folios || []; const i = f.cot_folios.indexOf(folio); if (i >= 0) f.cot_folios.splice(i, 1); else { f.cot_folios.push(folio); f.busca_cot = ''; } render(); };
+
+window.oppGuardar = async () => {
+  if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
+  const f = state.oppForm || {};
+  if (!f.cuenta_key) { toast('Elige la CUENTA (cliente o prospecto) de la oportunidad', 'error'); return; }
+  if (!String(f.titulo || '').trim()) { toast('Ponle título (ej. "Bolsa 90x120 planta Saltillo")', 'error'); return; }
+  const imp = Number(f.importe);
+  if (!(imp > 0)) { toast('Captura el importe estimado — sin él no hay pipeline', 'error'); return; }
+  const prob = Number(f.probabilidad);
+  if (!(prob >= 0 && prob <= 100)) { toast('Probabilidad entre 0 y 100', 'error'); return; }
+  if (!f.fecha_cierre) { toast('Captura la fecha estimada de cierre', 'error'); return; }
+  try {
+    const data = {
+      cuenta_key: f.cuenta_key, cuenta_nombre: f.cuenta_nombre,
+      cliente_codigo: String(f.cuenta_key).startsWith('C:') ? f.cuenta_key.slice(2) : '',
+      titulo: f.titulo.trim(), descripcion: String(f.descripcion || '').trim(),
+      importe: imp, moneda: f.moneda || 'MXN', probabilidad: prob, prob_manual: f.prob_manual === true,
+      fecha_cierre: f.fecha_cierre, urgencia: f.urgencia || 'media',
+      competidores: String(f.competidores || '').trim(), hitos: String(f.hitos || '').trim(), notas: String(f.notas || '').trim(),
+      vendedor: String(f.vendedor || '').trim(), vendedor_uid: f.vendedor_uid || '',
+      cot_folios: f.cot_folios || [],
+      actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp(),
+    };
+    if (data.vendedor && !data.vendedor_uid) { const us = (state.usuarios_sistema || []).find(x => (x.nombre || '') === data.vendedor); if (us) data.vendedor_uid = us.id; }
+    if (f.id) {
+      await updateDoc(doc(db, 'crm_oportunidades', f.id), data);
+      window.logAccion('crm_opp_editada', f.folio || f.titulo.trim(), `$${fmtNum(imp.toFixed(0))} ${data.moneda} · ${prob}% · cierre ${f.fecha_cierre}`);
+      toast(`💾 Oportunidad guardada`);
+    } else {
+      const num = await siguienteFolio('oportunidad');
+      const folio = 'OPP-' + String(num).padStart(4, '0');
+      await addDoc(collection(db, 'crm_oportunidades'), {
+        ...data, folio, etapa: f.etapa || 'lead', activo: true,
+        etapa_actualizada_at: serverTimestamp(),
+        creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || '', created_at: serverTimestamp(),
+      });
+      window.logAccion('crm_opp_creada', folio, `${f.titulo.trim()} · ${f.cuenta_nombre} · $${fmtNum(imp.toFixed(0))} ${data.moneda}`);
+      toast(`🎯 Oportunidad ${folio} creada`);
+    }
+    state.oppForm = null;
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// Mover de etapa (kanban). Perdida exige MOTIVO; ganada sella fecha; la probabilidad
+// sugerida solo se aplica si el vendedor no la ha fijado a mano (prob_manual).
+window.oppEtapa = async (id, nuevaEtapa) => {
+  if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
+  const o = (state.crm_oportunidades || []).find(x => x.id === id); if (!o) return;
+  const upd = { etapa: nuevaEtapa, etapa_actualizada_at: serverTimestamp(), updated_at: serverTimestamp() };
+  if (nuevaEtapa === 'perdida') {
+    const lista = CRM_MOTIVOS_PERDIDA.map((m, i) => `${i + 1}) ${m}`).join('\n');
+    const resp = prompt(`❌ ${o.folio || ''} · ${o.titulo}\n\nMOTIVO DE PÉRDIDA (obligatorio) — escribe el número o el texto:\n\n${lista}`);
+    if (resp === null) return;
+    const idx = parseInt(resp, 10);
+    const motivo = (idx >= 1 && idx <= CRM_MOTIVOS_PERDIDA.length) ? CRM_MOTIVOS_PERDIDA[idx - 1] : String(resp).trim();
+    if (!motivo) { toast('Sin motivo no se puede marcar perdida', 'error'); return; }
+    upd.motivo_perdida = motivo; upd.perdida_at = serverTimestamp(); upd.probabilidad = 0;
+  } else if (nuevaEtapa === 'ganada') {
+    if (!confirm(`🏆 ¿Marcar GANADA "${o.titulo}"?\n\n${o.cuenta_nombre} · $${fmtNum(Number(o.importe || 0).toFixed(0))} ${o.moneda || 'MXN'}`)) return;
+    upd.ganada_at = serverTimestamp(); upd.probabilidad = 100;
+  } else {
+    const et = window._oppEtapaInfo(nuevaEtapa);
+    if (et && o.prob_manual !== true) upd.probabilidad = et.prob;
+  }
+  try {
+    await updateDoc(doc(db, 'crm_oportunidades', id), upd);
+    window.logAccion('crm_opp_etapa', o.folio || o.titulo, `${o.etapa || 'lead'} → ${nuevaEtapa}${upd.motivo_perdida ? ` · motivo: ${upd.motivo_perdida}` : ''}`);
+    if (nuevaEtapa === 'ganada' && String(o.cuenta_key || '').startsWith('P:')) {
+      toast('🏆 GANADA. Este prospecto aún no es cliente — conviértelo desde su expediente (pestaña Cuentas) para poderle pedir', 'success');
+    } else if (nuevaEtapa === 'ganada') {
+      toast('🏆 GANADA — si ya hay cotización, desde el Cotizador la conviertes en pedido');
+    } else if (nuevaEtapa === 'perdida') {
+      toast(`❌ Perdida · ${upd.motivo_perdida}`);
+    }
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.oppArchivar = async (id) => {
+  const o = (state.crm_oportunidades || []).find(x => x.id === id); if (!o) return;
+  if (!['ganada', 'perdida'].includes(o.etapa)) { toast('Solo se archivan oportunidades ya cerradas', 'error'); return; }
+  try { await updateDoc(doc(db, 'crm_oportunidades', id), { activo: false, updated_at: serverTimestamp() }); toast('📥 Archivada'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
 window.crmTabSet = (t) => { state.crmTab = t; render(); };
 window.crmFiltro = (v) => { state.filtros.crm = v; window.forzarRender(); window._cotFoco('crm-buscar'); };
 window.crmSet = (campo, v, focusId) => { if (!state.crmExpForm) return; state.crmExpForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
@@ -22801,11 +22954,182 @@ window.crmContEliminar = async (id) => {
   try { await updateDoc(doc(db, 'crm_contactos', id), { activo: false, updated_at: serverTimestamp() }); toast('Contacto desactivado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// 🎯 Pestaña PIPELINE: kanban de oportunidades + KPIs + form
+window._renderCRMPipeline = () => {
+  const u = state.user || {};
+  const esJefe = window.esJefeODireccion();
+  const opps = window._oppsVisibles();
+  const abiertas = opps.filter(o => !['ganada', 'perdida'].includes(o.etapa));
+  const hoyMes = new Date().toLocaleDateString('en-CA').slice(0, 7);
+  const mesDe = (ts) => { const t = window._oppMs(ts); return t ? new Date(t).toLocaleDateString('en-CA').slice(0, 7) : ''; };
+  const ganadasMes = opps.filter(o => o.etapa === 'ganada' && mesDe(o.ganada_at) === hoyMes);
+  const perdidasMes = opps.filter(o => o.etapa === 'perdida' && mesDe(o.perdida_at) === hoyMes);
+  // KPIs
+  const sumMon = (arr, fn) => { const m = {}; arr.forEach(o => { const k = o.moneda || 'MXN'; m[k] = (m[k] || 0) + fn(o); }); return Object.keys(m).map(k => `$${fmtNum(m[k].toFixed(0))} ${k}`).join(' · ') || '$0'; };
+  const pipeStr = sumMon(abiertas, o => Number(o.importe) || 0);
+  const pondStr = sumMon(abiertas, o => (Number(o.importe) || 0) * (Number(o.probabilidad) || 0) / 100);
+  const ganMesStr = sumMon(ganadasMes, o => Number(o.importe) || 0);
+  const corte90 = Date.now() - 90 * 86400000;
+  const g90 = opps.filter(o => o.etapa === 'ganada' && window._oppMs(o.ganada_at) >= corte90);
+  const p90 = opps.filter(o => o.etapa === 'perdida' && window._oppMs(o.perdida_at) >= corte90);
+  const tasa = (g90.length + p90.length) ? Math.round(g90.length * 100 / (g90.length + p90.length)) : null;
+  const cierres = g90.filter(o => window._oppMs(o.created_at)).map(o => (window._oppMs(o.ganada_at) - window._oppMs(o.created_at)) / 86400000);
+  const tMedio = cierres.length ? Math.round(cierres.reduce((s, x) => s + x, 0) / cierres.length) : null;
+  const motivos90 = {};
+  p90.forEach(o => { const m = o.motivo_perdida || 'Sin motivo'; motivos90[m] = (motivos90[m] || 0) + 1; });
+  const topMotivos = Object.entries(motivos90).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  const lbl = (t) => `<label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${t}</label>`;
+  const f = state.oppForm;
+  let formHTML = '';
+  if (f) {
+    const q = String(f.busca_cta || '').trim().toLowerCase();
+    const sugCtas = q ? window._crmCuentas().filter(c => ((c.codigo || '') + ' ' + (c.nombre || '')).toLowerCase().includes(q)).slice(0, 8) : [];
+    const cotsCta = window._oppCotsDeCuenta(f);
+    const qc = String(f.busca_cot || '').trim().toLowerCase();
+    const sugCots = cotsCta.filter(c => !(f.cot_folios || []).includes(c.folio) && (!qc || (c.folio || '').toLowerCase().includes(qc))).slice(0, 6);
+    const urgBtn = (u2, label, color) => `<button onclick="window.oppUrgencia('${u2}')" style="flex:1;padding:8px;border:2px solid ${f.urgencia === u2 ? color : '#cbd5e1'};background:${f.urgencia === u2 ? color : '#fff'};color:${f.urgencia === u2 ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:11.5px;cursor:pointer;">${label}</button>`;
+    formHTML = `
+    <div style="background:#fff;border:2px solid #b45309;border-radius:14px;padding:15px 18px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-weight:900;font-size:15px;">${f.id ? `🎯 ${f.folio || 'Oportunidad'} · ${f.titulo}` : '➕ Nueva oportunidad'}
+          ${f.id ? `<span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 9px;border-radius:99px;margin-left:6px;">${(window._oppEtapaInfo(f.etapa)?.nombre) || f.etapa}</span>` : ''}</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;">
+          <button onclick="window.oppGuardar()" style="padding:8px 16px;background:#b45309;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">💾 Guardar</button>
+          <button onclick="window.oppCerrar()" style="padding:8px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Cerrar</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+        <div style="grid-column:1/-1;">
+          ${lbl('Cuenta (cliente o prospecto) *')}
+          ${f.cuenta_key ? `<div style="display:flex;align-items:center;gap:8px;background:#fffbeb;border:1.5px solid #b45309;border-radius:8px;padding:8px 12px;">
+            <strong style="flex:1;">${f.cuenta_nombre}</strong>
+            ${!f.id ? `<button onclick="window.oppSet('cuenta_key','');window.oppSet('cuenta_nombre','')" style="background:#fff;color:#dc2626;border:1.5px solid #dc2626;padding:4px 10px;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">✗ Cambiar</button>` : ''}
+          </div>` : `
+          <input class="input" id="opp-cta" type="text" value="${(f.busca_cta || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('busca_cta', this.value, 'opp-cta')" placeholder="🔍 Busca la cuenta por código o nombre..." />
+          ${sugCtas.length ? `<div style="border:1px solid #fde68a;border-radius:10px;margin-top:4px;max-height:180px;overflow-y:auto;">${sugCtas.map(c => `
+            <div onclick="window.oppCtaElegir('${c.key}')" style="padding:7px 12px;font-size:12px;border-bottom:1px dashed #fffbeb;cursor:pointer;" onmouseover="this.style.background='#fffbeb'" onmouseout="this.style.background='#fff'">
+              <strong>${c.nombre || ''}</strong> ${c.esCliente ? `<span class="text-mono" style="font-size:10px;color:#166534;">${c.codigo}</span>` : '<span style="font-size:10px;color:#92400e;">PROSPECTO</span>'}
+            </div>`).join('')}</div>` : ''}`}
+        </div>
+        <div style="grid-column:1/-1;">${lbl('Título de la oportunidad *')}<input class="input" id="opp-tit" type="text" value="${(f.titulo || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('titulo', this.value, 'opp-tit')" placeholder='Ej: "Bolsa 90x120 cal 200 planta Saltillo"' /></div>
+        <div style="grid-column:1/-1;">${lbl('Necesidad detectada / producto')}<input class="input" id="opp-desc" type="text" value="${(f.descripcion || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('descripcion', this.value, 'opp-desc')" placeholder="Qué necesita, especificación, volumen mensual..." /></div>
+        <div>${lbl('Importe estimado *')}<input class="input" id="opp-imp" type="text" inputmode="decimal" value="${f.importe || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.oppSet('importe', this.value, 'opp-imp')" placeholder="$" /></div>
+        <div style="max-width:110px;">${lbl('Moneda')}<select class="input" onchange="window.oppSet('moneda', this.value)"><option ${f.moneda === 'MXN' ? 'selected' : ''}>MXN</option><option ${f.moneda === 'USD' ? 'selected' : ''}>USD</option></select></div>
+        <div>${lbl('Probabilidad % *')}<input class="input" id="opp-prob" type="text" inputmode="numeric" value="${f.probabilidad || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.oppSet('probabilidad', this.value, 'opp-prob')" placeholder="0-100" />${f.prob_manual ? '<div style="font-size:9.5px;color:#94a3b8;margin-top:2px;">fijada a mano (no cambia sola por etapa)</div>' : '<div style="font-size:9.5px;color:#94a3b8;margin-top:2px;">sugerida por etapa</div>'}</div>
+        <div>${lbl('Fecha estimada de cierre *')}<input class="input" type="date" value="${f.fecha_cierre || ''}" onchange="window.oppSet('fecha_cierre', this.value)" /></div>
+        <div>${lbl('Vendedor')}<input class="input" id="opp-ven" type="text" list="crm-dl-ven2" value="${(f.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('vendedor', this.value, 'opp-ven')" /><datalist id="crm-dl-ven2">${(state.usuarios_sistema || []).filter(x => x.activo !== false && ['CS', 'KAM', 'CEO'].includes(x.depto)).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
+        <div style="min-width:200px;">${lbl('Urgencia')}<div style="display:flex;gap:6px;">${urgBtn('alta', '🔴 Alta', '#dc2626')}${urgBtn('media', '🟡 Media', '#f59e0b')}${urgBtn('baja', '⚪ Baja', '#64748b')}</div></div>
+        <div>${lbl('Competidores involucrados')}<input class="input" id="opp-comp" type="text" value="${(f.competidores || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('competidores', this.value, 'opp-comp')" placeholder="Quién más está cotizando" /></div>
+        <div>${lbl('Próximos hitos')}<input class="input" id="opp-hitos" type="text" value="${(f.hitos || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('hitos', this.value, 'opp-hitos')" placeholder="Prueba en máquina 15/ago, junta..." /></div>
+        <div style="grid-column:1/-1;">${lbl('Notas')}<input class="input" id="opp-notas" type="text" value="${(f.notas || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('notas', this.value, 'opp-notas')" /></div>
+        <div style="grid-column:1/-1;">
+          ${lbl('🧮 Cotizaciones ligadas (de esta cuenta)')}
+          <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:5px;">
+            ${(f.cot_folios || []).map(fo => `<span style="display:inline-flex;align-items:center;gap:6px;background:#1e40af;color:#fff;border-radius:99px;padding:3px 6px 3px 11px;font-size:11px;font-weight:800;" class="text-mono">${fo}<button onclick="window.oppCotToggle('${fo}')" style="background:#1e3a8a;color:#fff;border:none;border-radius:99px;width:16px;height:16px;cursor:pointer;font-weight:900;font-size:10px;line-height:1;">×</button></span>`).join('') || '<span style="font-size:11px;color:#94a3b8;">Sin cotizaciones ligadas aún</span>'}
+          </div>
+          ${f.cuenta_key ? (cotsCta.length ? `
+            <input class="input" id="opp-cot" type="text" value="${(f.busca_cot || '').replace(/"/g, '&quot;')}" oninput="window.oppSet('busca_cot', this.value, 'opp-cot')" placeholder="🔍 Busca el folio COT para ligarla..." style="max-width:340px;" />
+            ${sugCots.length ? `<div style="border:1px solid #bfdbfe;border-radius:10px;margin-top:4px;max-width:480px;">${sugCots.map(c => `
+              <div onclick="window.oppCotToggle('${c.folio}')" style="display:flex;justify-content:space-between;gap:8px;padding:6px 12px;font-size:12px;border-bottom:1px dashed #eff6ff;cursor:pointer;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='#fff'">
+                <span><strong class="text-mono">${c.folio}</strong> · ${c.fecha || ''} <span style="color:#94a3b8;">${(c.lineas || []).length} partida(s)</span></span><span style="color:#1e40af;font-weight:900;">➕</span>
+              </div>`).join('')}</div>` : ''}` : '<div style="font-size:11px;color:#94a3b8;">Esta cuenta no tiene cotizaciones en el sistema todavía</div>') : '<div style="font-size:11px;color:#94a3b8;">Primero elige la cuenta</div>'}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const idsEtapas = CRM_ETAPAS.map(e => e.id);
+  const urgDot = (u2) => u2 === 'alta' ? '🔴' : u2 === 'baja' ? '⚪' : '🟡';
+  const card = (o) => {
+    const idx = idsEtapas.indexOf(o.etapa || 'lead');
+    const dias = window._oppDiasEnEtapa(o);
+    const pond = (Number(o.importe) || 0) * (Number(o.probabilidad) || 0) / 100;
+    return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:9px 11px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.04);">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+        <div onclick="window.oppAbrir('${o.id}')" style="cursor:pointer;flex:1;min-width:0;">
+          <div style="font-size:10px;color:#94a3b8;" class="text-mono">${o.folio || ''} ${urgDot(o.urgencia)}</div>
+          <div style="font-weight:800;font-size:12px;line-height:1.25;">${o.titulo || ''}</div>
+          <div style="font-size:11px;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${o.cuenta_nombre || ''}</div>
+        </div>
+        <button onclick="window.oppAbrir('${o.id}')" style="background:none;border:none;cursor:pointer;font-size:12px;">✏️</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;margin-top:5px;align-items:center;flex-wrap:wrap;">
+        <span><strong>$${fmtNum((Number(o.importe) || 0).toFixed(0))}</strong> <span style="color:#94a3b8;">${o.moneda || 'MXN'}</span> · ${o.probabilidad || 0}% → <strong style="color:#b45309;">$${fmtNum(pond.toFixed(0))}</strong></span>
+        ${dias !== null ? `<span style="color:${dias > 21 ? '#dc2626' : '#94a3b8'};font-size:10px;font-weight:700;">${dias}d aquí</span>` : ''}
+      </div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:2px;">${o.vendedor || ''}${(o.cot_folios || []).length ? ` · 🧮 ${o.cot_folios.length}` : ''}${o.fecha_cierre ? ` · cierre ${o.fecha_cierre}` : ''}</div>
+      <div style="display:flex;gap:4px;margin-top:6px;">
+        ${idx > 0 ? `<button onclick="window.oppEtapa('${o.id}','${idsEtapas[idx - 1]}')" title="Regresar etapa" style="padding:4px 8px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-size:10.5px;font-weight:800;color:#64748b;">◀</button>` : ''}
+        ${idx < idsEtapas.length - 1 ? `<button onclick="window.oppEtapa('${o.id}','${idsEtapas[idx + 1]}')" title="Avanzar etapa" style="flex:1;padding:4px 8px;background:#0891b2;border:none;border-radius:6px;cursor:pointer;font-size:10.5px;font-weight:800;color:#fff;">▶ ${window._oppEtapaInfo(idsEtapas[idx + 1])?.nombre.split(' ').slice(1).join(' ')}</button>` : ''}
+        <button onclick="window.oppEtapa('${o.id}','ganada')" title="Ganada" style="padding:4px 8px;background:#16a34a;border:none;border-radius:6px;cursor:pointer;font-size:10.5px;color:#fff;font-weight:800;">🏆</button>
+        <button onclick="window.oppEtapa('${o.id}','perdida')" title="Perdida" style="padding:4px 8px;background:#fff;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:10.5px;color:#dc2626;font-weight:800;">✗</button>
+      </div>
+    </div>`;
+  };
+
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #0891b2;"><div style="font-size:10px;font-weight:700;color:#64748b;">🎯 ABIERTAS</div><div style="font-size:21px;font-weight:800;color:#0891b2;">${abiertas.length}</div><div style="font-size:10px;color:#94a3b8;">oportunidades en juego</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #1e40af;"><div style="font-size:10px;font-weight:700;color:#64748b;">💼 VALOR PIPELINE</div><div style="font-size:14px;font-weight:800;color:#1e40af;">${pipeStr}</div><div style="font-size:10px;color:#94a3b8;">suma de importes</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #b45309;"><div style="font-size:10px;font-weight:700;color:#64748b;">⚖️ PONDERADO (forecast)</div><div style="font-size:14px;font-weight:800;color:#b45309;">${pondStr}</div><div style="font-size:10px;color:#94a3b8;">importe × probabilidad</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #16a34a;"><div style="font-size:10px;font-weight:700;color:#64748b;">🏆 GANADAS DEL MES</div><div style="font-size:14px;font-weight:800;color:#16a34a;">${ganadasMes.length} · ${ganMesStr}</div><div style="font-size:10px;color:#94a3b8;">${perdidasMes.length} perdida(s) este mes</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">📈 CONVERSIÓN (90d)</div><div style="font-size:21px;font-weight:800;color:#7c3aed;">${tasa === null ? '—' : tasa + '%'}</div><div style="font-size:10px;color:#94a3b8;">${tMedio === null ? 'sin cierres aún' : `cierre medio: ${tMedio} día(s)`}</div></div>
+    </div>
+
+    ${formHTML}
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+      ${esJefe ? `<button onclick="state.crmVerTodas=!state.crmVerTodas;render();" style="padding:9px 14px;background:${state.crmVerTodas ? '#0891b2' : '#fff'};color:${state.crmVerTodas ? '#fff' : '#475569'};border:1.5px solid ${state.crmVerTodas ? '#0891b2' : '#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">${state.crmVerTodas ? '👁 Viendo TODAS' : '👤 Solo mías'}</button>` : ''}
+      ${topMotivos.length ? `<span style="font-size:11px;color:#64748b;">❌ Por qué perdemos (90d): ${topMotivos.map(([m, n]) => `<strong>${m}</strong> (${n})`).join(' · ')}</span>` : ''}
+      <span style="flex:1;"></span>
+      <button onclick="window.oppNueva()" style="padding:9px 16px;background:#b45309;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">➕ Nueva oportunidad</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(5,minmax(215px,1fr));gap:10px;overflow-x:auto;align-items:start;">
+      ${CRM_ETAPAS.map(et => {
+        const items = abiertas.filter(o => (o.etapa || 'lead') === et.id).sort((a, b) => (b.importe || 0) - (a.importe || 0));
+        const suma = sumMon(items, o => Number(o.importe) || 0);
+        return `
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:9px;min-width:215px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;padding:0 2px;">
+            <span style="font-weight:900;font-size:12px;color:${et.color};">${et.nombre}</span>
+            <span style="font-size:10.5px;font-weight:800;background:${et.color}18;color:${et.color};padding:2px 8px;border-radius:99px;">${items.length}</span>
+          </div>
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:6px;padding:0 2px;">${suma} · prob. sugerida ${et.prob}%</div>
+          ${items.map(card).join('') || '<div style="font-size:11px;color:#cbd5e1;text-align:center;padding:14px 0;">vacío</div>'}
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;">
+      <details style="background:#fff;border:1px solid #bbf7d0;border-radius:12px;padding:11px 14px;">
+        <summary style="font-weight:800;font-size:12.5px;color:#166534;cursor:pointer;">🏆 Ganadas del mes (${ganadasMes.length})</summary>
+        ${ganadasMes.map(o => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f0fdf4;flex-wrap:wrap;"><span><strong>${o.titulo}</strong> · ${o.cuenta_nombre} · $${fmtNum((Number(o.importe) || 0).toFixed(0))} ${o.moneda || 'MXN'}</span><button onclick="window.oppArchivar('${o.id}')" style="padding:3px 10px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-size:10px;font-weight:700;color:#64748b;">📥 Archivar</button></div>`).join('') || '<div style="font-size:11px;color:#94a3b8;margin-top:6px;">Aún nada este mes — a cerrar 💪</div>'}
+      </details>
+      <details style="background:#fff;border:1px solid #fecaca;border-radius:12px;padding:11px 14px;">
+        <summary style="font-weight:800;font-size:12.5px;color:#991b1b;cursor:pointer;">❌ Perdidas del mes (${perdidasMes.length})</summary>
+        ${perdidasMes.map(o => `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed #fef2f2;flex-wrap:wrap;"><span><strong>${o.titulo}</strong> · ${o.cuenta_nombre} · <span style="color:#dc2626;font-weight:700;">${o.motivo_perdida || 'sin motivo'}</span></span><button onclick="window.oppArchivar('${o.id}')" style="padding:3px 10px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-size:10px;font-weight:700;color:#64748b;">📥 Archivar</button></div>`).join('') || '<div style="font-size:11px;color:#94a3b8;margin-top:6px;">Ninguna este mes 🎉</div>'}
+      </details>
+    </div>
+  `;
+};
+
 function renderCRM() {
   if (!window._crmPuede()) return '<div style="padding:40px;color:#94a3b8;">Sin acceso al CRM</div>';
   const u = state.user || {};
   const esJefe = window.esJefeODireccion();
   if (state.crmVerTodas === undefined) state.crmVerTodas = esJefe;
+  // Pestañas del CRM: 📋 Cuentas (F1) · 🎯 Pipeline (F2)
+  const crmTab = state.crmTab || 'cuentas';
+  const nOppAb = window._oppsVisibles().filter(o => !['ganada', 'perdida'].includes(o.etapa)).length;
+  const tabsBar = `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
+      <button class="tab-btn ${crmTab === 'cuentas' ? 'active' : ''}" onclick="window.crmTabSet('cuentas')">📋 Cuentas</button>
+      <button class="tab-btn ${crmTab === 'pipeline' ? 'active' : ''}" onclick="window.crmTabSet('pipeline')" style="border-color:#b45309;">🎯 Pipeline (${nOppAb})</button>
+    </div>`;
+  if (crmTab === 'pipeline') return tabsBar + window._renderCRMPipeline();
   const filtro = (state.filtros.crm || '').toLowerCase();
   const fTipo = state.crmFiltroTipo || 'todas';
   const fPrio = state.crmFiltroPrio || 'todas';
@@ -22846,6 +23170,7 @@ function renderCRM() {
         </div>
         <div style="display:flex;gap:7px;flex-wrap:wrap;">
           ${f.drive_url ? `<a href="${f.drive_url.replace(/"/g, '&quot;')}" target="_blank" style="padding:8px 14px;background:#fff;color:#0891b2;border:1.5px solid #0891b2;border-radius:8px;font-weight:800;font-size:12px;text-decoration:none;">📁 Drive</a>` : ''}
+          ${f.key !== 'NUEVO' ? `<button onclick="window.oppNueva('${f.key}')" style="padding:8px 14px;background:#fff;color:#b45309;border:1.5px solid #b45309;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">🎯 Nueva oportunidad</button>` : ''}
           ${!f.esCliente && f.key !== 'NUEVO' ? `<button onclick="window.crmConvertir('${f._docId}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✨ Convertir a cliente</button>` : ''}
           <button onclick="window.crmGuardarExp()" style="padding:8px 16px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">💾 Guardar</button>
           <button onclick="window.crmCerrarExp()" style="padding:8px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Cerrar</button>
