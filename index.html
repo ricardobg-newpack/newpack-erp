@@ -4121,7 +4121,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B49-crm-actividades</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B50-crm-kpis</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -23358,6 +23358,164 @@ window._renderCRMActividades = () => {
   `;
 };
 
+// 📊 CRM F4 — Dashboard de KPIs comerciales (los del documento de requerimientos):
+//    embudo, forecast, actividad por semana, ranking de vendedores, share of
+//    wallet (potencial vs facturado), ticket promedio, motivos de pérdida y
+//    tiempo medio de cobro por cuenta. Todo del universo VISIBLE del usuario.
+window._renderCRMKpis = () => {
+  const esJefe = window.esJefeODireccion();
+  const hoy = window.hoyLocalISO();
+  const mesActual = hoy.slice(0, 7);
+  const DIA = 86400000;
+
+  // Universos visibles (mismo criterio de todo el CRM)
+  let ctas = window._crmCuentas();
+  if (!esJefe || !state.crmVerTodas) ctas = ctas.filter(window._crmEsMia);
+  const codsVisibles = new Set(ctas.filter(c => c.codigo).map(c => String(c.codigo).toUpperCase()));
+  const opps = window._oppsVisibles();
+  const abiertas = opps.filter(o => !['ganada', 'perdida'].includes(o.etapa));
+  const acts = window._actsVisibles();
+
+  // ── Embudo / pipeline ──
+  const sumMonObj = (arr, fn) => { const m = {}; arr.forEach(o => { const k = o.moneda || 'MXN'; m[k] = (m[k] || 0) + fn(o); }); return m; };
+  const monStr = (m) => Object.keys(m).map(k => `$${fmtNum(m[k].toFixed(0))} ${k}`).join(' · ') || '$0';
+  const pipeStr = monStr(sumMonObj(abiertas, o => Number(o.importe) || 0));
+  const pondStr = monStr(sumMonObj(abiertas, o => (Number(o.importe) || 0) * (Number(o.probabilidad) || 0) / 100));
+  // Forecast del MES: ponderado de oportunidades abiertas cuyo cierre estimado cae este mes
+  const cierranMes = abiertas.filter(o => String(o.fecha_cierre || '').slice(0, 7) === mesActual);
+  const forecastStr = monStr(sumMonObj(cierranMes, o => (Number(o.importe) || 0) * (Number(o.probabilidad) || 0) / 100));
+  // Leads nuevos del mes (prospectos creados, incluidos los ya convertidos)
+  const leadsMes = (state.crm_cuentas || []).filter(p => { const t = window._oppMs(p.created_at); return t && new Date(t).toLocaleDateString('en-CA').slice(0, 7) === mesActual; }).length;
+  // Conversión Lead→Cliente (90d): prospectos convertidos / creados
+  const corte90 = Date.now() - 90 * DIA;
+  const creados90 = (state.crm_cuentas || []).filter(p => window._oppMs(p.created_at) >= corte90);
+  const convertidos90 = (state.crm_cuentas || []).filter(p => p.convertido && window._oppMs(p.convertido_at) >= corte90);
+  const tasaLead = creados90.length ? Math.round(convertidos90.length * 100 / creados90.length) : null;
+  // Ganadas/perdidas y cierre (90d)
+  const g90 = opps.filter(o => o.etapa === 'ganada' && window._oppMs(o.ganada_at) >= corte90);
+  const p90 = opps.filter(o => o.etapa === 'perdida' && window._oppMs(o.perdida_at) >= corte90);
+  const tasaOpp = (g90.length + p90.length) ? Math.round(g90.length * 100 / (g90.length + p90.length)) : null;
+  const cierres = g90.filter(o => window._oppMs(o.created_at)).map(o => (window._oppMs(o.ganada_at) - window._oppMs(o.created_at)) / DIA);
+  const tMedio = cierres.length ? Math.round(cierres.reduce((s, x) => s + x, 0) / cierres.length) : null;
+
+  // ── Actividad por semana (últimas 4) ──
+  const semanas = [];
+  for (let i = 3; i >= 0; i--) {
+    const ini = window.hoyLocalISO(-(i * 7 + 6)), fin = window.hoyLocalISO(-(i * 7));
+    const n = acts.filter(a => (a.fecha || '') >= ini && (a.fecha || '') <= fin).length;
+    semanas.push({ label: i === 0 ? 'esta sem.' : `hace ${i} sem.`, n });
+  }
+  const maxSem = Math.max(1, ...semanas.map(s => s.n));
+
+  // ── Ranking por vendedor (30d actividades / abiertas / ganadas 90d) ──
+  const corte30 = window.hoyLocalISO(-29);
+  const vend = {};
+  const vDe = (nom) => { const k = nom || '(sin vendedor)'; if (!vend[k]) vend[k] = { acts30: 0, visitas30: 0, abiertas: 0, ganadas90: 0 }; return vend[k]; };
+  acts.filter(a => (a.fecha || '') >= corte30).forEach(a => { const v = vDe(a.realizada_por); v.acts30++; if (a.tipo === 'visita') v.visitas30++; });
+  abiertas.forEach(o => vDe(o.vendedor).abiertas++);
+  g90.forEach(o => vDe(o.vendedor).ganadas90++);
+  const ranking = Object.entries(vend).sort((a, b) => b[1].acts30 - a[1].acts30);
+
+  // ── Ventas reales (facturas no canceladas) ──
+  const facts = (state.facturas || []).filter(f => f.estado !== 'cancelada');
+  const factsVisibles = esJefe && state.crmVerTodas ? facts : facts.filter(f => codsVisibles.has(String(f.cliente_codigo || '').toUpperCase()));
+  // Ticket promedio (90d, por moneda)
+  const f90 = factsVisibles.filter(f => (f.fecha || '') >= window.hoyLocalISO(-89));
+  const tickM = {};
+  f90.forEach(f => { const k = f.moneda || 'MXN'; (tickM[k] = tickM[k] || []).push(Number(f.monto) || 0); });
+  const ticketStr = Object.keys(tickM).map(k => `$${fmtNum((tickM[k].reduce((s, x) => s + x, 0) / tickM[k].length).toFixed(0))} ${k}`).join(' · ') || '—';
+  // Tiempo medio de cobro (pagadas, 180d): días factura→pago, top más lentos por cliente
+  const pag180 = factsVisibles.filter(f => f.estado === 'pagada' && f.pagada_at && f.fecha && window._oppMs(f.pagada_at) >= Date.now() - 180 * DIA);
+  const cobroCli = {};
+  pag180.forEach(f => {
+    const dias = Math.max(0, Math.round((window._oppMs(f.pagada_at) - new Date(f.fecha + 'T12:00:00').getTime()) / DIA));
+    const k = f.cliente_nombre || f.cliente_codigo || '—';
+    (cobroCli[k] = cobroCli[k] || []).push(dias);
+  });
+  const cobroRank = Object.entries(cobroCli).map(([k, arr]) => ({ cli: k, prom: Math.round(arr.reduce((s, x) => s + x, 0) / arr.length), n: arr.length })).sort((a, b) => b.prom - a.prom);
+  const cobroGlobal = pag180.length ? Math.round(Object.values(cobroCli).flat().reduce((s, x) => s + x, 0) / Object.values(cobroCli).flat().length) : null;
+
+  // ── Share of wallet: potencial anual vs facturado 12 meses (misma moneda) ──
+  const hace365 = window.hoyLocalISO(-364);
+  const sow = ctas.filter(c => Number(c.potencial_anual) > 0).map(c => {
+    const mon = c.potencial_moneda || 'MXN';
+    const fCli = factsVisibles.filter(f => String(f.cliente_codigo || '').toUpperCase() === String(c.codigo || '').toUpperCase() && (f.moneda || 'MXN') === mon && (f.fecha || '') >= hace365);
+    const vendido = fCli.reduce((s, f) => s + (Number(f.monto) || 0), 0);
+    const otraMon = c.codigo ? factsVisibles.some(f => String(f.cliente_codigo || '').toUpperCase() === String(c.codigo).toUpperCase() && (f.moneda || 'MXN') !== mon && (f.fecha || '') >= hace365) : false;
+    return { c, mon, vendido, pct: Math.min(100, Math.round(vendido * 100 / Number(c.potencial_anual))), otraMon };
+  }).sort((a, b) => Number(b.c.potencial_anual) - Number(a.c.potencial_anual));
+
+  // ── Motivos de pérdida (90d) ──
+  const motivos = {};
+  p90.forEach(o => { const m = o.motivo_perdida || 'Sin motivo'; motivos[m] = (motivos[m] || 0) + 1; });
+  const motArr = Object.entries(motivos).sort((a, b) => b[1] - a[1]);
+  const maxMot = Math.max(1, ...motArr.map(x => x[1]));
+
+  const kpi = (icono, titulo, valor, sub, color) => `<div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid ${color};"><div style="font-size:10px;font-weight:700;color:#64748b;">${icono} ${titulo}</div><div style="font-size:${String(valor).length > 14 ? '13' : '20'}px;font-weight:800;color:${color};">${valor}</div><div style="font-size:10px;color:#94a3b8;">${sub}</div></div>`;
+  const barra = (pct, color) => `<div style="flex:1;background:#f1f5f9;border-radius:99px;height:14px;min-width:80px;overflow:hidden;"><div style="width:${pct}%;background:${color};height:100%;border-radius:99px;"></div></div>`;
+
+  return `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      ${esJefe ? `<button onclick="state.crmVerTodas=!state.crmVerTodas;render();" style="padding:9px 14px;background:${state.crmVerTodas ? '#0891b2' : '#fff'};color:${state.crmVerTodas ? '#fff' : '#475569'};border:1.5px solid ${state.crmVerTodas ? '#0891b2' : '#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">${state.crmVerTodas ? '👁 Números de TODOS' : '👤 Solo mis números'}</button>` : '<span style="font-size:11.5px;color:#64748b;">Tus números (tus cuentas y actividades)</span>'}
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px;">
+      ${kpi('🌱', 'LEADS NUEVOS (mes)', leadsMes, tasaLead === null ? 'conversión lead→cliente: —' : `conversión lead→cliente 90d: ${tasaLead}%`, '#16a34a')}
+      ${kpi('🎯', 'OPORTUNIDADES ABIERTAS', abiertas.length, `${cierranMes.length} cierran este mes`, '#0891b2')}
+      ${kpi('💼', 'VALOR PIPELINE', pipeStr, 'suma de importes abiertos', '#1e40af')}
+      ${kpi('⚖️', 'PONDERADO TOTAL', pondStr, 'importe × probabilidad', '#7c3aed')}
+      ${kpi('🔮', 'FORECAST DEL MES', forecastStr, 'ponderado de cierres estimados este mes', '#b45309')}
+      ${kpi('🏆', 'CONVERSIÓN OPPS (90d)', tasaOpp === null ? '—' : tasaOpp + '%', `${g90.length} ganadas · ${p90.length} perdidas${tMedio !== null ? ` · cierre medio ${tMedio}d` : ''}`, '#16a34a')}
+      ${kpi('🎟', 'TICKET PROMEDIO (90d)', ticketStr, `${f90.length} factura(s)`, '#0891b2')}
+      ${kpi('⏳', 'COBRO PROMEDIO (180d)', cobroGlobal === null ? '—' : cobroGlobal + ' días', 'de factura a pago', cobroGlobal !== null && cobroGlobal > 45 ? '#dc2626' : '#16a34a')}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;margin-bottom:12px;">
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">📈 Actividades por semana</div>
+        ${semanas.map(s => `
+          <div style="display:flex;align-items:center;gap:8px;font-size:11.5px;padding:3px 0;">
+            <span style="width:74px;color:#64748b;font-weight:700;">${s.label}</span>
+            ${barra(Math.round(s.n * 100 / maxSem), '#16a34a')}
+            <strong style="width:28px;text-align:right;">${s.n}</strong>
+          </div>`).join('')}
+        <div style="font-weight:900;font-size:13px;margin:12px 0 8px;">👥 Por vendedor (30 días)</div>
+        <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;">
+          <thead><tr style="color:#64748b;text-align:left;"><th>Vendedor</th><th style="text-align:right;">Actividades</th><th style="text-align:right;">Visitas</th><th style="text-align:right;">Opps abiertas</th><th style="text-align:right;">Ganadas 90d</th></tr></thead>
+          <tbody>${ranking.map(([nom, v]) => `<tr style="border-top:1px dashed #f1f5f9;"><td style="font-weight:700;padding:4px 0;">${nom}</td><td style="text-align:right;">${v.acts30}</td><td style="text-align:right;">${v.visitas30}</td><td style="text-align:right;">${v.abiertas}</td><td style="text-align:right;font-weight:800;color:#16a34a;">${v.ganadas90}</td></tr>`).join('') || '<tr><td colspan="5" style="color:#94a3b8;padding:8px 0;">Sin actividad registrada aún</td></tr>'}</tbody>
+        </table></div>
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+        <div style="font-weight:900;font-size:13px;margin-bottom:8px;">❌ Por qué perdemos (90 días)</div>
+        ${motArr.map(([m, n]) => `
+          <div style="display:flex;align-items:center;gap:8px;font-size:11.5px;padding:3px 0;">
+            <span style="width:150px;color:#475569;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m}</span>
+            ${barra(Math.round(n * 100 / maxMot), '#dc2626')}
+            <strong style="width:24px;text-align:right;">${n}</strong>
+          </div>`).join('') || '<div style="font-size:12px;color:#94a3b8;">Sin pérdidas registradas en 90 días 🎉</div>'}
+        <div style="font-weight:900;font-size:13px;margin:12px 0 8px;">🐌 Clientes más lentos para pagar (180d)</div>
+        ${cobroRank.slice(0, 8).map(r => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:11.5px;padding:3px 0;border-bottom:1px dashed #f8fafc;">
+            <span style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cli}</span>
+            <span style="white-space:nowrap;"><strong style="color:${r.prom > 60 ? '#dc2626' : r.prom > 30 ? '#f59e0b' : '#16a34a'};">${r.prom} días</strong> <span style="color:#94a3b8;">(${r.n} fact.)</span></span>
+          </div>`).join('') || '<div style="font-size:12px;color:#94a3b8;">Aún sin facturas pagadas en el periodo</div>'}
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+      <div style="font-weight:900;font-size:13px;margin-bottom:2px;">🥧 Participación en la cartera (share of wallet)</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">Facturado últimos 12 meses vs potencial ANUAL estimado de cada cuenta (misma moneda del potencial). Captura potenciales en el expediente para ver más cuentas aquí.</div>
+      ${sow.length ? sow.slice(0, 20).map(x => `
+        <div style="display:flex;align-items:center;gap:10px;font-size:11.5px;padding:4px 0;flex-wrap:wrap;">
+          <span style="width:210px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${x.c.nombre}${x.c.codigo ? ` <span class="text-mono" style="font-size:9.5px;color:#94a3b8;">${x.c.codigo}</span>` : ''}</span>
+          ${barra(x.pct, x.pct >= 60 ? '#16a34a' : x.pct >= 25 ? '#f59e0b' : '#dc2626')}
+          <span style="white-space:nowrap;"><strong>${x.pct}%</strong> <span style="color:#64748b;">· $${fmtNum(x.vendido.toFixed(0))} de $${fmtNum(Number(x.c.potencial_anual).toFixed(0))} ${x.mon}</span>${x.otraMon ? ' <span title="Esta cuenta también factura en otra moneda (no sumada aquí)" style="color:#f59e0b;">⚠</span>' : ''}</span>
+        </div>`).join('') : '<div style="font-size:12px;color:#94a3b8;">Ninguna cuenta visible tiene potencial anual capturado — es el dato que hace funcionar esta gráfica.</div>'}
+      ${sow.length > 20 ? `<div style="font-size:10px;color:#94a3b8;margin-top:5px;">Mostrando 20 de ${sow.length} (ordenadas por potencial)</div>` : ''}
+    </div>
+  `;
+};
+
 function renderCRM() {
   if (!window._crmPuede()) return '<div style="padding:40px;color:#94a3b8;">Sin acceso al CRM</div>';
   const u = state.user || {};
@@ -23375,9 +23533,11 @@ function renderCRM() {
       <button class="tab-btn ${crmTab === 'cuentas' ? 'active' : ''}" onclick="window.crmTabSet('cuentas')">📋 Cuentas</button>
       <button class="tab-btn ${crmTab === 'pipeline' ? 'active' : ''}" onclick="window.crmTabSet('pipeline')" style="border-color:#b45309;">🎯 Pipeline (${nOppAb})</button>
       <button class="tab-btn ${crmTab === 'actividades' ? 'active' : ''}" onclick="window.crmTabSet('actividades')" style="border-color:#16a34a;">📞 Actividades${nVencidas ? ` <span style="background:#dc2626;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:900;">${nVencidas}</span>` : nHoyAct ? ` <span style="background:#f59e0b;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:900;">${nHoyAct}</span>` : ''}</button>
+      <button class="tab-btn ${crmTab === 'kpis' ? 'active' : ''}" onclick="window.crmTabSet('kpis')" style="border-color:#7c3aed;">📊 KPIs</button>
     </div>`;
   if (crmTab === 'pipeline') return tabsBar + window._renderCRMPipeline();
   if (crmTab === 'actividades') return tabsBar + window._renderCRMActividades();
+  if (crmTab === 'kpis') return tabsBar + window._renderCRMKpis();
   const filtro = (state.filtros.crm || '').toLowerCase();
   const fTipo = state.crmFiltroTipo || 'todas';
   const fPrio = state.crmFiltroPrio || 'todas';
