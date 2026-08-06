@@ -4111,7 +4111,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B43-crm-f1</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B45-crm-guardar</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -8198,11 +8198,16 @@ function renderFormPedido() {
                       `;
                     })()}
                   `}
+                  <!-- 🆕 Observaciones POR LÍNEA: viajan impresas a SU ODP y SU OV -->
+                  <div class="field" style="margin-top:8px;margin-bottom:0;">
+                    <label class="field-label">📝 Observaciones de ESTA línea <span style="font-weight:600;color:#94a3b8;">(Producción las ve en su ODP)</span></label>
+                    <input class="input ped-obs-linea" data-idx="${i}" type="text" value="${(l.observaciones || '').replace(/"/g, '&quot;')}" placeholder="Ej: lámina punteada, tono especial, tolerancia..." />
+                  </div>
                 </div>
               `;}).join('')}
             </div>
             <div class="field" style="margin-top:14px;">
-              <label class="field-label">Observaciones</label>
+              <label class="field-label">Observaciones generales del PI <span style="font-weight:600;color:#94a3b8;">(también se copian a todas sus ODPs/OVs)</span></label>
               <textarea class="input" id="ped-obs" style="min-height:60px;">${datos.observaciones || ''}</textarea>
             </div>
             <div style="display:flex;gap:8px;margin-top:14px;">
@@ -22660,6 +22665,10 @@ window.crmGuardarExp = async () => {
       toast(`🤝 Prospecto "${f.nombre.trim()}" creado`);
     } else if (f.esCliente) {
       await updateDoc(doc(db, 'clientes', f._docId), data);
+      // 🔧 state.clientes NO es realtime (se carga una vez con getDocs) — sin este
+      //    refresco local el expediente se veía "sin guardar" aunque SÍ se guardó
+      const _cl = (state.clientes || []).find(x => (x.id || x.codigo) === f._docId);
+      if (_cl) { const dLocal = { ...data }; delete dLocal.updated_at; Object.assign(_cl, dLocal); }
       window.logAccion('crm_expediente', f.codigo || f.nombre, `expediente CRM actualizado`);
       toast(`💾 Expediente de ${f.nombre} guardado`);
     } else {
@@ -22702,6 +22711,9 @@ window.crmConvertir = async (prospectoId) => {
     contactos.forEach(ct => batch.update(doc(db, 'crm_contactos', ct.id), { cuenta_key: 'C:' + codU, cuenta_nombre: p.nombre || '', updated_at: serverTimestamp() }));
     batch.update(doc(db, 'crm_cuentas', p.id), { convertido: true, cliente_codigo: codU, convertido_at: serverTimestamp(), updated_at: serverTimestamp() });
     await batch.commit();
+    // 🔧 clientes no es realtime: recargar para que el nuevo cliente aparezca ya
+    const snapCli = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
+    state.clientes = snapCli.docs.map(d2 => ({ id: d2.id, ...d2.data() }));
     window.logAccion('crm_prospecto_convertido', codU, `"${p.nombre}" ahora es cliente ${codU} · ${contactos.length} contacto(s) migrados`);
     toast(`✅ Cliente ${codU} creado (completa RFC/dirección en Clientes cuando puedas)`);
     state.crmExpForm = null;
@@ -50998,7 +51010,7 @@ function attachAppEvents() {
     if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
   };
   ['ped-odc','ped-fecha','ped-obs'].forEach(id => { const el = $('#' + id); if (el) el.onblur = () => capturarPedido(); });
-  $$('.ped-cant, .ped-stock, .ped-prod, .ped-precio').forEach(inp => { inp.onblur = () => { capturarPedido(); render(); }; });
+  $$('.ped-cant, .ped-stock, .ped-prod, .ped-precio, .ped-obs-linea').forEach(inp => { inp.onblur = () => { capturarPedido(); render(); }; });
   $$('.ped-origen').forEach(sel => { sel.onchange = () => { capturarPedido(); render(); }; });
 }
 
@@ -51027,6 +51039,8 @@ function capturarPedido() {
   $$('.ped-prod').forEach(inp => { const i = +inp.dataset.idx; if (d.lineas[i]) d.lineas[i].cantidad_producir = inp.value; });
   // 🛒 Precio unitario (solo aplica a productos comercializados)
   $$('.ped-precio').forEach(inp => { const i = +inp.dataset.idx; if (d.lineas[i]) d.lineas[i].precio_unitario = inp.value; });
+  // 📝 Observaciones por línea (viajan a la ODP/OV de esa línea)
+  $$('.ped-obs-linea').forEach(inp => { const i = +inp.dataset.idx; if (d.lineas[i]) d.lineas[i].observaciones = inp.value; });
 }
 
 // ============================================================
@@ -52267,6 +52281,10 @@ window.aprobarPedido = async (pedidoId, folio) => {
     if (pedido.estatus !== 'pendiente_aprobacion') throw new Error('Ya fue procesado');
     
     const lineas = window.pedidoLineas(pedidoId);
+    // 📝 La nota GENERAL del PI viaja a TODAS sus ODPs/OVs (antes se quedaba solo
+    //    en el PI y Producción nunca la veía — ej. "la 70x70 es lámina punteada")
+    const obsPI = String(pedido.observaciones || '').trim();
+    const _obsLinea = (l) => [String(l.observaciones || '').trim(), obsPI ? `📌 Nota del PI: ${obsPI}` : ''].filter(Boolean).join('  |  ');
     const ovs = [], odps = [];
     // 🔒 FC: TODA la aprobación se escribe en UN solo commit atómico. Antes eran
     //    addDoc/setDoc sueltos: una falla a medias dejaba OVs/ODPs creadas con el
@@ -52310,7 +52328,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
           estatus: 'pendiente_asignar',
           tarimas_ids: [],
           fecha_entrega_solicitada: pedido.fecha_requerida || null,
-          observaciones: l.observaciones || '',
+          observaciones: _obsLinea(l),
           creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
           created_at: serverTimestamp(),
           updated_at: serverTimestamp()
@@ -52385,7 +52403,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
           peso_teorico_millar: pesoMillar || 0,
           peso_teorico_pieza: pesoPieza || 0,
           fecha_entrega_programada: pedido.fecha_requerida || null,
-          observaciones: l.observaciones || '',
+          observaciones: _obsLinea(l),
           tipo_origen: esStockInterno ? 'stock_interno' : 'pedido_cliente',
           cedis_destino: pedido.cedis_asignado || 'CEDIS-MTY',
           requiere_proceso_secundario: requiereSec,
@@ -52414,7 +52432,7 @@ window.aprobarPedido = async (pedidoId, folio) => {
             estatus: 'esperando_produccion',
             tarimas_ids: [],
             fecha_entrega_solicitada: pedido.fecha_requerida || null,
-            observaciones: l.observaciones || '',
+            observaciones: _obsLinea(l),
             creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || state.user?.email || '',
             created_at: serverTimestamp(),
             updated_at: serverTimestamp()
