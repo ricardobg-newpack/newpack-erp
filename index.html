@@ -251,6 +251,8 @@ const state = {
   gastos_rh: [],
   prestamos_rh: [],
   comisiones_vendedores: [],
+  crm_cuentas: [],
+  crm_contactos: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3676,6 +3678,15 @@ async function cargarTodo() {
         state.gastos_rh = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      // 🆕 CRM F1: cuentas (prospectos/leads) y contactos
+      onSnapshot(collection(db, 'crm_cuentas'), (snap) => {
+        state.crm_cuentas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
+      onSnapshot(collection(db, 'crm_contactos'), (snap) => {
+        state.crm_contactos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4100,7 +4111,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0804-B42-pct-cliente</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B43-crm-f1</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4124,6 +4135,9 @@ function renderApp() {
         ${(['CS','KAM','CEO','ADMIN','COMP','FAC','CYC'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'clientes' ? 'active' : ''}" data-vista="clientes">${ICONS.users} Clientes</button>
           <button class="nav-item ${state.vista === 'cotizador' ? 'active' : ''}" data-vista="cotizador">🧮 Cotizador</button>
+        ` : ''}
+        ${(['CS','KAM','CEO','ADMIN'].includes(u.depto) || esAdmin) ? `
+          <button class="nav-item ${state.vista === 'crm' ? 'active' : ''}" data-vista="crm">🤝 CRM</button>
         ` : ''}
         ${(esCS || esKAM || esPLN || esCOMP || esCEO || esADMIN) ? `
         <button class="nav-item ${state.vista === 'pedidos' ? 'active' : ''}" data-vista="pedidos">${ICONS.cart} Pedidos (PI/OV/ODP)</button>
@@ -4461,6 +4475,7 @@ function renderVista() {
   if (v === 'inv_mex') return renderInventarioAlmacen('CEDIS-MEX');
   if (v === 'salidas_dia') return renderSalidasDia();
   if (v === 'cotizador') return renderCotizador();
+  if (v === 'crm') return renderCRM();
   if (v === 'peletizado') return renderPeletizado();
   if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
   if (v === 'seguimiento_parcialidades') return renderSeguimientoParcialidades();
@@ -22537,6 +22552,426 @@ window._pdfCotizacion = (cot) => {
     if (!win) { docPDF.save(`${cot.folio}.pdf`); toast('El navegador bloqueó la vista previa — se descargó el PDF', 'error'); }
   } catch (e) { docPDF.save(`${cot.folio}.pdf`); }
 };
+
+// ============================================================
+// 🤝 CRM — FASE 1: expediente de cuenta + contactos + clasificación.
+//    Cuentas = clientes reales (expediente en su MISMO doc de 'clientes')
+//    + prospectos (colección crm_cuentas, SIN código hasta convertirse).
+//    Cada vendedor ve lo suyo; jefes/dirección ven todo.
+// ============================================================
+const CRM_INDUSTRIAS = ['Alimentos y bebidas', 'Industrial / Manufactura', 'Agroindustria', 'Retail / Comercio', 'Farmacéutica', 'Química', 'Construcción', 'Logística / Paquetería', 'Textil', 'Automotriz', 'Otro'];
+const CRM_ORIGENES = ['Referido', 'Página web', 'Prospección en frío', 'Feria / Expo', 'Llamada entrante', 'Redes sociales', 'Cliente existente', 'Otro'];
+const CRM_TAMANOS = ['Micro (<10 empleados)', 'Pequeña (10-50)', 'Mediana (51-250)', 'Grande (>250)'];
+const CRM_FACT_RANGOS = ['<10 MDP', '10-50 MDP', '50-250 MDP', '>250 MDP', 'No se sabe'];
+const CRM_INFLUENCIAS = ['Decisor', 'Comprador', 'Usuario', 'Prescriptor'];
+const CRM_CAMPOS_EXP = ['clasificacion', 'industria', 'tamano', 'num_empleados', 'fact_rango', 'web', 'ciudad', 'pais', 'territorio', 'origen_lead', 'prioridad', 'vendedor', 'vendedor_uid', 'potencial_anual', 'potencial_moneda', 'potencial_actualizado', 'drive_url', 'notas_crm'];
+
+window._crmPuede = () => { const u = state.user || {}; return u.rol === 'admin' || ['CS', 'KAM', 'CEO', 'ADMIN'].includes(u.depto); };
+// Unión de cuentas: prospectos (crm_cuentas) + clientes reales
+window._crmCuentas = () => {
+  const pros = (state.crm_cuentas || []).filter(p => p.activo !== false && !p.convertido)
+    .map(p => ({ ...p, key: 'P:' + p.id, _docId: p.id, esCliente: false, tipo: 'prospecto' }));
+  const clis = (state.clientes || []).filter(c => c.activo !== false)
+    .map(c => ({ ...c, key: 'C:' + c.codigo, _docId: c.id || c.codigo, esCliente: true, tipo: 'cliente', ciudad: c.ciudad || c.municipio || '' }));
+  return [...pros, ...clis];
+};
+window._crmEsMia = (cta) => {
+  const u = state.user || {};
+  return (cta.vendedor_uid && cta.vendedor_uid === u.id) || (cta.vendedor && cta.vendedor === u.nombre) || (!cta.vendedor && !cta.vendedor_uid);
+};
+// Días desde la última revisión del potencial (P8: revisión mensual/semestral)
+window._crmDiasRev = (cta) => {
+  if (!cta.potencial_actualizado) return null;
+  return Math.floor((Date.now() - new Date(cta.potencial_actualizado + 'T12:00:00').getTime()) / 86400000);
+};
+window._crmContactosDe = (key) => (state.crm_contactos || []).filter(x => x.cuenta_key === key && x.activo !== false);
+
+window.crmTabSet = (t) => { state.crmTab = t; render(); };
+window.crmFiltro = (v) => { state.filtros.crm = v; window.forzarRender(); window._cotFoco('crm-buscar'); };
+window.crmSet = (campo, v, focusId) => { if (!state.crmExpForm) return; state.crmExpForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+
+window.crmAbrirExp = (key) => {
+  const cta = key === 'NUEVO' ? { key: 'NUEVO', tipo: 'prospecto' } : window._crmCuentas().find(x => x.key === key);
+  if (!cta) return;
+  const u = state.user || {};
+  state.crmExpForm = {
+    key: cta.key, _docId: cta._docId || '', esCliente: !!cta.esCliente,
+    nombre: cta.nombre || '', codigo: cta.codigo || '',
+    clasificacion: cta.clasificacion || (cta.esCliente ? 'cliente_final' : ''),
+    industria: cta.industria || (cta.giro || ''), tamano: cta.tamano || '',
+    num_empleados: cta.num_empleados || '', fact_rango: cta.fact_rango || '',
+    web: cta.web || '', ciudad: cta.ciudad || '', pais: cta.pais || 'México',
+    territorio: cta.territorio || '', origen_lead: cta.origen_lead || '',
+    prioridad: cta.prioridad || 'media',
+    vendedor: cta.vendedor || (key === 'NUEVO' ? (u.nombre || '') : ''),
+    vendedor_uid: cta.vendedor_uid || (key === 'NUEVO' ? (u.id || '') : ''),
+    potencial_anual: cta.potencial_anual ? String(cta.potencial_anual) : '',
+    potencial_moneda: cta.potencial_moneda || 'MXN',
+    potencial_actualizado: cta.potencial_actualizado || '',
+    drive_url: cta.drive_url || '', notas_crm: cta.notas_crm || '',
+    _revisar: false,
+  };
+  state.crmContForm = null;
+  render();
+};
+window.crmCerrarExp = () => { state.crmExpForm = null; state.crmContForm = null; render(); };
+window.crmPrioridad = (p) => { if (state.crmExpForm) { state.crmExpForm.prioridad = p; render(); } };
+window.crmMarcarRevisado = () => { if (state.crmExpForm) { state.crmExpForm._revisar = true; toast('El potencial se sellará como REVISADO HOY al guardar'); render(); } };
+
+window.crmGuardarExp = async () => {
+  if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
+  const f = state.crmExpForm || {};
+  if (!String(f.nombre || '').trim()) { toast('El nombre de la empresa es obligatorio', 'error'); return; }
+  const pot = Number(f.potencial_anual);
+  if (f.potencial_anual && !(pot > 0)) { toast('Potencial anual inválido', 'error'); return; }
+  const url = String(f.drive_url || '').trim();
+  if (url && !/^https:\/\//.test(url)) { toast('El link de Drive debe empezar con https://', 'error'); return; }
+  if (url && !url.includes('drive.google.com') && !url.includes('docs.google.com')) {
+    if (!confirm('El link no parece de Google Drive.\n\n¿Guardarlo de todos modos?')) return;
+  }
+  // Detectar si el potencial cambió → re-sellar la fecha de revisión
+  const cta0 = f.key !== 'NUEVO' ? window._crmCuentas().find(x => x.key === f.key) : null;
+  const potCambio = cta0 && String(cta0.potencial_anual || '') !== String(f.potencial_anual || '');
+  const hoyISO = new Date().toLocaleDateString('en-CA');
+  const data = {
+    clasificacion: f.clasificacion || '', industria: f.industria || '', tamano: f.tamano || '',
+    num_empleados: String(f.num_empleados || '').replace(/[^0-9]/g, ''), fact_rango: f.fact_rango || '',
+    web: String(f.web || '').trim(), ciudad: String(f.ciudad || '').trim(), pais: String(f.pais || '').trim() || 'México',
+    territorio: String(f.territorio || '').trim(), origen_lead: f.origen_lead || '',
+    prioridad: f.prioridad || 'media',
+    vendedor: String(f.vendedor || '').trim(), vendedor_uid: f.vendedor_uid || '',
+    potencial_anual: pot > 0 ? pot : null, potencial_moneda: f.potencial_moneda || 'MXN',
+    potencial_actualizado: (f._revisar || potCambio || (f.key === 'NUEVO' && pot > 0)) ? hoyISO : (f.potencial_actualizado || null),
+    drive_url: url, notas_crm: String(f.notas_crm || '').trim(),
+    crm_actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp(),
+  };
+  // El vendedor capturado a mano: buscar su uid en usuarios del sistema
+  if (data.vendedor && !data.vendedor_uid) {
+    const us = (state.usuarios_sistema || []).find(x => (x.nombre || '') === data.vendedor);
+    if (us) data.vendedor_uid = us.id;
+  }
+  try {
+    if (f.key === 'NUEVO') {
+      await addDoc(collection(db, 'crm_cuentas'), {
+        ...data, nombre: f.nombre.trim(), tipo: 'prospecto', activo: true,
+        creado_por: state.user?.id || '', creado_por_nombre: state.user?.nombre || '', created_at: serverTimestamp(),
+      });
+      window.logAccion('crm_prospecto_creado', f.nombre.trim(), `${data.industria || ''} · ${data.ciudad || ''} · vendedor ${data.vendedor || '—'}`);
+      toast(`🤝 Prospecto "${f.nombre.trim()}" creado`);
+    } else if (f.esCliente) {
+      await updateDoc(doc(db, 'clientes', f._docId), data);
+      window.logAccion('crm_expediente', f.codigo || f.nombre, `expediente CRM actualizado`);
+      toast(`💾 Expediente de ${f.nombre} guardado`);
+    } else {
+      await updateDoc(doc(db, 'crm_cuentas', f._docId), { ...data, nombre: f.nombre.trim() });
+      window.logAccion('crm_expediente', f.nombre.trim(), `expediente de prospecto actualizado`);
+      toast(`💾 Expediente de ${f.nombre} guardado`);
+    }
+    state.crmExpForm = null; state.crmContForm = null;
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// ✨ Convertir prospecto CRM → cliente formal (mismo patrón que el cotizador)
+window.crmConvertir = async (prospectoId) => {
+  if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
+  const p = (state.crm_cuentas || []).find(x => x.id === prospectoId);
+  if (!p) return;
+  const cod = prompt(`✨ Convertir "${p.nombre}" en CLIENTE formal.\n\nAsigna su CÓDIGO de cliente (ej. A012):`);
+  if (cod === null) return;
+  const codU = String(cod).trim().toUpperCase();
+  if (!/^[A-Z0-9-]{2,10}$/.test(codU)) { toast('Código inválido — solo letras/números/guión, ej. A012', 'error'); return; }
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const existing = await getDoc(doc(db, 'clientes', codU));
+    if (existing.exists()) { toast(`Ya existe un cliente con el código ${codU}`, 'error'); return; }
+    const contactos = window._crmContactosDe('P:' + p.id);
+    const cp = contactos.find(x => x.principal) || contactos[0] || {};
+    const exped = {};
+    CRM_CAMPOS_EXP.forEach(k => { if (p[k] !== undefined) exped[k] = p[k]; });
+    await setDoc(doc(db, 'clientes', codU), {
+      codigo: codU, nombre: p.nombre || '',
+      contacto_nombre: [cp.nombre, cp.apellidos].filter(Boolean).join(' '),
+      telefono: cp.telefono || cp.movil || '', email: cp.email || '',
+      cedis_asignado: 'CEDIS-MTY', activo: true, origen: 'crm',
+      ...exped, clasificacion: exped.clasificacion || 'cliente_final',
+      created_at: serverTimestamp(),
+    });
+    // Contactos del prospecto → siguen al cliente
+    const batch = writeBatch(db);
+    contactos.forEach(ct => batch.update(doc(db, 'crm_contactos', ct.id), { cuenta_key: 'C:' + codU, cuenta_nombre: p.nombre || '', updated_at: serverTimestamp() }));
+    batch.update(doc(db, 'crm_cuentas', p.id), { convertido: true, cliente_codigo: codU, convertido_at: serverTimestamp(), updated_at: serverTimestamp() });
+    await batch.commit();
+    window.logAccion('crm_prospecto_convertido', codU, `"${p.nombre}" ahora es cliente ${codU} · ${contactos.length} contacto(s) migrados`);
+    toast(`✅ Cliente ${codU} creado (completa RFC/dirección en Clientes cuando puedas)`);
+    state.crmExpForm = null;
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// ⬇ MIGRACIÓN (una vez, dirección): prospectos que viven en cotizaciones → cuentas CRM
+window.crmMigrarProspectos = async () => {
+  if (!window.esDireccion()) { toast('🔒 Solo dirección puede migrar', 'error'); return; }
+  const yaNombres = new Set(window._crmCuentas().map(c => String(c.nombre || '').trim().toUpperCase()));
+  const candidatas = {};
+  (state.cotizaciones || []).forEach(c => {
+    if (c.cliente_tipo !== 'prospecto' || c.cliente_codigo) return;
+    const nom = String(c.cliente_nombre || '').trim();
+    if (!nom || yaNombres.has(nom.toUpperCase()) || candidatas[nom.toUpperCase()]) return;
+    candidatas[nom.toUpperCase()] = { nombre: nom, prospecto: c.prospecto || {}, vendedor: c.vendedor || '', vendedor_uid: c.vendedor_uid || '', folio: c.folio };
+  });
+  const lista = Object.values(candidatas);
+  if (!lista.length) { toast('No hay prospectos nuevos que migrar del cotizador', 'info'); return; }
+  if (!confirm(`⬇ MIGRAR PROSPECTOS DEL COTIZADOR\n\nSe crearán ${lista.length} cuenta(s) CRM:\n${lista.slice(0, 15).map(x => `• ${x.nombre}`).join('\n')}${lista.length > 15 ? `\n...y ${lista.length - 15} más` : ''}\n\n¿Continuar?`)) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    let n = 0;
+    for (const x of lista) {
+      const ref = await addDoc(collection(db, 'crm_cuentas'), {
+        nombre: x.nombre, tipo: 'prospecto', activo: true, prioridad: 'media',
+        origen_lead: 'Cotizador (migración)', vendedor: x.vendedor, vendedor_uid: x.vendedor_uid,
+        pais: 'México', creado_por_nombre: 'migración', created_at: serverTimestamp(),
+      });
+      const p = x.prospecto || {};
+      if (p.contacto || p.telefono || p.correo) {
+        await addDoc(collection(db, 'crm_contactos'), {
+          cuenta_key: 'P:' + ref.id, cuenta_nombre: x.nombre,
+          nombre: p.contacto || '(contacto)', apellidos: '', cargo: '', influencia: '',
+          telefono: p.telefono || '', movil: '', email: p.correo || '', linkedin: '', notas: `De la cotización ${x.folio}`,
+          principal: true, activo: true, created_at: serverTimestamp(),
+        });
+      }
+      n++;
+    }
+    window.logAccion('crm_migracion', 'CRM', `${n} prospecto(s) migrados del cotizador`);
+    toast(`✅ ${n} prospecto(s) migrados al CRM`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// ── Contactos de la cuenta ──
+window.crmContNuevo = () => { state.crmContForm = { id: '', nombre: '', apellidos: '', cargo: '', influencia: '', telefono: '', movil: '', email: '', linkedin: '', notas: '', principal: false }; render(); };
+window.crmContEditar = (id) => { const c = (state.crm_contactos || []).find(x => x.id === id); if (!c) return; state.crmContForm = { id: c.id, nombre: c.nombre || '', apellidos: c.apellidos || '', cargo: c.cargo || '', influencia: c.influencia || '', telefono: c.telefono || '', movil: c.movil || '', email: c.email || '', linkedin: c.linkedin || '', notas: c.notas || '', principal: c.principal === true }; render(); };
+window.crmContSet = (campo, v, focusId) => { if (!state.crmContForm) return; state.crmContForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.crmContCerrar = () => { state.crmContForm = null; render(); };
+window.crmContGuardar = async () => {
+  if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
+  const exp = state.crmExpForm; const f = state.crmContForm || {};
+  if (!exp || exp.key === 'NUEVO') { toast('Primero guarda la cuenta y vuelve a abrirla', 'error'); return; }
+  if (!String(f.nombre || '').trim()) { toast('Nombre del contacto obligatorio', 'error'); return; }
+  const email = String(f.email || '').trim();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('Email no válido', 'error'); return; }
+  try {
+    const data = {
+      cuenta_key: exp.key, cuenta_nombre: exp.nombre || '',
+      nombre: f.nombre.trim(), apellidos: String(f.apellidos || '').trim(), cargo: String(f.cargo || '').trim(),
+      influencia: f.influencia || '', telefono: String(f.telefono || '').trim(), movil: String(f.movil || '').trim(),
+      email, linkedin: String(f.linkedin || '').trim(), notas: String(f.notas || '').trim(),
+      principal: f.principal === true, activo: true, updated_at: serverTimestamp(),
+    };
+    let idNuevo = f.id;
+    if (f.id) { await updateDoc(doc(db, 'crm_contactos', f.id), data); }
+    else { const ref = await addDoc(collection(db, 'crm_contactos'), { ...data, created_at: serverTimestamp() }); idNuevo = ref.id; }
+    // Solo UN contacto principal por cuenta
+    if (data.principal) {
+      const otros = window._crmContactosDe(exp.key).filter(x => x.id !== idNuevo && x.principal);
+      for (const o of otros) { await updateDoc(doc(db, 'crm_contactos', o.id), { principal: false }); }
+    }
+    window.logAccion('crm_contacto', exp.nombre || exp.key, `${data.nombre} ${data.apellidos} · ${data.cargo || 's/cargo'} · ${data.influencia || ''}`);
+    state.crmContForm = null;
+    toast('👤 Contacto guardado');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.crmContEliminar = async (id) => {
+  if (!window._crmPuede()) return;
+  const c = (state.crm_contactos || []).find(x => x.id === id); if (!c) return;
+  if (!confirm(`¿Quitar el contacto ${c.nombre} ${c.apellidos || ''}?\n\n(Se desactiva, no se pierde el historial)`)) return;
+  try { await updateDoc(doc(db, 'crm_contactos', id), { activo: false, updated_at: serverTimestamp() }); toast('Contacto desactivado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function renderCRM() {
+  if (!window._crmPuede()) return '<div style="padding:40px;color:#94a3b8;">Sin acceso al CRM</div>';
+  const u = state.user || {};
+  const esJefe = window.esJefeODireccion();
+  if (state.crmVerTodas === undefined) state.crmVerTodas = esJefe;
+  const filtro = (state.filtros.crm || '').toLowerCase();
+  const fTipo = state.crmFiltroTipo || 'todas';
+  const fPrio = state.crmFiltroPrio || 'todas';
+
+  let cuentas = window._crmCuentas();
+  const totales = { cuentas: cuentas.length, prospectos: cuentas.filter(c => !c.esCliente).length, clientes: cuentas.filter(c => c.esCliente).length };
+  if (!esJefe || !state.crmVerTodas) cuentas = cuentas.filter(window._crmEsMia);
+  if (fTipo === 'prospectos') cuentas = cuentas.filter(c => !c.esCliente);
+  if (fTipo === 'clientes') cuentas = cuentas.filter(c => c.esCliente);
+  if (fTipo === 'canal') cuentas = cuentas.filter(c => ['distribuidor', 'partner'].includes(c.clasificacion));
+  if (fPrio !== 'todas') cuentas = cuentas.filter(c => (c.prioridad || 'media') === fPrio);
+  if (filtro) cuentas = cuentas.filter(c => ((c.codigo || '') + ' ' + (c.nombre || '') + ' ' + (c.industria || '') + ' ' + (c.ciudad || '') + ' ' + (c.territorio || '') + ' ' + (c.vendedor || '')).toLowerCase().includes(filtro));
+  cuentas.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+
+  const potPorMon = {};
+  cuentas.forEach(c => { if (Number(c.potencial_anual) > 0) { const m = c.potencial_moneda || 'MXN'; potPorMon[m] = (potPorMon[m] || 0) + Number(c.potencial_anual); } });
+  const potStr = Object.keys(potPorMon).map(m => `$${fmtNum(potPorMon[m].toFixed(0))} ${m}`).join(' · ') || '—';
+  const sinRevisar = cuentas.filter(c => Number(c.potencial_anual) > 0 && (window._crmDiasRev(c) === null || window._crmDiasRev(c) > 35)).length;
+  const sinVendedor = cuentas.filter(c => !c.vendedor && !c.vendedor_uid).length;
+
+  const f = state.crmExpForm;
+  const prioBtn = (p, label, color) => `<button onclick="window.crmPrioridad('${p}')" style="flex:1;padding:9px;border:2px solid ${f?.prioridad === p ? color : '#cbd5e1'};background:${f?.prioridad === p ? color : '#fff'};color:${f?.prioridad === p ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${label}</button>`;
+  const lbl = (t) => `<label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${t}</label>`;
+  const selOpts = (arr, val) => arr.map(x => `<option value="${x}" ${val === x ? 'selected' : ''}>${x}</option>`).join('');
+
+  // ── Panel EXPEDIENTE (inline, arriba de la lista) ──
+  let expedienteHTML = '';
+  if (f) {
+    const contactos = f.key !== 'NUEVO' ? window._crmContactosDe(f.key) : [];
+    const cf = state.crmContForm;
+    const dias = f.potencial_actualizado ? Math.floor((Date.now() - new Date(f.potencial_actualizado + 'T12:00:00').getTime()) / 86400000) : null;
+    expedienteHTML = `
+    <div style="background:#fff;border:2px solid #0891b2;border-radius:14px;padding:15px 18px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-weight:900;font-size:15px;">
+          ${f.key === 'NUEVO' ? '➕ Nuevo prospecto' : `📂 ${f.nombre}`}
+          ${f.esCliente ? `<span class="text-mono" style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 9px;border-radius:99px;margin-left:6px;">CLIENTE ${f.codigo}</span>` : f.key !== 'NUEVO' ? '<span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 9px;border-radius:99px;margin-left:6px;">PROSPECTO</span>' : ''}
+        </div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;">
+          ${f.drive_url ? `<a href="${f.drive_url.replace(/"/g, '&quot;')}" target="_blank" style="padding:8px 14px;background:#fff;color:#0891b2;border:1.5px solid #0891b2;border-radius:8px;font-weight:800;font-size:12px;text-decoration:none;">📁 Drive</a>` : ''}
+          ${!f.esCliente && f.key !== 'NUEVO' ? `<button onclick="window.crmConvertir('${f._docId}')" style="padding:8px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">✨ Convertir a cliente</button>` : ''}
+          <button onclick="window.crmGuardarExp()" style="padding:8px 16px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">💾 Guardar</button>
+          <button onclick="window.crmCerrarExp()" style="padding:8px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Cerrar</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;">
+        ${f.key === 'NUEVO' ? `<div style="grid-column:1/-1;">${lbl('Empresa *')}<input class="input" id="crm-nom" type="text" value="${(f.nombre || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('nombre', this.value, 'crm-nom')" placeholder="Nombre comercial del prospecto" /></div>` : ''}
+        ${f.esCliente ? `<div>${lbl('Clasificación')}<select class="input" onchange="window.crmSet('clasificacion', this.value)"><option value="cliente_final" ${f.clasificacion === 'cliente_final' ? 'selected' : ''}>Cliente final</option><option value="distribuidor" ${f.clasificacion === 'distribuidor' ? 'selected' : ''}>Distribuidor</option><option value="partner" ${f.clasificacion === 'partner' ? 'selected' : ''}>Partner</option></select></div>` : ''}
+        <div>${lbl('Industria / sector')}<select class="input" onchange="window.crmSet('industria', this.value)"><option value="">—</option>${selOpts(CRM_INDUSTRIAS, f.industria)}</select></div>
+        <div>${lbl('Tamaño')}<select class="input" onchange="window.crmSet('tamano', this.value)"><option value="">—</option>${selOpts(CRM_TAMANOS, f.tamano)}</select></div>
+        <div>${lbl('# empleados (aprox)')}<input class="input" id="crm-emp" type="text" inputmode="numeric" value="${f.num_empleados || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.crmSet('num_empleados', this.value, 'crm-emp')" /></div>
+        <div>${lbl('Facturación estimada')}<select class="input" onchange="window.crmSet('fact_rango', this.value)"><option value="">—</option>${selOpts(CRM_FACT_RANGOS, f.fact_rango)}</select></div>
+        <div>${lbl('Página web')}<input class="input" id="crm-web" type="text" value="${(f.web || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('web', this.value, 'crm-web')" placeholder="www..." /></div>
+        <div>${lbl('Ciudad')}<input class="input" id="crm-ciu" type="text" value="${(f.ciudad || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('ciudad', this.value, 'crm-ciu')" /></div>
+        <div>${lbl('País')}<input class="input" id="crm-pais" type="text" value="${(f.pais || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('pais', this.value, 'crm-pais')" /></div>
+        <div>${lbl('Territorio')}<input class="input" id="crm-terr" type="text" list="crm-dl-terr" value="${(f.territorio || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('territorio', this.value, 'crm-terr')" /><datalist id="crm-dl-terr">${['Norte', 'Bajío', 'Centro', 'Sur', 'Pacífico', 'Golfo', 'USA'].map(t => `<option value="${t}"></option>`).join('')}</datalist></div>
+        <div>${lbl('Origen del lead')}<select class="input" onchange="window.crmSet('origen_lead', this.value)"><option value="">—</option>${selOpts(CRM_ORIGENES, f.origen_lead)}</select></div>
+        <div>${lbl('Vendedor asignado')}<input class="input" id="crm-ven" type="text" list="crm-dl-ven" value="${(f.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('vendedor', this.value, 'crm-ven')" /><datalist id="crm-dl-ven">${(state.usuarios_sistema || []).filter(x => x.activo !== false && ['CS', 'KAM', 'CEO'].includes(x.depto)).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
+        <div style="grid-column:1/-1;display:flex;gap:8px;align-items:end;flex-wrap:wrap;">
+          <div style="flex:2;min-width:140px;">${lbl('Prioridad')}<div style="display:flex;gap:6px;">${prioBtn('alta', '🔴 Alta', '#dc2626')}${prioBtn('media', '🟡 Media', '#f59e0b')}${prioBtn('baja', '⚪ Baja', '#64748b')}</div></div>
+          <div style="flex:1;min-width:130px;">${lbl('Potencial ANUAL estimado')}<input class="input" id="crm-pot" type="text" inputmode="decimal" value="${f.potencial_anual || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.crmSet('potencial_anual', this.value, 'crm-pot')" placeholder="$ al año" /></div>
+          <div style="width:90px;">${lbl('Moneda')}<select class="input" onchange="window.crmSet('potencial_moneda', this.value)"><option ${f.potencial_moneda === 'MXN' ? 'selected' : ''}>MXN</option><option ${f.potencial_moneda === 'USD' ? 'selected' : ''}>USD</option></select></div>
+          <div style="min-width:170px;">
+            ${lbl('Última revisión del potencial')}
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="font-size:12px;color:${dias === null ? '#94a3b8' : dias > 185 ? '#dc2626' : dias > 35 ? '#f59e0b' : '#16a34a'};font-weight:800;">${f._revisar ? '✓ hoy (al guardar)' : dias === null ? 'nunca' : dias === 0 ? 'hoy' : `hace ${dias} día(s)`}</span>
+              ${!f._revisar ? `<button onclick="window.crmMarcarRevisado()" style="padding:5px 10px;background:#fff;color:#0891b2;border:1px solid #0891b2;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">✓ Revisado</button>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="grid-column:1/-1;">${lbl('📁 Carpeta Google Drive de la cuenta (cotizaciones, contratos, NDA, fotos...)')}<input class="input" id="crm-drive" type="text" value="${(f.drive_url || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('drive_url', this.value, 'crm-drive')" placeholder="https://drive.google.com/drive/folders/..." /></div>
+        <div style="grid-column:1/-1;">${lbl('Notas')}<input class="input" id="crm-notas" type="text" value="${(f.notas_crm || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('notas_crm', this.value, 'crm-notas')" placeholder="Condiciones de negociación, acuerdos, contexto..." /></div>
+      </div>
+      ${f.key !== 'NUEVO' ? `
+      <div style="border-top:2px solid #f1f5f9;margin-top:12px;padding-top:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+          <div style="font-weight:800;font-size:12.5px;color:#0e7490;">👥 Contactos (${contactos.length})</div>
+          ${!cf ? `<button onclick="window.crmContNuevo()" style="padding:6px 13px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">➕ Agregar contacto</button>` : ''}
+        </div>
+        ${contactos.map(ct => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;align-items:center;">
+            <span style="flex:1;min-width:220px;">
+              <strong>${ct.nombre} ${ct.apellidos || ''}</strong>${ct.principal ? ' <span style="font-size:10px;background:#0891b2;color:#fff;padding:1px 7px;border-radius:99px;font-weight:800;">PRINCIPAL</span>' : ''}
+              <span style="color:#64748b;">${ct.cargo ? ` · ${ct.cargo}` : ''}${ct.influencia ? ` · <strong style="color:#0e7490;">${ct.influencia}</strong>` : ''}</span>
+              <div style="font-size:11px;color:#94a3b8;">${[ct.telefono, ct.movil, ct.email, ct.linkedin].filter(Boolean).join(' · ') || 'sin datos de contacto'}</div>
+            </span>
+            <span style="display:flex;gap:5px;">
+              <button onclick="window.crmContEditar('${ct.id}')" style="padding:4px 10px;background:#fff;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">✏️</button>
+              <button onclick="window.crmContEliminar('${ct.id}')" style="padding:4px 10px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">🗑</button>
+            </span>
+          </div>`).join('') || '<div style="font-size:11.5px;color:#94a3b8;">Sin contactos aún — en B2B la cuenta vale por sus contactos: agrega al comprador, al decisor y al usuario.</div>'}
+        ${cf ? `
+        <div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:10px 12px;margin-top:8px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;">
+            <div>${lbl('Nombre *')}<input class="input" id="crm-ct-nom" type="text" value="${(cf.nombre || '').replace(/"/g, '&quot;')}" oninput="window.crmContSet('nombre', this.value, 'crm-ct-nom')" /></div>
+            <div>${lbl('Apellidos')}<input class="input" id="crm-ct-ape" type="text" value="${(cf.apellidos || '').replace(/"/g, '&quot;')}" oninput="window.crmContSet('apellidos', this.value, 'crm-ct-ape')" /></div>
+            <div>${lbl('Cargo')}<input class="input" id="crm-ct-cargo" type="text" value="${(cf.cargo || '').replace(/"/g, '&quot;')}" oninput="window.crmContSet('cargo', this.value, 'crm-ct-cargo')" placeholder="Comprador, Dir. Ops..." /></div>
+            <div>${lbl('Influencia')}<select class="input" onchange="window.crmContSet('influencia', this.value)"><option value="">—</option>${selOpts(CRM_INFLUENCIAS, cf.influencia)}</select></div>
+            <div>${lbl('Teléfono')}<input class="input" id="crm-ct-tel" type="text" inputmode="tel" value="${(cf.telefono || '').replace(/"/g, '&quot;')}" oninput="this.value=this.value.replace(/[^0-9+ -]/g,'');window.crmContSet('telefono', this.value, 'crm-ct-tel')" /></div>
+            <div>${lbl('Móvil / WhatsApp')}<input class="input" id="crm-ct-mov" type="text" inputmode="tel" value="${(cf.movil || '').replace(/"/g, '&quot;')}" oninput="this.value=this.value.replace(/[^0-9+ -]/g,'');window.crmContSet('movil', this.value, 'crm-ct-mov')" /></div>
+            <div>${lbl('Email')}<input class="input" id="crm-ct-mail" type="text" inputmode="email" value="${(cf.email || '').replace(/"/g, '&quot;')}" oninput="window.crmContSet('email', this.value, 'crm-ct-mail')" /></div>
+            <div>${lbl('LinkedIn')}<input class="input" id="crm-ct-lnk" type="text" value="${(cf.linkedin || '').replace(/"/g, '&quot;')}" oninput="window.crmContSet('linkedin', this.value, 'crm-ct-lnk')" placeholder="linkedin.com/in/..." /></div>
+            <div style="grid-column:1/-1;">${lbl('Notas')}<input class="input" id="crm-ct-not" type="text" value="${(cf.notas || '').replace(/"/g, '&quot;')}" oninput="window.crmContSet('notas', this.value, 'crm-ct-not')" /></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+            <button onclick="window.crmContSet('principal', ${cf.principal ? 'false' : 'true'})" style="padding:7px 13px;background:${cf.principal ? '#0891b2' : '#fff'};color:${cf.principal ? '#fff' : '#64748b'};border:1.5px solid ${cf.principal ? '#0891b2' : '#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">${cf.principal ? '★ Contacto PRINCIPAL' : '☆ Marcar como principal'}</button>
+            <span style="flex:1;"></span>
+            <button onclick="window.crmContGuardar()" style="padding:8px 15px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">💾 Guardar contacto</button>
+            <button onclick="window.crmContCerrar()" style="padding:8px 12px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">Cancelar</button>
+          </div>
+        </div>` : ''}
+      </div>` : '<div style="font-size:11px;color:#94a3b8;margin-top:8px;">💡 Guarda la cuenta y vuélvela a abrir para agregar contactos.</div>'}
+    </div>`;
+  }
+
+  const prioBadge = (p) => ({ alta: '<span style="font-size:10px;font-weight:900;color:#dc2626;">🔴 ALTA</span>', baja: '<span style="font-size:10px;font-weight:800;color:#94a3b8;">⚪ BAJA</span>' }[p] || '<span style="font-size:10px;font-weight:800;color:#f59e0b;">🟡 MEDIA</span>');
+
+  return `
+    <!-- KPIs F1 -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #0891b2;"><div style="font-size:10px;font-weight:700;color:#64748b;">🤝 CUENTAS</div><div style="font-size:21px;font-weight:800;color:#0891b2;">${totales.cuentas}</div><div style="font-size:10px;color:#94a3b8;">${totales.clientes} clientes · ${totales.prospectos} prospectos</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #7c3aed;"><div style="font-size:10px;font-weight:700;color:#64748b;">💎 POTENCIAL ANUAL (vista actual)</div><div style="font-size:14px;font-weight:800;color:#7c3aed;">${potStr}</div><div style="font-size:10px;color:#94a3b8;">suma de cuentas listadas</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #f59e0b;"><div style="font-size:10px;font-weight:700;color:#64748b;">⏰ POTENCIAL SIN REVISAR</div><div style="font-size:21px;font-weight:800;color:${sinRevisar ? '#f59e0b' : '#16a34a'};">${sinRevisar}</div><div style="font-size:10px;color:#94a3b8;">+35 días sin revisión (meta: mensual)</div></div>
+      <div style="background:#fff;padding:11px 13px;border-radius:10px;border-left:4px solid #dc2626;"><div style="font-size:10px;font-weight:700;color:#64748b;">👤 SIN VENDEDOR</div><div style="font-size:21px;font-weight:800;color:${sinVendedor ? '#dc2626' : '#16a34a'};">${sinVendedor}</div><div style="font-size:10px;color:#94a3b8;">cuentas sin responsable</div></div>
+    </div>
+
+    ${expedienteHTML}
+
+    <!-- Toolbar -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+      <input class="input" id="crm-buscar" style="max-width:320px;flex:1;min-width:180px;" placeholder="🔍 Empresa, industria, ciudad, vendedor..." value="${(state.filtros.crm || '').replace(/"/g, '&quot;')}" oninput="window.crmFiltro(this.value)" autocomplete="off" />
+      <select class="input" style="width:auto;" onchange="state.crmFiltroTipo=this.value;render();">
+        <option value="todas" ${fTipo === 'todas' ? 'selected' : ''}>Todas</option>
+        <option value="clientes" ${fTipo === 'clientes' ? 'selected' : ''}>Clientes</option>
+        <option value="prospectos" ${fTipo === 'prospectos' ? 'selected' : ''}>Prospectos</option>
+        <option value="canal" ${fTipo === 'canal' ? 'selected' : ''}>Distribuidores/Partners</option>
+      </select>
+      <select class="input" style="width:auto;" onchange="state.crmFiltroPrio=this.value;render();">
+        <option value="todas" ${fPrio === 'todas' ? 'selected' : ''}>Prioridad: todas</option>
+        <option value="alta" ${fPrio === 'alta' ? 'selected' : ''}>🔴 Alta</option>
+        <option value="media" ${fPrio === 'media' ? 'selected' : ''}>🟡 Media</option>
+        <option value="baja" ${fPrio === 'baja' ? 'selected' : ''}>⚪ Baja</option>
+      </select>
+      ${esJefe ? `<button onclick="state.crmVerTodas=!state.crmVerTodas;render();" style="padding:9px 14px;background:${state.crmVerTodas ? '#0891b2' : '#fff'};color:${state.crmVerTodas ? '#fff' : '#475569'};border:1.5px solid ${state.crmVerTodas ? '#0891b2' : '#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">${state.crmVerTodas ? '👁 Viendo TODAS' : '👤 Solo mías'}</button>` : ''}
+      <span style="flex:1;"></span>
+      ${window.esDireccion() ? `<button onclick="window.crmMigrarProspectos()" style="padding:9px 14px;background:#fff;color:#7c3aed;border:1.5px solid #7c3aed;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Migrar prospectos del cotizador</button>` : ''}
+      <button onclick="window.crmAbrirExp('NUEVO')" style="padding:9px 16px;background:#0891b2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">➕ Nuevo prospecto</button>
+    </div>
+
+    <!-- Lista de cuentas -->
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Cuenta</th><th>Tipo</th><th>Industria</th><th>Ciudad</th><th>Prioridad</th><th>Vendedor</th><th style="text-align:right;">Potencial anual</th><th>Contactos</th><th></th></tr></thead>
+        <tbody>
+          ${cuentas.length === 0 ? '<tr><td colspan="9" style="padding:40px;text-align:center;color:#94a3b8;">Sin cuentas con este filtro — agrega un prospecto o migra los del cotizador</td></tr>' :
+            cuentas.slice(0, 200).map(c => {
+              const nCt = window._crmContactosDe(c.key).length;
+              const dias = window._crmDiasRev(c);
+              const potTxt = Number(c.potencial_anual) > 0 ? `$${fmtNum(Number(c.potencial_anual).toFixed(0))} ${c.potencial_moneda || 'MXN'}` : '—';
+              const alertaRev = Number(c.potencial_anual) > 0 && (dias === null || dias > 35) ? ' <span title="Potencial sin revisar (meta mensual)" style="color:#f59e0b;">⏰</span>' : '';
+              return `<tr style="cursor:pointer;" onclick="window.crmAbrirExp('${c.key}')">
+                <td style="font-weight:700;">${c.nombre || ''}${c.codigo ? ` <span class="text-mono" style="font-size:10px;color:#94a3b8;">${c.codigo}</span>` : ''}</td>
+                <td>${c.esCliente ? (c.clasificacion === 'distribuidor' ? '<span style="font-size:10.5px;font-weight:800;color:#7c3aed;">DISTRIBUIDOR</span>' : c.clasificacion === 'partner' ? '<span style="font-size:10.5px;font-weight:800;color:#7c3aed;">PARTNER</span>' : '<span style="font-size:10.5px;font-weight:800;color:#166534;">CLIENTE</span>') : '<span style="font-size:10.5px;font-weight:800;color:#92400e;">PROSPECTO</span>'}</td>
+                <td style="font-size:12px;color:#475569;">${c.industria || c.giro || '—'}</td>
+                <td style="font-size:12px;color:#475569;">${c.ciudad || '—'}${c.territorio ? ` <span style="color:#94a3b8;">(${c.territorio})</span>` : ''}</td>
+                <td>${prioBadge(c.prioridad || 'media')}</td>
+                <td style="font-size:12px;">${c.vendedor || '<span style="color:#dc2626;font-weight:700;">sin asignar</span>'}</td>
+                <td style="text-align:right;font-weight:700;">${potTxt}${alertaRev}</td>
+                <td style="text-align:center;">${nCt ? `<span style="font-weight:800;color:#0891b2;">👥 ${nCt}</span>` : '<span style="color:#cbd5e1;">—</span>'}</td>
+                <td><button class="icon-btn" onclick="event.stopPropagation();window.crmAbrirExp('${c.key}')" title="Abrir expediente">📂</button></td>
+              </tr>`;
+            }).join('')}
+        </tbody>
+      </table>
+      ${cuentas.length > 200 ? `<div style="font-size:11px;color:#94a3b8;padding:8px;">Mostrando 200 de ${cuentas.length} — usa el buscador</div>` : ''}
+    </div>
+  `;
+}
 
 function renderCotizador() {
   if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras', color: 'Transparente', aditivo: 'NINGUNO', impresion: '', tintas: '', colores_imp: '', presentacion: '', minimo: '' };
