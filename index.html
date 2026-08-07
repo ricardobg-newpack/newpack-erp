@@ -256,6 +256,8 @@ const state = {
   crm_oportunidades: [],
   crm_actividades: [],
   directorio: [],
+  cambios_malla: [],
+  cotizaciones_proveedor: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3725,6 +3727,16 @@ async function cargarTodo() {
         state.directorio = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      // 🕸 Cambios de malla (screen pack) de extrusión — programa preventivo + bitácora
+      onSnapshot(query(collection(db, 'cambios_malla'), orderBy('created_at', 'desc'), limit(600)), (snap) => {
+        state.cambios_malla = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
+      // 💰 Cotizaciones de proveedor (comparativo antes de generar la OC)
+      onSnapshot(query(collection(db, 'cotizaciones_proveedor'), orderBy('created_at', 'desc'), limit(800)), (snap) => {
+        state.cotizaciones_proveedor = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4135,9 +4147,16 @@ function renderApp() {
   const supervisorRestringido = u.depto === 'PRO' && !!u.proceso_asignado && !esCEO && u.rol !== 'admin';
   // Si intenta estar en cualquier otra vista, forzar su panel y su proceso.
   if (supervisorRestringido) {
-    if (state.vista !== 'panel_operador') state.vista = 'panel_operador';
+    // 🕸 Excepción: el supervisor de extrusión también entra al programa de mallas
+    //    (es su responsabilidad directa), sin abrirle el resto del menú.
+    if (!['panel_operador', 'mallas'].includes(state.vista)) state.vista = 'panel_operador';
     state.panelOpProc = u.proceso_asignado;
   }
+  // 🆕 JEFATURA DE ABASTECIMIENTO Y ALMACENES: Compras marcado como JEFE coordina los
+  //    dos CEDIS y el Almacén de Planta (cada almacén conserva su propio jefe, que es
+  //    quien opera). Necesita VER inventarios y embarques para priorizar y escalar,
+  //    NO los botones de operación de cada almacén.
+  const esJefeAlmacenes = (u.depto === 'COMP' && u.es_jefe === true) || esCEO;
   const esVerCompras = esCOMP || esPLN || esALP || esCEO || esCEDMTY || esCEDMEX || esMTTO || esADMIN || esCS; // Todos los deptos que pueden crear RCs
   const esVerMTTO = esMTTO || esCOMP || esCEO; // Quien puede VER catálogo MTTO
   // 📦 EMPAQUE: ALP, CEDMTY, CEDMEX, COMP, CEO, ADMIN
@@ -4153,13 +4172,14 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0806-B57-perfiles</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0807-B62-comparativo-cot</span></div>
         </div>
         
         ${supervisorRestringido ? `
           <!-- 🆕 SUPERVISOR RESTRINGIDO: solo su Panel de Operador -->
           <div class="sidebar-section">Mi área</div>
           <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador · ${getProc(u.proceso_asignado)?.nombre || ''}</button>
+          ${u.proceso_asignado === 'P1-EXT' ? `<button class="nav-item ${state.vista === 'mallas' ? 'active' : ''}" data-vista="mallas">🕸 Mallas de Extrusión</button>` : ''}
           <div style="margin-top:auto;padding:14px 16px;font-size:10px;color:#94a3b8;">
             🔒 Acceso de supervisor de ${getProc(u.proceso_asignado)?.nombre || 'producción'}
           </div>
@@ -4203,6 +4223,9 @@ function renderApp() {
         ${esPRO ? `
           <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador${supervisorRestringido ? ` · ${getProc(u.proceso_asignado)?.nombre || ''}` : ''}</button>
         ` : ''}
+        ${(esPRO || esPLN) ? `
+          <button class="nav-item ${state.vista === 'mallas' ? 'active' : ''}" data-vista="mallas">🕸 Mallas de Extrusión</button>
+        ` : ''}
         ${(esPLN || esPRO) && !supervisorRestringido ? `
           <button class="nav-item ${state.vista === 'kanban_maquinas' ? 'active' : ''}" data-vista="kanban_maquinas">📋 Kanban Máquinas</button>
           <button class="nav-item ${state.vista === 'seguimiento_parcialidades' ? 'active' : ''}" data-vista="seguimiento_parcialidades">🔗 Seguimiento Parcialidades</button>
@@ -4227,10 +4250,10 @@ function renderApp() {
           ${(esRH || esADMIN) ? `<button class="nav-item ${state.vista === 'rh' ? 'active' : ''}" data-vista="rh">👥 Capital Humano</button>` : ''}
         ` : ''}
         
-        ${esALP ? `
+        ${(esALP || esJefeAlmacenes) ? `
           <div class="sidebar-section">🏭 Almacén Planta</div>
           <button class="nav-item ${state.vista === 'almacen_planta' ? 'active' : ''}" data-vista="almacen_planta">📦 Stock Planta</button>
-          <button class="nav-item ${state.vista === 'oti_planta' ? 'active' : ''}" data-vista="oti_planta">🚚 Enviar a CEDIS-MTY (OTI)</button>
+          ${esALP ? `<button class="nav-item ${state.vista === 'oti_planta' ? 'active' : ''}" data-vista="oti_planta">🚚 Enviar a CEDIS-MTY (OTI)</button>` : ''}
         ` : ''}
         ${esCEDMTY ? `
           <div class="sidebar-section">📦 CEDIS Monterrey</div>
@@ -4247,7 +4270,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Embarques del día</button>
           <button class="nav-item ${state.vista === 'embarques_mex' ? 'active' : ''}" data-vista="embarques_mex">🚚 Embarques MEX (al cliente)</button>
         ` : ''}
-        ${(esCEO || esADMIN || esCS || esKAM || esPLN || esFAC || esCYC) && !esALP && !esCEDMTY && !esCEDMEX ? `
+        ${(esCEO || esADMIN || esCS || esKAM || esPLN || esFAC || esCYC || esJefeAlmacenes) && !esALP && !esCEDMTY && !esCEDMEX ? `
           <div class="sidebar-section">📊 Inventarios (Producto Terminado)</div>
           <button class="nav-item ${state.vista === 'inv_mty' ? 'active' : ''}" data-vista="inv_mty">📦 Inventario CEDIS-MTY</button>
           <button class="nav-item ${state.vista === 'inv_mex' ? 'active' : ''}" data-vista="inv_mex">🇲🇽 Inventario CEDIS-MEX</button>
@@ -4524,6 +4547,7 @@ function renderVista() {
   if (v === 'cotizador') return renderCotizador();
   if (v === 'crm') return renderCRM();
   if (v === 'directorio') return renderDirectorio();
+  if (v === 'mallas') return renderMallas();
   if (v === 'peletizado') return renderPeletizado();
   if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
   if (v === 'seguimiento_parcialidades') return renderSeguimientoParcialidades();
@@ -11266,7 +11290,33 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
   }
   
   const maqCodigo = odp.maquinas_asignadas?.[procAIniciar] || '';
-  
+
+  // 🕸 Candado suave de malla: no arrancar extrusión con la malla vencida o sin
+  //    registro. No bloquea la producción, pero exige decisión consciente y deja
+  //    en bitácora quién decidió correr así (fue el problema del turno pasado).
+  if (procAIniciar === 'P1-EXT' && maqCodigo && window._mallaEstado) {
+    const maqM = (state.maquinas || []).find(m => m.codigo === maqCodigo);
+    if (maqM) {
+      const em = window._mallaEstado(maqM);
+      if (em.nivel === 'vencida' || em.nivel === 'sin_registro') {
+        const detalle = em.ult
+          ? `La malla lleva ${fmtNum(em.kg)} kg y ${em.dias ?? '?'} día(s): ${em.pct}% de su vida (límite ${fmtNum(em.cfg.kg)} kg / ${em.cfg.dias} días).`
+          : `NO hay ningún registro de cambio de malla en esta máquina — nadie sabe cuándo se cambió.`;
+        const sigue = confirm(
+          `🕸 REVISA LA MALLA DE ${maqCodigo} ANTES DE ARRANCAR\n\n${detalle}\n\n` +
+          `Si arrancas así te expones a que se tape en plena corrida y a sacar producto con geles.\n\n` +
+          `ACEPTAR = ya la revisé o la cambié, arranco (queda registrado)\n` +
+          `CANCELAR = voy a cambiar la malla primero`
+        );
+        if (!sigue) {
+          toast(`Registra el cambio en 🕸 Mallas de Extrusión y vuelve a arrancar ${odp.folio}.`, 'info');
+          return;
+        }
+        window.logAccion('arranque_con_malla_vencida', odp.folio, `${maqCodigo} · ${em.ult ? `${fmtNum(em.kg)} kg / ${em.dias ?? '?'} d (${em.pct}%)` : 'SIN registro de malla'}`);
+      }
+    }
+  }
+
   const ok = confirm(
     `▶️ INICIAR ${getProc(procAIniciar)?.nombre || procAIniciar} — ${odp.folio}\n\n` +
     `Producto: ${odp.producto_codigo}\n` +
@@ -14658,7 +14708,21 @@ function _tableroPorMaquina(maquinasProc, enProduccion, enCola, completadas, pro
               </div>
               ${m.nombre ? `<div style="font-size:11px;opacity:0.9;margin-top:2px;">${m.nombre}</div>` : ''}
             </div>
-            
+
+            <!-- 🕸 ESTADO DE LA MALLA (solo extrusión): lo primero que ve el operador -->
+            ${procSel === 'P1-EXT' && window._mallaEstado ? (() => {
+              const em = window._mallaEstado(m);
+              const bg = { sin_registro: '#f5f3ff', vencida: '#fee2e2', proxima: '#fffbeb', ok: '#f0fdf4' }[em.nivel];
+              return `
+              <div style="background:${bg};border-bottom:1px solid #e2e8f0;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                <div style="min-width:0;">
+                  <div style="font-size:11.5px;font-weight:900;color:${em.color};">🕸 MALLA: ${em.etiqueta}</div>
+                  <div style="font-size:10px;font-weight:600;color:#64748b;">${em.ult ? `${fmtNum(em.kg)} de ${fmtNum(em.cfg.kg)} kg (${em.pct}%) · puesta hace ${em.dias ?? '?'} d · ${em.ult.configuracion || 'sin config anotada'}` : 'nadie ha registrado cuándo se cambió'}</div>
+                </div>
+                ${window._mallaPuedeRegistrar() ? `<button onclick="event.stopPropagation();window.mallaAbrir('${m.codigo}')" style="padding:6px 11px;background:${em.nivel === 'ok' ? '#fff' : em.color};color:${em.nivel === 'ok' ? em.color : '#fff'};border:1.5px solid ${em.color};border-radius:7px;cursor:pointer;font-weight:800;font-size:10.5px;white-space:nowrap;">${['vencida', 'sin_registro'].includes(em.nivel) ? '🕸 CAMBIAR YA' : '🕸 Registrar'}</button>` : ''}
+              </div>`;
+            })() : ''}
+
             <!-- CONTENIDO PRINCIPAL: qué hacer AHORA -->
             <div style="padding:14px;flex:1;">
               ${activa ? _tableroTarjetaActiva(activa, procSel, proc) : siguiente ? `
@@ -17656,6 +17720,7 @@ function renderModal() {
   if (m === 'editar-rc') return modalRC(true);
   if (m === 'detalle-rc') return modalDetalleRC();
   if (m === 'generar-oc') return modalGenerarOC();
+  if (m === 'comparativo-cot') return modalComparativoCotizaciones();
   if (m === 'editar-oc') return modalEditarOC();
   if (m === 'recibir-oc') return modalRecibirOC();
   if (m === 'ajustar-consumo-mp') return modalAjustarConsumoMP();
@@ -22656,6 +22721,521 @@ window._pdfCotizacion = (cot) => {
     if (!win) { docPDF.save(`${cot.folio}.pdf`); toast('El navegador bloqueó la vista previa — se descargó el PDF', 'error'); }
   } catch (e) { docPDF.save(`${cot.folio}.pdf`); }
 };
+
+// ============================================================
+// 🕸 PROGRAMA DE CAMBIO DE MALLA (SCREEN PACK) — EXTRUSIÓN
+//    Problema que resuelve: nadie sabía cuándo se cambió la malla por última vez,
+//    y se tapó en plena corrida. Es trabajo de operadores y supervisores de
+//    extrusión, no de mantenimiento.
+//    Cómo funciona: el contador de kg es AUTOMÁTICO (se suma de los rollos y
+//    capturas de esa máquina desde el último cambio), así que no depende de que
+//    alguien lleve una libreta. El registro del cambio queda con quién, cuándo,
+//    a cuántos kg, con qué mallas, presión antes/después y qué ODPs corrían
+//    (para que Calidad sepa qué revisar si salieron geles).
+// ============================================================
+const MALLA_MOTIVOS = [
+  { id: 'programado',      nombre: '📅 Programado (llegó a su límite)' },
+  { id: 'presion',         nombre: '📈 Subió la presión / cayó la producción' },
+  { id: 'cambio_material', nombre: '🔄 Cambio de material o color' },
+  { id: 'contaminacion',   nombre: '⚫ Contaminación o geles en el film' },
+  { id: 'rotura',          nombre: '💥 Malla rota o colapsada' },
+  { id: 'arranque',        nombre: '🏁 Arranque del control (poner el contador en cero)' },
+  { id: 'otro',            nombre: '📎 Otro' },
+];
+const MALLA_CONFIGS = ['20/40/60', '20/60/80', '20/60/100', '20/40/60/80', '20/80', '20/40/80/100', '20/60', 'Solo soporte 20'];
+const MALLA_KG_DEFAULT = 8000;   // kg por malla si la máquina no tiene límite propio
+const MALLA_DIAS_DEFAULT = 30;   // días máximo aunque no se alcancen los kg
+
+const _mms = (ts) => ts && ts.seconds ? ts.seconds * 1000 : (ts && ts.toDate ? ts.toDate().getTime() : (ts ? new Date(ts).getTime() : 0));
+window._mallaExtrusoras = () => (state.maquinas || []).filter(m => m.activa !== false && m.proceso_codigo === 'P1-EXT').sort((a, b) => (a.codigo || '').localeCompare(b.codigo || ''));
+window._mallaPuedeRegistrar = () => { const u = state.user || {}; return u.rol === 'admin' || ['PRO', 'PLN', 'CEO', 'ADMIN', 'MTTO'].includes(u.depto); };
+window._mallaPuedeConfig = () => { const u = state.user || {}; return u.rol === 'admin' || ['PLN', 'CEO', 'ADMIN'].includes(u.depto); };
+// Límites del programa por máquina (viven en el catálogo de máquinas — los fija Planeación)
+window._mallaCfg = (maq) => ({
+  kg: Number(maq?.malla_kg_limite) > 0 ? Number(maq.malla_kg_limite) : MALLA_KG_DEFAULT,
+  dias: Number(maq?.malla_dias_limite) > 0 ? Number(maq.malla_dias_limite) : MALLA_DIAS_DEFAULT,
+  presion_max: Number(maq?.malla_presion_max) || 0,
+  presion_um: maq?.malla_presion_um || 'psi',
+  config: maq?.malla_config_default || '',
+  esDefaultKg: !(Number(maq?.malla_kg_limite) > 0),
+});
+window._mallaHistorial = (cod) => (state.cambios_malla || [])
+  .filter(c => c.anulado !== true && (!cod || c.maquina_codigo === cod))
+  .sort((a, b) => _mms(b.created_at) - _mms(a.created_at));
+window._mallaUltimo = (cod) => window._mallaHistorial(cod)[0] || null;
+// 🧮 Contador AUTOMÁTICO: kg extruidos en esa máquina desde el último cambio.
+//    Suma las capturas de turno (consolidadas) + los rollos aún NO consolidados,
+//    para no contar doble.
+window._mallaKgDesde = (cod, desdeMs) => {
+  let kg = 0;
+  (state.capturas_produccion || []).forEach(c => {
+    if (c.anulada === true) return;
+    if ((c.maquina || '') !== cod || c.proceso !== 'P1-EXT') return;
+    if (desdeMs && _mms(c.created_at) < desdeMs) return;
+    kg += Number(c.producido_kg) || 0;
+  });
+  (state.rollos_extrusion || []).forEach(r => {
+    if (r.anulado === true || r.consolidado_en_turno === true) return;
+    if ((r.maquina_codigo || '') !== cod) return;
+    if (desdeMs && _mms(r.created_at) < desdeMs) return;
+    kg += Number(r.peso_kg) || 0;
+  });
+  return Math.round(kg);
+};
+// Estado de la malla de una máquina: 🟢 ok · 🟡 próxima (80%) · 🔴 vencida (100%)
+window._mallaEstado = (maq) => {
+  const cfg = window._mallaCfg(maq);
+  const ult = window._mallaUltimo(maq.codigo);
+  const desdeMs = ult ? _mms(ult.created_at) : 0;
+  const kg = window._mallaKgDesde(maq.codigo, desdeMs);
+  const dias = desdeMs ? Math.floor((Date.now() - desdeMs) / 86400000) : null;
+  const pctKg = cfg.kg ? Math.round(kg * 100 / cfg.kg) : 0;
+  const pctDias = (dias !== null && cfg.dias) ? Math.round(dias * 100 / cfg.dias) : 0;
+  const pct = Math.max(pctKg, pctDias);
+  const nivel = !ult ? 'sin_registro' : (pct >= 100 ? 'vencida' : pct >= 80 ? 'proxima' : 'ok');
+  const color = { sin_registro: '#7c3aed', vencida: '#dc2626', proxima: '#f59e0b', ok: '#16a34a' }[nivel];
+  const etiqueta = { sin_registro: '❓ FALTA REGISTRAR', vencida: '🔴 CAMBIAR YA', proxima: '🟡 PREPARA EL REPUESTO', ok: '🟢 EN RANGO' }[nivel];
+  // 👉 Qué tiene que hacer la persona que ve esto (sin margen de interpretación)
+  const porQue = pct >= 100 ? (pctKg >= 100 ? `ya pasó los ${fmtNum(cfg.kg)} kg del programa` : `ya pasó los ${cfg.dias} días del programa`) : '';
+  const queHacer = {
+    sin_registro: '👉 Cambia la malla (o revísala) y REGISTRA el cambio con motivo "Arranque del control". Hasta que se registre, esta máquina cuenta como vencida.',
+    vencida: `👉 CAMBIA LA MALLA ANTES DE SEGUIR: ${porQue}. Si arrancas una orden aquí, el sistema te va a detener para preguntarte.`,
+    proxima: '👉 Ten listo el juego de mallas de repuesto: le queda menos del 20% de su vida. Aprovecha el siguiente cambio de material para cambiarla.',
+    ok: '👉 Nada por hacer. Solo cámbiala antes si sube la presión, si aparecen geles o si vas a cambiar de material o color.',
+  }[nivel];
+  // Duración real promedio (para calibrar el límite con evidencia, no a ojo)
+  const hist = window._mallaHistorial(maq.codigo).filter(c => Number(c.kg_desde_anterior) > 0);
+  const promKg = hist.length ? Math.round(hist.reduce((s, c) => s + Number(c.kg_desde_anterior), 0) / hist.length) : null;
+  const promDias = hist.length ? Math.round(hist.reduce((s, c) => s + (Number(c.dias_desde_anterior) || 0), 0) / hist.length) : null;
+  return { cfg, ult, kg, dias, pct, pctKg, pctDias, nivel, color, etiqueta, queHacer, promKg, promDias, cambios: window._mallaHistorial(maq.codigo).length };
+};
+// ODPs de extrusión corriendo ahora en esa máquina (para trazabilidad de contaminación)
+window._mallaOdpsEnCurso = (cod) => (state.ordenes_produccion || [])
+  .filter(o => o.estatus === 'en_produccion' && !o.archivada && (o.maquinas_asignadas?.['P1-EXT'] || o.maquina_codigo || '') === cod)
+  .map(o => ({ folio: o.folio, producto: o.producto_codigo || '', id: o.id }));
+
+// ── Registro del cambio ──
+window.mallaAbrir = (cod) => {
+  if (!window._mallaPuedeRegistrar()) { toast('🔒 Solo producción/planeación registran cambios de malla', 'error'); return; }
+  const maq = (state.maquinas || []).find(m => m.codigo === cod);
+  const cfg = window._mallaCfg(maq);
+  const h = new Date().getHours();
+  state.mallaForm = {
+    maquina_codigo: cod || '', fecha: window.hoyLocalISO(),
+    turno: (h >= 7 && h < 19) ? 'dia' : 'noche',
+    motivo: '', configuracion: cfg.config || '',
+    presion_antes: '', presion_despues: '', amp_antes: '', amp_despues: '',
+    geles: false, verificado_por: '', observaciones: '',
+  };
+  state.vista = 'mallas';
+  render();
+};
+window.mallaSet = (campo, v, focusId) => { if (!state.mallaForm) return; state.mallaForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.mallaMotivo = (m) => { if (state.mallaForm) { state.mallaForm.motivo = m; render(); } };
+window.mallaGeles = (v) => { if (state.mallaForm) { state.mallaForm.geles = !!v; render(); } };
+window.mallaCerrar = () => { state.mallaForm = null; render(); };
+
+window.mallaGuardar = async () => {
+  if (!window._mallaPuedeRegistrar()) { toast('🔒 Sin permiso para registrar', 'error'); return; }
+  const f = state.mallaForm || {};
+  if (!f.maquina_codigo) { toast('Elige la máquina', 'error'); return; }
+  if (!f.motivo) { toast('Elige el motivo del cambio', 'error'); return; }
+  if (!String(f.configuracion || '').trim()) { toast('Captura la configuración de mallas que quedó puesta (ej. 20/60/100)', 'error'); return; }
+  if (f.fecha > window.hoyLocalISO()) { toast('La fecha no puede ser futura', 'error'); return; }
+  if (state.loadingAccion) return;
+  const maq = (state.maquinas || []).find(m => m.codigo === f.maquina_codigo);
+  const est = window._mallaEstado(maq || { codigo: f.maquina_codigo });
+  const odps = window._mallaOdpsEnCurso(f.maquina_codigo);
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const u = state.user || {};
+    const data = {
+      maquina_codigo: f.maquina_codigo, maquina_nombre: maq?.nombre || '',
+      fecha: f.fecha, turno: f.turno || 'dia',
+      motivo: f.motivo,
+      motivo_nombre: (MALLA_MOTIVOS.find(x => x.id === f.motivo) || {}).nombre || f.motivo,
+      configuracion: String(f.configuracion).trim(),
+      presion_antes: Number(f.presion_antes) || null,
+      presion_despues: Number(f.presion_despues) || null,
+      presion_um: est.cfg.presion_um,
+      amp_antes: Number(f.amp_antes) || null,
+      amp_despues: Number(f.amp_despues) || null,
+      geles: f.geles === true,
+      // 🧮 Duración REAL de la malla que se acaba de quitar (queda guardada aunque
+      //    después el sistema ya no tenga las capturas viejas en memoria)
+      kg_desde_anterior: est.ult ? est.kg : null,
+      dias_desde_anterior: est.dias,
+      limite_kg_vigente: est.cfg.kg,
+      pct_vida_usada: est.ult ? est.pct : null,
+      // 🔗 Trazabilidad: qué se estaba corriendo con la malla que se quitó
+      odps_en_curso: odps.map(o => o.folio),
+      productos_en_curso: [...new Set(odps.map(o => o.producto))].filter(Boolean),
+      verificado_por: String(f.verificado_por || '').trim(),
+      observaciones: String(f.observaciones || '').trim(),
+      realizado_por: u.nombre || u.email || '', realizado_por_uid: u.id || '',
+      anulado: false,
+      created_at: serverTimestamp(),
+    };
+    await addDoc(collection(db, 'cambios_malla'), data);
+    // 🧯 Si salieron geles/contaminación: Calidad debe revisar lo que se corrió con esa malla
+    if (data.geles) {
+      const msg = `Malla de ${f.maquina_codigo} cambiada por CONTAMINACIÓN/GELES. Revisar producto de: ${odps.map(o => o.folio).join(', ') || '(sin ODP en curso registrada)'}`;
+      ['CAL', 'ALP', 'PLN'].forEach(d => addDoc(collection(db, 'notificaciones'), {
+        titulo: `⚫ Geles en ${f.maquina_codigo} — revisar producto`,
+        mensaje: msg, depto_destino: d, tipo: 'warning',
+        folio_ref: odps[0]?.folio || f.maquina_codigo, leida: false, created_at: serverTimestamp(),
+      }).catch(() => {}));
+    }
+    window.logAccion('cambio_malla', f.maquina_codigo, `${data.motivo_nombre} · mallas ${data.configuracion} · duró ${est.ult ? `${fmtNum(est.kg)} kg / ${est.dias ?? '?'} día(s)` : 'primer registro'}${data.geles ? ' · CON GELES' : ''}${odps.length ? ` · ODPs: ${odps.map(o => o.folio).join(', ')}` : ''}`);
+    state.mallaForm = null;
+    if (est.ult) {
+      const veredicto = est.pct >= 100 ? '⚠ se pasó del límite' : est.pct >= 80 ? 'llegó justo a su vida útil' : 'se cambió antes del límite';
+      toast(`🕸 Registrado. La malla anterior duró ${fmtNum(est.kg)} kg y ${est.dias ?? '?'} día(s) — ${veredicto} (límite ${fmtNum(est.cfg.kg)} kg).`, 'success');
+    } else {
+      toast(`🕸 Registro inicial de ${f.maquina_codigo}. El contador arranca en cero desde ahora.`, 'success');
+    }
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+window.mallaAnular = async (id) => {
+  if (!window._mallaPuedeConfig()) { toast('🔒 Solo Planeación/Dirección anulan registros', 'error'); return; }
+  const c = (state.cambios_malla || []).find(x => x.id === id); if (!c) return;
+  const motivo = prompt(`Anular el registro del ${c.fecha} de ${c.maquina_codigo}.\n\nEl registro NO se borra (es bitácora): queda marcado como anulado.\n\nMotivo (obligatorio):`);
+  if (motivo === null) return;
+  if (!String(motivo).trim()) { toast('Sin motivo no se anula', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'cambios_malla', id), { anulado: true, anulado_motivo: String(motivo).trim(), anulado_por: state.user?.nombre || '', anulado_at: serverTimestamp() });
+    window.logAccion('cambio_malla_anulado', c.maquina_codigo, `registro ${c.fecha} · ${String(motivo).trim()}`);
+    toast('Registro anulado');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// ── Configuración del programa (límites por máquina) ──
+window.mallaCfgAbrir = (cod) => {
+  if (!window._mallaPuedeConfig()) { toast('🔒 Solo Planeación/Dirección definen los límites', 'error'); return; }
+  const maq = (state.maquinas || []).find(m => m.codigo === cod); if (!maq) return;
+  const cfg = window._mallaCfg(maq);
+  state.mallaCfgForm = { id: maq.id, codigo: maq.codigo, kg: String(cfg.kg), dias: String(cfg.dias), presion_max: cfg.presion_max ? String(cfg.presion_max) : '', presion_um: cfg.presion_um, config: cfg.config };
+  render();
+};
+window.mallaCfgSet = (campo, v, focusId) => { if (!state.mallaCfgForm) return; state.mallaCfgForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.mallaCfgCerrar = () => { state.mallaCfgForm = null; render(); };
+window.mallaCfgGuardar = async () => {
+  const f = state.mallaCfgForm || {};
+  if (!f.id) return;
+  const kg = Number(f.kg), dias = Number(f.dias);
+  if (!(kg > 0)) { toast('El límite de kg debe ser mayor a 0', 'error'); return; }
+  if (!(dias > 0)) { toast('El límite de días debe ser mayor a 0', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'maquinas', f.id), {
+      malla_kg_limite: kg, malla_dias_limite: dias,
+      malla_presion_max: Number(f.presion_max) || null,
+      malla_presion_um: f.presion_um || 'psi',
+      malla_config_default: String(f.config || '').trim(),
+      updated_at: serverTimestamp(),
+    });
+    const ml = (state.maquinas || []).find(m => m.id === f.id);
+    if (ml) { ml.malla_kg_limite = kg; ml.malla_dias_limite = dias; ml.malla_presion_max = Number(f.presion_max) || null; ml.malla_presion_um = f.presion_um || 'psi'; ml.malla_config_default = String(f.config || '').trim(); }
+    window.logAccion('malla_programa_config', f.codigo, `límite ${fmtNum(kg)} kg · ${dias} días · presión máx ${f.presion_max || '—'} ${f.presion_um || ''}`);
+    state.mallaCfgForm = null;
+    toast(`⚙️ Programa de ${f.codigo}: cambio cada ${fmtNum(kg)} kg o ${dias} días`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// ── PDF: el programa + la bitácora (evidencia para auditoría) ──
+window.pdfProgramaMallas = () => {
+  try {
+    if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'a4' });
+    // Los PDFs usan helvetica: los acentos SÍ salen, los emojis NO (se quitan).
+    const _sinEmoji = (t) => String(t || '').replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, '').replace(/\s+/g, ' ').trim();
+    let y = _pdfHeaderEmpresa(d, 'PROGRAMA DE MALLA', 'EXTRUSIÓN');
+    d.setFontSize(15); d.setFont('helvetica', 'bold'); d.setTextColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
+    d.text('PROGRAMA DE CAMBIO DE MALLA (SCREEN PACK)', 105, y + 4, { align: 'center' });
+    d.setFontSize(8); d.setFont('helvetica', 'normal'); d.setTextColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
+    d.text(`Responsables: operadores y supervisores de EXTRUSIÓN · impreso ${new Date().toLocaleString('es-MX')}`, 105, y + 9, { align: 'center' });
+    y += 16;
+    // Reglas del programa
+    d.setFontSize(9.5); d.setFont('helvetica', 'bold'); d.setTextColor(30, 41, 59);
+    d.text('1. REGLAS DEL PROGRAMA', 14, y); y += 5;
+    d.setFont('helvetica', 'normal'); d.setFontSize(8.5);
+    [
+      'La malla se cambia con lo PRIMERO que ocurra: llegar al límite de kg, llegar al límite de días,',
+      'que la presión suba arriba del máximo, o que aparezcan geles / puntos negros en el film.',
+      'Cambio OBLIGATORIO al cambiar de material o de color (sobre todo al pasar a transparente).',
+      'Todo cambio se REGISTRA en el sistema el mismo turno. Sin registro, la malla se considera vencida.',
+      'El contador de kg es automático: el sistema lo suma de la captura de rollos y turnos de cada máquina.',
+      'La presión la lee el operador en el manómetro; el sistema no la mide solo, por eso se anota al cambiar.',
+    ].forEach(t => { d.text('- ' + t, 16, y); y += 4.4; });
+    y += 4;
+    // Límites vigentes
+    d.setFont('helvetica', 'bold'); d.setFontSize(9.5);
+    d.text('2. LÍMITES VIGENTES Y ESTADO ACTUAL', 14, y); y += 2;
+    const rows = window._mallaExtrusoras().map(m => {
+      const e = window._mallaEstado(m);
+      return [m.codigo, `${fmtNum(e.cfg.kg)} kg`, `${e.cfg.dias} d`,
+        e.cfg.presion_max ? `${e.cfg.presion_max} ${e.cfg.presion_um}` : '-',
+        e.ult ? `${fmtNum(e.kg)} kg / ${e.dias ?? '?'} d (${e.pct}%)` : 'SIN REGISTRO',
+        e.ult ? `${e.ult.fecha} · ${e.ult.configuracion || '-'}` : '-',
+        e.promKg ? `${fmtNum(e.promKg)} kg` : '-'];
+    });
+    d.autoTable({
+      startY: y + 3, head: [['Máquina', 'Límite kg', 'Límite días', 'Presión máx', 'Acumulado hoy', 'Último cambio', 'Duración real prom.']],
+      body: rows, styles: { fontSize: 7.5, cellPadding: 1.8 },
+      headStyles: { fillColor: [30, 58, 138], textColor: 255, fontSize: 7.5 }, margin: { left: 14, right: 14 },
+    });
+    y = d.lastAutoTable.finalY + 8;
+    // Bitácora
+    if (y > 210) { d.addPage(); y = 20; }
+    d.setFont('helvetica', 'bold'); d.setFontSize(9.5); d.setTextColor(30, 41, 59);
+    d.text('3. BITÁCORA DE CAMBIOS (últimos 40)', 14, y);
+    const hist = window._mallaHistorial().slice(0, 40).map(c => [
+      c.fecha || '', (c.turno || '') === 'noche' ? 'NOCHE' : 'DÍA', c.maquina_codigo || '', c.configuracion || '',
+      _sinEmoji(c.motivo_nombre || c.motivo),
+      c.kg_desde_anterior ? `${fmtNum(c.kg_desde_anterior)} kg` : '-',
+      c.dias_desde_anterior != null ? `${c.dias_desde_anterior} d` : '-',
+      (c.presion_antes || c.presion_despues) ? `${c.presion_antes || '?'} a ${c.presion_despues || '?'}` : '-',
+      c.geles ? 'SÍ' : '',
+      _sinEmoji(c.realizado_por || ''),
+    ]);
+    d.autoTable({
+      startY: y + 3, head: [['Fecha', 'Turno', 'Máq', 'Mallas', 'Motivo del cambio', 'Duró kg', 'Duró días', 'Presión', 'Geles', 'Realizó']],
+      body: hist.length ? hist : [['-', '', '', '', 'Sin registros todavía', '', '', '', '', '']],
+      styles: { fontSize: 7, cellPadding: 1.5 },
+      headStyles: { fillColor: [22, 101, 52], textColor: 255, fontSize: 7 }, margin: { left: 14, right: 14 },
+    });
+    let yF = d.lastAutoTable.finalY + 12;
+    if (yF > 250) { d.addPage(); yF = 30; }
+    d.setDrawColor(148, 163, 184); d.line(24, yF, 84, yF); d.line(122, yF, 182, yF);
+    d.setFontSize(7.5); d.setTextColor(71, 85, 105); d.setFont('helvetica', 'bold');
+    d.text('Supervisor de Extrusión', 54, yF + 4, { align: 'center' });
+    d.text('Jefe de Producción / Planeación', 152, yF + 4, { align: 'center' });
+    _pdfPiePagina(d);
+    const filename = `Programa_Mallas_Extrusion_${window.hoyLocalISO()}.pdf`;
+    if (typeof _mostrarVistaPreviaPDF === 'function') _mostrarVistaPreviaPDF(d, filename, 'Programa de cambio de malla · Extrusión');
+    else d.save(filename);
+  } catch (e) { console.error(e); toast('Error generando el PDF: ' + e.message, 'error'); }
+};
+
+function renderMallas() {
+  const puedeReg = window._mallaPuedeRegistrar();
+  const puedeCfg = window._mallaPuedeConfig();
+  const maqs = window._mallaExtrusoras();
+  const f = state.mallaForm;
+  const cf = state.mallaCfgForm;
+  const lbl = (t) => `<label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${t}</label>`;
+
+  // ── Formulario de registro ──
+  let formHTML = '';
+  if (f) {
+    const maqF = (state.maquinas || []).find(m => m.codigo === f.maquina_codigo);
+    const est = maqF ? window._mallaEstado(maqF) : null;
+    const odps = window._mallaOdpsEnCurso(f.maquina_codigo);
+    formHTML = `
+    <div style="background:#fff;border:2px solid #dc2626;border-radius:14px;padding:15px 18px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-weight:900;font-size:15px;">🕸 Registrar cambio de malla ${f.maquina_codigo ? `· <span class="text-mono">${f.maquina_codigo}</span>` : ''}</div>
+        <div style="display:flex;gap:7px;">
+          <button onclick="window.mallaGuardar()" style="padding:9px 17px;background:#dc2626;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">💾 Guardar registro</button>
+          <button onclick="window.mallaCerrar()" style="padding:9px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:9px;cursor:pointer;font-weight:800;">Cancelar</button>
+        </div>
+      </div>
+      ${est && est.ult ? `
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#334155;">
+          📊 <strong>La malla que estás quitando</strong> lleva <strong style="color:${est.color};">${fmtNum(est.kg)} kg</strong> y <strong>${est.dias ?? '?'} día(s)</strong> (${est.pct}% de su vida · límite ${fmtNum(est.cfg.kg)} kg / ${est.cfg.dias} días). Puesta el ${est.ult.fecha} por ${est.ult.realizado_por || '—'}${est.ult.configuracion ? ` · mallas ${est.ult.configuracion}` : ''}.
+          ${odps.length ? `<div style="margin-top:4px;color:#7c3aed;font-weight:700;">🔗 Corriendo ahora: ${odps.map(o => `${o.folio}${o.producto ? ` (${o.producto})` : ''}`).join(' · ')} — queda ligado al registro.</div>` : ''}
+        </div>` : est ? `
+        <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#5b21b6;">
+          🏁 <strong>Primer registro de esta máquina.</strong> El contador de kg arranca en cero a partir de este momento; los próximos cambios ya mostrarán la duración real.
+        </div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;">
+        <div>${lbl('Máquina *')}
+          <select class="input" onchange="window.mallaSet('maquina_codigo', this.value)">
+            <option value="">— elige —</option>
+            ${maqs.map(m => `<option value="${m.codigo}" ${f.maquina_codigo === m.codigo ? 'selected' : ''}>${m.codigo}${m.nombre ? ` · ${m.nombre}` : ''}</option>`).join('')}
+          </select></div>
+        <div>${lbl('Fecha *')}<input class="input" type="date" max="${window.hoyLocalISO()}" value="${f.fecha || ''}" onchange="window.mallaSet('fecha', this.value)" /></div>
+        <div>${lbl('Turno')}
+          <select class="input" onchange="window.mallaSet('turno', this.value)">
+            <option value="dia" ${f.turno === 'dia' ? 'selected' : ''}>☀️ Día</option>
+            <option value="noche" ${f.turno === 'noche' ? 'selected' : ''}>🌙 Noche</option>
+          </select></div>
+        <div style="grid-column:1/-1;">${lbl('¿Por qué se cambió? *')}
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${MALLA_MOTIVOS.map(m => `<button type="button" onclick="window.mallaMotivo('${m.id}')" style="padding:8px 12px;border:2px solid ${f.motivo === m.id ? '#dc2626' : '#cbd5e1'};background:${f.motivo === m.id ? '#dc2626' : '#fff'};color:${f.motivo === m.id ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:11.5px;cursor:pointer;">${m.nombre}</button>`).join('')}
+          </div></div>
+        <div style="grid-column:1/-1;">${lbl('¿Qué mallas quedaron PUESTAS? * (mesh, del soporte hacia el dado)')}
+          <input class="input" id="malla-cfg" type="text" list="malla-dl-cfg" value="${(f.configuracion || '').replace(/"/g, '&quot;')}" oninput="window.mallaSet('configuracion', this.value, 'malla-cfg')" placeholder="Ej: 20/60/100" />
+          <datalist id="malla-dl-cfg">${MALLA_CONFIGS.map(c => `<option value="${c}"></option>`).join('')}</datalist>
+          <div style="font-size:10.5px;color:#64748b;margin-top:3px;">${est?.cfg.config ? `El estándar de ${f.maquina_codigo} es <strong>${est.cfg.config}</strong> (ya viene puesto; cámbialo solo si usaste otras mallas).` : 'Esta máquina no tiene un estándar definido — anota exactamente el juego que pusiste. Planeación puede fijar el estándar en ⚙️ Límites.'}</div></div>
+        <div style="grid-column:1/-1;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+          <div style="font-size:11.5px;font-weight:800;color:#475569;margin-bottom:7px;">📈 Lecturas del manómetro y del amperímetro <span style="font-weight:600;color:#94a3b8;">— opcionales, pero son las que después avisan cuándo se está tapando</span></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:9px;">
+            <div>${lbl(`Presión ANTES (${est?.cfg.presion_um || 'psi'})`)}<input class="input" id="malla-pa" type="text" inputmode="decimal" value="${f.presion_antes || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.mallaSet('presion_antes', this.value, 'malla-pa')" placeholder="con la malla sucia" /></div>
+            <div>${lbl(`Presión DESPUÉS (${est?.cfg.presion_um || 'psi'})`)}<input class="input" id="malla-pd" type="text" inputmode="decimal" value="${f.presion_despues || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.mallaSet('presion_despues', this.value, 'malla-pd')" placeholder="con la malla nueva" /></div>
+            <div>${lbl('Amperaje antes')}<input class="input" id="malla-aa" type="text" inputmode="decimal" value="${f.amp_antes || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.mallaSet('amp_antes', this.value, 'malla-aa')" placeholder="opcional" /></div>
+            <div>${lbl('Amperaje después')}<input class="input" id="malla-ad" type="text" inputmode="decimal" value="${f.amp_despues || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.mallaSet('amp_despues', this.value, 'malla-ad')" placeholder="opcional" /></div>
+          </div>
+          ${est?.cfg.presion_max ? `<div style="font-size:10.5px;color:#b45309;margin-top:6px;font-weight:700;">Máxima permitida en ${f.maquina_codigo}: ${est.cfg.presion_max} ${est.cfg.presion_um}. Si la de ANTES estaba arriba de ese número, el motivo correcto es "📈 Subió la presión".</div>` : ''}
+        </div>
+        <div style="grid-column:1/-1;padding:10px 12px;background:${f.geles ? '#fee2e2' : '#f8fafc'};border:1.5px solid ${f.geles ? '#dc2626' : '#e2e8f0'};border-radius:10px;">
+          <div style="font-size:12px;font-weight:800;color:${f.geles ? '#991b1b' : '#475569'};margin-bottom:6px;">¿Salió producto con geles, puntos negros o contaminación?</div>
+          <div style="display:flex;gap:8px;">
+            <button type="button" onclick="window.mallaGeles(true)" style="flex:1;padding:9px;border:2px solid ${f.geles ? '#dc2626' : '#cbd5e1'};background:${f.geles ? '#dc2626' : '#fff'};color:${f.geles ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">⚫ SÍ — avisar a Calidad</button>
+            <button type="button" onclick="window.mallaGeles(false)" style="flex:1;padding:9px;border:2px solid ${!f.geles ? '#16a34a' : '#cbd5e1'};background:${!f.geles ? '#16a34a' : '#fff'};color:${!f.geles ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">✓ No, el film salió limpio</button>
+          </div>
+          ${f.geles ? `<div style="font-size:11px;color:#991b1b;margin-top:6px;">Se notificará a Calidad y Planeación con las ODPs que estaban corriendo para que revisen el producto antes de liberarlo.</div>` : ''}
+        </div>
+        <div>${lbl('Verificó (supervisor)')}<input class="input" id="malla-ver" type="text" list="malla-dl-sup" value="${(f.verificado_por || '').replace(/"/g, '&quot;')}" oninput="window.mallaSet('verificado_por', this.value, 'malla-ver')" />
+          <datalist id="malla-dl-sup">${(state.usuarios_sistema || []).filter(x => x.activo !== false && ['PRO', 'PLN'].includes(x.depto)).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
+        <div style="grid-column:1/-1;">${lbl('Observaciones')}<input class="input" id="malla-obs" type="text" value="${(f.observaciones || '').replace(/"/g, '&quot;')}" oninput="window.mallaSet('observaciones', this.value, 'malla-obs')" placeholder="Cómo estaba la malla, qué se encontró, si hubo que limpiar el dado..." /></div>
+      </div>
+    </div>`;
+  }
+
+  // ── Configuración de límites ──
+  let cfgHTML = '';
+  if (cf) {
+    cfgHTML = `
+    <div style="background:#fff;border:2px solid #1e40af;border-radius:14px;padding:15px 18px;margin-bottom:14px;">
+      <div style="font-weight:900;font-size:14px;margin-bottom:4px;">⚙️ Límites del programa · <span class="text-mono">${cf.codigo}</span></div>
+      <div style="font-size:11.5px;color:#64748b;margin-bottom:10px;">Se cambia la malla con lo PRIMERO que ocurra. Calíbralos con la duración real que ya registró el equipo (aparece en la tarjeta de cada máquina).</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+        <div>${lbl('Límite de kg extruidos *')}<input class="input" id="mcfg-kg" type="text" inputmode="numeric" value="${cf.kg || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.mallaCfgSet('kg', this.value, 'mcfg-kg')" />
+          <div style="font-size:10px;color:#94a3b8;margin-top:2px;">El semáforo se pone 🟡 al 80% y 🔴 al 100%.</div></div>
+        <div>${lbl('Límite de días *')}<input class="input" id="mcfg-dias" type="text" inputmode="numeric" value="${cf.dias || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.mallaCfgSet('dias', this.value, 'mcfg-dias')" />
+          <div style="font-size:10px;color:#94a3b8;margin-top:2px;">Aplica aunque no se alcancen los kg.</div></div>
+        <div>${lbl('Presión máxima de referencia')}<input class="input" id="mcfg-pm" type="text" inputmode="decimal" value="${cf.presion_max || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.mallaCfgSet('presion_max', this.value, 'mcfg-pm')" />
+          <div style="font-size:10px;color:#94a3b8;margin-top:2px;">Solo referencia para el operador: el sistema NO lee la presión de la máquina.</div></div>
+        <div>${lbl('Unidad de presión')}
+          <select class="input" onchange="window.mallaCfgSet('presion_um', this.value)">
+            ${['psi', 'bar', 'kg/cm²'].map(x => `<option ${cf.presion_um === x ? 'selected' : ''}>${x}</option>`).join('')}
+          </select></div>
+        <div>${lbl('Configuración estándar de mallas')}<input class="input" id="mcfg-cfg" type="text" list="malla-dl-cfg2" value="${(cf.config || '').replace(/"/g, '&quot;')}" oninput="window.mallaCfgSet('config', this.value, 'mcfg-cfg')" placeholder="20/60/100" />
+          <datalist id="malla-dl-cfg2">${MALLA_CONFIGS.map(c => `<option value="${c}"></option>`).join('')}</datalist></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button onclick="window.mallaCfgGuardar()" style="padding:9px 17px;background:#1e40af;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">💾 Guardar límites</button>
+        <button onclick="window.mallaCfgCerrar()" style="padding:9px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:9px;cursor:pointer;font-weight:800;">Cancelar</button>
+      </div>
+    </div>`;
+  }
+
+  const vencidas = maqs.filter(m => ['vencida', 'sin_registro'].includes(window._mallaEstado(m).nivel)).length;
+  const hist = window._mallaHistorial();
+  const lim = window._limiteLista('mallas', 30);
+
+  return `
+    <div style="background:${vencidas ? '#fee2e2' : '#f0fdf4'};border:2px solid ${vencidas ? '#dc2626' : '#16a34a'};border-radius:12px;padding:12px 15px;margin-bottom:12px;">
+      <div style="font-weight:900;font-size:14px;color:${vencidas ? '#991b1b' : '#166534'};">
+        ${vencidas ? `⚠ ${vencidas} extrusora(s) necesitan cambio de malla o les falta el registro` : '✅ Las ' + maqs.length + ' extrusoras están dentro de su programa de malla'}
+      </div>
+      <div style="font-size:11.5px;color:${vencidas ? '#7f1d1d' : '#15803d'};margin-top:3px;">
+        ${vencidas ? 'Revisa abajo cuál y qué hacer. Cada tarjeta te dice el paso exacto.' : 'Nada urgente. Registra cada cambio de malla el mismo turno y esto se queda en verde.'}
+      </div>
+    </div>
+
+    <details style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:11px 15px;margin-bottom:14px;" ${vencidas ? '' : 'open'}>
+      <summary style="font-weight:900;font-size:13px;cursor:pointer;color:#0f172a;">📖 Cómo funciona este programa (léelo una vez)</summary>
+      <div style="margin-top:9px;font-size:12px;color:#334155;line-height:1.65;">
+        <div style="font-weight:800;color:#991b1b;margin-bottom:3px;">¿CUÁNDO se cambia la malla? Con lo PRIMERO que ocurra:</div>
+        1️⃣ Llegó a su <strong>límite de kg</strong> extruidos · 2️⃣ Llegó a su <strong>límite de días</strong> (aunque no alcance los kg) ·
+        3️⃣ <strong>Subió la presión</strong> arriba del máximo o cayó la producción con las mismas revoluciones ·
+        4️⃣ Salieron <strong>geles o puntos negros</strong> en el film.<br>
+        🔄 <strong>Y siempre que se cambie de material o de color</strong> (sobre todo al pasar a transparente después de material oscuro o con mucho reciclado).
+        <div style="font-weight:800;color:#166534;margin:8px 0 3px;">¿Quién lo hace?</div>
+        Los <strong>operadores y supervisores de EXTRUSIÓN</strong>. No es trabajo de mantenimiento. Los <strong>límites</strong> los fija Planeación.
+        <div style="font-weight:800;color:#1e40af;margin:8px 0 3px;">¿De dónde salen los kg que muestra el sistema?</div>
+        Se suman <strong>solos</strong> de la captura de rollos y turnos de esa máquina desde el último cambio registrado: nadie tiene que apuntarlos en una libreta.
+        Por eso <strong>el registro es lo único indispensable</strong>: si un cambio no se registra, el contador sigue creciendo sobre la malla anterior y la máquina se marca vencida.
+        <div style="font-weight:800;color:#b45309;margin:8px 0 3px;">Sobre la presión</div>
+        El sistema <strong>no lee la presión de la máquina</strong>: la lee el operador en el manómetro. Se anota al registrar el cambio (antes y después) y con eso el equipo va viendo qué presión avisa que la malla se está tapando.
+      </div>
+    </details>
+
+    ${formHTML}
+    ${cfgHTML}
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+      ${puedeReg && !f ? `<button onclick="window.mallaAbrir('')" style="padding:9px 17px;background:#dc2626;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;">🕸 Registrar cambio de malla</button>` : ''}
+      <span style="flex:1;"></span>
+      <button onclick="window.pdfProgramaMallas()" style="padding:9px 15px;background:#0f172a;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;">📄 Programa + bitácora (PDF)</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:16px;">
+      ${maqs.length === 0 ? '<div style="padding:30px;color:#94a3b8;font-size:13px;">No hay extrusoras activas en el catálogo de máquinas (proceso P1-EXT).</div>' :
+        maqs.map(m => {
+          const e = window._mallaEstado(m);
+          const barra = Math.min(100, e.pct);
+          return `
+          <div style="background:#fff;border:2px solid ${e.color};border-radius:14px;overflow:hidden;">
+            <div style="background:${e.color};color:#fff;padding:11px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <div style="font-size:17px;font-weight:900;">🛠️ ${m.codigo}</div>
+              <div style="font-size:11px;font-weight:900;background:rgba(255,255,255,0.25);padding:3px 10px;border-radius:99px;">${e.etiqueta}</div>
+            </div>
+            <div style="padding:13px 15px;">
+              <div style="background:${e.color}14;border-left:3px solid ${e.color};border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:11.5px;font-weight:700;color:#1e293b;line-height:1.45;">${e.queHacer}</div>
+              ${e.ult ? `
+                <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:#334155;margin-bottom:4px;">
+                  <span>${fmtNum(e.kg)} kg de ${fmtNum(e.cfg.kg)}</span><span style="color:${e.color};">${e.pct}% de su vida</span>
+                </div>
+                <div style="background:#f1f5f9;height:12px;border-radius:99px;overflow:hidden;margin-bottom:8px;">
+                  <div style="width:${barra}%;background:${e.color};height:100%;"></div>
+                </div>
+                <div style="font-size:11.5px;color:#475569;line-height:1.6;">
+                  📅 Puesta el <strong>${e.ult.fecha}</strong> — hace <strong>${e.dias ?? '?'} día(s)</strong> (el límite son ${e.cfg.dias} días)<br>
+                  🕸 Mallas que trae: <strong>${e.ult.configuracion || 'no se anotó'}</strong> · la cambió: <strong>${e.ult.realizado_por || '—'}</strong><br>
+                  ${e.ult.motivo_nombre ? `↩ Por qué se cambió la vez pasada: ${e.ult.motivo_nombre}<br>` : ''}
+                  ${e.cfg.presion_max ? `📈 Presión máxima permitida: <strong>${e.cfg.presion_max} ${e.cfg.presion_um}</strong>${e.ult.presion_despues ? ` · con la malla nueva quedó en ${e.ult.presion_despues} ${e.cfg.presion_um}` : ''} <span style="color:#94a3b8;">(la lee el operador en el manómetro)</span><br>` : ''}
+                  ${e.promKg ? `📊 En esta máquina las mallas duran de verdad <strong>${fmtNum(e.promKg)} kg</strong>${e.promDias ? ` / ${e.promDias} días` : ''} en promedio (${e.cambios} cambio(s) registrados)${e.promKg < e.cfg.kg * 0.85 ? ` — <span style="color:#b45309;font-weight:800;">el límite de ${fmtNum(e.cfg.kg)} kg parece alto, conviene bajarlo</span>` : ''}` : `📊 Duración real: aún sin promedio (se calcula a partir del 2º cambio registrado)`}
+                </div>
+              ` : `
+                <div style="font-size:11.5px;color:#475569;line-height:1.6;">
+                  Nunca se ha registrado un cambio de malla en esta máquina, así que el sistema <strong>no puede saber cuántos kg lleva</strong> la que está puesta ahora.<br>
+                  El límite configurado es <strong>${fmtNum(e.cfg.kg)} kg</strong> o <strong>${e.cfg.dias} días</strong>, lo que pase primero.
+                </div>
+              `}
+              <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">
+                ${puedeReg ? `<button onclick="window.mallaAbrir('${m.codigo}')" style="flex:1;min-width:130px;padding:10px;background:${e.color};color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;">🕸 Registrar cambio</button>` : ''}
+                ${puedeCfg ? `<button onclick="window.mallaCfgAbrir('${m.codigo}')" style="padding:10px 13px;background:#fff;color:#1e40af;border:1.5px solid #1e40af;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;">⚙️ Límites</button>` : ''}
+              </div>
+              ${e.cfg.esDefaultKg ? `<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;">Usando el límite genérico de ${fmtNum(MALLA_KG_DEFAULT)} kg — Planeación debería fijar el real de esta máquina.</div>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+    </div>
+
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
+      <div style="font-weight:900;font-size:13px;margin-bottom:8px;">📋 Bitácora de cambios (${hist.length})</div>
+      <div class="table-wrap" style="overflow-x:auto;">
+        <table style="width:100%;font-size:11.5px;">
+          <thead><tr style="color:#64748b;text-align:left;">
+            <th>Fecha</th><th>Máq</th><th>Mallas</th><th>Motivo</th><th style="text-align:right;">Duró</th><th>Presión</th><th>Geles</th><th>Realizó / verificó</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${hist.length === 0 ? '<tr><td colspan="9" style="padding:24px;text-align:center;color:#94a3b8;">Sin registros todavía — el primer cambio que registren aparece aquí.</td></tr>' :
+              hist.slice(0, lim).map(c => `
+              <tr style="border-top:1px solid #f1f5f9;">
+                <td style="padding:6px 0;white-space:nowrap;"><strong>${c.fecha || ''}</strong> <span style="color:#94a3b8;">${(c.turno || '') === 'noche' ? '🌙' : '☀️'}</span></td>
+                <td class="text-mono" style="font-weight:700;">${c.maquina_codigo || ''}</td>
+                <td style="font-weight:700;">${c.configuracion || '—'}</td>
+                <td style="color:#475569;">${c.motivo_nombre || c.motivo || ''}</td>
+                <td style="text-align:right;white-space:nowrap;">${c.kg_desde_anterior ? `${fmtNum(c.kg_desde_anterior)} kg` : '—'}${c.dias_desde_anterior != null ? ` <span style="color:#94a3b8;">/ ${c.dias_desde_anterior}d</span>` : ''}${Number(c.pct_vida_usada) >= 100 ? ' <span style="color:#dc2626;font-weight:800;" title="Se pasó del límite">⚠</span>' : ''}</td>
+                <td style="color:#475569;white-space:nowrap;">${c.presion_antes || c.presion_despues ? `${c.presion_antes || '?'} → ${c.presion_despues || '?'}` : '—'}</td>
+                <td>${c.geles ? '<span style="color:#dc2626;font-weight:800;">⚫ SÍ</span>' : '<span style="color:#cbd5e1;">—</span>'}</td>
+                <td style="color:#475569;">${c.realizado_por || ''}${c.verificado_por ? ` <span style="color:#94a3b8;">/ ${c.verificado_por}</span>` : ''}</td>
+                <td style="text-align:right;">${puedeCfg ? `<button onclick="window.mallaAnular('${c.id}')" title="Anular registro (queda en bitácora)" style="padding:3px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">✗</button>` : ''}</td>
+              </tr>
+              ${c.observaciones || (c.odps_en_curso || []).length ? `<tr><td colspan="9" style="padding:0 0 6px 0;font-size:10.5px;color:#94a3b8;">${(c.odps_en_curso || []).length ? `🔗 Corriendo: ${c.odps_en_curso.join(', ')} · ` : ''}${c.observaciones || ''}</td></tr>` : ''}
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${hist.length > lim ? `<div style="padding:10px;text-align:center;"><button onclick="window.verTodosLista('mallas')" style="padding:8px 18px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Mostrar TODOS (${hist.length})</button></div>` : ''}
+    </div>
+  `;
+}
 
 // ============================================================
 // 📇 DIRECTORIO INTERNO — quién es quién en NewPack: puesto, correo,
@@ -32157,9 +32737,14 @@ function renderTarjetaRC(rc, puedeAprobar) {
           <button onclick="rechazarRC('${rc.id}')" style="padding:8px 14px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">❌ Rechazar</button>
         ` : ''}
         
-        ${rc.estatus === 'aprobada' && puedeAprobar ? `
-          <button onclick="abrirModal('generar-oc','${rc.id}')" style="padding:8px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">📑 Generar OC</button>
-        ` : ''}
+        ${rc.estatus === 'aprobada' && puedeAprobar ? (() => {
+          const nCot = (window._cotProvDeRC ? window._cotProvDeRC(rc.id) : []).length;
+          const gan = (window._cotProvDeRC ? window._cotProvDeRC(rc.id) : []).find(c => c.estado === 'ganadora');
+          return `
+          <button onclick="abrirModal('comparativo-cot','${rc.id}')" style="padding:8px 14px;background:${gan ? '#16a34a' : nCot ? '#f59e0b' : '#7c3aed'};color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
+            ${gan ? `🏆 ${gan.proveedor} elegido → generar OC` : nCot ? `💰 Comparar cotizaciones (${nCot}) → OC` : '💰 Cotizar proveedores → OC'}
+          </button>`;
+        })() : ''}
         
         ${!['recibida','cancelada'].includes(rc.estatus) && (rc.solicitante_id === state.user.id || puedeAprobar) ? `
           <button onclick="cancelarRC('${rc.id}')" style="padding:8px 14px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;margin-left:auto;">❌ Cancelar RC</button>
@@ -32910,6 +33495,431 @@ function modalDetalleRC() {
 }
 
 // ============================================================
+// 💰 COMPARATIVO DE COTIZACIONES DE PROVEEDOR
+//    El paso que faltaba entre la RC y la OC: capturar las cotizaciones de
+//    varios proveedores, compararlas línea por línea y elegir con un motivo
+//    escrito. No siempre gana el más barato (entrega, crédito, calidad) — por
+//    eso la decisión se registra, no solo el precio.
+// ============================================================
+window._cotProvPuede = () => { const u = state.user || {}; return u.rol === 'admin' || ['COMP', 'CEO', 'ADMIN'].includes(u.depto); };
+window._cotProvTotal = (cot) => (cot.lineas || []).reduce((s, l) => s + (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0), 0);
+window._cotProvDeRC = (rcId) => (state.cotizaciones_proveedor || [])
+  .filter(c => c.rc_id === rcId && c.anulada !== true)
+  .sort((a, b) => window._cotProvTotal(a) - window._cotProvTotal(b));
+// ⚠ Una cotización que NO cotizó todas las líneas parece más barata sin serlo.
+//    "Completa" = puso precio en todas las líneas de la RC.
+window._cotProvSinCotizar = (cot, nLineas) => {
+  let faltan = 0;
+  for (let i = 0; i < nLineas; i++) if (!(Number((cot.lineas || [])[i]?.costo_unitario) > 0)) faltan++;
+  return faltan;
+};
+window._cotProvCompleta = (cot, nLineas) => window._cotProvSinCotizar(cot, nLineas) === 0;
+// La referencia REAL de precio: la más barata entre las que cotizaron TODO.
+window._cotProvMejorCompleta = (rcId) => {
+  const rc = (state.requisiciones_compras || []).find(r => r.id === rcId);
+  const n = (rc?.lineas || []).length;
+  return window._cotProvDeRC(rcId).find(c => window._cotProvCompleta(c, n)) || null;
+};
+// 📉 Último precio PAGADO de un insumo (de las OCs anteriores) — para detectar aumentos
+window._ultimoPrecioInsumo = (codigo) => {
+  if (!codigo) return null;
+  let mejor = null;
+  (state.ordenes_compra || []).forEach(oc => {
+    if (oc.estatus === 'cancelada') return;
+    (oc.lineas || []).forEach(l => {
+      const cod = l.mp_codigo || l.producto_codigo || '';
+      if (cod !== codigo || !(Number(l.costo_unitario) > 0)) return;
+      const t = oc.created_at?.seconds ? oc.created_at.seconds * 1000 : (oc.fecha ? new Date(oc.fecha + 'T12:00:00').getTime() : 0);
+      if (!mejor || t > mejor.t) mejor = { t, precio: Number(l.costo_unitario), proveedor: oc.proveedor || '', folio: oc.folio || '', fecha: oc.fecha || '', moneda: oc.moneda || 'MXN' };
+    });
+  });
+  return mejor;
+};
+
+window.cotProvNueva = (rcId) => {
+  if (!window._cotProvPuede()) { toast('🔒 Solo Abastecimiento y Dirección capturan cotizaciones', 'error'); return; }
+  const rc = (state.requisiciones_compras || []).find(r => r.id === rcId); if (!rc) return;
+  state.cotProvForm = {
+    rc_id: rcId, proveedor_id: '', proveedor: '', folio_proveedor: '',
+    fecha: window.hoyLocalISO(), vigencia: '', moneda: 'MXN',
+    dias_credito: '', dias_entrega: '', flete_incluido: true, observaciones: '',
+    lineas: (rc.lineas || []).map(l => ({
+      tipo_catalogo: l.tipo_catalogo || 'MP',
+      mp_codigo: l.mp_codigo || l.producto_codigo || '',
+      producto_codigo: l.producto_codigo || l.mp_codigo || '',
+      categoria: l.categoria || '', almacen_destino: l.almacen_destino || '',
+      descripcion: l.descripcion || '', cantidad: Number(l.cantidad) || 0,
+      um: l.um || 'Kg', costo_unitario: '',
+    })),
+  };
+  window.forzarRender();
+};
+window.cotProvSet = (campo, v, focusId) => { if (!state.cotProvForm) return; state.cotProvForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.cotProvSetLinea = (i, v, focusId) => {
+  if (!state.cotProvForm) return;
+  const l = state.cotProvForm.lineas[i]; if (!l) return;
+  l.costo_unitario = String(v).replace(/[^0-9.]/g, '');
+  window.forzarRender(); if (focusId) window._cotFoco(focusId);
+};
+window.cotProvCerrarForm = () => { state.cotProvForm = null; window.forzarRender(); };
+window.cotProvProveedor = (provId) => {
+  const f = state.cotProvForm; if (!f) return;
+  const p = (state.proveedores || []).find(x => x.id === provId);
+  f.proveedor_id = provId; f.proveedor = p?.razon_social || '';
+  if (p?.moneda) f.moneda = p.moneda;
+  if (p?.dias_credito) f.dias_credito = String(p.dias_credito);
+  window.forzarRender();
+};
+
+window.cotProvGuardar = async () => {
+  if (!window._cotProvPuede()) { toast('🔒 Sin permiso', 'error'); return; }
+  const f = state.cotProvForm || {};
+  if (!f.proveedor_id) { toast('Elige el proveedor que cotizó', 'error'); return; }
+  const conPrecio = (f.lineas || []).filter(l => Number(l.costo_unitario) > 0);
+  if (!conPrecio.length) { toast('Captura al menos un precio: sin precios no hay nada que comparar', 'error'); return; }
+  if (f.vigencia && f.vigencia < f.fecha) { toast('La vigencia no puede ser anterior a la fecha de la cotización', 'error'); return; }
+  const rc = (state.requisiciones_compras || []).find(r => r.id === f.rc_id);
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const u = state.user || {};
+    const lineas = (f.lineas || []).map(l => ({ ...l, costo_unitario: Number(l.costo_unitario) || 0 }));
+    const total = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0) * (Number(l.costo_unitario) || 0), 0);
+    await addDoc(collection(db, 'cotizaciones_proveedor'), {
+      rc_id: f.rc_id, rc_folio: rc?.folio || '',
+      proveedor_id: f.proveedor_id, proveedor: f.proveedor,
+      folio_proveedor: String(f.folio_proveedor || '').trim(),
+      fecha: f.fecha, vigencia: f.vigencia || null,
+      moneda: f.moneda || 'MXN',
+      dias_credito: Number(f.dias_credito) || 0,
+      dias_entrega: Number(f.dias_entrega) || null,
+      flete_incluido: f.flete_incluido !== false,
+      observaciones: String(f.observaciones || '').trim(),
+      lineas, total,
+      estado: 'recibida', anulada: false,
+      lineas_sin_cotizar: lineas.filter(l => !(Number(l.costo_unitario) > 0)).length,
+      capturado_por: u.nombre || u.email || '', capturado_por_uid: u.id || '',
+      created_at: serverTimestamp(),
+    });
+    window.logAccion('cotizacion_proveedor', rc?.folio || f.rc_id, `${f.proveedor} · $${fmtNum(total.toFixed(2))} ${f.moneda} · entrega ${f.dias_entrega || '?'} días`);
+    state.cotProvForm = null;
+    toast(`💰 Cotización de ${f.proveedor} guardada`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+window.cotProvAnular = async (id) => {
+  if (!window._cotProvPuede()) return;
+  const c = (state.cotizaciones_proveedor || []).find(x => x.id === id); if (!c) return;
+  const motivo = prompt(`Anular la cotización de ${c.proveedor}.\n\nNo se borra (es evidencia de la decisión de compra): queda marcada como anulada.\n\nMotivo:`);
+  if (motivo === null) return;
+  if (!String(motivo).trim()) { toast('Sin motivo no se anula', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'cotizaciones_proveedor', id), { anulada: true, anulada_motivo: String(motivo).trim(), anulada_por: state.user?.nombre || '', anulada_at: serverTimestamp() });
+    window.logAccion('cotizacion_proveedor_anulada', c.rc_folio || '', `${c.proveedor} · ${String(motivo).trim()}`);
+    toast('Cotización anulada');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 🏆 Elegir la ganadora: exige MOTIVO y precarga la OC con sus precios
+window.cotProvElegir = async (id) => {
+  if (!window._cotProvPuede()) { toast('🔒 Sin permiso', 'error'); return; }
+  const c = (state.cotizaciones_proveedor || []).find(x => x.id === id); if (!c) return;
+  const todas = window._cotProvDeRC(c.rc_id);
+  const rcSel = (state.requisiciones_compras || []).find(r => r.id === c.rc_id);
+  const nLin = (rcSel?.lineas || []).length;
+  const total = window._cotProvTotal(c);
+  const faltanEsta = window._cotProvSinCotizar(c, nLin);
+  // 🔒 La referencia de precio es la más barata entre las COMPLETAS: comparar contra
+  //    una cotización incompleta daría una diferencia falsa.
+  const masBarata = window._cotProvMejorCompleta(c.rc_id);
+  const esMasBarata = masBarata && masBarata.id === c.id;
+  const dif = (!esMasBarata && masBarata && faltanEsta === 0) ? total - window._cotProvTotal(masBarata) : 0;
+  const motivo = prompt(
+    `🏆 ELEGIR A ${c.proveedor} — $${fmtNum(total.toFixed(2))} ${c.moneda}\n\n` +
+    (todas.length < 2 ? 'ATENCIÓN: es la única cotización capturada. Si es proveedor único o compra urgente, anótalo como motivo.\n\n' : '') +
+    (faltanEsta > 0 ? `⚠ Esta cotización está INCOMPLETA: no cotizó ${faltanEsta} de ${nLin} línea(s). Si generas la OC así, esas líneas van en cero y hay que capturarlas a mano o quitarlas.\n\n` : '') +
+    (!esMasBarata && dif > 0 ? `⚠ NO es la más barata de las completas: está $${fmtNum(dif.toFixed(2))} arriba de ${masBarata.proveedor}.\nJustifica por qué se elige (entrega, calidad, crédito, proveedor único...).\n\n` : '') +
+    `¿POR QUÉ se elige esta cotización? (obligatorio, queda en la bitácora)`,
+    esMasBarata ? 'Mejor precio' : ''
+  );
+  if (motivo === null) return;
+  if (!String(motivo).trim()) { toast('Sin motivo no se puede elegir: es la justificación de la compra', 'error'); return; }
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'cotizaciones_proveedor', c.id), {
+      estado: 'ganadora', motivo_seleccion: String(motivo).trim(),
+      es_mas_barata: !!esMasBarata, diferencia_vs_mejor: dif || 0,
+      era_completa: faltanEsta === 0, lineas_sin_cotizar_al_elegir: faltanEsta,
+      elegida_por: state.user?.nombre || '', elegida_at: serverTimestamp(),
+    });
+    todas.filter(x => x.id !== c.id).forEach(x => batch.update(doc(db, 'cotizaciones_proveedor', x.id), { estado: 'descartada' }));
+    await batch.commit();
+    window.logAccion('cotizacion_elegida', c.rc_folio || '', `${c.proveedor} · $${fmtNum(total.toFixed(2))} ${c.moneda} · ${todas.length} cotización(es) comparadas${!esMasBarata && dif > 0 ? ` · NO era la más barata (+$${fmtNum(dif.toFixed(2))})` : ''} · motivo: ${String(motivo).trim()}`);
+
+    // 🔗 Precargar la OC con el proveedor y los precios de la cotización ganadora.
+    //    OJO: no se usa abrirModal() porque ese resetea modalForm para 'generar-oc'.
+    const rc = (state.requisiciones_compras || []).find(r => r.id === c.rc_id);
+    const prov = (state.proveedores || []).find(p => p.id === c.proveedor_id);
+    const fechaProm = Number(c.dias_entrega) > 0 ? window.hoyLocalISO(Number(c.dias_entrega)) : '';
+    state.modalForm = {
+      proveedor_id: c.proveedor_id, proveedor: c.proveedor, codigo_proveedor: '',
+      fecha_promesa: fechaProm,
+      destino_recepcion: (rc?.lineas || [])[0]?.almacen_destino || 'ALMACEN-PLANTA-MTY',
+      moneda: c.moneda || 'MXN', tipo_cambio: '',
+      con_iva: prov?.maneja_iva !== undefined ? prov.maneja_iva : (c.moneda || 'MXN') === 'MXN',
+      costo_total: 0,
+      observaciones: [c.folio_proveedor ? `Según cotización ${c.folio_proveedor} del proveedor` : '', c.observaciones || ''].filter(Boolean).join(' · '),
+      cotizacion_id: c.id, cotizacion_proveedor_folio: c.folio_proveedor || '',
+      lineas: (c.lineas || []).map(l => ({
+        tipo_catalogo: l.tipo_catalogo || 'MP',
+        mp_codigo: l.mp_codigo || '', producto_codigo: l.producto_codigo || l.mp_codigo || '',
+        categoria: l.categoria || '', almacen_destino: l.almacen_destino || '',
+        descripcion: l.descripcion || '', cantidad: Number(l.cantidad) || 0,
+        um: l.um || 'Kg', costo_unitario: Number(l.costo_unitario) || 0, codigo_proveedor: '',
+      })),
+    };
+    state.modal = 'generar-oc';
+    state.modalData = c.rc_id;
+    toast(`🏆 ${c.proveedor} elegido. La OC ya viene con sus precios — revisa y genera.`, 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+function modalComparativoCotizaciones() {
+  const rc = (state.requisiciones_compras || []).find(r => r.id === state.modalData);
+  if (!rc) return '';
+  const puede = window._cotProvPuede();
+  const cots = window._cotProvDeRC(rc.id);
+  const anuladas = (state.cotizaciones_proveedor || []).filter(c => c.rc_id === rc.id && c.anulada === true);
+  const f = state.cotProvForm;
+  const lineasRC = rc.lineas || [];
+  const monedas = [...new Set(cots.map(c => c.moneda || 'MXN'))];
+  const ganadora = cots.find(c => c.estado === 'ganadora');
+  const mejorCompleta = window._cotProvMejorCompleta(rc.id);
+  const incompletas = cots.filter(c => window._cotProvSinCotizar(c, lineasRC.length) > 0);
+  const lbl = (t) => `<label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${t}</label>`;
+  // Mejor precio por línea (solo entre cotizaciones de la MISMA moneda que la mayoría)
+  const mejorPorLinea = lineasRC.map((l, i) => {
+    let min = null;
+    cots.forEach(c => {
+      const p = Number((c.lineas || [])[i]?.costo_unitario) || 0;
+      if (p > 0 && (min === null || p < min)) min = p;
+    });
+    return min;
+  });
+
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:1150px;max-height:92vh;display:flex;flex-direction:column;">
+        <div class="modal-header" style="background:#f59e0b11;border-bottom:2px solid #f59e0b;">
+          <div>
+            <h2 style="font-size:18px;font-weight:800;">💰 Comparativo de cotizaciones</h2>
+            <div style="font-size:11px;color:#64748b;margin-top:4px;">
+              RC <span class="text-mono">${rc.folio}</span> · ${rc.solicitante_nombre || ''} · ${lineasRC.length} línea(s)
+              ${rc.fecha_requerida ? ` · requerido para <strong>${rc.fecha_requerida}</strong>` : ''}
+            </div>
+          </div>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;">
+          ${ganadora ? `
+            <div style="padding:11px 14px;background:#dcfce7;border:2px solid #16a34a;border-radius:10px;margin-bottom:14px;font-size:12px;color:#166534;">
+              <strong>🏆 Ya se eligió a ${ganadora.proveedor}</strong> por $${fmtNum(window._cotProvTotal(ganadora).toFixed(2))} ${ganadora.moneda}.
+              Motivo: "${ganadora.motivo_seleccion || '—'}" · elegida por ${ganadora.elegida_por || '—'}.
+              ${!ganadora.es_mas_barata && Number(ganadora.diferencia_vs_mejor) > 0 ? `<div style="color:#92400e;margin-top:3px;">No era la más barata: $${fmtNum(Number(ganadora.diferencia_vs_mejor).toFixed(2))} arriba de la mejor oferta.</div>` : ''}
+            </div>` : ''}
+          ${cots.length === 0 ? `
+            <div style="padding:16px;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:10px;margin-bottom:14px;font-size:12.5px;color:#92400e;">
+              <strong>Todavía no hay cotizaciones capturadas para esta requisición.</strong><br>
+              Captura la de cada proveedor que te coticé y el sistema arma el comparativo solo. Con dos o más ya puedes comparar precio, tiempo de entrega y crédito antes de decidir.
+            </div>` : ''}
+          ${monedas.length > 1 ? `
+            <div style="padding:9px 12px;background:#fee2e2;border:1.5px solid #dc2626;border-radius:8px;margin-bottom:12px;font-size:11.5px;color:#991b1b;">
+              ⚠ Hay cotizaciones en monedas distintas (${monedas.join(', ')}). El sistema NO convierte: compara los totales con el tipo de cambio del día antes de decidir.
+            </div>` : ''}
+          ${incompletas.length ? `
+            <div style="padding:9px 12px;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:12px;font-size:11.5px;color:#92400e;">
+              ⚠ <strong>${incompletas.length} cotización(es) están INCOMPLETAS</strong> (${incompletas.map(c => c.proveedor).join(', ')}): no cotizaron todas las líneas, así que su total se ve más bajo sin serlo.
+              El sello "MÁS BARATA" solo se le pone a la mejor entre las que cotizaron TODO${mejorCompleta ? ` (hoy: ${mejorCompleta.proveedor})` : ' — y por ahora ninguna cotizó todo'}.
+            </div>` : ''}
+
+          <!-- TABLA COMPARATIVA -->
+          ${cots.length ? `
+          <div style="overflow-x:auto;margin-bottom:16px;">
+            <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:${360 + cots.length * 150}px;">
+              <thead>
+                <tr style="background:#f8fafc;">
+                  <th style="text-align:left;padding:8px;border-bottom:2px solid #cbd5e1;min-width:230px;">Insumo</th>
+                  <th style="text-align:right;padding:8px;border-bottom:2px solid #cbd5e1;">Cant.</th>
+                  ${cots.map(c => `<th style="text-align:right;padding:8px;border-bottom:2px solid #cbd5e1;border-left:1px solid #e2e8f0;min-width:140px;">
+                    <div style="font-weight:800;color:#0f172a;">${c.proveedor}${c.estado === 'ganadora' ? ' 🏆' : ''}</div>
+                    <div style="font-size:9.5px;color:#94a3b8;font-weight:600;">${c.moneda}${c.folio_proveedor ? ` · ${c.folio_proveedor}` : ''}</div>
+                  </th>`).join('')}
+                </tr>
+              </thead>
+              <tbody>
+                ${lineasRC.map((l, i) => {
+                  const cod = l.mp_codigo || l.producto_codigo || '';
+                  const ult = window._ultimoPrecioInsumo(cod);
+                  return `
+                  <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:7px 8px;">
+                      <div style="font-weight:700;">${l.descripcion || cod}</div>
+                      <div style="font-size:10px;color:#94a3b8;" class="text-mono">${cod}</div>
+                      ${ult ? `<div style="font-size:10px;color:#7c3aed;font-weight:700;">último pagado: $${fmtNum(ult.precio.toFixed(2))} ${ult.moneda} (${ult.proveedor}, ${ult.fecha || '—'})</div>` : ''}
+                    </td>
+                    <td style="text-align:right;padding:7px 8px;white-space:nowrap;">${fmtNum(l.cantidad)} ${l.um || ''}</td>
+                    ${cots.map(c => {
+                      const p = Number((c.lineas || [])[i]?.costo_unitario) || 0;
+                      const esMejor = p > 0 && mejorPorLinea[i] === p;
+                      const sub = p * (Number(l.cantidad) || 0);
+                      const vsUlt = (ult && p > 0) ? ((p - ult.precio) / ult.precio) * 100 : null;
+                      return `<td style="text-align:right;padding:7px 8px;border-left:1px solid #e2e8f0;background:${esMejor ? '#f0fdf4' : 'transparent'};">
+                        ${p > 0 ? `
+                          <div style="font-weight:${esMejor ? '900' : '700'};color:${esMejor ? '#166534' : '#0f172a'};">$${fmtNum(p.toFixed(2))}${esMejor ? ' ✓' : ''}</div>
+                          <div style="font-size:9.5px;color:#64748b;">= $${fmtNum(sub.toFixed(2))}</div>
+                          ${vsUlt !== null && Math.abs(vsUlt) >= 3 ? `<div style="font-size:9.5px;font-weight:800;color:${vsUlt > 0 ? '#dc2626' : '#16a34a'};">${vsUlt > 0 ? '▲' : '▼'} ${Math.abs(vsUlt).toFixed(0)}% vs último</div>` : ''}
+                        ` : '<span style="color:#cbd5e1;">no cotizó</span>'}
+                      </td>`;
+                    }).join('')}
+                  </tr>`;
+                }).join('')}
+                <tr style="background:#f8fafc;font-weight:900;">
+                  <td colspan="2" style="padding:9px 8px;border-top:2px solid #cbd5e1;">TOTAL</td>
+                  ${cots.map(c => {
+                    const t = window._cotProvTotal(c);
+                    const faltan = window._cotProvSinCotizar(c, lineasRC.length);
+                    // 🔒 "MÁS BARATA" solo entre las que cotizaron TODO: si no, una
+                    //    cotización incompleta se vería como la mejor sin serlo.
+                    const esMin = mejorCompleta && mejorCompleta.id === c.id;
+                    return `<td style="text-align:right;padding:9px 8px;border-top:2px solid #cbd5e1;border-left:1px solid #e2e8f0;background:${esMin ? '#dcfce7' : faltan ? '#fffbeb' : 'transparent'};color:${esMin ? '#166534' : '#0f172a'};">
+                      $${fmtNum(t.toFixed(2))}
+                      <div style="font-size:9.5px;font-weight:700;">${c.moneda}${esMin ? ' · MÁS BARATA' : ''}</div>
+                      ${faltan ? `<div style="font-size:9px;font-weight:800;color:#b45309;">⚠ INCOMPLETA<br>no cotizó ${faltan} de ${lineasRC.length}</div>` : ''}
+                    </td>`;
+                  }).join('')}
+                </tr>
+                <tr style="font-size:10.5px;color:#475569;">
+                  <td colspan="2" style="padding:7px 8px;font-weight:700;">Condiciones</td>
+                  ${cots.map(c => `<td style="text-align:right;padding:7px 8px;border-left:1px solid #e2e8f0;">
+                    🚚 ${c.dias_entrega ? `${c.dias_entrega} días` : 'sin dato'}<br>
+                    💳 ${c.dias_credito ? `${c.dias_credito} días crédito` : 'contado'}<br>
+                    📦 ${c.flete_incluido ? 'flete incluido' : 'flete NO incluido'}<br>
+                    ${c.vigencia ? `⏳ vence ${c.vigencia}${c.vigencia < window.hoyLocalISO() ? ' <span style="color:#dc2626;font-weight:800;">(VENCIDA)</span>' : ''}` : ''}
+                  </td>`).join('')}
+                </tr>
+                ${puede ? `
+                <tr>
+                  <td colspan="2" style="padding:9px 8px;"></td>
+                  ${cots.map(c => `<td style="text-align:right;padding:9px 8px;border-left:1px solid #e2e8f0;">
+                    ${c.estado === 'ganadora'
+                      ? '<span style="font-size:10.5px;font-weight:800;color:#166534;">🏆 ELEGIDA</span>'
+                      : `<button onclick="window.cotProvElegir('${c.id}')" style="padding:6px 10px;background:#16a34a;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:10.5px;white-space:nowrap;">🏆 Elegir y generar OC</button>`}
+                    <div style="margin-top:4px;"><button onclick="window.cotProvAnular('${c.id}')" style="padding:3px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:700;font-size:9.5px;">anular</button></div>
+                  </td>`).join('')}
+                </tr>` : ''}
+              </tbody>
+            </table>
+          </div>
+          <div style="font-size:10.5px;color:#64748b;margin-bottom:14px;">
+            ✓ = mejor precio de esa línea · ▲▼ = variación contra el último precio pagado de ese insumo (de las OCs anteriores).
+            Capturadas por: ${[...new Set(cots.map(c => c.capturado_por).filter(Boolean))].join(', ') || '—'}.
+          </div>` : ''}
+
+          <!-- FORM: agregar cotización -->
+          ${f ? `
+            <div style="background:#fff;border:2px solid #f59e0b;border-radius:12px;padding:14px 16px;">
+              <div style="font-weight:900;font-size:14px;margin-bottom:10px;">➕ Cotización de proveedor</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px;">
+                <div style="grid-column:span 2;">${lbl('Proveedor *')}
+                  <select class="input" onchange="window.cotProvProveedor(this.value)">
+                    <option value="">— elige —</option>
+                    ${(state.proveedores || []).filter(p => p.activo !== false).sort((a, b) => (a.razon_social || '').localeCompare(b.razon_social || '')).map(p => `<option value="${p.id}" ${f.proveedor_id === p.id ? 'selected' : ''}>${p.razon_social}</option>`).join('')}
+                  </select></div>
+                <div>${lbl('Folio de SU cotización')}<input class="input" id="cp-folio" type="text" value="${(f.folio_proveedor || '').replace(/"/g, '&quot;')}" oninput="window.cotProvSet('folio_proveedor', this.value, 'cp-folio')" placeholder="el número que ellos dan" /></div>
+                <div>${lbl('Fecha de la cotización')}<input class="input" type="date" max="${window.hoyLocalISO()}" value="${f.fecha || ''}" onchange="window.cotProvSet('fecha', this.value)" /></div>
+                <div>${lbl('Vigencia (hasta)')}<input class="input" type="date" value="${f.vigencia || ''}" onchange="window.cotProvSet('vigencia', this.value)" /></div>
+                <div>${lbl('Moneda')}<select class="input" onchange="window.cotProvSet('moneda', this.value)"><option ${f.moneda === 'MXN' ? 'selected' : ''}>MXN</option><option ${f.moneda === 'USD' ? 'selected' : ''}>USD</option></select></div>
+                <div>${lbl('Días de entrega')}<input class="input" id="cp-ent" type="text" inputmode="numeric" value="${f.dias_entrega || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.cotProvSet('dias_entrega', this.value, 'cp-ent')" placeholder="a partir de la OC" /></div>
+                <div>${lbl('Días de crédito')}<input class="input" id="cp-cred" type="text" inputmode="numeric" value="${f.dias_credito || ''}" oninput="this.value=this.value.replace(/[^0-9]/g,'');window.cotProvSet('dias_credito', this.value, 'cp-cred')" placeholder="0 = contado" /></div>
+                <div>${lbl('¿Flete incluido?')}
+                  <div style="display:flex;gap:6px;">
+                    <button type="button" onclick="window.cotProvSet('flete_incluido', true)" style="flex:1;padding:8px;border:2px solid ${f.flete_incluido !== false ? '#16a34a' : '#cbd5e1'};background:${f.flete_incluido !== false ? '#16a34a' : '#fff'};color:${f.flete_incluido !== false ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:11px;cursor:pointer;">Sí</button>
+                    <button type="button" onclick="window.cotProvSet('flete_incluido', false)" style="flex:1;padding:8px;border:2px solid ${f.flete_incluido === false ? '#dc2626' : '#cbd5e1'};background:${f.flete_incluido === false ? '#dc2626' : '#fff'};color:${f.flete_incluido === false ? '#fff' : '#475569'};border-radius:8px;font-weight:800;font-size:11px;cursor:pointer;">No</button>
+                  </div></div>
+              </div>
+              <div style="font-weight:800;font-size:12px;color:#92400e;margin-bottom:6px;">Precio unitario que dio por cada insumo (deja en blanco lo que no cotizó)</div>
+              ${(f.lineas || []).map((l, i) => {
+                const ult = window._ultimoPrecioInsumo(l.mp_codigo || l.producto_codigo);
+                return `
+                <div style="display:flex;gap:9px;align-items:center;padding:6px 0;border-bottom:1px dashed #f1f5f9;flex-wrap:wrap;">
+                  <div style="flex:1;min-width:200px;font-size:11.5px;">
+                    <strong>${l.descripcion || l.mp_codigo}</strong>
+                    <div style="font-size:10px;color:#94a3b8;">${fmtNum(l.cantidad)} ${l.um}${ult ? ` · último pagado $${fmtNum(ult.precio.toFixed(2))} ${ult.moneda}` : ''}</div>
+                  </div>
+                  <div style="width:130px;">
+                    <input class="input" id="cp-l-${i}" type="text" inputmode="decimal" value="${l.costo_unitario || ''}" oninput="window.cotProvSetLinea(${i}, this.value, 'cp-l-${i}')" placeholder="$ unitario" style="text-align:right;" />
+                  </div>
+                  <div style="width:110px;text-align:right;font-size:11.5px;font-weight:800;color:#0f172a;">
+                    ${Number(l.costo_unitario) > 0 ? `$${fmtNum((Number(l.costo_unitario) * (Number(l.cantidad) || 0)).toFixed(2))}` : '<span style="color:#cbd5e1;">—</span>'}
+                  </div>
+                </div>`;
+              }).join('')}
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px;">
+                <div style="font-weight:900;font-size:14px;">Total: $${fmtNum(((f.lineas || []).reduce((s, l) => s + (Number(l.costo_unitario) || 0) * (Number(l.cantidad) || 0), 0)).toFixed(2))} ${f.moneda}</div>
+                <div style="display:flex;gap:8px;">
+                  <button onclick="window.cotProvGuardar()" style="padding:9px 17px;background:#f59e0b;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">💾 Guardar cotización</button>
+                  <button onclick="window.cotProvCerrarForm()" style="padding:9px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:9px;cursor:pointer;font-weight:800;">Cancelar</button>
+                </div>
+              </div>
+              <div style="margin-top:8px;">${lbl('Observaciones de esta cotización')}<input class="input" id="cp-obs" type="text" value="${(f.observaciones || '').replace(/"/g, '&quot;')}" oninput="window.cotProvSet('observaciones', this.value, 'cp-obs')" placeholder="Descuentos por volumen, mínimo de compra, condiciones especiales..." /></div>
+            </div>
+          ` : puede ? `
+            <button onclick="window.cotProvNueva('${rc.id}')" style="padding:10px 18px;background:#f59e0b;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:13px;">➕ Agregar cotización de proveedor</button>
+          ` : '<div style="font-size:12px;color:#94a3b8;">Solo Abastecimiento y Dirección capturan cotizaciones.</div>'}
+
+          ${anuladas.length ? `
+            <details style="margin-top:14px;">
+              <summary style="font-size:11.5px;color:#64748b;cursor:pointer;font-weight:700;">🗑 Cotizaciones anuladas (${anuladas.length})</summary>
+              ${anuladas.map(c => `<div style="font-size:11px;color:#94a3b8;padding:4px 0;">${c.proveedor} · $${fmtNum(window._cotProvTotal(c).toFixed(2))} ${c.moneda} · anulada por ${c.anulada_por || '—'}: ${c.anulada_motivo || ''}</div>`).join('')}
+            </details>` : ''}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:space-between;align-items:center;background:#fff;flex-wrap:wrap;">
+          <div style="font-size:11px;color:#64748b;">
+            ${cots.length === 0 ? 'Sin cotizaciones' : cots.length === 1 ? '1 cotización — con una sola no hay comparativo real' : `${cots.length} cotizaciones comparadas`}
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button class="btn-secondary" onclick="cerrarModal()">Cerrar</button>
+            ${puede && rc.estatus === 'aprobada' ? `<button onclick="window.generarOCDirecto('${rc.id}')" class="btn-primary" style="background:#7c3aed;">📑 Generar OC sin comparativo</button>` : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Generar OC saltándose el comparativo (queda registrado quién y por qué)
+window.generarOCDirecto = (rcId) => {
+  const cots = window._cotProvDeRC(rcId);
+  const rc = (state.requisiciones_compras || []).find(r => r.id === rcId);
+  if (cots.length >= 2) {
+    // Ya hay comparativo: no tiene sentido saltárselo
+    state.modalForm = null; state.modal = 'generar-oc'; state.modalData = rcId; window.forzarRender();
+    return;
+  }
+  if (!confirm(
+    `📑 GENERAR LA OC SIN COMPARATIVO\n\n` +
+    `Esta requisición ${cots.length === 0 ? 'no tiene ninguna cotización capturada' : 'solo tiene una cotización'}.\n` +
+    `Se puede continuar (proveedor único, compra urgente o recurrente), pero queda registrado en la bitácora.\n\n` +
+    `¿Continuar sin comparativo?`
+  )) return;
+  window.logAccion('oc_sin_comparativo', rc?.folio || rcId, `${cots.length} cotización(es) capturada(s) al momento de generar la OC`);
+  state.modalForm = null; state.modal = 'generar-oc'; state.modalData = rcId; window.forzarRender();
+};
+
+// ============================================================
 // MODAL: Generar Orden de Compra (OC) desde RC aprobada
 // ============================================================
 function modalGenerarOC() {
@@ -32967,6 +33977,21 @@ function modalGenerarOC() {
           <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
         </div>
         <div class="modal-body" style="overflow-y:auto;flex:1;">
+          ${(() => {
+            // 💰 De dónde salen estos precios: de una cotización elegida, o de nadie
+            const cots = window._cotProvDeRC ? window._cotProvDeRC(rc.id) : [];
+            const gan = cots.find(c => c.estado === 'ganadora');
+            if (gan) {
+              return `<div style="padding:10px 13px;background:#dcfce7;border:1.5px solid #16a34a;border-radius:9px;margin-bottom:14px;font-size:11.5px;color:#166534;">
+                🏆 <strong>Precios tomados de la cotización de ${gan.proveedor}</strong>${gan.folio_proveedor ? ` (folio ${gan.folio_proveedor})` : ''}, elegida entre ${cots.length} cotización(es).
+                Motivo: "${gan.motivo_seleccion || '—'}". Puedes ajustar aquí si renegociaste, pero el comparativo queda como evidencia de la decisión.
+              </div>`;
+            }
+            return `<div style="padding:10px 13px;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:9px;margin-bottom:14px;font-size:11.5px;color:#92400e;">
+              ⚠ <strong>Esta OC se está generando sin comparativo de cotizaciones.</strong> Si es proveedor único, compra urgente o recurrente, adelante.
+              Si es un monto importante, cierra esto y captura al menos dos cotizaciones en <strong>💰 Comparar cotizaciones</strong> — el sistema te precarga la OC con los precios del proveedor que elijas.
+            </div>`;
+          })()}
           ${esMixta ? `
             <div style="padding:10px 14px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;margin-bottom:14px;font-size:11.5px;color:#92400e;">
               ⚠ <strong>OC mixta detectada:</strong> esta RC tiene líneas de tipos distintos (${tiposEnLineas.join(', ')}). 
@@ -33289,10 +34314,18 @@ window.confirmarGenerarOC = async (rcId) => {
     const almacenOC = lineaConAlmacen?.almacen_destino || '';
     
     // 3. Crear OC
+    // 💰 Trazabilidad de la decisión de compra: si vino de una cotización elegida,
+    //    la OC guarda su id y el motivo por el que se eligió ese proveedor.
+    const _cotsRC = window._cotProvDeRC ? window._cotProvDeRC(rcId) : [];
+    const _cotGan = _cotsRC.find(c => c.estado === 'ganadora');
     const dataOC = {
       folio: folioOC,
       rc_id: rcId,
       rc_folio: rc.folio,
+      cotizacion_id: f.cotizacion_id || _cotGan?.id || '',
+      cotizacion_folio_proveedor: f.cotizacion_proveedor_folio || _cotGan?.folio_proveedor || '',
+      cotizaciones_comparadas: _cotsRC.length,
+      motivo_seleccion_proveedor: _cotGan?.motivo_seleccion || '',
       proveedor_id: proveedorId,
       proveedor: proveedor,
       destino_recepcion: f.destino_recepcion || 'ALMACEN-PLANTA-MTY',
