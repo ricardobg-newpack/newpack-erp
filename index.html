@@ -3799,6 +3799,10 @@ async function siguienteFolio(tipo) {
 }
 window.siguienteFolio = siguienteFolio;
 
+// 📜 Tablas largas: 100 filas por default y botón para ver TODAS (por vista).
+window._limiteLista = (key, def = 100) => (state.limites && state.limites[key]) || def;
+window.verTodosLista = (key) => { state.limites = state.limites || {}; state.limites[key] = 999999; render(); };
+
 // ============================================================
 // RENDER
 // ============================================================
@@ -4149,7 +4153,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0806-B55-dos-telas</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0806-B57-perfiles</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4171,14 +4175,14 @@ function renderApp() {
         ` : ''}
         
         <div class="sidebar-section">Comercial</div>
-        ${(['CS','KAM','CEO','ADMIN','COMP','FAC','CYC'].includes(u.depto) || esAdmin) ? `
+        ${(['CS','KAM','CEO','ADMIN','FAC','CYC'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'clientes' ? 'active' : ''}" data-vista="clientes">${ICONS.users} Clientes</button>
           <button class="nav-item ${state.vista === 'cotizador' ? 'active' : ''}" data-vista="cotizador">🧮 Cotizador</button>
         ` : ''}
         ${(['CS','KAM','CEO','ADMIN'].includes(u.depto) || esAdmin) ? `
           <button class="nav-item ${state.vista === 'crm' ? 'active' : ''}" data-vista="crm">🤝 CRM</button>
         ` : ''}
-        ${(esCS || esKAM || esPLN || esCOMP || esCEO || esADMIN) ? `
+        ${(esCS || esKAM || esPLN || esCEO || esADMIN) ? `
         <button class="nav-item ${state.vista === 'pedidos' ? 'active' : ''}" data-vista="pedidos">${ICONS.cart} Pedidos (PI/OV/ODP)</button>
         ` : ''}
         ${esCS ? `
@@ -4243,7 +4247,7 @@ function renderApp() {
           <button class="nav-item ${state.vista === 'salidas_dia' ? 'active' : ''}" data-vista="salidas_dia">📤 Embarques del día</button>
           <button class="nav-item ${state.vista === 'embarques_mex' ? 'active' : ''}" data-vista="embarques_mex">🚚 Embarques MEX (al cliente)</button>
         ` : ''}
-        ${(esCEO || esADMIN || esCS || esKAM || esPLN || esCOMP || esFAC || esCYC) && !esALP && !esCEDMTY && !esCEDMEX ? `
+        ${(esCEO || esADMIN || esCS || esKAM || esPLN || esFAC || esCYC) && !esALP && !esCEDMTY && !esCEDMEX ? `
           <div class="sidebar-section">📊 Inventarios (Producto Terminado)</div>
           <button class="nav-item ${state.vista === 'inv_mty' ? 'active' : ''}" data-vista="inv_mty">📦 Inventario CEDIS-MTY</button>
           <button class="nav-item ${state.vista === 'inv_mex' ? 'active' : ''}" data-vista="inv_mex">🇲🇽 Inventario CEDIS-MEX</button>
@@ -4255,6 +4259,8 @@ function renderApp() {
         ` : ''}
         ${(esALP || esCEDMTY || esCEDMEX || esCS) ? `
           <button class="nav-item ${state.vista === 'catalogo_logistica' ? 'active' : ''}" data-vista="catalogo_logistica">🚛 Catálogo Logística</button>
+        ` : ''}
+        ${(esCS || esFAC || esCYC || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'historico_remisiones' ? 'active' : ''}" data-vista="historico_remisiones">📋 Histórico Remisiones</button>
         ` : ''}
         
@@ -4311,8 +4317,10 @@ function renderApp() {
         ` : ''}
         -->
         
+        ${(esCS || esPLN || esPRO || esCAL || esCEO || esADMIN) ? `
         <div class="sidebar-section">Catálogos</div>
         <button class="nav-item ${state.vista === 'productos_pt' ? 'active' : ''}" data-vista="productos_pt">${ICONS.boxes} Productos PT</button>
+        ` : ''}
         ${esPLN || esPRO || esCEO || u.rol === 'admin' ? `
           <button class="nav-item ${state.vista === 'maquinas' ? 'active' : ''}" data-vista="maquinas">🛠️ Máquinas</button>
           <button class="nav-item ${state.vista === 'personal' ? 'active' : ''}" data-vista="personal">👷 Personal</button>
@@ -5220,7 +5228,7 @@ function renderClientes() {
         <thead><tr><th>Código</th><th>Nombre</th><th>CEDIS</th><th style="text-align:right;">Productos</th><th></th></tr></thead>
         <tbody>
           ${arr.length === 0 ? `<tr><td colspan="5" style="padding:40px;text-align:center;color:#94a3b8;">Sin clientes</td></tr>` :
-            arr.slice(0, 100).map(c => {
+            arr.slice(0, window._limiteLista(state.vista)).map(c => {
               const numProds = state.cliente_productos.filter(cp => cp.cliente_codigo === c.codigo).length;
               return `<tr>
                 <td class="text-mono" style="font-weight:700;">${c.codigo}</td>
@@ -5233,7 +5241,10 @@ function renderClientes() {
           }
         </tbody>
       </table>
-      ${arr.length > 100 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 100 de ${arr.length}.</div>` : ''}
+      ${arr.length > window._limiteLista(state.vista) ? `<div style="padding:12px;text-align:center;background:#f8fafc;border-radius:0 0 10px 10px;">
+        <span style="font-size:12px;color:#64748b;margin-right:10px;">Mostrando ${window._limiteLista(state.vista)} de ${arr.length}</span>
+        <button onclick="window.verTodosLista(state.vista)" style="padding:8px 18px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Mostrar TODOS (${arr.length})</button>
+      </div>` : ''}
     </div>
   `;
 }
@@ -5377,7 +5388,7 @@ function renderProductosPT() {
         <thead><tr><th>Código</th><th>Descripción</th><th>Material</th><th>Tipo</th><th>Medida</th><th>Cal.</th><th>Color</th><th>Aditivo</th><th style="text-align:center;">UM</th><th style="text-align:center;">📦 Empaque</th><th style="text-align:center;">🏭 Técnica</th><th>👥 Clientes</th><th></th></tr></thead>
         <tbody>
           ${arr.length === 0 ? `<tr><td colspan="12" style="padding:40px;text-align:center;color:#94a3b8;">Sin productos que coincidan</td></tr>` :
-            arr.slice(0, 100).map(p => {
+            arr.slice(0, window._limiteLista(state.vista)).map(p => {
               const medida = p.fuelle > 0 ? `${p.ancho}+${p.fuelle}x${p.largo}` : `${p.ancho}x${p.largo}`;
               const clisArr = clisPorProducto[p.codigo] || [];
               const clis = clisArr.length;
@@ -5447,7 +5458,10 @@ function renderProductosPT() {
           }
         </tbody>
       </table>
-      ${arr.length > 100 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 100 de ${arr.length}.</div>` : ''}
+      ${arr.length > window._limiteLista(state.vista) ? `<div style="padding:12px;text-align:center;background:#f8fafc;border-radius:0 0 10px 10px;">
+        <span style="font-size:12px;color:#64748b;margin-right:10px;">Mostrando ${window._limiteLista(state.vista)} de ${arr.length}</span>
+        <button onclick="window.verTodosLista(state.vista)" style="padding:8px 18px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Mostrar TODOS (${arr.length})</button>
+      </div>` : ''}
     </div>
   `;
 }
@@ -6554,7 +6568,7 @@ function renderProductosMTTO() {
                 ? '🔧 No hay productos MTTO registrados aún. Crea el primero con el botón "Nuevo producto MTTO".'
                 : 'Sin resultados con los filtros actuales.'}
             </td></tr>
-          ` : arr.slice(0, 100).map(p => {
+          ` : arr.slice(0, window._limiteLista(state.vista)).map(p => {
             const fam = getFamiliaMTTO(p.familia);
             const stock = Number(p.stock_actual) || 0;
             const min = Number(p.stock_minimo) || 0;
@@ -6583,7 +6597,10 @@ function renderProductosMTTO() {
           }).join('')}
         </tbody>
       </table>
-      ${arr.length > 100 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 100 de ${arr.length}.</div>` : ''}
+      ${arr.length > window._limiteLista(state.vista) ? `<div style="padding:12px;text-align:center;background:#f8fafc;border-radius:0 0 10px 10px;">
+        <span style="font-size:12px;color:#64748b;margin-right:10px;">Mostrando ${window._limiteLista(state.vista)} de ${arr.length}</span>
+        <button onclick="window.verTodosLista(state.vista)" style="padding:8px 18px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Mostrar TODOS (${arr.length})</button>
+      </div>` : ''}
     </div>
   `;
 }
@@ -7016,7 +7033,7 @@ function renderCatalogoGenerico(config) {
                 ? `${config.icono} No hay productos ${config.nombre} aún. Crea el primero con el botón "Nuevo producto ${config.nombre}".`
                 : 'Sin resultados con los filtros actuales.'}
             </td></tr>
-          ` : arr.slice(0, 100).map(p => {
+          ` : arr.slice(0, window._limiteLista(state.vista)).map(p => {
             const fam = config.getFamilia(p.familia);
             const stock = _getStockTotal(p);
             const min = Number(p.stock_minimo) || 0;
@@ -7051,7 +7068,10 @@ function renderCatalogoGenerico(config) {
           }).join('')}
         </tbody>
       </table>
-      ${arr.length > 100 ? `<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px;">Mostrando 100 de ${arr.length}.</div>` : ''}
+      ${arr.length > window._limiteLista(state.vista) ? `<div style="padding:12px;text-align:center;background:#f8fafc;border-radius:0 0 10px 10px;">
+        <span style="font-size:12px;color:#64748b;margin-right:10px;">Mostrando ${window._limiteLista(state.vista)} de ${arr.length}</span>
+        <button onclick="window.verTodosLista(state.vista)" style="padding:8px 18px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Mostrar TODOS (${arr.length})</button>
+      </div>` : ''}
     </div>
   `;
 }
@@ -52989,33 +53009,59 @@ window.reactivarProductoPT = async (codigo) => {
 
 // 🆕 Eliminar un producto POR COMPLETO (solo si está desactivado y sin historial)
 window.eliminarProductoPTDef = async (codigo) => {
-  // Verificar que no tenga ODPs, ventas, pedidos o tarimas ligadas
-  const tieneODP = (state.ordenes_produccion || []).some(o => o.producto_codigo === codigo);
-  const tieneOV = (state.ordenes_venta || []).some(o => o.producto_codigo === codigo);
-  const tienePedido = (state.pedidos || []).some(p => (p.lineas || []).some(l => l.producto_codigo === codigo));
-  const tieneTarima = (state.tarimas || []).some(t => t.producto_codigo === codigo && t.activo !== false);
-  
-  if (tieneODP || tieneOV || tienePedido || tieneTarima) {
+  const u = state.user || {};
+  const esDir = u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto);
+  // Contar el historial ligado (para informar la decisión, no para bloquear a dirección)
+  const nODP = (state.ordenes_produccion || []).filter(o => o.producto_codigo === codigo).length;
+  const nOV = (state.ordenes_venta || []).filter(o => o.producto_codigo === codigo).length;
+  const nLin = (state.pedido_lineas || []).filter(l => l.producto_codigo === codigo).length;
+  const nTar = (state.tarimas || []).filter(t => t.producto_codigo === codigo && t.activo !== false).length;
+  const asignsCli = (state.cliente_productos || []).filter(cp => cp.producto_codigo === codigo && cp.id);
+  const tieneHist = (nODP + nOV + nLin + nTar) > 0;
+
+  if (tieneHist && !esDir) {
     alert(
       `⚠ NO se puede eliminar ${codigo} por completo.\n\n` +
       `Tiene historial ligado:` +
-      (tieneODP ? '\n• Órdenes de producción' : '') +
-      (tieneOV ? '\n• Órdenes de venta' : '') +
-      (tienePedido ? '\n• Pedidos' : '') +
-      (tieneTarima ? '\n• Tarimas en inventario' : '') +
-      `\n\nEliminarlo rompería ese historial. Déjalo desactivado (ya no aparece en búsquedas) o reactívalo si lo necesitas.`
+      (nODP ? `\n• ${nODP} orden(es) de producción` : '') +
+      (nOV ? `\n• ${nOV} orden(es) de venta` : '') +
+      (nLin ? `\n• ${nLin} línea(s) de pedido` : '') +
+      (nTar ? `\n• ${nTar} tarima(s) activa(s) en inventario` : '') +
+      `\n\nDéjalo DESACTIVADO (ya no aparece en búsquedas) o pide a DIRECCIÓN la eliminación definitiva.`
     );
     return;
   }
-  
-  if (!confirm(`🗑 ELIMINAR POR COMPLETO ${codigo}\n\n⚠ Esta acción NO se puede deshacer. El código quedará libre para reutilizarse.\n\n¿Eliminar definitivamente?`)) return;
-  
+
+  if (tieneHist && esDir) {
+    // 🔒 Eliminación FORZADA — solo dirección, con doble confirmación y huella indeleble
+    if (!confirm(
+      `🗑 ELIMINAR ${codigo} AUNQUE TIENE HISTORIAL (permiso de dirección)\n\n` +
+      `Ligado a:\n• ${nODP} ODP(s)\n• ${nOV} OV(s)\n• ${nLin} línea(s) de pedido\n• ${nTar} tarima(s) activa(s)\n• ${asignsCli.length} asignación(es) cliente-precio (se borran también)\n\n` +
+      `Las órdenes y tarimas viejas NO se borran y conservan su propia copia del código y la descripción — seguirán legibles.\n` +
+      `Lo que SÍ se pierde: la ficha técnica, la fórmula y los precios por cliente de este producto; y ya no se podrá cotizar ni pedir.\n` +
+      `⚠ El código queda libre: si se reutiliza para otro producto, el historial viejo puede prestarse a confusión.\n\n` +
+      `Si solo quieres sacarlo de circulación, usa DESACTIVAR (recomendado para productos reales).\n\n¿Continuar con la ELIMINACIÓN DEFINITIVA?`
+    )) return;
+    const conf = prompt(`Para confirmar la eliminación, escribe el código exacto:\n\n${codigo}`);
+    if (conf === null) return;
+    if (conf.trim().toUpperCase() !== String(codigo).toUpperCase()) { toast('El código no coincide. Eliminación cancelada.', 'info'); return; }
+  } else if (!tieneHist) {
+    if (!confirm(`🗑 ELIMINAR POR COMPLETO ${codigo}\n\n⚠ Esta acción NO se puede deshacer. El código quedará libre para reutilizarse.\n\n¿Eliminar definitivamente?`)) return;
+  }
+
   state.loadingAccion = true; render();
   try {
-    await deleteDoc(doc(db, 'productos_pt', codigo));
+    // Huella INDELEBLE antes de borrar (la bitácora sobrevive al producto)
+    const p0 = state.productos_pt.find(p => p.codigo === codigo);
+    window.logAccion('eliminar_producto_pt', codigo, `BORRADO DEFINITIVO${tieneHist ? ' CON HISTORIAL' : ''} · ${(p0?.descripcion || '').slice(0, 120)} · ODPs ${nODP} · OVs ${nOV} · líneas ${nLin} · tarimas ${nTar} · asignaciones cliente ${asignsCli.length}`);
+    const batch = writeBatch(db);
+    asignsCli.forEach(cp => batch.delete(doc(db, 'cliente_productos', cp.id)));
+    batch.delete(doc(db, 'productos_pt', codigo));
+    await batch.commit();
     state.productos_pt = state.productos_pt.filter(p => p.codigo !== codigo);
+    state.cliente_productos = (state.cliente_productos || []).filter(cp => cp.producto_codigo !== codigo);
     cerrarModalPT();
-    toast(`🗑 ${codigo} eliminado por completo · el código quedó libre`, 'success');
+    toast(`🗑 ${codigo} eliminado por completo${asignsCli.length ? ` · ${asignsCli.length} asignación(es) de cliente borradas` : ''} · el código quedó libre`, 'success');
   } catch (e) {
     toast('Error al eliminar: ' + e.message, 'error');
   } finally {
