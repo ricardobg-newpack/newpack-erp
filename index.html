@@ -255,6 +255,7 @@ const state = {
   crm_contactos: [],
   crm_oportunidades: [],
   crm_actividades: [],
+  directorio: [],
   modal: null,
   modalData: null,
   filtros: {},
@@ -3697,6 +3698,10 @@ async function cargarTodo() {
         state.crm_actividades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      onSnapshot(collection(db, 'directorio'), (snap) => {
+        state.directorio = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }, () => {}),
       onSnapshot(collection(db, 'comisiones_vendedores'), (snap) => {
         state.comisiones_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4121,7 +4126,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0805-B50-crm-kpis</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0806-B51-directorio</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4134,6 +4139,7 @@ function renderApp() {
         ` : `
         <div class="sidebar-section">General</div>
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
+        <button class="nav-item ${state.vista === 'directorio' ? 'active' : ''}" data-vista="directorio">📇 Directorio</button>
         ${(esCEO || esADMIN || esPLN) ? `
         <button class="nav-item ${state.vista === 'centro_control' ? 'active' : ''}" data-vista="centro_control" style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;font-weight:800;">📊 Centro de Control</button>
         ` : ''}
@@ -4486,6 +4492,7 @@ function renderVista() {
   if (v === 'salidas_dia') return renderSalidasDia();
   if (v === 'cotizador') return renderCotizador();
   if (v === 'crm') return renderCRM();
+  if (v === 'directorio') return renderDirectorio();
   if (v === 'peletizado') return renderPeletizado();
   if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
   if (v === 'seguimiento_parcialidades') return renderSeguimientoParcialidades();
@@ -22567,6 +22574,148 @@ window._pdfCotizacion = (cot) => {
     if (!win) { docPDF.save(`${cot.folio}.pdf`); toast('El navegador bloqueó la vista previa — se descargó el PDF', 'error'); }
   } catch (e) { docPDF.save(`${cot.folio}.pdf`); }
 };
+
+// ============================================================
+// 📇 DIRECTORIO INTERNO — quién es quién en NewPack: puesto, correo,
+//    teléfono y WhatsApp con un clic. Lo ven TODOS los usuarios;
+//    lo mantienen dirección y RH. Carga inicial con un botón (una vez).
+// ============================================================
+const DIR_AREAS = ['Dirección', 'Comercial', 'Administración y Finanzas', 'Operaciones', 'CEDIS'];
+const DIR_AREA_COLOR = { 'Dirección': '#1e3a8a', 'Comercial': '#2563eb', 'Administración y Finanzas': '#be185d', 'Operaciones': '#b45309', 'CEDIS': '#7c3aed' };
+const DIR_SEED = [
+  { nombre: 'Ricardo Briones', puesto: 'Director General', area: 'Dirección', email: 'rbriones@newpackempaques.com', telefono: '+52 81 1583 5179', orden: 1 },
+  { nombre: 'Ricardo Briones', puesto: 'Director de Operaciones', area: 'Dirección', email: 'ricardobg@newpackempaques.com', telefono: '+52 81 1006 0544', orden: 2 },
+  { nombre: 'Diego Pitarch', puesto: 'Director de Finanzas', area: 'Dirección', email: 'diego.pitarch@newpackempaques.com', telefono: '+52 81 3080 8232', orden: 3 },
+  { nombre: 'Javier López', puesto: 'Director de Planeación', area: 'Dirección', email: 'javier.lopez@newpackempaques.com', telefono: '+52 81 1466 3940', orden: 4 },
+  { nombre: 'Karla Quiñones', puesto: 'Comercial Manager', area: 'Comercial', email: 'karla.quinones@newpackempaques.com', telefono: '+52 81 1250 8910', orden: 5 },
+  { nombre: 'Damaris Martínez', puesto: 'Customer Service', area: 'Comercial', email: 'ventas2@newpackempaques.com', telefono: '+52 81 1910 0952', orden: 6 },
+  { nombre: 'Rosy Loera', puesto: 'Customer Service', area: 'Comercial', email: 'ventas1@newpackempaques.com', telefono: '+52 81 2205 5797', orden: 7 },
+  { nombre: 'Liz Castillo', puesto: 'Sales Representative · México', area: 'Comercial', email: 'ventas10@newpackempaques.com', telefono: '+52 81 1798 4177', orden: 8 },
+  { nombre: 'Martha García', puesto: 'Crédito y Cobranza y Tesorería', area: 'Administración y Finanzas', email: 'martha.garcia@newpackempaques.com', telefono: '+52 81 1503 7537', orden: 9 },
+  { nombre: 'Carmen', puesto: 'Facturación y Cobranza', area: 'Administración y Finanzas', email: 'facturacionycobranza@newpackempaques.com', telefono: '+52 81 1007 8670', orden: 10 },
+  { nombre: 'Sergio Olivares', puesto: 'Coordinador de Aseguramiento de Calidad y Logística Interna', area: 'Operaciones', email: 'sergio.olivares@newpackempaques.com', telefono: '+52 81 2636 4129', orden: 11 },
+  { nombre: 'César Cervantes', puesto: 'Coordinador de Producción', area: 'Operaciones', email: 'cesar.cervantes@newpackempaques.com', telefono: '+52 55 8561 4096', orden: 12 },
+  { nombre: 'Carlos Juárez', puesto: 'Coordinador de Mantenimiento', area: 'Operaciones', email: 'mantenimiento@newpackempaques.com', telefono: '+52 81 8090 4484', orden: 13 },
+  { nombre: 'Selenne Torres', puesto: 'Analista de Abastecimiento y Suministros', area: 'Operaciones', email: 'compras@newpackempaques.com', telefono: '+52 81 1799 1494', orden: 14 },
+  { nombre: 'Cristian Ramírez', puesto: 'Coordinador de Distribución y Almacén · CEDIS Monterrey', area: 'CEDIS', email: 'cedismty@newpackempaques.com', telefono: '+52 81 1503 3695', orden: 15 },
+  { nombre: 'Abraham González', puesto: 'Coordinador de Distribución y Almacén · CEDIS México', area: 'CEDIS', email: 'mexico@newpackempaques.com', telefono: '+52 81 1004 8455', orden: 16 },
+];
+
+window._dirPuedeEditar = () => { const u = state.user || {}; return u.rol === 'admin' || ['CEO', 'ADMIN', 'RH'].includes(u.depto); };
+window._dirTelDigitos = (tel) => String(tel || '').replace(/[^0-9]/g, '');
+window.dirFiltro = (v) => { state.filtros.directorio = v; window.forzarRender(); window._cotFoco('dir-buscar'); };
+window.dirNuevo = () => { state.dirForm = { id: '', nombre: '', puesto: '', area: 'Comercial', email: '', telefono: '' }; render(); };
+window.dirEditar = (id) => { const d = (state.directorio || []).find(x => x.id === id); if (!d) return; state.dirForm = { id: d.id, nombre: d.nombre || '', puesto: d.puesto || '', area: d.area || 'Comercial', email: d.email || '', telefono: d.telefono || '' }; render(); };
+window.dirSet = (campo, v, focusId) => { if (!state.dirForm) return; state.dirForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.dirCerrar = () => { state.dirForm = null; render(); };
+window.dirGuardar = async () => {
+  if (!window._dirPuedeEditar()) { toast('🔒 Solo dirección y RH editan el directorio', 'error'); return; }
+  const f = state.dirForm || {};
+  if (!String(f.nombre || '').trim()) { toast('El nombre es obligatorio', 'error'); return; }
+  if (!String(f.puesto || '').trim()) { toast('El puesto es obligatorio', 'error'); return; }
+  const email = String(f.email || '').trim();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('Email no válido', 'error'); return; }
+  try {
+    const data = {
+      nombre: f.nombre.trim(), puesto: f.puesto.trim(), area: f.area || 'Comercial',
+      email, telefono: String(f.telefono || '').trim(), activo: true,
+      actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp(),
+    };
+    if (f.id) { await updateDoc(doc(db, 'directorio', f.id), data); }
+    else { await addDoc(collection(db, 'directorio'), { ...data, orden: 99, created_at: serverTimestamp() }); }
+    window.logAccion('directorio', f.nombre.trim(), `${f.puesto.trim()} · ${email || 's/correo'}`);
+    state.dirForm = null;
+    toast('📇 Directorio actualizado');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.dirBaja = async (id) => {
+  if (!window._dirPuedeEditar()) return;
+  const d = (state.directorio || []).find(x => x.id === id); if (!d) return;
+  if (!confirm(`¿Quitar del directorio a ${d.nombre} (${d.puesto})?`)) return;
+  try { await updateDoc(doc(db, 'directorio', id), { activo: false, updated_at: serverTimestamp() }); window.logAccion('directorio_baja', d.nombre, d.puesto || ''); toast('Quitado del directorio'); } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+// Carga inicial (una sola vez, cuando el directorio está vacío)
+window.dirSeedInicial = async () => {
+  if (!window._dirPuedeEditar()) { toast('🔒 Solo dirección y RH', 'error'); return; }
+  if ((state.directorio || []).some(d => d.activo !== false)) { toast('El directorio ya tiene registros — edítalos directamente', 'info'); return; }
+  if (!confirm(`📇 Se cargarán ${DIR_SEED.length} personas al directorio (el equipo actual).\n\n¿Continuar?`)) return;
+  try {
+    const batch = writeBatch(db);
+    DIR_SEED.forEach(p => batch.set(doc(collection(db, 'directorio')), { ...p, activo: true, created_at: serverTimestamp() }));
+    await batch.commit();
+    window.logAccion('directorio_carga_inicial', 'DIRECTORIO', `${DIR_SEED.length} personas`);
+    toast(`📇 ${DIR_SEED.length} personas cargadas al directorio`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function renderDirectorio() {
+  const puede = window._dirPuedeEditar();
+  const filtro = (state.filtros.directorio || '').toLowerCase();
+  let gente = (state.directorio || []).filter(d => d.activo !== false);
+  if (filtro) gente = gente.filter(d => ((d.nombre || '') + ' ' + (d.puesto || '') + ' ' + (d.area || '') + ' ' + (d.email || '') + ' ' + (d.telefono || '')).toLowerCase().includes(filtro));
+  gente.sort((a, b) => (Number(a.orden) || 99) - (Number(b.orden) || 99) || (a.nombre || '').localeCompare(b.nombre || ''));
+
+  const f = state.dirForm;
+  const lbl = (t) => `<label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">${t}</label>`;
+  const formHTML = f ? `
+    <div style="background:#fff;border:2px solid #0f766e;border-radius:14px;padding:15px 18px;margin-bottom:14px;">
+      <div style="font-weight:900;font-size:14px;margin-bottom:10px;">${f.id ? '✏️ Editar persona' : '➕ Agregar persona'}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+        <div>${lbl('Nombre *')}<input class="input" id="dir-nom" type="text" value="${(f.nombre || '').replace(/"/g, '&quot;')}" oninput="window.dirSet('nombre', this.value, 'dir-nom')" /></div>
+        <div style="grid-column:span 2;">${lbl('Puesto *')}<input class="input" id="dir-pue" type="text" value="${(f.puesto || '').replace(/"/g, '&quot;')}" oninput="window.dirSet('puesto', this.value, 'dir-pue')" placeholder="Coordinador de..." /></div>
+        <div>${lbl('Área')}<select class="input" onchange="window.dirSet('area', this.value)">${DIR_AREAS.map(a => `<option ${f.area === a ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+        <div>${lbl('Correo')}<input class="input" id="dir-mail" type="text" inputmode="email" value="${(f.email || '').replace(/"/g, '&quot;')}" oninput="window.dirSet('email', this.value, 'dir-mail')" placeholder="@newpackempaques.com" /></div>
+        <div>${lbl('Teléfono')}<input class="input" id="dir-tel" type="text" inputmode="tel" value="${(f.telefono || '').replace(/"/g, '&quot;')}" oninput="this.value=this.value.replace(/[^0-9+ -]/g,'');window.dirSet('telefono', this.value, 'dir-tel')" placeholder="+52 81 ..." /></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button onclick="window.dirGuardar()" style="padding:9px 17px;background:#0f766e;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;">💾 Guardar</button>
+        <button onclick="window.dirCerrar()" style="padding:9px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:9px;cursor:pointer;font-weight:800;">Cancelar</button>
+      </div>
+    </div>` : '';
+
+  const card = (d) => {
+    const col = DIR_AREA_COLOR[d.area] || '#64748b';
+    const dig = window._dirTelDigitos(d.telefono);
+    return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-left:4px solid ${col};border-radius:12px;padding:13px 15px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+        <div style="min-width:0;">
+          <div style="font-weight:900;font-size:14px;">${d.nombre || ''}</div>
+          <div style="font-size:12px;color:#475569;line-height:1.35;">${d.puesto || ''}</div>
+        </div>
+        ${puede ? `<span style="display:flex;gap:4px;flex:none;">
+          <button onclick="window.dirEditar('${d.id}')" style="padding:3px 9px;background:#fff;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">✏️</button>
+          <button onclick="window.dirBaja('${d.id}')" style="padding:3px 9px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">🗑</button>
+        </span>` : ''}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
+        ${d.email ? `<a href="mailto:${d.email}" style="padding:5px 11px;background:#eff6ff;color:#1e40af;border-radius:8px;font-weight:700;font-size:11px;text-decoration:none;">✉️ ${d.email}</a>` : ''}
+        ${d.telefono ? `<a href="tel:+${dig}" style="padding:5px 11px;background:#f0fdf4;color:#166534;border-radius:8px;font-weight:700;font-size:11px;text-decoration:none;">📞 ${d.telefono}</a>` : ''}
+        ${dig ? `<a href="https://wa.me/${dig}" target="_blank" style="padding:5px 11px;background:#dcfce7;color:#15803d;border-radius:8px;font-weight:800;font-size:11px;text-decoration:none;">💬 WhatsApp</a>` : ''}
+      </div>
+    </div>`;
+  };
+
+  const grupos = DIR_AREAS.map(a => ({ a, items: gente.filter(d => (d.area || '') === a) })).filter(g => g.items.length);
+  const sueltos = gente.filter(d => !DIR_AREAS.includes(d.area || ''));
+
+  return `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
+      <input class="input" id="dir-buscar" style="max-width:340px;flex:1;min-width:200px;" placeholder="🔍 Nombre, puesto, área, correo..." value="${(state.filtros.directorio || '').replace(/"/g, '&quot;')}" oninput="window.dirFiltro(this.value)" autocomplete="off" />
+      <span style="flex:1;"></span>
+      ${puede && !(state.directorio || []).some(d => d.activo !== false) ? `<button onclick="window.dirSeedInicial()" style="padding:9px 16px;background:#7c3aed;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;">⬇ Cargar equipo inicial (${DIR_SEED.length})</button>` : ''}
+      ${puede && !f ? `<button onclick="window.dirNuevo()" style="padding:9px 16px;background:#0f766e;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:12px;">➕ Agregar persona</button>` : ''}
+    </div>
+    ${formHTML}
+    ${gente.length === 0 ? '<div style="padding:40px;text-align:center;color:#94a3b8;">Directorio vacío — dirección/RH pueden cargar el equipo inicial con un clic.</div>' : ''}
+    ${grupos.map(g => `
+      <div style="margin-bottom:18px;">
+        <div style="font-weight:900;font-size:13px;color:${DIR_AREA_COLOR[g.a] || '#64748b'};margin-bottom:8px;letter-spacing:.04em;">${g.a.toUpperCase()} <span style="color:#94a3b8;font-weight:600;">(${g.items.length})</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px;">${g.items.map(card).join('')}</div>
+      </div>`).join('')}
+    ${sueltos.length ? `<div style="margin-bottom:18px;"><div style="font-weight:900;font-size:13px;color:#64748b;margin-bottom:8px;">OTROS (${sueltos.length})</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px;">${sueltos.map(card).join('')}</div></div>` : ''}
+  `;
+}
 
 // ============================================================
 // 🤝 CRM — FASE 1: expediente de cuenta + contactos + clasificación.
