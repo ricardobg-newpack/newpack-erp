@@ -4149,7 +4149,7 @@ function renderApp() {
   if (supervisorRestringido) {
     // 🕸 Excepción: el supervisor de extrusión también entra al programa de mallas
     //    (es su responsabilidad directa), sin abrirle el resto del menú.
-    if (!['panel_operador', 'mallas'].includes(state.vista)) state.vista = 'panel_operador';
+    if (!['panel_operador', 'mallas', 'mapa_flujo'].includes(state.vista)) state.vista = 'panel_operador';
     state.panelOpProc = u.proceso_asignado;
   }
   // 🆕 JEFATURA DE ABASTECIMIENTO Y ALMACENES: Compras marcado como JEFE coordina los
@@ -4172,7 +4172,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0807-B62-comparativo-cot</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0810-B64-tratado-corona</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4180,6 +4180,7 @@ function renderApp() {
           <div class="sidebar-section">Mi área</div>
           <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador · ${getProc(u.proceso_asignado)?.nombre || ''}</button>
           ${u.proceso_asignado === 'P1-EXT' ? `<button class="nav-item ${state.vista === 'mallas' ? 'active' : ''}" data-vista="mallas">🕸 Mallas de Extrusión</button>` : ''}
+          <button class="nav-item ${state.vista === 'mapa_flujo' ? 'active' : ''}" data-vista="mapa_flujo">🧭 Mapa del Sistema</button>
           <div style="margin-top:auto;padding:14px 16px;font-size:10px;color:#94a3b8;">
             🔒 Acceso de supervisor de ${getProc(u.proceso_asignado)?.nombre || 'producción'}
           </div>
@@ -4187,6 +4188,7 @@ function renderApp() {
         <div class="sidebar-section">General</div>
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
         <button class="nav-item ${state.vista === 'directorio' ? 'active' : ''}" data-vista="directorio">📇 Directorio</button>
+        <button class="nav-item ${state.vista === 'mapa_flujo' ? 'active' : ''}" data-vista="mapa_flujo">🧭 Mapa del Sistema</button>
         ${(esCEO || esADMIN || esPLN) ? `
         <button class="nav-item ${state.vista === 'centro_control' ? 'active' : ''}" data-vista="centro_control" style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;font-weight:800;">📊 Centro de Control</button>
         ` : ''}
@@ -4547,6 +4549,7 @@ function renderVista() {
   if (v === 'cotizador') return renderCotizador();
   if (v === 'crm') return renderCRM();
   if (v === 'directorio') return renderDirectorio();
+  if (v === 'mapa_flujo') return renderMapaFlujo();
   if (v === 'mallas') return renderMallas();
   if (v === 'peletizado') return renderPeletizado();
   if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
@@ -22296,10 +22299,24 @@ window._cotLineaCalc = (l) => {
   return { cant, unit, importe: cant * unit, kg: cant * kgU, unidad, uv };
 };
 
+// ⚡ Impresión ⇒ tratado: la tinta no ancla en película sin tratamiento corona.
+//    Al marcar "Con impresión", el tratado se activa solo (editable, pero avisa).
+window.cotSetImpresion = (v) => {
+  const f = state.cotForm; if (!f) return;
+  f.impresion = v;
+  if (v === 'si' && f.tratado !== 'si') {
+    f.tratado = 'si';
+    if (!f.tratado_dinas) f.tratado_dinas = '38';
+    toast('⚡ Se activó TRATADO 38 dinas: la impresión lo requiere (ajústalo si el cliente pide otro)');
+  }
+  window.forzarRender();
+};
+
 // Especificación del producto en texto (para la cotización, el PDF y el futuro pedido)
 window._cotSpecTxt = (l) => {
   const p = [`Color: ${l.color || 'Transparente'}`];
   if (l.aditivo && l.aditivo !== 'NINGUNO') p.push(`Aditivo: ${l.aditivo}`);
+  p.push(l.tratado === 'si' ? `⚡ TRATADO corona ${l.tratado_dinas || 38} dinas` : 'Sin tratado');
   p.push(l.impresion === 'si' ? `Impresión ${l.tintas || '—'} tinta(s)${l.colores_imp ? `: ${l.colores_imp}` : ''}` : 'Sin impresión');
   if (l.presentacion) p.push(`Presentación: ${l.presentacion}`);
   if (l.minimo) p.push(`Mínimo: ${l.minimo}`);
@@ -22332,6 +22349,7 @@ window.cotAgregarLinea = () => {
     // Especificación del producto (viaja al PDF y al futuro pedido)
     color: f.color || 'Transparente', aditivo: f.aditivo || 'NINGUNO',
     impresion: f.impresion || '', tintas: f.tintas || '', colores_imp: f.colores_imp || '',
+    tratado: f.tratado || '', tratado_dinas: f.tratado === 'si' ? (Number(f.tratado_dinas) || 38) : 0,
     presentacion: f.presentacion || '', minimo: f.minimo || '',
   });
   toast('➕ Línea agregada — abajo puedes ajustar cantidades y guardar');
@@ -23310,6 +23328,228 @@ window.dirSeedInicial = async () => {
     toast(`📇 ${DIR_SEED.length} personas cargadas al directorio`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
+
+// ============================================================
+// 🧭 MAPA DEL SISTEMA — el flujo completo del negocio dentro del ERP.
+//    Versión viva del Doc 18: las 3 rutas (stock / fabricación / comercializado),
+//    cadena de MP, logística, trazabilidad y candados. Se abre AUTO-FILTRADO al
+//    departamento del usuario ("¿qué me toca?") y se puede cambiar con los chips.
+// ============================================================
+window._mapaRolDelDepto = (depto) => ({
+  CS: 'cs', KAM: 'cs', PLN: 'pln', PRO: 'pro', CAL: 'alp', ALP: 'alp',
+  CEDMTY: 'cedis', CEDMEX: 'cedis', COMP: 'comp', FAC: 'fac', CYC: 'fac',
+}[depto] || '');
+window.mapaFiltroRol = (rol) => { state.mapaRol = rol; window.forzarRender(); };
+
+function renderMapaFlujo() {
+  // primer ingreso: iluminar lo que le toca a ESTE usuario
+  if (state.mapaRol === undefined) state.mapaRol = window._mapaRolDelDepto(state.user?.depto);
+  const rol = state.mapaRol || '';
+
+  const CHIPS = [
+    ['', 'Todos'], ['dir', 'Dirección'], ['cs', 'CS / KAM'], ['pln', 'Planeación'],
+    ['pro', 'Producción'], ['alp', 'ALP'], ['cedis', 'CEDIS'], ['comp', 'Compras'], ['fac', 'FAC / CyC'],
+  ];
+  const cls = (roles) => !rol ? '' : (roles.includes(rol) ? ' mf-on' : ' mf-off');
+  // estación del riel central: [roles], badge (clase+texto), título, folio opcional, descripción
+  const est = (roles, bc, bt, titulo, folio, desc) => `
+    <div class="mf-est${cls(roles)}">
+      <div class="mf-tit"><span class="mf-rol mf-${bc}">${bt}</span> ${titulo} ${folio ? `<span class="mf-folio">${folio}</span>` : ''}</div>
+      <div class="mf-desc">${desc}</div>
+    </div>`;
+  const con = () => '<div class="mf-con"></div>';
+
+  return `
+    <style>
+      .mf-wrap { max-width: 980px; margin: 0 auto; }
+      .mf-filtro { position: sticky; top: 0; z-index: 30; background: #f8fafc; padding: 10px 0; margin-bottom: 6px; display: flex; gap: 6px; align-items: center; overflow-x: auto; border-bottom: 2px solid #16a34a; }
+      .mf-filtro b { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+      .mf-chip { border: 1.5px solid #cbd5e1; background: #fff; color: #0f172a; font-size: 12.5px; font-weight: 700; padding: 7px 12px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
+      .mf-chip.act { background: #16a34a; border-color: #16a34a; color: #fff; }
+      .mf-esq { background: #dcfce7; border-left: 4px solid #16a34a; padding: 11px 15px; border-radius: 0 10px 10px 0; font-size: 13.5px; margin: 10px 0 22px; }
+      .mf-h2 { font-size: 20px; font-weight: 900; color: #0f172a; margin: 34px 0 4px; }
+      .mf-baja { font-size: 13px; color: #64748b; margin: 0 0 14px; }
+      .mf-linea { display: flex; flex-direction: column; align-items: center; }
+      .mf-est { width: min(620px, 100%); background: #fff; border: 1.5px solid #e2e8f0; border-radius: 12px; padding: 11px 15px; text-align: center; box-shadow: 0 1px 3px rgba(15,23,42,.06); transition: opacity .2s; }
+      .mf-on { border-color: #16a34a; box-shadow: 0 0 0 3px #dcfce7, 0 1px 3px rgba(15,23,42,.06); }
+      .mf-off { opacity: .28; }
+      .mf-tit { font-weight: 800; font-size: 14.5px; display: flex; gap: 7px; justify-content: center; align-items: center; flex-wrap: wrap; color: #0f172a; }
+      .mf-desc { font-size: 12px; color: #64748b; margin-top: 3px; }
+      .mf-folio { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: #f1f5f9; border: 1px solid #e2e8f0; color: #1e3a8a; }
+      .mf-rol { font-size: 10px; font-weight: 800; letter-spacing: .04em; padding: 2px 7px; border-radius: 6px; }
+      .mf-crm { background: #f1eafc; color: #6d28d9; } .mf-pln { background: #e3f0fa; color: #0e7dc2; }
+      .mf-ope { background: #dcfce7; color: #16a34a; } .mf-adm { background: #fdf1e0; color: #b45309; }
+      .mf-con { width: 2px; height: 20px; background: #cbd5e1; position: relative; }
+      .mf-con::after { content: '▾'; position: absolute; left: 50%; transform: translateX(-50%); bottom: -7px; color: #94a3b8; font-size: 12px; line-height: 1; }
+      .mf-rombo { width: min(620px, 100%); background: #fdf1e0; border: 2px solid #b45309; border-radius: 12px; padding: 11px 15px; text-align: center; font-weight: 800; color: #b45309; font-size: 14.5px; }
+      .mf-abre { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; margin: 13px 0; text-align: center; }
+      .mf-rutas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; width: 100%; }
+      @media (max-width: 900px) { .mf-rutas { grid-template-columns: 1fr; } }
+      .mf-ruta { background: #fff; border: 1.5px solid #e2e8f0; border-top: 4px solid var(--c, #16a34a); border-radius: 12px; padding: 13px 15px; transition: opacity .2s; }
+      .mf-ruta h4 { margin: 0; font-size: 14.5px; color: var(--c, #16a34a); }
+      .mf-ruta .mf-cuando { font-size: 12px; color: #64748b; margin: 3px 0 9px; }
+      .mf-ruta ol { margin: 0; padding-left: 19px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; color: #334155; }
+      .mf-fase { list-style: none; margin-left: -19px; font-size: 10.5px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--c); margin-top: 3px; }
+      .mf-var { margin-top: 11px; background: #f1f5f9; border-radius: 9px; padding: 9px 13px; font-size: 12px; color: #334155; }
+      .mf-nota { background: #fdf1e0; border-left: 4px solid #b45309; padding: 10px 14px; border-radius: 0 10px 10px 0; font-size: 12.5px; margin-top: 13px; }
+      .mf-roja { background: #fdeaea; border-left: 4px solid #b91c1c; padding: 10px 14px; border-radius: 0 10px 10px 0; font-size: 12.5px; margin-top: 13px; }
+      .mf-tw { overflow-x: auto; border: 1.5px solid #e2e8f0; border-radius: 12px; background: #fff; }
+      .mf-tw table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 12.5px; }
+      .mf-tw th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: #64748b; padding: 9px 13px; border-bottom: 2px solid #e2e8f0; }
+      .mf-tw td { padding: 9px 13px; border-bottom: 1px solid #f1f5f9; vertical-align: top; color: #334155; }
+      .mf-tw tr:last-child td { border-bottom: none; }
+      .mf-tw td:first-child { font-weight: 700; color: #0f172a; }
+      .mf-cand td:first-child { border-left: 3px solid #b91c1c; }
+      .mf-cadena { display: flex; align-items: stretch; overflow-x: auto; padding: 4px 2px 12px; }
+      .mf-esl { min-width: 140px; flex: 1; background: #fff; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 9px 11px; text-align: center; }
+      .mf-esl b { font-size: 12.5px; display: block; color: #0f172a; }
+      .mf-esl span { font-size: 11px; color: #64748b; }
+      .mf-liga { align-self: center; padding: 0 5px; color: #16a34a; font-weight: 800; font-size: 15px; }
+      @media (max-width: 700px) { .mf-cadena { flex-direction: column; } .mf-liga { align-self: center; transform: rotate(90deg); padding: 3px 0; } }
+      .mf-sop { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 11px; }
+      .mf-sopc { background: #fff; border: 1.5px solid #e2e8f0; border-left: 4px solid #6d28d9; border-radius: 10px; padding: 11px 13px; transition: opacity .2s; }
+      .mf-sopc b { font-size: 13px; color: #0f172a; } .mf-sopc p { font-size: 12px; color: #64748b; margin: 3px 0 0; }
+    </style>
+    <div class="mf-wrap">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+        <h1 style="font-size:24px;font-weight:900;">🧭 Mapa del Sistema</h1>
+        <span style="font-size:12px;color:#64748b;">el flujo completo del negocio · versión viva del Doc 18</span>
+      </div>
+      <div class="mf-filtro">
+        <b>¿Qué me toca?</b>
+        ${CHIPS.map(([r, n]) => `<button class="mf-chip ${rol === r ? 'act' : ''}" onclick="window.mapaFiltroRol('${r}')">${n}</button>`).join('')}
+      </div>
+      <p style="font-size:13px;color:#64748b;max-width:70ch;">Si alguien pregunta <em>"¿dónde va mi pedido?"</em>, la respuesta se señala con el dedo aquí. Tu vista abre iluminando lo que le toca a tu departamento — cambia de rol con los botones para ver el tramo de los demás.</p>
+      <div class="mf-esq"><strong>El esqueleto para no perderse:</strong> todo lo que sale de la planta viaja en una <strong>TARIMA</strong>, toda tarima nació de una <strong>ODP</strong> o de una recepción de compra, y toda entrega termina en una <strong>REMISIÓN</strong> que se factura y se cobra. El resto son ramas.</div>
+
+      <div class="mf-h2">1 · El negocio completo, de prospecto a comisión</div>
+      <p class="mf-baja">Cada estación dice quién actúa y qué documento nace ahí (su folio).</p>
+      <div class="mf-linea">
+        ${est(['cs', 'dir'], 'crm', 'CS / KAM', 'Prospecto y cliente en el CRM', '', 'Cuenta, contactos y oportunidad por 6 etapas · próxima acción siempre obligatoria')}${con()}
+        ${est(['cs'], 'crm', 'CS / KAM', 'Cotización', 'COT', 'Cotizador con precios por cliente')}${con()}
+        ${est(['cs'], 'crm', 'CS', 'Pedido interno', 'PI', 'Producto, cantidad, FECHA y LUGAR de entrega, observaciones por línea')}${con()}
+        ${est(['pln'], 'pln', 'PLN', 'Planeación aprueba el PI', '', 'Candado: sin fecha y lugar completos, el sistema no deja aprobar')}${con()}
+        <div class="mf-rombo">◆ ¿De dónde sale el producto? — cada línea del pedido puede tomar una ruta distinta</div>
+        <div class="mf-abre">se abre en tres rutas ▾</div>
+        <div class="mf-rutas">
+          <div class="mf-ruta${cls(['cs', 'pln', 'alp', 'cedis'])}" style="--c:#16a34a">
+            <h4>Ruta A · Hay stock</h4><p class="mf-cuando">El producto ya está en un almacén (planta o CEDIS)</p>
+            <ol>
+              <li>Nace la <span class="mf-folio">OV</span> y se <strong>asignan tarimas</strong> del inventario: quedan amarradas al pedido</li>
+              <li>Si está en otro almacén, primero corre una <span class="mf-folio">OTI</span> (traslado interno, no venta)</li>
+              <li>Sigue directo a preparación ▾</li>
+            </ol>
+          </div>
+          <div class="mf-ruta${cls(['pln', 'pro', 'alp'])}" style="--c:#0e7dc2">
+            <h4>Ruta B · Se fabrica</h4><p class="mf-cuando">No hay stock: al aprobar nace UNA ODP POR PRODUCTO</p>
+            <ol>
+              <li class="mf-fase">Programación — PLN</li>
+              <li>Cada <span class="mf-folio">ODP</span> a su proceso: extrusión y los que siga (bolseo, rollo, impresión)</li>
+              <li>La configuración sale del <strong>código</strong> del producto (su matrícula)</li>
+              <li>¿Falta MP? nace una <span class="mf-folio">RC</span> antes de comprometer fecha</li>
+              <li class="mf-fase">Piso — Producción</li>
+              <li>Arranque con candados (malla vencida pide confirmación y queda en bitácora)</li>
+              <li>Capturas por turno + rollos con peso (película de 2 telas = rollos dobles)</li>
+              <li>Cierre solo con <strong>consumos de MP</strong> registrados — el eslabón del recall</li>
+              <li>Merma → peletizado P-5 · producto → <strong>tarimas</strong> ligadas a su ODP</li>
+              <li class="mf-fase">Calidad — ALP</li>
+              <li>Mide contra especificación: <strong>libera</strong>, retiene o levanta <span class="mf-folio">NC</span></li>
+              <li>Certificado con la ubicación real · solo tarimas liberadas se asignan ▾</li>
+            </ol>
+            <div class="mf-var"><b>Variante — producción para stock:</b> PLN lanza un PI tipo STOCK (sin cliente, sin OV). El producto entra al inventario disponible y mañana hace posible la Ruta A.</div>
+          </div>
+          <div class="mf-ruta${cls(['comp', 'cedis', 'alp'])}" style="--c:#b45309">
+            <h4>Ruta C · Se compra hecho</h4><p class="mf-cuando">Producto comercializado — se vende con nuestra remisión</p>
+            <ol>
+              <li>Nace <span class="mf-folio">RC</span> → <strong>comparativo de cotizaciones</strong> → <span class="mf-folio">OC</span> (punto 2)</li>
+              <li>Recepción <strong>directa al almacén que despacha</strong> (el destino viene en la OC)</li>
+              <li>Se revisa al recibir igual que todo</li>
+              <li>Entra a stock y sigue la Ruta A ▾</li>
+            </ol>
+          </div>
+        </div>
+        <div class="mf-abre">las tres rutas convergen aquí ▾</div>
+        ${est(['cs', 'pln'], 'pln', 'CS / PLN', 'Orden de venta "por preparar"', 'OV', 'El material ya está asignado: el almacén que despacha la ve en su cola')}${con()}
+        ${est(['alp', 'cedis'], 'ope', 'ALP / CEDIS', 'Preparación y verificación', '', 'Producto, cantidad, etiqueta y estado — verificado antes de marcar preparado')}${con()}
+        ${est(['alp', 'cedis'], 'ope', 'CEDIS / ALP', 'Embarque + remisión', 'REM', 'Carga y amarre seguro, foto de la carga, sale la unidad con documento')}${con()}
+        ${est(['cedis'], 'ope', 'Chofer / ruta', 'Entrega con POD', '', 'Quién recibió y a qué hora — la tarima queda "entregada", nunca "en planta"')}${con()}
+        ${est(['fac'], 'adm', 'FAC → CyC', 'Factura y cobranza', 'FAC', 'Se factura contra la remisión · estado de cuenta, aging y complementos de pago')}${con()}
+        ${est(['fac', 'dir'], 'adm', 'Dirección', 'Comisiones y resultados', '', 'Comisión por cliente al vendedor · KPIs del Doc 19 al tablero mensual')}
+      </div>
+      <div class="mf-nota"><strong>⚠ Una misma OV puede combinar rutas:</strong> 2 líneas de stock + 1 fabricada + 1 comercializada. Por eso la unidad de seguimiento es la <strong>línea</strong> (cada producto con su ODP o su asignación), no el pedido completo.</div>
+      <div class="mf-roja"><strong>🚨 Regla que no se negocia:</strong> quien LIBERA (Calidad) no reporta a quien tiene la presión de ENTREGAR. Un conflicto liberar-vs-entregar se escala a Dirección — no se arregla en el pasillo.</div>
+
+      <div class="mf-h2">2 · La cadena de materia prima y compras</div>
+      <p class="mf-baja">Alimenta las tres rutas. El lote que entra aquí es el mismo que producción consume — esa unión hace posible el recall.</p>
+      <div class="mf-linea">
+        ${est(['pln', 'comp', 'alp', 'cedis', 'pro'], 'pln', 'Cualquier área', 'Requisición', 'RC', 'Con FECHA REQUERIDA y prioridad — PLN pide MP, MTTO refacciones, CEDIS insumos')}${con()}
+        ${est(['comp'], 'adm', 'COMP', '💰 Cotiza y compara proveedores', '', 'Comparativo automático línea por línea · alerta ▲ contra el último precio pagado · se elige CON MOTIVO escrito')}${con()}
+        ${est(['comp'], 'adm', 'COMP', 'Orden de compra', 'OC', 'Precargada con el proveedor elegido · moneda, IVA, fecha promesa · PDF oficial')}${con()}
+        ${est(['alp', 'cedis', 'comp'], 'ope', 'ALP / CEDIS', 'Recepción física en el DESTINO de la OC', '', 'Revisión física · parciales permitidas · la OC se cierra sola al completarse')}${con()}
+        <div class="mf-rombo">◆ ¿El material pasa inspección?</div>
+      </div>
+      <div class="mf-rutas" style="margin-top:13px">
+        <div class="mf-ruta${cls(['alp'])}" style="--c:#16a34a"><h4>Libre</h4><p class="mf-cuando">Entra a stock MP con su <strong>lote del proveedor</strong> y caducidad (pigmentos y aditivos la llevan obligatoria).</p></div>
+        <div class="mf-ruta${cls(['alp'])}" style="--c:#b45309"><h4>Cuarentena</h4><p class="mf-cuando">Se aparta hasta que Calidad decida. <strong>No se puede consumir</strong> en producción.</p></div>
+        <div class="mf-ruta${cls(['alp', 'comp'])}" style="--c:#b91c1c"><h4>Rechazo</h4><p class="mf-cuando">No baja del camión o se devuelve: Compras gestiona devolución o reposición.</p></div>
+      </div>
+
+      <div class="mf-h2">3 · Logística interna — mover sin perder el hilo</div>
+      <div class="mf-tw"><table>
+        <tr><th>Movimiento</th><th>Folio</th><th>Quién</th><th>Regla que lo protege</th></tr>
+        <tr><td>Planta → CEDIS MTY</td><td><span class="mf-folio">OTI</span></td><td>ALP envía, CEDIS recibe</td><td>La tarima cambia de almacén SOLO cuando el receptor confirma. En tránsito vive en la OTI.</td></tr>
+        <tr><td>CEDIS MTY ⇄ CEDIS MEX</td><td><span class="mf-folio">OTI</span></td><td>Ambos coordinadores</td><td>Sin confirmación del receptor, el inventario no se mueve.</td></tr>
+        <tr><td>Dentro del almacén</td><td>ubicación</td><td>El almacén dueño</td><td>El certificado usa la ubicación REAL — mover sin registrar rompe el certificado.</td></tr>
+        <tr><td>Salida a cliente</td><td><span class="mf-folio">REM</span></td><td>CEDIS/ALP + chofer</td><td>POD obligatorio. Tarima entregada nunca queda "en planta".</td></tr>
+      </table></div>
+
+      <div class="mf-h2">4 · Flujos de soporte — corren en paralelo</div>
+      <div class="mf-sop">
+        <div class="mf-sopc${cls(['cs'])}"><b>CRM comercial</b><p>Prospecto → cuenta → oportunidad (6 etapas) → cotización → cliente. Ninguna cuenta sin próxima acción.</p></div>
+        <div class="mf-sopc${cls(['alp', 'dir'])}"><b>Calidad y recall 🚨</b><p>NC → contención → causa → acción. El simulador rastrea en ambos sentidos: lote MP → clientes, o factura → lotes.</p></div>
+        <div class="mf-sopc${cls(['pro', 'pln'])}"><b>Mallas de extrusión</b><p>Contador automático de kg y días → semáforo → registro de 2 min → candado al arrancar vencida.</p></div>
+        <div class="mf-sopc${cls(['pro'])}"><b>Mantenimiento</b><p>Falla → orden → refacciones (stock nunca negativo) → cierre. Preventivos con paro acordado con PLN.</p></div>
+        <div class="mf-sopc${cls(['dir'])}"><b>Capital Humano</b><p>Alta → cuenta con PIN y accesos por depto → tabla de raya semanal → préstamos ligados a nómina.</p></div>
+        <div class="mf-sopc${cls(['comp'])}"><b>Compras internas</b><p>Empaques e insumos siguen la misma cadena RC → OC → recepción, con destino a su almacén.</p></div>
+      </div>
+
+      <div class="mf-h2">5 · La cadena de trazabilidad — con un folio encuentras todo</div>
+      <div class="mf-cadena">
+        <div class="mf-esl"><b>Proveedor + lote MP</b><span>OC y recepción</span></div><div class="mf-liga">⇄</div>
+        <div class="mf-esl"><b>Consumo en ODP</b><span>obligatorio al cerrar extrusión</span></div><div class="mf-liga">⇄</div>
+        <div class="mf-esl"><b>Rollos y capturas</b><span>máquina, turno, malla</span></div><div class="mf-liga">⇄</div>
+        <div class="mf-esl"><b>Tarima</b><span>liberada con certificado</span></div><div class="mf-liga">⇄</div>
+        <div class="mf-esl"><b>Remisión + POD</b><span>cliente y quién recibió</span></div><div class="mf-liga">⇄</div>
+        <div class="mf-esl"><b>Factura y cobro</b><span>el cierre del mismo hilo</span></div>
+      </div>
+      <div class="mf-tw"><table>
+        <tr><th>Si tienes…</th><th>Encuentras…</th><th>Cómo</th></tr>
+        <tr><td>Una FACTURA</td><td>Remisiones → tarimas → ODPs → lotes de MP → proveedor</td><td>Historial de la factura → remisiones ligadas</td></tr>
+        <tr><td>Un LOTE sospechoso</td><td>ODPs que lo consumieron → tarimas → clientes</td><td>Simulador de recall 🚨</td></tr>
+        <tr><td>Una TARIMA física</td><td>Su ODP, certificado, OV y a quién se entregó</td><td>Buscar su folio en inventarios</td></tr>
+        <tr><td>Un PI</td><td>Su OV y la ODP de CADA línea con su estado</td><td>Detalle del PI</td></tr>
+        <tr><td>Una QUEJA de cliente</td><td>Remisión → tarima → ODP → turno, máquina y malla</td><td>De la remisión hacia atrás · la NC documenta</td></tr>
+        <tr><td>Una OC</td><td>Su RC, las cotizaciones comparadas y el motivo</td><td>La OC guarda comparativo y motivo</td></tr>
+      </table></div>
+
+      <div class="mf-h2">6 · Los candados — por qué a veces "no te deja"</div>
+      <div class="mf-tw"><table class="mf-cand">
+        <tr><th>El sistema no deja…</th><th>Hasta que…</th><th>Qué protege</th></tr>
+        <tr><td>Aprobar un PI</td><td>tenga fecha y lugar de entrega completos</td><td>Que producción y logística no trabajen a ciegas</td></tr>
+        <tr><td>Cerrar extrusión</td><td>se registren los consumos de MP</td><td>El eslabón lote→ODP: sin él no hay recall</td></tr>
+        <tr><td>Guardar un producto</td><td>el código y el tipo coincidan</td><td>Que la matrícula no le mienta a producción</td></tr>
+        <tr><td>Arrancar con malla vencida</td><td>el operador confirme (queda en bitácora)</td><td>Que el paro por malla tapada no se repita</td></tr>
+        <tr><td>Elegir cotización de proveedor</td><td>se escriba el motivo</td><td>Que la decisión de compra quede justificada</td></tr>
+        <tr><td>Sacar producto sin factura</td><td>FAC lo autorice explícitamente</td><td>El control fiscal y la cartera</td></tr>
+        <tr><td>Stock negativo de refacciones</td><td>— (bloqueado)</td><td>Que Mantenimiento sepa qué hay de verdad</td></tr>
+        <tr><td>Cancelar OV con ODPs corriendo</td><td>la cascada avise y cancele en orden</td><td>Que no queden órdenes huérfanas produciendo</td></tr>
+      </table></div>
+      <div class="mf-nota"><strong>Si un candado estorba en un caso legítimo, no se le da la vuelta:</strong> se reporta a Dirección de Operaciones. O es una excepción que se autoriza y registra, o el candado necesita ajuste — se decide arriba, no en el pasillo.</div>
+
+      <p style="font-size:11.5px;color:#94a3b8;margin-top:22px;">Documento vivo · se actualiza junto con el sistema · versión impresa: Doc 18 del paquete institucional · las dudas que salgan de aquí van al FAQ del manual de tu área.</p>
+    </div>
+  `;
+}
 
 function renderDirectorio() {
   const puede = window._dirPuedeEditar();
@@ -24537,7 +24777,7 @@ function renderCRM() {
 }
 
 function renderCotizador() {
-  if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras', color: 'Transparente', aditivo: 'NINGUNO', impresion: '', tintas: '', colores_imp: '', presentacion: '', minimo: '' };
+  if (!state.cotForm) state.cotForm = { tipo: 'BOLSA SUELTA', unidades: 'cm', material: 'Baja Densidad', modo: 'pieza', ancho: '', fuelle: '0', largo: '', calibre: '', precio_kg: '', kg_paquete: '25', piezas_rollo: '', metros_rollo: '', peso_bobina: '0.3', conv_val: '', conv_um: 'micras', color: 'Transparente', aditivo: 'NINGUNO', impresion: '', tintas: '', colores_imp: '', tratado: '', tratado_dinas: '38', presentacion: '', minimo: '' };
   const f = state.cotForm;
   const r = window.cotCalc(f);
   const conv = window.cotConvertirCalibre(f.conv_val, f.conv_um);
@@ -24652,11 +24892,27 @@ function renderCotizador() {
           </div>
           <div>
             <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Impresión</label>
-            <select class="input" onchange="window.cotSet('impresion', this.value)">
+            <select class="input" onchange="window.cotSetImpresion(this.value)">
               <option value="" ${!f.impresion ? 'selected' : ''}>Sin impresión</option>
               <option value="si" ${f.impresion === 'si' ? 'selected' : ''}>Con impresión</option>
             </select>
           </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">⚡ Tratado (corona)</label>
+            <select class="input" onchange="window.cotSet('tratado', this.value)">
+              <option value="" ${!f.tratado ? 'selected' : ''}>Sin tratado</option>
+              <option value="si" ${f.tratado === 'si' ? 'selected' : ''}>Tratado</option>
+            </select>
+            ${f.impresion === 'si' && f.tratado !== 'si' ? `<div style="font-size:10px;color:#dc2626;font-weight:700;margin-top:3px;">⚠ Con impresión el material DEBE ir tratado — la tinta no ancla sin corona</div>` : ''}
+          </div>
+          ${f.tratado === 'si' ? `
+          <div>
+            <label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Dinas del tratado</label>
+            <select class="input" onchange="window.cotSet('tratado_dinas', this.value)">
+              ${['36', '38', '40', '42', '44', '46', '48'].map(d => `<option value="${d}" ${String(f.tratado_dinas || '38') === d ? 'selected' : ''}>${d} dinas</option>`).join('')}
+            </select>
+            <div style="font-size:10px;color:#64748b;margin-top:3px;">38 es el estándar para impresión · más dinas = mejor anclaje</div>
+          </div>` : ''}
           ${f.impresion === 'si' ? `
           ${inp('cot-tintas', 'tintas', 'No. de tintas', '2')}
           <div>
@@ -42583,6 +42839,24 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   _campo(colA + wTer + 5, y, 'Núm. tintas', producto?.num_tintas || '', wTer);
   _campo(colA + (wTer + 5)*2, y, 'Tipo de sellado', nombreSellado, wTer);
   y += 12;
+
+  // ⚡ TRATADO CORONA: banda de alerta imposible de no ver — el operador debe
+  //    encender el tratador ANTES de arrancar, y Calidad verificar las dinas.
+  if (producto?.tratado === 'si') {
+    docPDF.setFillColor(245, 243, 255);
+    docPDF.setDrawColor(124, 58, 237);
+    docPDF.rect(margen, y, W - margen*2, 12, 'FD');
+    docPDF.setDrawColor(0, 0, 0);
+    docPDF.setFont('helvetica', 'bold');
+    docPDF.setFontSize(10);
+    docPDF.setTextColor(91, 33, 182);
+    docPDF.text(`MATERIAL TRATADO (CORONA): ${producto.tratado_dinas || 38} DINAS`, margen + 3, y + 5);
+    docPDF.setFontSize(7);
+    docPDF.setFont('helvetica', 'normal');
+    docPDF.text('Extrusion: ENCENDER EL TRATADOR antes de arrancar. Calidad: verificar dinas con plumon dyne antes de liberar.', margen + 3, y + 9.5);
+    docPDF.setTextColor(0, 0, 0);
+    y += 15;
+  }
   
   // ============ MEZCLA / FÓRMULA POR CAPAS (CON DATOS REALES) ============
   docPDF.setFillColor(31, 178, 75);
@@ -45326,6 +45600,8 @@ window.imprimirPlanoMecanicoPDF = (productoCodigo, clienteCodigo) => {
         ['Fuelles', Number(p.fuelle) > 0 ? `${p.fuelle} cm` : 'N/A', 'Aditivo', aditivo, ''],
         ['Largo', `${p.largo || '—'} cm`, 'Color', pigmento, ''],
         ['Tipo de Producto', tipoDesc, 'Calibre', String(calibre), { content: 'Autorizado', styles: { fillColor: [220, 240, 220], fontStyle: 'bold', halign: 'center', valign: 'middle' } }],
+        // ⚡ Tratamiento corona: el cliente y Calidad deben verlo en la especificación
+        ['Tratado (corona)', p.tratado === 'si' ? `SI - ${p.tratado_dinas || 38} dinas` : 'No', 'Impresion', p.impresion || 'Sin impresion', ''],
       ],
       theme: 'grid',
       headStyles: { fillColor: _COL_VERDE, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
@@ -48899,6 +49175,10 @@ function modalLiberarCalidad() {
                 <div style="font-size:10px;color:#475569;background:#f0f9ff;padding:6px 10px;border-radius:6px;margin-bottom:10px;border:1px solid #bae6fd;">
                   📋 <strong>Tolerancias del producto:</strong> Ancho ±${tolsCal.tol_ancho}cm ${tieneFuelle ? `· Fuelle ±${tolsCal.tol_fuelle}cm` : ''} · Largo ±${tolsCal.tol_largo}cm · Calibre ±${tolsCal.tol_calibre_pct}%
                 </div>
+                ${productoCal.tratado === 'si' ? `
+                <div style="font-size:11px;color:#5b21b6;background:#f5f3ff;padding:8px 10px;border-radius:6px;margin-bottom:10px;border:1.5px solid #7c3aed;font-weight:700;">
+                  ⚡ ESTE PRODUCTO VA TRATADO (corona) a ${productoCal.tratado_dinas || 38} dinas — verifícalo con plumón/tinta dyne ANTES de liberar. Si el tratador no se encendió, la tinta o el laminado del cliente no anclan y el lote se rechaza completo.
+                </div>` : ''}
               ` : `<div style="color:#dc2626;font-size:11px;margin-bottom:8px;">⚠ Producto no encontrado en catálogo. Captura libre.</div>`}
               
               <!-- Dimensiones (con spec al lado) -->
@@ -50580,6 +50860,26 @@ function modalEditarProductoPT() {
               <div style="font-size:10px;color:#78350f;margin-top:4px;">Define qué logo lleva la etiqueta cuando se imprima desde la ODP. Si es "Logo cliente", se mostrará el nombre del cliente como referencia.</div>
             </div>
           </div>
+
+          <!-- ⚡ Tratado corona (para impresión o por especificación del cliente) -->
+          <div style="margin-top:12px;padding:12px;background:#f5f3ff;border-radius:10px;border:1px solid #7c3aed;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="color:#5b21b6;font-weight:800;">⚡ Tratado (corona)</label>
+                <select class="input form-pt-edit" data-field="tratado">
+                  <option value="" ${!f.tratado ? 'selected' : ''}>Sin tratado</option>
+                  <option value="si" ${f.tratado === 'si' ? 'selected' : ''}>TRATADO</option>
+                </select>
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="color:#5b21b6;font-weight:800;">Dinas</label>
+                <select class="input form-pt-edit" data-field="tratado_dinas">
+                  ${['36', '38', '40', '42', '44', '46', '48'].map(d => `<option value="${d}" ${String(f.tratado_dinas || '38') === d ? 'selected' : ''}>${d} dinas</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div style="font-size:10px;color:#5b21b6;margin-top:5px;">Si el producto lleva impresión o el cliente lamina/imprime por su cuenta, DEBE ir tratado. El dato viaja a extrusión (encender tratador), a la hoja de especificaciones y a Calidad (verificar dinas con plumón dyne). Las dinas solo aplican si está TRATADO.</div>
+          </div>
           
           <!-- Asignación a clientes -->
           <div style="margin-top:18px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
@@ -50699,6 +50999,11 @@ function renderBloqueConfigExtrusion(f, p) {
         Las medidas del rollo se calculan automáticamente a partir de las medidas del producto.
       </div>
       
+      ${(f.tratado === 'si' || p?.tratado === 'si') ? `
+        <div style="padding:10px 12px;background:#f5f3ff;border:2px solid #7c3aed;border-radius:8px;margin-bottom:10px;font-size:12px;color:#5b21b6;line-height:1.5;">
+          <strong>⚡ ESTE PRODUCTO VA TRATADO (corona) a ${Number(f.tratado_dinas || p?.tratado_dinas) || 38} dinas.</strong>
+          El rollo debe salir de la extrusora con el TRATADOR ENCENDIDO — prográmalo en una extrusora con tratador y anótalo en la junta de arranque. Sin tratado, la impresión o el laminado del cliente NO anclan y el lote completo se rechaza.
+        </div>` : ''}
       ${(() => {
         // 💡 GUÍA AUTOMÁTICA: el TIPO de producto dicta el sellado correcto — cero adivinanzas
         const _tp = String(f.tipo || p?.tipo || '').toUpperCase().trim();
@@ -52056,6 +52361,26 @@ function modalCrearProductoPT() {
               </select>
               <div style="font-size:10px;color:#78350f;margin-top:4px;">Define qué logo lleva la etiqueta cuando se imprima desde la ODP. Si es "Logo cliente", se mostrará el nombre del cliente como referencia.</div>
             </div>
+          </div>
+
+          <!-- ⚡ Tratado corona (para impresión o por especificación del cliente) -->
+          <div style="margin-top:12px;padding:12px;background:#f5f3ff;border-radius:10px;border:1px solid #7c3aed;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="color:#5b21b6;font-weight:800;">⚡ Tratado (corona)</label>
+                <select class="input form-pt" data-field="tratado">
+                  <option value="" ${!f.tratado ? 'selected' : ''}>Sin tratado</option>
+                  <option value="si" ${f.tratado === 'si' ? 'selected' : ''}>TRATADO</option>
+                </select>
+              </div>
+              <div class="field" style="margin:0;">
+                <label class="field-label" style="color:#5b21b6;font-weight:800;">Dinas</label>
+                <select class="input form-pt" data-field="tratado_dinas">
+                  ${['36', '38', '40', '42', '44', '46', '48'].map(d => `<option value="${d}" ${String(f.tratado_dinas || '38') === d ? 'selected' : ''}>${d} dinas</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div style="font-size:10px;color:#5b21b6;margin-top:5px;">Si el producto lleva impresión o el cliente lamina/imprime por su cuenta, DEBE ir tratado. El dato viaja a extrusión (encender tratador), a la hoja de especificaciones y a Calidad (verificar dinas con plumón dyne). Las dinas solo aplican si está TRATADO.</div>
           </div>
           
           <!-- 🔀 PROCESO SECUNDARIO — deducido automáticamente del tipo de producto -->
@@ -53724,6 +54049,9 @@ window.crearProductoPT = async () => {
       tipo_etiqueta: f.tipo_etiqueta || '',
       impresion: f.impresion || '',
       num_tintas: Number(f.num_tintas) || 0,
+      // ⚡ Tratamiento corona: viaja a extrusión, hoja de specs y certificado
+      tratado: f.tratado || '',
+      tratado_dinas: f.tratado === 'si' ? (Number(f.tratado_dinas) || 38) : 0,
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
@@ -53879,6 +54207,9 @@ window.guardarProductoPT = async (codigo) => {
       tipo_etiqueta: f.tipo_etiqueta || '',
       impresion: f.impresion || '',
       num_tintas: Number(f.num_tintas) || 0,
+      // ⚡ Tratamiento corona: viaja a extrusión, hoja de specs y certificado
+      tratado: f.tratado || '',
+      tratado_dinas: f.tratado === 'si' ? (Number(f.tratado_dinas) || 38) : 0,
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
