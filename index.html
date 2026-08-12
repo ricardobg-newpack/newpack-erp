@@ -2705,6 +2705,21 @@ function calcularMedidasRolloExt(producto) {
       observacion = `🟠 Tubular doble:\n1) Extruir burbuja tubular al DOBLE: ${largo * 2} cm (= ${largo} × 2), SIN cortar (queda tubo cerrado).\n2) Embobinar tubular.\n→ BOLSEO corta por el centro y saca 2 piezas tubulares de ${largo} cm c/u.`;
     }
   }
+  // 🔄 DESDOBLADO (máquina DESDO): la película se EXTRUYE A LA MITAD del ancho,
+  //    AX1L (abierta por UN lado), y el 2º proceso (Embobinado/Refilación) la
+  //    DESDOBLA al ancho completo. Ej: película de 230 cm → extrusión saca rollo
+  //    de 115 cm AX1L → la DESDO lo abre y embobina a 230 cm.
+  else if ((tipo === 'ROLLO_DIRECTO' || tipo === 'PELICULA') && producto.refilacion_modo === 'desdoblado') {
+    const mitad = ancho / 2;
+    ancho_rollo = mitad * salidas;
+    fuelle_rollo = 0;
+    descripcion = `DESDOBLADO · extruir ${mitad} cm AX1L${salidas > 1 ? ` × ${salidas} salidas` : ''} → DESDO desdobla a ${ancho} cm`;
+    observacion = `🔄 DESDOBLADO (2 procesos):\n` +
+      `EXTRUSIÓN:\n1) Extruir burbuja tubular de ${mitad} cm de ancho (LA MITAD de los ${ancho} cm del producto)${salidas > 1 ? ` por salida (total burbuja ${ancho_rollo} cm)` : ''}.\n` +
+      `2) Cortar la burbuja por UN solo lado ANTES de embobinar → rollo AX1L de ${mitad} cm (las 2 caras unidas por el doblez).\n` +
+      `EMBOBINADO/REFILACIÓN (DESDO):\n3) El rollo pasa a la DESDO como 2º proceso: se DESDOBLA (se abre el doblez) y se embobina → película plana de ${ancho} cm de ancho.\n` +
+      `→ Producto final: rollo de película de ${ancho} cm que sale de la DESDO, no de extrusión.`;
+  }
   // 🆕 ROLLO DIRECTO → el producto final ES un rollo (no se convierte en bolsa)
   else if (tipo === 'ROLLO_DIRECTO') {
     const sufijoSalidas = salidas > 1 ? ` (= ${ancho} x ${salidas})` : '';
@@ -3023,10 +3038,14 @@ window.deduceRequiereProcesoSecundario = (producto) => {
   //    que es lo más común. Solo requiere P6-REF si el producto lo marca EXPLÍCITAMENTE
   //    (refilacion_modo === 'proceso_aparte'). Antes asumía P6-REF y metía procesos de más.
   if (txt.includes('PELICULA') && (txt.includes('REFILAD') || txt.includes('REFILE'))) {
-    if (producto.refilacion_modo === 'proceso_aparte') {
-      return { requiere: true, proceso: 'P6-REF', origen: 'manual' };
+    // 🔧 FIX: el botón "EMBOBINADO aparte" guardaba 'independiente' pero aquí se
+    //    buscaba 'proceso_aparte' — esa opción NUNCA mandaba el rollo a P6-REF.
+    //    Ahora: solo 'extrusion' sale terminada; todo lo demás (independiente,
+    //    proceso_aparte y el nuevo DESDOBLADO) pasa a Embobinado/Refilación.
+    if (producto.refilacion_modo === 'extrusion') {
+      return { requiere: false, proceso: '', origen: 'auto-tipo' }; // refilada en línea
     }
-    return { requiere: false, proceso: '', origen: 'auto-tipo' }; // refila en extrusión (default)
+    return { requiere: true, proceso: 'P6-REF', origen: producto.refilacion_modo === 'desdoblado' ? 'desdoblado' : 'manual' };
   }
   // Película plana PUNTEADA / PERFORADA → Bolsa en Rollo (P4-BR), ahí se puntea
   if (txt.includes('PELICULA') && (txt.includes('PUNTEAD') || txt.includes('PERFORAD'))) {
@@ -4207,7 +4226,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0812-B66-captura-express</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0812-B67-desdoblado-desdo</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -15253,9 +15272,13 @@ function _tarjetaOperador(o, procSel, modo, posicion) {
         // 🔒 Producto con código↔tipo contradictorios: el operador NO debe producir a ciegas
         const _mmExt = window._ptMismatch(prod);
         const _rutaO = o.ruta_procesos || [];
+        const _esDesdoblado = prod?.refilacion_modo === 'desdoblado';
+        const _anchoDesdo = Number(prod?.ancho) || 0;
         const _destinoRollo = _rutaO.includes('P4-BR') ? 'el rollo PASA A BOLSA EN ROLLO (P4-BR)'
           : _rutaO.includes('P3-BS') ? 'el rollo PASA A BOLSEO (P3-BS)'
           : _rutaO.includes('P2-IMP') ? 'el rollo PASA A IMPRESIÓN (P2-IMP)'
+          : (_rutaO.includes('P6-REF') && _esDesdoblado) ? `🔄 DESDOBLADO: extruir a ${_anchoDesdo ? (_anchoDesdo / 2) + ' cm' : 'LA MITAD del ancho'} AX1L (abierto por UN lado) → el rollo PASA A EMBOBINADO/REFILACIÓN (DESDO), que lo desdobla a ${_anchoDesdo ? _anchoDesdo + ' cm' : 'el ancho completo'}`
+          : _rutaO.includes('P6-REF') ? 'el rollo PASA A EMBOBINADO/REFILACIÓN (P6-REF) a refilarse'
           : 'el rollo sale TERMINADO de extrusión (directo a Calidad)';
         return `
           ${_mmExt ? `
@@ -51212,15 +51235,29 @@ function renderBloqueConfigExtrusion(f, p) {
         return `
           <div style="margin-top:10px;padding:12px;background:#fffbeb;border-radius:10px;border:1.5px solid #f59e0b;">
             <label style="font-size:12px;font-weight:800;color:#92400e;display:block;margin-bottom:6px;">✂️ ¿Dónde se refila este producto?</label>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            ${(() => {
+              const esAparte = modo === 'independiente' || modo === 'proceso_aparte';
+              const esDesdo = modo === 'desdoblado';
+              const _anchoP = Number(f.ancho !== undefined ? f.ancho : p?.ancho) || 0;
+              return `
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
               <button type="button" onclick="window.setRefilacionModo('extrusion')" style="padding:10px 8px;background:${modo === 'extrusion' ? '#16a34a' : '#fff'};color:${modo === 'extrusion' ? '#fff' : '#166534'};border:1.5px solid ${modo === 'extrusion' ? '#16a34a' : '#86efac'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;text-align:left;">
                 🔥 En EXTRUSIÓN<br><span style="font-weight:500;font-size:9.5px;opacity:0.85;">Se refila en la misma corrida. Sale terminado → directo a Calidad.</span>
               </button>
-              <button type="button" onclick="window.setRefilacionModo('independiente')" style="padding:10px 8px;background:${modo === 'independiente' ? '#f59e0b' : '#fff'};color:${modo === 'independiente' ? '#fff' : '#92400e'};border:1.5px solid ${modo === 'independiente' ? '#f59e0b' : '#fcd34d'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;text-align:left;">
-                ✂️ EMBOBINADO aparte<br><span style="font-weight:500;font-size:9.5px;opacity:0.85;">El rollo pasa a Refilación/Embobinado (P6-REF) como 2º proceso.</span>
+              <button type="button" onclick="window.setRefilacionModo('proceso_aparte')" style="padding:10px 8px;background:${esAparte ? '#f59e0b' : '#fff'};color:${esAparte ? '#fff' : '#92400e'};border:1.5px solid ${esAparte ? '#f59e0b' : '#fcd34d'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;text-align:left;">
+                ✂️ EMBOBINADO aparte<br><span style="font-weight:500;font-size:9.5px;opacity:0.85;">Se extruye al ancho COMPLETO y el rollo pasa a Refilación/Embobinado (P6-REF) a refilarse.</span>
+              </button>
+              <button type="button" onclick="window.setRefilacionModo('desdoblado')" style="padding:10px 8px;background:${esDesdo ? '#7c3aed' : '#fff'};color:${esDesdo ? '#fff' : '#5b21b6'};border:1.5px solid ${esDesdo ? '#7c3aed' : '#c4b5fd'};border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;text-align:left;">
+                🔄 DESDOBLADORA (DESDO)<br><span style="font-weight:500;font-size:9.5px;opacity:0.85;">Se extruye a la MITAD del ancho, AX1L (abierta por un lado) → la DESDO la desdobla al ancho completo.</span>
               </button>
             </div>
-            <div style="font-size:10px;color:#92400e;margin-top:6px;">💡 Define el flujo: en extrusión = 1 ODP directa; embobinado aparte = pasa al Almacén Intermedio y luego a Refilación.</div>
+            ${esDesdo && _anchoP > 0 ? `
+            <div style="margin-top:8px;padding:9px 12px;background:#f5f3ff;border:2px solid #7c3aed;border-radius:8px;font-size:11.5px;color:#5b21b6;font-weight:700;line-height:1.5;">
+              🔄 Con las medidas de ESTE producto: EXTRUSIÓN extruye rollo de <strong>${_anchoP / 2} cm AX1L</strong> (abierto por un lado) → pasa a <strong>EMBOBINADO/REFILACIÓN (DESDO)</strong> → se desdobla y embobina a <strong>${_anchoP} cm</strong>. Cada operador verá SU instrucción en su panel y en la hoja de especificaciones.
+            </div>` : ''}
+            <div style="font-size:10px;color:#92400e;margin-top:6px;">💡 Define el flujo: en extrusión = 1 ODP directa · embobinado aparte y desdobladora = el rollo pasa al Almacén Intermedio y luego a Refilación (P6-REF).</div>
+              `;
+            })()}
           </div>
         `;
       })()}
@@ -51290,10 +51327,13 @@ window.setCorteSalidas = (donde) => {
   _capturarFormPT();
   window.renderSoloModal();
 };
-// 🆕 Modo de refilación: en extrusión (sale terminado) o independiente (P6-REF)
+// 🆕 Modo de refilación: 'extrusion' (sale terminada) · 'proceso_aparte' (ancho
+//    completo → P6-REF a refilar) · 'desdoblado' (mitad del ancho AX1L → la DESDO
+//    la desdobla al ancho completo). 'independiente' queda como valor legado y
+//    se trata igual que proceso_aparte.
 window.setRefilacionModo = (modo) => {
   if (!state.modalForm) return;
-  state.modalForm.refilacion_modo = modo === 'extrusion' ? 'extrusion' : 'independiente';
+  state.modalForm.refilacion_modo = (modo === 'extrusion' || modo === 'desdoblado') ? modo : 'proceso_aparte';
   _capturarFormPT();
   window.renderSoloModal();
 };
