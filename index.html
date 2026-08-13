@@ -4226,7 +4226,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0812-B67-desdoblado-desdo</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0812-B68-indicadores-vivos</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4245,6 +4245,9 @@ function renderApp() {
         <button class="nav-item ${state.vista === 'dashboard' ? 'active' : ''}" data-vista="dashboard">${ICONS.home} Dashboard</button>
         <button class="nav-item ${state.vista === 'directorio' ? 'active' : ''}" data-vista="directorio">📇 Directorio</button>
         <button class="nav-item ${state.vista === 'mapa_flujo' ? 'active' : ''}" data-vista="mapa_flujo">🧭 Mapa del Sistema</button>
+        ${(esCEO || esADMIN || esPLN || u.es_jefe === true) && window._indAreasDe(u).length ? `
+        <button class="nav-item ${state.vista === 'indicadores' ? 'active' : ''}" data-vista="indicadores">📊 Indicadores (Doc 19)</button>
+        ` : ''}
         ${(esCEO || esADMIN || esPLN) ? `
         <button class="nav-item ${state.vista === 'centro_control' ? 'active' : ''}" data-vista="centro_control" style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;font-weight:800;">📊 Centro de Control</button>
         ` : ''}
@@ -4606,6 +4609,7 @@ function renderVista() {
   if (v === 'crm') return renderCRM();
   if (v === 'directorio') return renderDirectorio();
   if (v === 'mapa_flujo') return renderMapaFlujo();
+  if (v === 'indicadores') return renderIndicadores();
   if (v === 'mallas') return renderMallas();
   if (v === 'peletizado') return renderPeletizado();
   if (v === 'almacen_intermedio') return renderAlmacenIntermedio();
@@ -23408,6 +23412,225 @@ window.dirSeedInicial = async () => {
     toast(`📇 ${DIR_SEED.length} personas cargadas al directorio`);
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
+
+// ============================================================
+// 📊 INDICADORES (Doc 19 VIVO) — el sistema CALCULA los KPIs, nadie los saca a
+//    mano. Cada jefe abre los de SU área ya listos (periodo, valor, meta, N de
+//    registros), los proyecta a Dirección en modo presentación o los descarga
+//    en PDF para su junta. Dirección y Planeación ven todas las áreas.
+// ============================================================
+window._indMesActual = () => new Date().toISOString().slice(0, 7);
+// ¿El registro cae en el mes 'YYYY-MM'? Acepta timestamp Firestore, ms o 'YYYY-MM-DD'
+window._enMes = (x, mes) => {
+  if (!x) return false;
+  let d;
+  if (typeof x === 'string') return x.slice(0, 7) === mes;
+  if (x.seconds) d = new Date(x.seconds * 1000);
+  else if (typeof x === 'number') d = new Date(x);
+  else return false;
+  return d.toISOString().slice(0, 7) === mes;
+};
+window._indAreasDe = (u) => {
+  const TODAS = ['comercial', 'planeacion', 'produccion', 'calidad', 'cedis', 'compras', 'finanzas', 'mtto'];
+  if (!u) return [];
+  if (u.rol === 'admin' || ['CEO', 'ADMIN', 'PLN'].includes(u.depto)) return TODAS;
+  const m = { CS: ['comercial'], KAM: ['comercial'], PRO: ['produccion'], CAL: ['calidad'], ALP: ['calidad', 'cedis'], CEDMTY: ['cedis'], CEDMEX: ['cedis'], COMP: ['compras'], FAC: ['finanzas'], CYC: ['finanzas'], MTTO: ['mtto'] };
+  return m[u.depto] || [];
+};
+
+// Motor: cada KPI devuelve { v: valor mostrado, n: registros usados, meta, ok: true/false/null }
+window._indCalcular = (mes) => {
+  const hoy = new Date().toISOString().split('T')[0];
+  const sum = (arr, f) => arr.reduce((s, x) => s + (Number(f(x)) || 0), 0);
+  const $ = (n) => '$' + fmtNum(Math.round(n));
+  const pct = (a, b) => b > 0 ? Math.round((a / b) * 100) : null;
+
+  // fuentes
+  const facs = (state.facturas || []).filter(f => f.estado !== 'cancelada');
+  const facsMes = facs.filter(f => window._enMes(f.fecha || f.created_at, mes));
+  const cobrosMes = (state.cobros || []).filter(c => window._enMes(c.fecha || c.created_at, mes));
+  const rems = state.remisiones || [];
+  const remsEntMes = rems.filter(r => r.estatus === 'entregada' && window._enMes(r.entregada_at || r.updated_at, mes));
+  const opps = (state.crm_oportunidades || []).filter(o => o.activo !== false);
+  const oppsAbiertas = opps.filter(o => !String(o.etapa || '').match(/gan|perd/i));
+  const odps = state.ordenes_produccion || [];
+  const capsMes = (state.capturas_produccion || []).filter(c => !c.anulada && window._enMes(c.fecha || c.created_at, mes));
+  const rollosMes = (state.rollos_extrusion || []).filter(r => !r.anulado && !r.consolidado_en_turno && window._enMes(r.fecha || r.created_at, mes));
+  const kgCaps = sum(capsMes, c => c.producido_kg) + sum(rollosMes, r => r.peso_kg);
+  const mermaKg = sum(capsMes, c => c.mermas_kg) + sum(rollosMes, r => r.mermas_kg);
+  const tarimas = state.tarimas || [];
+  const ocs = state.ordenes_compra || [];
+  const ocsMes = ocs.filter(o => window._enMes(o.fecha_oc || o.created_at, mes));
+  const otis = state.otis || state.oti || [];
+  const ncs = state.no_conformidades || [];
+  const cartera = facs.filter(f => Number(f.saldo !== undefined ? f.saldo : f.monto) > 0.01 && f.estado !== 'pagada');
+  const carteraTotal = sum(cartera, f => f.saldo !== undefined ? f.saldo : f.monto);
+  const carteraVencida = sum(cartera.filter(f => f.vence && f.vence < hoy), f => f.saldo !== undefined ? f.saldo : f.monto);
+  const fact90 = sum(facs.filter(f => { const d = new Date(); d.setDate(d.getDate() - 90); return (f.fecha || '') >= d.toISOString().split('T')[0]; }), f => f.monto);
+  const remsSinFac = rems.filter(r => r.estatus === 'entregada' && !r.factura_folio);
+  const podOk = remsEntMes.filter(r => (r.recibio || r.entrega_recibio || r.recibido_por || r.pod || '').toString().trim()).length;
+  const mallasRojas = (typeof window._mallaEstado === 'function') ? (state.maquinas || []).filter(m => /COEX|EXT/i.test(m.codigo || '')).filter(m => { try { return window._mallaEstado(m).nivel === 'rojo' || window._mallaEstado(m).nivel === 'sin_registro'; } catch (e) { return false; } }).length : null;
+  const refacBajo = (state.productos_mtto || []).filter(p => Number(p.stock_minimo ?? p.minimo) > 0 && Number(p.stock ?? p.existencia ?? 0) < Number(p.stock_minimo ?? p.minimo)).length;
+  const fallas = state.fallas_mantenimiento || [];
+  const pedidos = state.pedidos || [];
+  const cots = state.cotizaciones || [];
+
+  return {
+    comercial: { titulo: '3.1 Comercial (CS/KAM)', kpis: [
+      { k: 'Venta facturada del mes', v: $(sum(facsMes, f => f.monto)), n: facsMes.length, meta: '[DEFINIR]' },
+      { k: 'Pipeline ponderado (opps abiertas)', v: $(sum(oppsAbiertas, o => (Number(o.importe) || 0) * (Number(o.probabilidad) || 0) / 100)), n: oppsAbiertas.length, meta: '[DEFINIR]' },
+      { k: 'Oportunidades ganadas / perdidas (mes)', v: `${opps.filter(o => /gan/i.test(o.etapa || '') && window._enMes(o.etapa_actualizada_at || o.updated_at, mes)).length} / ${opps.filter(o => /perd/i.test(o.etapa || '') && window._enMes(o.etapa_actualizada_at || o.updated_at, mes)).length}`, n: opps.length, meta: 'tendencia' },
+      { k: 'Próximas acciones VENCIDAS (CRM)', v: String((state.crm_actividades || []).filter(a => a.completada !== true && (a.fecha || '') < hoy).length), n: (state.crm_actividades || []).length, meta: '0', ok: (state.crm_actividades || []).filter(a => a.completada !== true && (a.fecha || '') < hoy).length === 0 },
+      { k: 'Cotizaciones → PIs del mes', v: `${cots.filter(c => window._enMes(c.fecha || c.created_at, mes)).length} → ${pedidos.filter(p => window._enMes(p.fecha || p.created_at, mes)).length}`, n: cots.length, meta: '[DEFINIR]' },
+    ]},
+    planeacion: { titulo: '3.2 Planeación', kpis: [
+      { k: 'PIs aprobados del mes', v: String(pedidos.filter(p => window._enMes(p.aprobado_at || p.updated_at, mes) && /aprob|proceso|complet/i.test(p.estatus || '')).length), n: pedidos.length, meta: '—' },
+      { k: 'PIs PENDIENTES de aprobar ahora', v: String(pedidos.filter(p => /pendiente/i.test(p.estatus || '')).length), n: pedidos.length, meta: 'cerca de 0' },
+      { k: 'ODPs cerradas del mes', v: String(odps.filter(o => /cerrad|complet/i.test(o.estatus || '') && window._enMes(o.updated_at || o.created_at, mes)).length), n: odps.length, meta: '—' },
+      { k: 'ODPs abiertas con fecha vencida', v: String(odps.filter(o => !/cerrad|complet|cancel/i.test(o.estatus || '') && (o.fecha_programada || o.fecha_compromiso || o.fecha_entrega || '') && (o.fecha_programada || o.fecha_compromiso || o.fecha_entrega) < hoy).length), n: odps.length, meta: '0', ok: odps.filter(o => !/cerrad|complet|cancel/i.test(o.estatus || '') && (o.fecha_programada || o.fecha_compromiso || o.fecha_entrega || '') && (o.fecha_programada || o.fecha_compromiso || o.fecha_entrega) < hoy).length === 0 },
+      { k: 'MP bajo mínimo', v: String((state.materias_primas || []).filter(m => Number(m.stock_minimo ?? m.minimo) > 0 && Number(m.stock ?? m.existencia ?? 0) < Number(m.stock_minimo ?? m.minimo)).length), n: (state.materias_primas || []).length, meta: '0 sorpresas' },
+    ]},
+    produccion: { titulo: '3.3 Producción', kpis: [
+      { k: 'Kg producidos del mes', v: fmtNum(Math.round(kgCaps)) + ' kg', n: capsMes.length + rollosMes.length, meta: '[DEFINIR]' },
+      { k: 'Merma % del mes', v: (pct(mermaKg, kgCaps + mermaKg) ?? '—') + '%', n: capsMes.length, meta: '[DEFINIR]' },
+      { k: 'Cambios de malla del mes', v: String((state.cambios_malla || []).filter(c => window._enMes(c.created_at, mes) && !c.anulada).length), n: (state.cambios_malla || []).length, meta: 'según programa' },
+      { k: 'Extrusoras con malla vencida o sin registro AHORA', v: mallasRojas === null ? '—' : String(mallasRojas), n: (state.maquinas || []).length, meta: '0', ok: mallasRojas === 0 },
+      { k: 'Kg turno día vs noche (mes)', v: `${fmtNum(Math.round(sum(capsMes.filter(c => c.turno === 'dia'), c => c.producido_kg) + sum(rollosMes.filter(r => r.turno === 'dia'), r => r.peso_kg)))} / ${fmtNum(Math.round(sum(capsMes.filter(c => c.turno === 'noche'), c => c.producido_kg) + sum(rollosMes.filter(r => r.turno === 'noche'), r => r.peso_kg)))}`, n: capsMes.length + rollosMes.length, meta: 'sin brecha' },
+    ]},
+    calidad: { titulo: '3.4 Calidad y ALP', kpis: [
+      { k: 'Tarimas liberadas del mes', v: String(tarimas.filter(t => (t.liberada === true || /liberad/i.test(t.estatus_calidad || '')) && window._enMes(t.liberada_at || t.updated_at, mes)).length), n: tarimas.length, meta: '—' },
+      { k: 'Tarimas RETENIDAS ahora', v: String(tarimas.filter(t => /reten|cuarent/i.test((t.estatus_calidad || t.estatus || '')) && t.estatus !== 'entregada').length), n: tarimas.length, meta: 'cerca de 0' },
+      { k: 'No conformidades del mes', v: String(ncs.filter(n2 => window._enMes(n2.fecha || n2.created_at, mes)).length), n: ncs.length, meta: 'a la baja' },
+      { k: 'NCs con origen CLIENTE (mes)', v: String(ncs.filter(n2 => window._enMes(n2.fecha || n2.created_at, mes) && /client/i.test(n2.origen || '')).length), n: ncs.length, meta: '0', ok: ncs.filter(n2 => window._enMes(n2.fecha || n2.created_at, mes) && /client/i.test(n2.origen || '')).length === 0 },
+      { k: 'OTIs sin confirmar recepción', v: String((otis || []).filter(o => !/recibid|confirmad|cerrad|cancel/i.test(o.estatus || '')).length), n: (otis || []).length, meta: '0' },
+    ]},
+    cedis: { titulo: '3.5 CEDIS MTY y MEX', kpis: [
+      { k: 'Entregas del mes', v: String(remsEntMes.length), n: rems.length, meta: '—' },
+      { k: 'Entregas con POD (quién recibió)', v: (pct(podOk, remsEntMes.length) ?? '—') + '%', n: remsEntMes.length, meta: '100%', ok: remsEntMes.length > 0 ? podOk === remsEntMes.length : null },
+      { k: 'Tarimas en CEDIS sin movimiento +60 días', v: String(tarimas.filter(t => /en_cedis/i.test(t.estatus || '') && t.created_at?.seconds && (Date.now() - t.created_at.seconds * 1000) > 60 * 86400000).length), n: tarimas.length, meta: 'a la baja' },
+      { k: 'Exactitud de inventario (conteo cíclico)', v: 'MANUAL', n: 0, meta: '[DEFINIR]' },
+    ]},
+    compras: { titulo: '3.6 Compras y Abastecimiento', kpis: [
+      { k: 'OCs generadas del mes', v: String(ocsMes.length), n: ocs.length, meta: '—' },
+      { k: 'OCs del mes CON comparativo (2+ cotizaciones)', v: (pct(ocsMes.filter(o => Number(o.cotizaciones_comparadas) >= 2).length, ocsMes.length) ?? '—') + '%', n: ocsMes.length, meta: '[DEFINIR]' },
+      { k: 'OCs abiertas con promesa VENCIDA', v: String(ocs.filter(o => !/recibid|cerrad|complet|cancel/i.test(o.estatus || '') && (o.fecha_promesa || '') && o.fecha_promesa < hoy).length), n: ocs.length, meta: '0', ok: ocs.filter(o => !/recibid|cerrad|complet|cancel/i.test(o.estatus || '') && (o.fecha_promesa || '') && o.fecha_promesa < hoy).length === 0 },
+      { k: 'RCs urgentes del mes', v: String((state.requisiciones_compras || []).filter(r => window._enMes(r.created_at, mes) && /urgent/i.test(r.prioridad || '')).length), n: (state.requisiciones_compras || []).length, meta: 'a la baja' },
+    ]},
+    finanzas: { titulo: '3.7 Facturación y CyC', kpis: [
+      { k: 'Facturado del mes', v: $(sum(facsMes, f => f.monto)), n: facsMes.length, meta: '—' },
+      { k: 'Cobrado del mes', v: $(sum(cobrosMes, c => c.monto)), n: cobrosMes.length, meta: '—' },
+      { k: 'Remisiones entregadas SIN facturar', v: String(remsSinFac.length), n: rems.length, meta: '0', ok: remsSinFac.length === 0 },
+      { k: 'Cartera total / vencida', v: `${$(carteraTotal)} / ${$(carteraVencida)}`, n: cartera.length, meta: 'vencida [DEFINIR]' },
+      { k: 'DSO (días de cartera, base 90 días)', v: fact90 > 0 ? String(Math.round(carteraTotal / (fact90 / 90))) + ' días' : '—', n: cartera.length, meta: '[DEFINIR]' },
+    ]},
+    mtto: { titulo: '3.8 Mantenimiento', kpis: [
+      { k: 'Fallas reportadas del mes', v: String(fallas.filter(f => window._enMes(f.fecha || f.created_at, mes)).length), n: fallas.length, meta: 'a la baja' },
+      { k: 'Fallas ABIERTAS ahora', v: String(fallas.filter(f => !/cerrad|resuelt|reparad|cancel/i.test(f.estatus || '')).length), n: fallas.length, meta: 'cerca de 0' },
+      { k: 'Refacciones bajo mínimo', v: String(refacBajo), n: (state.productos_mtto || []).length, meta: '0', ok: refacBajo === 0 },
+    ]},
+  };
+};
+
+window.indSetMes = (m) => { state.indMes = m; window.forzarRender(); };
+window.indPresentar = (i) => { state.indPresent = i; window.forzarRender(); };
+
+// 📄 Descargar el tablero en PDF (una tabla por área visible)
+window.pdfIndicadores = () => {
+  const mes = state.indMes || window._indMesActual();
+  const data = window._indCalcular(mes);
+  const areas = window._indAreasDe(state.user);
+  const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
+  let y = 16;
+  docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(15);
+  docPDF.text('TABLERO DE INDICADORES - Doc 19', 105, y, { align: 'center' }); y += 6;
+  docPDF.setFontSize(10); docPDF.setFont('helvetica', 'normal');
+  docPDF.text(`Periodo: ${mes} · Generado por el sistema el ${new Date().toLocaleString('es-MX')} · ${state.user?.nombre || ''}`, 105, y, { align: 'center' }); y += 4;
+  docPDF.setFontSize(8); docPDF.setTextColor(120);
+  docPDF.text('Los valores los calcula el ERP con la formula del Doc 19. N = registros usados. Cifras en vivo al momento de generar.', 105, y, { align: 'center' }); y += 6;
+  docPDF.setTextColor(0);
+  areas.forEach(a => {
+    const sec = data[a]; if (!sec) return;
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: sec.titulo.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, ''), colSpan: 4 }], ['Indicador', 'Valor del periodo', 'Meta', 'N']],
+      body: sec.kpis.map(k => [k.k, String(k.v), k.meta || '', String(k.n)]),
+      theme: 'grid', headStyles: { fillColor: [22, 163, 74], fontSize: 8 },
+      styles: { fontSize: 8, cellPadding: 1.6 }, margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 6;
+    if (y > 255) { docPDF.addPage(); y = 16; }
+  });
+  docPDF.save(`Indicadores-${mes}.pdf`);
+  window.logAccion && window.logAccion('tablero_indicadores_pdf', mes, `áreas: ${areas.join(', ')}`);
+};
+
+function renderIndicadores() {
+  const u = state.user || {};
+  const areas = window._indAreasDe(u);
+  if (!areas.length) return `<div style="padding:30px;color:#64748b;">Tu perfil no tiene áreas de indicadores asignadas.</div>`;
+  if (!state.indMes) state.indMes = window._indMesActual();
+  const mes = state.indMes;
+  const data = window._indCalcular(mes);
+  const meses = []; { const d = new Date(); for (let i = 0; i < 12; i++) { meses.push(d.toISOString().slice(0, 7)); d.setMonth(d.getMonth() - 1); } }
+  const semaforo = (k) => k.ok === true ? '#16a34a' : (k.ok === false ? '#dc2626' : '#94a3b8');
+
+  // 🖥 MODO PRESENTACIÓN: un área por pantalla, tipografía grande, para proyectar
+  if (state.indPresent !== undefined && state.indPresent !== null) {
+    const i = Math.max(0, Math.min(areas.length - 1, state.indPresent));
+    const sec = data[areas[i]];
+    return `
+      <div style="max-width:1000px;margin:0 auto;padding:10px 0 40px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+          <div style="font-size:14px;color:#64748b;font-weight:700;">${mes} · ${i + 1} / ${areas.length}</div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn-secondary" onclick="window.indPresentar(${i - 1 < 0 ? areas.length - 1 : i - 1})">← Anterior</button>
+            <button class="btn-secondary" onclick="window.indPresentar(${(i + 1) % areas.length})">Siguiente →</button>
+            <button class="btn-secondary" onclick="state.indPresent = null; window.forzarRender()">✕ Salir</button>
+          </div>
+        </div>
+        <h1 style="font-size:34px;font-weight:900;margin:0 0 20px;">${sec.titulo}</h1>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;">
+          ${sec.kpis.map(k => `
+            <div style="background:#fff;border:2px solid ${semaforo(k)};border-radius:14px;padding:22px;">
+              <div style="font-size:15px;font-weight:700;color:#475569;">${k.k}</div>
+              <div style="font-size:42px;font-weight:900;color:#0f172a;margin:6px 0;">${k.v}</div>
+              <div style="font-size:13px;color:#64748b;">Meta: <strong>${k.meta || '—'}</strong> · ${k.n} registro(s)</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div style="max-width:1080px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
+        <div>
+          <h1 style="font-size:24px;font-weight:900;">📊 Indicadores <span style="font-size:13px;color:#64748b;font-weight:600;">Doc 19 vivo — el sistema los calcula, tú los presentas</span></h1>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <select class="input" style="width:auto;" onchange="window.indSetMes(this.value)">
+            ${meses.map(m => `<option value="${m}" ${m === mes ? 'selected' : ''}>${m}</option>`).join('')}
+          </select>
+          <button class="btn-secondary" onclick="window.indPresentar(0)" style="background:#0f172a;color:#fff;font-weight:800;">🖥 Modo presentación</button>
+          <button class="btn-primary" onclick="window.pdfIndicadores()" style="background:#16a34a;">📄 Descargar PDF</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:16px;">Cifras EN VIVO calculadas con las fórmulas del Doc 19 · N = registros usados en el cálculo · las metas [DEFINIR] se fijan en la junta del 4 de septiembre y quedan aquí.</div>
+      ${areas.map(a => { const sec = data[a]; if (!sec) return ''; return `
+        <div style="margin-bottom:22px;">
+          <h2 style="font-size:17px;font-weight:900;color:#0f172a;margin:0 0 10px;border-bottom:2px solid #16a34a;padding-bottom:4px;">${sec.titulo}</h2>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;">
+            ${sec.kpis.map(k => `
+              <div style="background:#fff;border:1.5px solid #e2e8f0;border-left:4px solid ${semaforo(k)};border-radius:10px;padding:12px 14px;">
+                <div style="font-size:11.5px;font-weight:700;color:#475569;">${k.k}</div>
+                <div style="font-size:24px;font-weight:900;color:#0f172a;margin:3px 0;">${k.v}</div>
+                <div style="font-size:10.5px;color:#94a3b8;">Meta: <strong>${k.meta || '—'}</strong> · N=${k.n}</div>
+              </div>`).join('')}
+          </div>
+        </div>`; }).join('')}
+      <div style="font-size:11px;color:#94a3b8;margin-top:8px;">"MANUAL" = ese indicador todavía se levanta a mano (conteo físico). "—" = sin datos en el periodo. Si un número se ve raro, revisa N: pocos registros = arranque del sistema, no tendencia.</div>
+    </div>
+  `;
+}
 
 // ============================================================
 // 🧭 MAPA DEL SISTEMA — el flujo completo del negocio dentro del ERP.
