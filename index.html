@@ -4226,7 +4226,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0814-B70-blindaje-vistas</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0814-B72-pdf-ejecutivo-graficas</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4281,7 +4281,8 @@ function renderApp() {
         ${esPLN && !supervisorRestringido ? `
           <button class="nav-item ${state.vista === 'programacion' ? 'active' : ''}" data-vista="programacion">🏭 Programación</button>
         ` : ''}
-        ${esPRO ? `
+        ${(esPRO || esPLN) ? `
+          <!-- ⏳ TEMPORAL: PLN también captura en el panel mientras se ajustan los ritmos de trabajo -->
           <button class="nav-item ${state.vista === 'panel_operador' ? 'active' : ''}" data-vista="panel_operador" style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;font-weight:800;">🎯 Panel Operador${supervisorRestringido ? ` · ${getProc(u.proceso_asignado)?.nombre || ''}` : ''}</button>
         ` : ''}
         ${(esPRO || esPLN) ? `
@@ -4352,8 +4353,11 @@ function renderApp() {
           <div class="sidebar-section">Compras</div>
           <button class="nav-item ${state.vista === 'compras_tablero' ? 'active' : ''}" data-vista="compras_tablero">🧭 Seguimiento de compras</button>
           <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Solicitar material (RC)</button>
-          ${(esCOMP || esCEO || esADMIN) ? `
+          ${(esCOMP || esFAC || esCYC || esCEO || esADMIN) ? `
+            <!-- 💰 FAC/CyC entran a OCs para el seguimiento de CUENTAS POR PAGAR -->
             <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes de Compra</button>
+          ` : ''}
+          ${(esCOMP || esCEO || esADMIN) ? `
             <button class="nav-item ${state.vista === 'proveedores' ? 'active' : ''}" data-vista="proveedores">🏭 Proveedores</button>
           ` : ''}
           ${(esALP || esCEDMTY || esCEDMEX || esADMIN || esCOMP || esCEO) ? `
@@ -4387,19 +4391,20 @@ function renderApp() {
         ` : ''}
         -->
         
-        <!-- 🔒 OCULTOS HASTA ACTIVAR OFICINA/COMERCIALIZADO (arranque solo con producción)
+        <!-- 🔒 OCULTO HASTA ACTIVAR OFICINA (arranque solo con producción)
         ${esVerOficina ? `
           <div class="sidebar-section">Oficina</div>
           <button class="nav-item ${state.vista === 'productos_oficina' ? 'active' : ''}" data-vista="productos_oficina">🖇️ Productos Oficina</button>
           <button class="nav-item ${state.vista === 'inventario_oficina' ? 'active' : ''}" data-vista="inventario_oficina">📊 Inventario Oficina</button>
         ` : ''}
-        
+        -->
+
+        <!-- 🛒 COMERCIALIZADO ACTIVADO (14-ago): alta de productos, RCs y su inventario -->
         ${esVerCOM ? `
           <div class="sidebar-section">Comercializado</div>
           <button class="nav-item ${state.vista === 'productos_com' ? 'active' : ''}" data-vista="productos_com">🛒 Productos Comercializados</button>
           <button class="nav-item ${state.vista === 'inventario_com' ? 'active' : ''}" data-vista="inventario_com">📊 Inventario Comercializado</button>
         ` : ''}
-        -->
         
         ${(esCS || esPLN || esPRO || esCAL || esCEO || esADMIN) ? `
         <div class="sidebar-section">Catálogos</div>
@@ -4597,8 +4602,10 @@ window._vistaPermitida = (v) => {
     salidas_dia: () => en('CS', 'KAM', 'PLN', 'FAC', 'CYC', 'CEDMTY', 'CEDMEX') || jefeAlm,
     stock_producto: () => en('CS', 'KAM'),
     almacen_planta: () => en('ALP', 'CAL') || jefeAlm,
-    ordenes_compra: () => en('COMP'),
+    ordenes_compra: () => en('COMP', 'FAC', 'CYC'), // FAC/CyC: seguimiento de cuentas por pagar
     proveedores: () => en('COMP'),
+    productos_com: () => en('CS', 'KAM', 'CEDMTY', 'CEDMEX', 'COMP'),
+    inventario_com: () => en('CS', 'KAM', 'CEDMTY', 'CEDMEX', 'COMP'),
     almacen_mp: () => en('ALP', 'CAL', 'PLN', 'COMP'),
     usuarios: () => dir,
     // Operación por almacén: cada CEDIS lo suyo; embarques para comercial y su CEDIS
@@ -23492,10 +23499,10 @@ window._enMes = (x, mes) => {
   return d.toISOString().slice(0, 7) === mes;
 };
 window._indAreasDe = (u) => {
-  const TODAS = ['comercial', 'planeacion', 'produccion', 'calidad', 'cedis', 'compras', 'finanzas', 'mtto'];
+  const TODAS = ['comercial', 'planeacion', 'produccion', 'calidad', 'cedis', 'compras', 'tesoreria', 'finanzas', 'mtto'];
   if (!u) return [];
   if (u.rol === 'admin' || ['CEO', 'ADMIN', 'PLN'].includes(u.depto)) return TODAS;
-  const m = { CS: ['comercial'], KAM: ['comercial'], PRO: ['produccion'], CAL: ['calidad'], ALP: ['calidad', 'cedis'], CEDMTY: ['cedis'], CEDMEX: ['cedis'], COMP: ['compras'], FAC: ['finanzas'], CYC: ['finanzas'], MTTO: ['mtto'] };
+  const m = { CS: ['comercial'], KAM: ['comercial'], PRO: ['produccion'], CAL: ['calidad'], ALP: ['calidad', 'cedis'], CEDMTY: ['cedis'], CEDMEX: ['cedis'], COMP: ['compras', 'tesoreria'], FAC: ['finanzas', 'tesoreria'], CYC: ['finanzas', 'tesoreria'], MTTO: ['mtto'] };
   return m[u.depto] || [];
 };
 
@@ -23577,6 +23584,23 @@ window._indCalcular = (mes) => {
       { k: 'OCs abiertas con promesa VENCIDA', v: String(ocs.filter(o => !/recibid|cerrad|complet|cancel/i.test(o.estatus || '') && (o.fecha_promesa || '') && o.fecha_promesa < hoy).length), n: ocs.length, meta: '0', ok: ocs.filter(o => !/recibid|cerrad|complet|cancel/i.test(o.estatus || '') && (o.fecha_promesa || '') && o.fecha_promesa < hoy).length === 0 },
       { k: 'RCs urgentes del mes', v: String((state.requisiciones_compras || []).filter(r => window._enMes(r.created_at, mes) && /urgent/i.test(r.prioridad || '')).length), n: (state.requisiciones_compras || []).length, meta: 'a la baja' },
     ]},
+    tesoreria: { titulo: '3.6-B Tesorería — Cuentas por Pagar y programación de pagos', kpis: (() => {
+      const cxp = ocs.filter(o => window._ocEsCxP && window._ocEsCxP(o));
+      const $$ = (n) => '$' + fmtNum(Math.round(n));
+      const monto = (o) => window._ocMontoMXN(o);
+      const en7 = (() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toLocaleDateString('en-CA'); })();
+      const vencidas = cxp.filter(o => { const v = window._ocVencePago(o); return v && v < hoy; });
+      const prox7 = cxp.filter(o => { const v = window._ocVencePago(o); return v && v >= hoy && v <= en7; });
+      const pagadasMes = ocs.filter(o => o.pagada === true && window._enMes(o.pago_fecha, mes));
+      const comprometido = ocs.filter(o => !/recibid|cerrad|complet|cancel/i.test(o.estatus || '')).reduce((s, o) => s + monto(o), 0);
+      return [
+        { k: 'Cuentas por pagar (OCs recibidas sin pagar)', v: `${$$(cxp.reduce((s, o) => s + monto(o), 0))} · ${cxp.length} OC(s)`, n: cxp.length, meta: '—' },
+        { k: 'Pagos VENCIDOS', v: `${$$(vencidas.reduce((s, o) => s + monto(o), 0))} · ${vencidas.length} OC(s)`, n: vencidas.length, meta: '0', ok: vencidas.length === 0 },
+        { k: 'Por pagar en los PRÓXIMOS 7 DÍAS', v: `${$$(prox7.reduce((s, o) => s + monto(o), 0))} · ${prox7.length} OC(s)`, n: prox7.length, meta: 'programar' },
+        { k: 'Pagado del mes', v: $$(pagadasMes.reduce((s, o) => s + monto(o), 0)), n: pagadasMes.length, meta: '—' },
+        { k: 'Comprometido en OCs abiertas (aún no recibidas)', v: $$(comprometido), n: ocs.filter(o => !/recibid|cerrad|complet|cancel/i.test(o.estatus || '')).length, meta: 'para proyectar flujo' },
+      ];
+    })() },
     finanzas: { titulo: '3.7 Facturación y CyC', kpis: [
       { k: 'Facturado del mes', v: $(sum(facsMes, f => f.monto)), n: facsMes.length, meta: '—' },
       { k: 'Cobrado del mes', v: $(sum(cobrosMes, c => c.monto)), n: cobrosMes.length, meta: '—' },
@@ -23595,34 +23619,115 @@ window._indCalcular = (mes) => {
 window.indSetMes = (m) => { state.indMes = m; window.forzarRender(); };
 window.indPresentar = (i) => { state.indPresent = i; window.forzarRender(); };
 
-// 📄 Descargar el tablero en PDF (una tabla por área visible)
+// 📄 REPORTE EJECUTIVO en PDF: identidad, tabla comparativa vs mes anterior con
+//    semáforo, y GRÁFICA de barras por área (mes anterior gris vs actual verde).
+//    Lo usan Indicadores y el Centro de Control — es LA presentación de la junta.
+window._indNum = (v) => {
+  const s = String(v ?? '');
+  if (s.includes('/')) return null;                 // "12 / 3" no se grafica como uno
+  const m = s.replace(/[,$\s]/g, '').match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : null;
+};
+window._mesAnterior = (mes) => { const d = new Date(mes + '-15T12:00:00'); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); };
+window._sinEmojiPdf = (t) => String(t).replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, '').trim();
 window.pdfIndicadores = () => {
   const mes = state.indMes || window._indMesActual();
+  const mesPrev = window._mesAnterior(mes);
   const data = window._indCalcular(mes);
+  const dataPrev = window._indCalcular(mesPrev);
   const areas = window._indAreasDe(state.user);
   const docPDF = new jsPDF({ unit: 'mm', format: 'a4' });
-  let y = 16;
-  docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(15);
-  docPDF.text('TABLERO DE INDICADORES - Doc 19', 105, y, { align: 'center' }); y += 6;
-  docPDF.setFontSize(10); docPDF.setFont('helvetica', 'normal');
-  docPDF.text(`Periodo: ${mes} · Generado por el sistema el ${new Date().toLocaleString('es-MX')} · ${state.user?.nombre || ''}`, 105, y, { align: 'center' }); y += 4;
-  docPDF.setFontSize(8); docPDF.setTextColor(120);
-  docPDF.text('Los valores los calcula el ERP con la formula del Doc 19. N = registros usados. Cifras en vivo al momento de generar.', 105, y, { align: 'center' }); y += 6;
-  docPDF.setTextColor(0);
+  const W = 210, margen = 14;
+  const VERDE = [22, 163, 74], AZUL = [30, 58, 138], GRISB = [148, 163, 184], ROJO = [220, 38, 38];
+
+  const encabezado = () => {
+    try { docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', margen, 8, 26, 11.6); } catch (e) {}
+    docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(14); docPDF.setTextColor(...AZUL);
+    docPDF.text('TABLERO DE INDICADORES', W - margen, 12, { align: 'right' });
+    docPDF.setFontSize(9); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(90);
+    docPDF.text(`Doc 19 vivo · Periodo ${mes} (comparado vs ${mesPrev})`, W - margen, 17, { align: 'right' });
+    docPDF.setDrawColor(...VERDE); docPDF.setLineWidth(0.8); docPDF.line(margen, 21.5, W - margen, 21.5);
+    docPDF.setLineWidth(0.2);
+    return 26;
+  };
+  const pie = () => {
+    const total = docPDF.getNumberOfPages();
+    for (let p = 1; p <= total; p++) {
+      docPDF.setPage(p);
+      docPDF.setFontSize(7); docPDF.setTextColor(150);
+      docPDF.text(`${DATOS_EMPRESA.razon_social} · generado por el sistema ${new Date().toLocaleString('es-MX')} · ${state.user?.nombre || ''} · pág. ${p}/${total}`, W / 2, 291, { align: 'center' });
+    }
+  };
+  let y = encabezado();
+
   areas.forEach(a => {
     const sec = data[a]; if (!sec) return;
+    const prevSec = dataPrev[a] || { kpis: [] };
+    // Espacio estimado: tabla + gráfica
+    if (y > 200) { docPDF.addPage(); y = encabezado(); }
+    // Banda de sección
+    docPDF.setFillColor(...AZUL);
+    docPDF.rect(margen, y, W - margen * 2, 7, 'F');
+    docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(10); docPDF.setTextColor(255);
+    docPDF.text(window._sinEmojiPdf(sec.titulo), margen + 3, y + 4.8);
+    y += 9;
+    // Tabla comparativa con semáforo
     docPDF.autoTable({
       startY: y,
-      head: [[{ content: sec.titulo.replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, ''), colSpan: 4 }], ['Indicador', 'Valor del periodo', 'Meta', 'N']],
-      body: sec.kpis.map(k => [k.k, String(k.v), k.meta || '', String(k.n)]),
-      theme: 'grid', headStyles: { fillColor: [22, 163, 74], fontSize: 8 },
-      styles: { fontSize: 8, cellPadding: 1.6 }, margin: { left: 14, right: 14 },
+      head: [['Indicador', `Mes anterior (${mesPrev})`, `Mes actual (${mes})`, 'Meta', 'N']],
+      body: sec.kpis.map((k, i) => [window._sinEmojiPdf(k.k), window._sinEmojiPdf(prevSec.kpis[i]?.v ?? '—'), window._sinEmojiPdf(k.v), window._sinEmojiPdf(k.meta || '—'), String(k.n)]),
+      theme: 'grid',
+      headStyles: { fillColor: VERDE, fontSize: 7.5, cellPadding: 1.6 },
+      styles: { fontSize: 8, cellPadding: 1.6, textColor: [30, 41, 59] },
+      columnStyles: { 0: { cellWidth: 62, fontStyle: 'bold' }, 1: { cellWidth: 38, halign: 'right', textColor: [120, 120, 120] }, 2: { cellWidth: 40, halign: 'right', fontStyle: 'bold' }, 3: { cellWidth: 28 }, 4: { cellWidth: 10, halign: 'center' } },
+      didParseCell: (h) => {
+        if (h.section === 'body' && h.column.index === 2) {
+          const k = sec.kpis[h.row.index];
+          if (k && k.ok === true) h.cell.styles.textColor = VERDE;
+          if (k && k.ok === false) h.cell.styles.textColor = ROJO;
+        }
+      },
+      margin: { left: margen, right: margen },
     });
-    y = docPDF.lastAutoTable.finalY + 6;
-    if (y > 255) { docPDF.addPage(); y = 16; }
+    y = docPDF.lastAutoTable.finalY + 4;
+    // 📊 GRÁFICA: barras horizontales actual vs anterior (solo KPIs numéricos)
+    const graficables = sec.kpis.map((k, i) => ({ nombre: k.k, act: window._indNum(k.v), ant: window._indNum(prevSec.kpis[i]?.v) }))
+      .filter(g => g.act !== null && isFinite(g.act));
+    if (graficables.length) {
+      const filaH = 9, chartH = graficables.length * filaH + 8;
+      if (y + chartH > 275) { docPDF.addPage(); y = encabezado(); }
+      const maxV = Math.max(...graficables.map(g => Math.max(Math.abs(g.act), Math.abs(g.ant ?? 0))), 1);
+      const x0 = margen + 60, wMax = W - margen - x0 - 20;
+      docPDF.setFontSize(7.5); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(90);
+      docPDF.text('COMPARATIVO', margen, y + 3);
+      docPDF.setFillColor(...GRISB); docPDF.rect(margen + 26, y, 4, 3, 'F');
+      docPDF.setFont('helvetica', 'normal'); docPDF.text(mesPrev, margen + 31.5, y + 2.7);
+      docPDF.setFillColor(...VERDE); docPDF.rect(margen + 46, y, 4, 3, 'F');
+      docPDF.text(mes, margen + 51.5, y + 2.7);
+      y += 6;
+      graficables.forEach(g => {
+        docPDF.setFontSize(7); docPDF.setTextColor(60);
+        const nom = window._sinEmojiPdf(g.nombre);
+        docPDF.text(nom.length > 42 ? nom.slice(0, 41) + '…' : nom, margen, y + 3.4);
+        if (g.ant !== null && isFinite(g.ant)) {
+          docPDF.setFillColor(...GRISB);
+          docPDF.rect(x0, y, Math.max(0.8, Math.abs(g.ant) / maxV * wMax), 2.6, 'F');
+          docPDF.setFontSize(6); docPDF.setTextColor(130);
+          docPDF.text(fmtNum(Math.round(g.ant)), x0 + Math.max(0.8, Math.abs(g.ant) / maxV * wMax) + 1.5, y + 2.2);
+        }
+        docPDF.setFillColor(...VERDE);
+        docPDF.rect(x0, y + 3.2, Math.max(0.8, Math.abs(g.act) / maxV * wMax), 2.6, 'F');
+        docPDF.setFontSize(6.5); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(...VERDE);
+        docPDF.text(fmtNum(Math.round(g.act)), x0 + Math.max(0.8, Math.abs(g.act) / maxV * wMax) + 1.5, y + 5.4);
+        docPDF.setFont('helvetica', 'normal');
+        y += filaH;
+      });
+      y += 4;
+    }
   });
+  pie();
   docPDF.save(`Indicadores-${mes}.pdf`);
-  window.logAccion && window.logAccion('tablero_indicadores_pdf', mes, `áreas: ${areas.join(', ')}`);
+  window.logAccion && window.logAccion('tablero_indicadores_pdf', mes, `áreas: ${areas.join(', ')} · comparado vs ${mesPrev}`);
 };
 
 function renderIndicadores() {
@@ -29403,6 +29508,7 @@ function renderCentroControl() {
           <button onclick="state.kpi_periodo=${d};render();" style="padding:6px 14px;background:${dias === d ? '#0f172a' : '#fff'};color:${dias === d ? '#fff' : '#475569'};border:1.5px solid ${dias === d ? '#0f172a' : '#cbd5e1'};border-radius:8px;font-weight:700;font-size:11.5px;cursor:pointer;">${lbl}</button>
         `).join('')}
         <button onclick="window.generarReporteEjecutivoPDF()" style="padding:8px 18px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;box-shadow:0 2px 6px rgba(220,38,38,0.3);">📄 Reporte PDF para Dirección</button>
+        <button onclick="window.pdfIndicadores()" style="padding:8px 18px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;box-shadow:0 2px 6px rgba(22,163,74,0.3);" title="Tabla comparativa vs mes anterior + gráficas de barras por área (Doc 19)">📊 Tablero mensual con gráficas</button>
       </div>
     </div>
     
@@ -34316,6 +34422,56 @@ window.cotProvElegir = async (id) => {
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
+// ============================================================
+// 💰 CUENTAS POR PAGAR (CxP) — el seguimiento de pagos a proveedores.
+//    Una OC RECIBIDA y no pagada es una cuenta por pagar. Su vencimiento se
+//    ESTIMA: fecha promesa (proxy de la recepción) + días de crédito del
+//    proveedor. Tesorería/FAC/Compras marcan el pago con referencia.
+// ============================================================
+window._ocMontoMXN = (oc) => Number(oc.costo_total_mxn) || Number(oc.costo_total) || 0;
+window._ocEsCxP = (oc) => /recibid|cerrad|complet/i.test(oc.estatus || '') && oc.pagada !== true && oc.estatus !== 'cancelada';
+window._ocVencePago = (oc) => {
+  const base = oc.pago_vence || oc.fecha_promesa || oc.fecha_oc || '';
+  if (oc.pago_vence) return oc.pago_vence;
+  if (!base) return '';
+  const prov = (state.proveedores || []).find(p => p.id === oc.proveedor_id);
+  const dias = Number(prov?.dias_credito) || 0;
+  const d = new Date(base + 'T12:00:00');
+  d.setDate(d.getDate() + dias);
+  return d.toISOString().split('T')[0];
+};
+window._cxpPuede = () => { const u = state.user || {}; return u.rol === 'admin' || ['COMP', 'FAC', 'CYC', 'CEO', 'ADMIN'].includes(u.depto); };
+window.ocMarcarPagada = async (id) => {
+  if (!window._cxpPuede()) { toast('🔒 Solo Compras, Facturación y Tesorería registran pagos', 'error'); return; }
+  const oc = (state.ordenes_compra || []).find(o => o.id === id); if (!oc) return;
+  const ref = prompt(`💰 REGISTRAR PAGO de la OC ${oc.folio}\n\nProveedor: ${oc.proveedor}\nMonto: $${fmtNum(window._ocMontoMXN(oc).toFixed(2))} ${oc.moneda || 'MXN'}\n\nReferencia del pago (transferencia, cheque, etc.):`);
+  if (ref === null) return;
+  if (!String(ref).trim()) { toast('Sin referencia no se registra: es el comprobante del pago', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'ordenes_compra', id), {
+      pagada: true,
+      pago_fecha: new Date().toLocaleDateString('en-CA'),
+      pago_referencia: String(ref).trim(),
+      pago_registrado_por: state.user?.nombre || state.user?.email || '',
+      updated_at: serverTimestamp(),
+    });
+    window.logAccion('oc_pagada', oc.folio, `${oc.proveedor} · $${fmtNum(window._ocMontoMXN(oc).toFixed(2))} · ref: ${String(ref).trim()}`);
+    toast(`💰 OC ${oc.folio} marcada como PAGADA`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+window.ocDesmarcarPago = async (id) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Dirección corrige pagos registrados', 'error'); return; }
+  const oc = (state.ordenes_compra || []).find(o => o.id === id); if (!oc) return;
+  const motivo = prompt(`Quitar la marca de PAGADA a la OC ${oc.folio}. Motivo:`);
+  if (motivo === null || !String(motivo).trim()) return;
+  try {
+    await updateDoc(doc(db, 'ordenes_compra', id), { pagada: false, pago_correccion: String(motivo).trim(), updated_at: serverTimestamp() });
+    window.logAccion('oc_pago_corregido', oc.folio, String(motivo).trim());
+    toast('Pago desmarcado');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
 function modalComparativoCotizaciones() {
   const rc = (state.requisiciones_compras || []).find(r => r.id === state.modalData);
   if (!rc) return '';
@@ -37828,6 +37984,13 @@ function renderTarjetaOC(oc, esCOMP) {
         <button onclick="imprimirPreOrdenPDF('${oc.id}')" style="padding:6px 12px;background:#f59e0b;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📋 Pre-orden ALP</button>
         ${oc.estatus !== 'recibida' && oc.estatus !== 'cancelada' ? `
           <button onclick="abrirModal('recibir-oc','${oc.id}')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">📥 Capturar recepción</button>
+        ` : ''}
+        ${window._ocEsCxP && window._ocEsCxP(oc) ? `
+          <span style="padding:6px 10px;background:#fef3c7;color:#92400e;border:1.5px solid #f59e0b;border-radius:6px;font-weight:800;font-size:10.5px;">💰 POR PAGAR${(() => { const v = window._ocVencePago(oc); const hoy = new Date().toLocaleDateString('en-CA'); return v ? ` · vence ${v}${v < hoy ? ' ⚠ VENCIDO' : ''}` : ''; })()}</span>
+          ${window._cxpPuede() ? `<button onclick="window.ocMarcarPagada('${oc.id}')" style="padding:6px 12px;background:#0f766e;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">💰 Registrar pago</button>` : ''}
+        ` : ''}
+        ${oc.pagada === true ? `
+          <span style="padding:6px 10px;background:#dcfce7;color:#166534;border:1.5px solid #16a34a;border-radius:6px;font-weight:800;font-size:10.5px;" title="Ref: ${(oc.pago_referencia || '').replace(/"/g, '&quot;')} · registró ${oc.pago_registrado_por || ''}">✅ PAGADA ${oc.pago_fecha || ''}</span>
         ` : ''}
         ${esCOMP ? `
           <button onclick="abrirModal('editar-oc','${oc.id}')" style="padding:6px 12px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;" title="Editar proveedor, destino, fecha, cantidades, moneda, IVA y costos">${ICONS.edit} Editar</button>
