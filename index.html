@@ -4226,7 +4226,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0814-B72-pdf-ejecutivo-graficas</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0814-B73-fix-pdf-vista-previa</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -23631,6 +23631,9 @@ window._indNum = (v) => {
 window._mesAnterior = (mes) => { const d = new Date(mes + '-15T12:00:00'); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); };
 window._sinEmojiPdf = (t) => String(t).replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, '').trim();
 window.pdfIndicadores = () => {
+  try {
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página (Ctrl+Shift+R).', 'error'); return; }
+  const { jsPDF } = window.jspdf;
   const mes = state.indMes || window._indMesActual();
   const mesPrev = window._mesAnterior(mes);
   const data = window._indCalcular(mes);
@@ -23726,8 +23729,14 @@ window.pdfIndicadores = () => {
     }
   });
   pie();
-  docPDF.save(`Indicadores-${mes}.pdf`);
+  // Misma experiencia que el resto del sistema: VISTA PREVIA antes de descargar
+  if (typeof _mostrarVistaPreviaPDF === 'function') {
+    _mostrarVistaPreviaPDF(docPDF, `Indicadores-${mes}.pdf`, `Tablero de Indicadores · ${mes} vs ${mesPrev}`);
+  } else {
+    docPDF.save(`Indicadores-${mes}.pdf`);
+  }
   window.logAccion && window.logAccion('tablero_indicadores_pdf', mes, `áreas: ${areas.join(', ')} · comparado vs ${mesPrev}`);
+  } catch (e) { toast('Error al generar el PDF: ' + e.message, 'error'); console.error(e); }
 };
 
 function renderIndicadores() {
@@ -29754,7 +29763,8 @@ window.generarReporteEjecutivoPDF = () => {
     docPDF.autoTable({
       startY: y,
       head: [['', 'Problema detectado', 'Detalle']],
-      body: D.alertas.map(a => [a.icono, a.txt, a.detalle.substring(0, 110)]),
+      // 🔧 Sin emojis: las fuentes estándar de jsPDF los pintan como signos raros
+      body: D.alertas.map(a => ['!', window._sinEmojiPdf(a.txt), window._sinEmojiPdf(a.detalle).substring(0, 110)]),
       margin: { left: M, right: M },
       styles: { fontSize: 8, cellPadding: 2 },
       headStyles: { fillColor: ROJO, fontSize: 8.5 },
@@ -29796,28 +29806,44 @@ window.generarReporteEjecutivoPDF = () => {
   y = docPDF.lastAutoTable.finalY + 8;
   
   // ── GRÁFICA: PRODUCCIÓN DIARIA (barras nativas) ──
+  // 🔧 REDISEÑO: 7 mm de aire bajo el título (antes las etiquetas de valor de la
+  //    barra más alta se ENCIMABAN con él), línea base, y en periodos largos
+  //    (30/90 días) las etiquetas se muestran salteadas para no encimarse entre sí.
   const dibujarBarras = (titulo, datos, colorRGB, maxAncho = W - 2 * M, alturaG = 42) => {
-    if (y + alturaG + 16 > 282) { docPDF.addPage(); y = 16; }
+    if (y + alturaG + 22 > 282) { docPDF.addPage(); y = 16; }
     docPDF.setFontSize(10.5); docPDF.setFont(undefined, 'bold'); docPDF.setTextColor(...NEGRO);
-    docPDF.text(titulo, M, y); 
+    docPDF.text(titulo, M, y);
     docPDF.setFont(undefined, 'normal');
-    y += 3;
+    y += 7;
     const maxV = Math.max(...datos.map(d => d.valor), 1);
-    const n = datos.length;
-    const bw = Math.min(14, (maxAncho - 10) / n - 2);
+    const n = Math.max(1, datos.length);
+    const gap = n > 20 ? 0.8 : 2;
+    const bw = Math.max(1, Math.min(14, (maxAncho - 10) / n - gap));
+    const pasoLbl = Math.ceil(n / 14);  // máx ~14 etiquetas legibles por gráfica
+    // línea base
+    docPDF.setDrawColor(203, 213, 225); docPDF.setLineWidth(0.3);
+    docPDF.line(M + 2, y + alturaG, M + 4 + n * (bw + gap), y + alturaG);
     datos.forEach((d, i) => {
       const bh = Math.max(0.5, (d.valor / maxV) * alturaG);
-      const x = M + 4 + i * (bw + 2);
+      const x = M + 4 + i * (bw + gap);
       docPDF.setFillColor(...(d.colorRGB || colorRGB));
       docPDF.rect(x, y + alturaG - bh, bw, bh, 'F');
-      docPDF.setFontSize(5.5); docPDF.setTextColor(...GRIS);
-      docPDF.text(d.label, x + bw / 2, y + alturaG + 3.5, { align: 'center' });
-      if (d.valor > 0) {
+      if (i % pasoLbl === 0 || i === n - 1) {
+        docPDF.setFontSize(5.5); docPDF.setTextColor(...GRIS);
+        docPDF.text(String(d.label), x + bw / 2, y + alturaG + 3.5, { align: 'center' });
+      }
+      // valor encima de la barra solo si hay espacio horizontal para leerlo
+      if (d.valor > 0 && bw >= 5) {
         docPDF.setFontSize(5.5); docPDF.setTextColor(...NEGRO);
         docPDF.text(String(fmtNum(Math.round(d.valor))), x + bw / 2, y + alturaG - bh - 1, { align: 'center' });
       }
     });
-    y += alturaG + 10;
+    // máximo del periodo como referencia cuando las barras van sin valor
+    if (bw < 5) {
+      docPDF.setFontSize(6); docPDF.setTextColor(...GRIS);
+      docPDF.text(`máx: ${fmtNum(Math.round(maxV))}`, M + maxAncho - 2, y + 2, { align: 'right' });
+    }
+    y += alturaG + 12;
   };
   
   seccion('TENDENCIAS DEL PERIODO');
