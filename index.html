@@ -4226,7 +4226,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-logo" style="display:flex;align-items:center;gap:8px;padding:8px 16px 18px;">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" style="height:34px;width:auto;background:#fff;border-radius:6px;padding:3px;" />
-          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0812-B68-indicadores-vivos</span></div>
+          <div style="font-size:14px;font-weight:900;color:#3fd34b;line-height:1.1;">NewPack<br><span style="font-size:9px;color:#94a3b8;font-weight:600;">ERP v6 · build 0814-B70-blindaje-vistas</span></div>
         </div>
         
         ${supervisorRestringido ? `
@@ -4567,8 +4567,69 @@ function tituloVista() {
   })[state.vista] || '';
 }
 
+// 🔒 BLINDAJE DE VISTAS: ocultar un botón NO es seguridad — este guardián valida
+//    el departamento ANTES de pintar la vista. Espeja los mismos candados de la
+//    barra lateral, para que sean UNA sola verdad aunque alguien llegue a una
+//    vista por otra ruta (estado guardado, botón interno, cambio de depto).
+window._vistaPermitida = (v) => {
+  const u = state.user || {};
+  const admin = u.rol === 'admin';
+  const d = u.depto || '';
+  const dir = admin || d === 'CEO' || d === 'ADMIN';
+  const en = (...deptos) => dir || deptos.includes(d);
+  const jefeAlm = (d === 'COMP' && u.es_jefe === true);
+  const G = {
+    clientes: () => en('CS', 'KAM', 'FAC', 'CYC'),
+    cotizador: () => en('CS', 'KAM', 'FAC', 'CYC'),
+    crm: () => en('CS', 'KAM'),
+    seguimiento: () => en('CS', 'KAM'),
+    pedidos: () => en('CS', 'KAM', 'PLN'),
+    facturacion: () => en('FAC', 'CYC', 'CS', 'KAM'),
+    historico_remisiones: () => en('CS', 'KAM', 'FAC', 'CYC'),
+    rh: () => en('RH'),
+    bitacora: () => dir,
+    centro_control: () => en('PLN'),
+    indicadores: () => (dir || d === 'PLN' || u.es_jefe === true) && (window._indAreasDe(u) || []).length > 0,
+    programacion: () => en('PLN'),
+    productos_pt: () => en('CS', 'KAM', 'PLN', 'PRO', 'CAL', 'ALP'),
+    inv_mty: () => en('CS', 'KAM', 'PLN', 'FAC', 'CYC', 'CEDMTY') || jefeAlm,
+    inv_mex: () => en('CS', 'KAM', 'PLN', 'FAC', 'CYC', 'CEDMEX') || jefeAlm,
+    salidas_dia: () => en('CS', 'KAM', 'PLN', 'FAC', 'CYC', 'CEDMTY', 'CEDMEX') || jefeAlm,
+    stock_producto: () => en('CS', 'KAM'),
+    almacen_planta: () => en('ALP', 'CAL') || jefeAlm,
+    ordenes_compra: () => en('COMP'),
+    proveedores: () => en('COMP'),
+    almacen_mp: () => en('ALP', 'CAL', 'PLN', 'COMP'),
+    usuarios: () => dir,
+    // Operación por almacén: cada CEDIS lo suyo; embarques para comercial y su CEDIS
+    recepcion_cedis: () => en('CEDMTY'),
+    cedis_mty: () => en('CEDMTY'),
+    cedis_mex: () => en('CEDMEX'),
+    oti_planta: () => en('ALP', 'CAL'),
+    embarques_mty: () => en('CS', 'KAM', 'CEDMTY'),
+    embarques_mex: () => en('CS', 'KAM', 'CEDMEX'),
+    // Calidad y trazabilidad
+    calidad: () => en('CAL', 'ALP'),
+    certificados_calidad: () => en('CS', 'KAM', 'CAL', 'ALP'),
+    devoluciones: () => en('CS', 'KAM', 'CAL', 'ALP'),
+    recall: () => en('CS', 'KAM', 'CAL', 'ALP'),
+    nc: () => en('CS', 'KAM', 'CAL', 'ALP'),
+  };
+  return G[v] ? !!G[v]() : true; // vista no listada = pública para usuarios logueados
+};
+
 function renderVista() {
   const v = state.vista;
+  // 🔒 Guardián central (misma verdad que la barra lateral)
+  if (!window._vistaPermitida(v)) {
+    return `
+      <div style="max-width:520px;margin:60px auto;text-align:center;background:#fff;border:2px solid #fca5a5;border-radius:14px;padding:34px;">
+        <div style="font-size:44px;">🔒</div>
+        <div style="font-size:19px;font-weight:900;color:#991b1b;margin:8px 0;">Esta sección no corresponde a tu departamento</div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Cada área ve su propia información. Si tu trabajo requiere este acceso, pídelo a Dirección — se otorga por perfil, no por excepción.</div>
+        <button class="btn-primary" onclick="state.vista='dashboard'; window.forzarRender()">Ir a mi Dashboard</button>
+      </div>`;
+  }
   if (v === 'dashboard') return renderDashboardPorRol();
   if (v === 'centro_control') return renderCentroControl();
   if (v === 'clientes') return renderClientes();
@@ -14499,7 +14560,7 @@ function renderPanelOperador() {
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
           <button onclick="window.mostrarAyudaPanelExtrusion()" style="background:#fff;color:${proc.color || '#1e40af'};border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:800;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.15);">❓ ¿Cómo funciona?</button>
-          ${!procAsignado ? `<button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>` : `<div style="background:rgba(255,255,255,0.15);color:#fff;padding:8px 14px;border-radius:8px;font-size:11px;font-weight:700;">🔒 Tu área asignada</div>`}
+          ${!_procsPanel.length ? `<button onclick="window.cambiarProcOperador()" style="background:rgba(255,255,255,0.2);color:#fff;border:1.5px solid #fff;padding:10px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;">↩ Cambiar área</button>` : `<div style="background:rgba(255,255,255,0.15);color:#fff;padding:8px 14px;border-radius:8px;font-size:11px;font-weight:700;">🔒 Tu${_procsPanel.length > 1 ? 's áreas asignadas (cambia en el menú lateral)' : ' área asignada'}</div>`}
         </div>
       </div>
       
