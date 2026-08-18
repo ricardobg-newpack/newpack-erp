@@ -589,6 +589,18 @@ tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--brand-vivid); }
 }
 @keyframes npAntCamina { 0% { transform: translateX(-30px) scaleX(1); } 48% { transform: translateX(30px) scaleX(1); } 52% { transform: translateX(30px) scaleX(-1); } 98% { transform: translateX(-30px) scaleX(-1); } 100% { transform: translateX(-30px) scaleX(1); } }
 @keyframes npConfeti { to { transform: translateY(105vh) rotate(680deg); opacity: .9; } }
+/* 🖐 DRAG & DROP DE PROGRAMACIÓN — arrastre con vida */
+.np-minicard { transition: transform var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+.np-minicard:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(15,23,42,.12); }
+.np-minicard:active { cursor: grabbing; }
+.np-arrastrando { opacity: .45; transform: rotate(2.5deg) scale(.97) !important; }
+.np-dropzone { transition: box-shadow .16s var(--ease), transform .16s var(--ease); }
+.np-dropzone-activa {
+  box-shadow: 0 0 0 3px rgba(63,211,75,.55), 0 10px 28px rgba(22,163,74,.28) !important;
+  transform: scale(1.015);
+}
+.np-dropzone-activa > div:first-child { background: #dcfce7 !important; }
+
 /* 🐜 CARAVANA DE HORMIGAS OBRERAS — cruzan la pantalla cargando rollos y
    paquetes. Ambiente de marca: no bloquean clics, respetan reduced-motion. */
 .np-antworker {
@@ -4507,6 +4519,9 @@ window.verTodosLista = (key) => { state.limites = state.limites || {}; state.lim
 //    colecciones), en vez de hacer N renders completos del app (lento), se agrupan
 //    en UN solo render. Los renders de interacción del usuario son inmediatos.
 function render() {
+  // 🖐 Si hay un ARRASTRE en curso, aplazar el re-render (el snapshot en vivo
+  //    destruiría el DOM a mitad del drag). Se re-renderiza al soltar.
+  if (window.__npDragging) { window.__renderPendiente = true; return; }
   // Si el render viene de un snapshot, lo agrupamos (debounce)
   if (state._renderDesdeSnapshot === true && state._forzarRender !== true && 
       state._renderModalInterno !== true && state._renderProgrammatic !== true) {
@@ -4875,7 +4890,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B105-programa-pdf</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B106-drag-drop</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -10652,6 +10667,66 @@ window.onKanbanDrop = async (event, maqDestino) => {
 // 🆕 Mover ODP arriba/abajo en la cola de su máquina (botones ↑↓)
 // Más confiable que drag&drop. Funciona en cualquier dispositivo (móvil/tablet/desktop).
 // 🆕 Asignar máquina rápido a una ODP sin máquina (desde el Kanban)
+// ═══════════════════════════════════════════════════════════
+// 🖐 DRAG & DROP DE PROGRAMACIÓN — arrastra una ODP a otra máquina
+// del MISMO proceso y se reasigna. Misma escritura que el flujo
+// manual (asignarMaquinaRapido): estatus, prioridad_cola, bitácora.
+// ═══════════════════════════════════════════════════════════
+window.npDropODP = async (odpId, procCod, maqDestino) => {
+  const u = state.user || {};
+  const puede = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
+  if (!puede) { toast('🔒 Solo PLN, PRO o dirección pueden reasignar máquinas', 'error'); return; }
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) return;
+  const actual = odp.maquinas_asignadas?.[procCod] || '';
+  if (actual === maqDestino) { toast('Ya está en esa máquina', 'info'); return; }
+  try {
+    const nuevasMaqs = { ...(odp.maquinas_asignadas || {}) };
+    nuevasMaqs[procCod] = maqDestino;
+    const updates = { maquinas_asignadas: nuevasMaqs, prioridad_cola: Number.MAX_SAFE_INTEGER, updated_at: serverTimestamp() };
+    if (odp.estatus === 'pendiente_planeacion') updates.estatus = 'programada';
+    await updateDoc(doc(db, 'ordenes_produccion', odpId), updates);
+    window.logAccion('odp_drag_maquina', odp.folio, `${procCod}: ${actual || 'sin asignar'} -> ${maqDestino}`);
+    toast(`🖐 ${odp.folio} → ${maqDestino}`, 'success');
+    if (window.npObrera) window.npObrera();
+  } catch (e) { toast('Error al reasignar: ' + e.message, 'error'); }
+};
+
+window.npDragStart = (ev, odpId, procCod) => {
+  window.__npDrag = { odpId, procCod };
+  window.__npDragging = true;
+  ev.dataTransfer.effectAllowed = 'move';
+  try { ev.dataTransfer.setData('text/plain', odpId); } catch (e) {}
+  ev.currentTarget.classList.add('np-arrastrando');
+};
+window.npDragEnd = (ev) => {
+  ev.currentTarget.classList.remove('np-arrastrando');
+  window.__npDragging = false;
+  document.querySelectorAll('.np-dropzone-activa').forEach(z => z.classList.remove('np-dropzone-activa'));
+  if (window.__renderPendiente) { window.__renderPendiente = false; render(); }
+};
+window.npDragOver = (ev) => {
+  const d = window.__npDrag;
+  if (!d) return;
+  const z = ev.currentTarget;
+  if (z.dataset.proc !== d.procCod || z.dataset.maq === '_sin_maq') return; // solo mismo proceso y máquina real
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  z.classList.add('np-dropzone-activa');
+};
+window.npDragLeave = (ev) => ev.currentTarget.classList.remove('np-dropzone-activa');
+window.npDrop = async (ev) => {
+  ev.preventDefault();
+  const z = ev.currentTarget;
+  z.classList.remove('np-dropzone-activa');
+  const d = window.__npDrag;
+  window.__npDrag = null;
+  window.__npDragging = false;
+  if (window.__renderPendiente) { window.__renderPendiente = false; }
+  if (!d) return;
+  await window.npDropODP(d.odpId, z.dataset.proc, z.dataset.maq);
+};
+
 window.asignarMaquinaRapido = async (odpId) => {
   const u = state.user || {};
   const puedeEditar = u.depto === 'PLN' || u.depto === 'CEO' || u.depto === 'ADMIN' || u.depto === 'PRO' || u.rol === 'admin';
@@ -14886,7 +14961,7 @@ function renderProgramacionPorProceso(odps, subTab) {
                 const totalKg = maqOdps.reduce((s, o) => s + (Number(o.cantidad_kg_produccion || o.cantidad) || 0), 0);
                 
                 return `
-                  <div style="border:1px solid ${esSinAsignar?'#fbbf24':'#e2e8f0'};border-radius:10px;overflow:hidden;background:${esSinAsignar?'#fffbeb':'#f8fafc'};">
+                  <div class="np-dropzone" data-proc="${procCod}" data-maq="${maqCod}" ondragover="window.npDragOver(event)" ondragleave="window.npDragLeave(event)" ondrop="window.npDrop(event)" style="border:1px solid ${esSinAsignar?'#fbbf24':'#e2e8f0'};border-radius:10px;overflow:hidden;background:${esSinAsignar?'#fffbeb':'#f8fafc'};">
                     <!-- Header máquina -->
                     <div style="padding:8px 12px;background:${esSinAsignar?'#fef3c7':'#fff'};border-bottom:1px solid ${esSinAsignar?'#fbbf24':'#e2e8f0'};display:flex;justify-content:space-between;align-items:center;">
                       <div>
@@ -14936,7 +15011,7 @@ function renderMiniCardODP(o, proc, subTab) {
   const atrasada = o.fecha_entrega_programada && new Date(o.fecha_entrega_programada) < new Date() && o.estatus !== 'completada';
   
   return `
-    <div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${prio.col};border-radius:6px;padding:8px 10px;cursor:pointer;" onclick="abrirModal('detalle-odp','${o.id}')">
+    <div class="np-minicard" draggable="true" ondragstart="window.npDragStart(event,'${o.id}','${proc.codigo}')" ondragend="window.npDragEnd(event)" title="🖐 Arrástrala a otra máquina para reasignarla" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${prio.col};border-radius:6px;padding:8px 10px;cursor:grab;" onclick="abrirModal('detalle-odp','${o.id}')">
       <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
