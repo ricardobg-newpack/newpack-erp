@@ -4875,7 +4875,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B104-hormigas-obreras</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B105-programa-pdf</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -9465,6 +9465,98 @@ function renderListaODPs(odps) {
 // ============================================================
 // Combina: carga por máquina (kg + días), atrasados vs a tiempo, secuencia
 // de órdenes, y fecha estimada de término. Pensada para verse proyectada.
+// ═══════════════════════════════════════════════════════════
+// 📄 PDF DEL PROGRAMA DE PRODUCCIÓN — espejo de la Vista Junta:
+// carga por máquina (ODPs, kg pendientes, fechas), cola sin asignar
+// y resumen. Membrete institucional. Para junta y para el piso.
+// ═══════════════════════════════════════════════════════════
+window.pdfProgramaProduccion = () => {
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  try {
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'landscape' });
+    const W = 279, M = 12, NAVY = [13, 44, 84], VERDE = [22, 128, 58], AMBAR = [180, 83, 9], GRIS = [100, 116, 139], NEGRO = [15, 23, 42];
+    const odps = (state.ordenes_produccion || []).filter(o => !o.archivada);
+    const porProg = odps.filter(o => o.estatus === 'pendiente_planeacion');
+    const activas = odps.filter(o => ['programada', 'en_produccion'].includes(o.estatus));
+    d.setFillColor(...NAVY); d.rect(0, 0, W, 22, 'F');
+    try { d.setFillColor(255, 255, 255); d.roundedRect(M, 3.5, 15, 15, 2, 2, 'F'); d.addImage(DATOS_EMPRESA.logo_url, 'JPEG', M + 1, 7.7, 13, 5.8); } catch (e) {}
+    d.setTextColor(255, 255, 255); d.setFontSize(12); d.setFont(undefined, 'bold');
+    d.text('PROGRAMA DE PRODUCCIÓN — CARGA POR MÁQUINA', M + 19, 10);
+    d.setFontSize(7.5); d.setFont(undefined, 'normal');
+    d.text(`${DATOS_EMPRESA.razon_social || ''} · Generado: ${new Date().toLocaleString('es-MX')} · Por: ${state.user?.nombre || ''}`, M + 19, 16);
+    d.setFontSize(9); d.setFont(undefined, 'bold');
+    d.text(`${activas.length} ODP(s) activas · ${porProg.length} por programar`, W - M, 10, { align: 'right' });
+    d.setFillColor(63, 211, 75); d.rect(0, 22, W * 0.62, 2.2, 'F');
+    d.setFillColor(56, 182, 255); d.rect(W * 0.62, 22, W * 0.38, 2.2, 'F');
+    let y = 32;
+    const banda = (t, color) => {
+      if (y > 185) { d.addPage(); y = 16; }
+      d.setFillColor(...color); d.roundedRect(M, y - 4.6, W - 2 * M, 7, 1.2, 1.2, 'F');
+      d.setTextColor(255, 255, 255); d.setFontSize(9.5); d.setFont(undefined, 'bold');
+      d.text(t, M + 3.5, y); d.setFont(undefined, 'normal'); d.setTextColor(...NEGRO); y += 6;
+    };
+    const kgPend = (o, idxProc) => {
+      const meta = Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0;
+      const av = window.avanceProcesosODP ? window.avanceProcesosODP(o) : null;
+      const prod = av?.procesos?.[idxProc]?.producido_kg || 0;
+      return Math.max(0, meta - prod);
+    };
+    const maquinas = (state.maquinas || []).filter(m => m.activa !== false).sort((a, b) => a.codigo.localeCompare(b.codigo));
+    const carga = {}; maquinas.forEach(m => { carga[m.codigo] = []; });
+    const sinAsignar = [...porProg];
+    activas.forEach(o => {
+      const ruta = o.ruta_procesos || []; let en = false;
+      const av = window.avanceProcesosODP ? window.avanceProcesosODP(o) : null;
+      ruta.forEach((pc, i) => {
+        if (av?.procesos?.[i]?.completado) return;
+        const mc = o.maquinas_asignadas?.[pc] || '';
+        if (mc && carga[mc]) { carga[mc].push({ o, proc: pc, idx: i }); en = true; }
+      });
+      if (!en) sinAsignar.push(o);
+    });
+    const filaTabla = (x) => [
+      x.o.folio || '', x.proc || (x.o.ruta_procesos || [])[0] || '', (x.o.producto_codigo || '').substring(0, 24),
+      (x.o.cliente_nombre || '').substring(0, 22), fmtNum(Math.round(kgPend(x.o, x.idx || 0))) + ' kg',
+      x.o.fecha_entrega_programada || '—', x.o.estatus === 'en_produccion' ? 'EN PRODUCCIÓN' : (x.o.estatus === 'programada' ? 'Programada' : 'Por programar'),
+    ];
+    maquinas.forEach(m => {
+      const lista = carga[m.codigo];
+      const kgTot = lista.reduce((s, x) => s + kgPend(x.o, x.idx), 0);
+      banda(`${m.codigo} · ${(m.nombre || '').substring(0, 40)}  —  ${lista.length ? fmtNum(Math.round(kgTot)) + ' kg en cola (' + lista.length + ' ODP·proceso)' : 'SIN CARGA'}`, lista.length ? NAVY : [148, 163, 184]);
+      if (lista.length) {
+        d.autoTable({
+          startY: y, head: [['ODP', 'Proceso', 'Producto', 'Cliente', 'Kg pend.', 'Entrega', 'Estatus']],
+          body: lista.map(filaTabla), margin: { left: M, right: M },
+          styles: { fontSize: 7.5, cellPadding: 1.6 }, headStyles: { fillColor: [71, 85, 105], fontSize: 7.5 },
+          columnStyles: { 4: { halign: 'right', fontStyle: 'bold' } },
+          didParseCell: (h) => { if (h.section === 'body' && h.column.index === 6 && String(h.cell.raw).startsWith('EN')) h.cell.styles.textColor = VERDE; },
+        });
+        y = d.lastAutoTable.finalY + 8;
+      } else { y += 4; }
+    });
+    if (sinAsignar.length) {
+      banda(`COLA SIN MÁQUINA ASIGNADA — ${sinAsignar.length} ODP(s) esperando programación`, AMBAR);
+      d.autoTable({
+        startY: y, head: [['ODP', 'Producto', 'Cliente', 'Kg', 'Entrega solicitada', 'Estatus']],
+        body: sinAsignar.map(o => [o.folio || '', (o.producto_codigo || '').substring(0, 26), (o.cliente_nombre || '').substring(0, 24), fmtNum(Math.round(Number(o.cantidad_kg_produccion) || Number(o.cantidad) || 0)) + ' kg', o.fecha_entrega_programada || '—', o.estatus === 'pendiente_planeacion' ? 'Por programar' : o.estatus]),
+        margin: { left: M, right: M }, styles: { fontSize: 7.5, cellPadding: 1.6 }, headStyles: { fillColor: AMBAR, fontSize: 7.5 },
+        columnStyles: { 3: { halign: 'right', fontStyle: 'bold' } },
+      });
+      y = d.lastAutoTable.finalY + 8;
+    }
+    const tp = d.internal.getNumberOfPages();
+    for (let p = 1; p <= tp; p++) {
+      d.setPage(p); d.setFontSize(7); d.setTextColor(...GRIS);
+      d.setDrawColor(203, 213, 225); d.setLineWidth(0.25); d.line(M, 202, W - M, 202);
+      d.text(`${DATOS_EMPRESA.razon_social || ''} · FO-PLN-01 Programa de Producción · Página ${p} de ${tp}`, W / 2, 206, { align: 'center' });
+      d.setFillColor(63, 211, 75); d.rect(0, 209.6, W * 0.62, 2.2, 'F');
+      d.setFillColor(56, 182, 255); d.rect(W * 0.62, 209.6, W * 0.38, 2.2, 'F');
+    }
+    _mostrarVistaPreviaPDF(d, `Programa_Produccion_${window.hoyLocalISO()}.pdf`, 'Programa de Producción · carga por máquina');
+  } catch (e) { toast('Error generando programa: ' + e.message, 'error'); }
+};
+
 function renderVistaJuntaCarga(odpsBase) {
   const HORAS_TURNO = 12, TURNOS_DIA = 2; // 24h productivas/día (2 turnos de 12 hr)
   const hoy = new Date();
@@ -9743,6 +9835,7 @@ function renderProgramacion() {
       <button onclick="cambiarVistaProgramacion('junta')" style="padding:6px 12px;background:${vistaModo==='junta'?'#7c3aed':'#fff'};color:${vistaModo==='junta'?'#fff':'#475569'};border:2px solid ${vistaModo==='junta'?'#7c3aed':'#cbd5e1'};border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;">
         📊 Vista Junta (carga por máquina)
       </button>
+          <button onclick="window.pdfProgramaProduccion()" title="PDF institucional: carga por máquina, kg pendientes, cola sin asignar — para junta y para el piso" style="padding:8px 14px;background:#0d2c54;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:12px;">📄 PDF del Programa</button>
       ${kpiAtrasadas > 0 ? `<span style="background:#fef2f2;color:#dc2626;padding:4px 10px;border-radius:6px;font-weight:700;font-size:11px;border:1px solid #fecaca;margin-left:auto;">⚠ ${kpiAtrasadas} atrasada(s)</span>` : ''}
     </div>
     
