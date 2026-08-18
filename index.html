@@ -4851,7 +4851,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B95-nomina-auto</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B97-logos-pdf</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -28604,6 +28604,120 @@ window.rhNominaBorrar = async (id) => {
 };
 
 // ═══════════════════════════════════════════════════════════
+// 📇 EXPEDIENTE DEL EMPLEADO PDF — ficha membretada completa
+// para la carpeta física: identificación, condiciones de pago
+// (solo si quien lo genera puede ver nómina), préstamos y firmas.
+// ═══════════════════════════════════════════════════════════
+window._rhMembrete = (d, titulo, sub) => {
+  const W = 216, M = 16, NAVY = [13, 44, 84];
+  d.setFillColor(...NAVY); d.rect(0, 0, W, 26, 'F');
+  try { d.setFillColor(255, 255, 255); d.roundedRect(M, 5, 16, 16, 2, 2, 'F'); d.addImage(DATOS_EMPRESA.logo_url, 'JPEG', M + 1, 7.5, 14, 6.3); } catch (e) {}
+  d.setTextColor(255, 255, 255); d.setFontSize(10.5); d.setFont(undefined, 'bold');
+  d.text(String(DATOS_EMPRESA.razon_social || 'NEW PACK').substring(0, 44), M + 20, 12);
+  d.setFontSize(8); d.setFont(undefined, 'normal');
+  d.text(`RFC ${DATOS_EMPRESA.rfc || ''} · ${DATOS_EMPRESA.telefono || ''}`, M + 20, 17.5);
+  d.setFontSize(12); d.setFont(undefined, 'bold');
+  d.text(titulo, W - M, 12, { align: 'right' });
+  if (sub) { d.setFontSize(9); d.setFont(undefined, 'normal'); d.text(sub, W - M, 17.5, { align: 'right' }); }
+};
+
+window.expedientePDF = (empId) => {
+  if (!window._esRHOK()) { toast('🔒 Solo Capital Humano y dirección', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const e = (state.empleados || []).find(x => x.id === empId);
+  if (!e) return;
+  try {
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'letter' });
+    const W = 216, M = 16, NAVY = [13, 44, 84], GRIS = [100, 116, 139], NEGRO = [15, 23, 42];
+    window._rhMembrete(d, 'EXPEDIENTE DE EMPLEADO', `Generado: ${new Date().toLocaleDateString('es-MX')}`);
+    let y = 38;
+    const ing = e.fecha_ingreso || e.ingreso || '';
+    let antig = '—';
+    if (ing) { const dias = Math.floor((Date.now() - new Date(ing + 'T12:00:00').getTime()) / 86400000); antig = dias >= 365 ? `${Math.floor(dias / 365)} año(s) ${Math.floor((dias % 365) / 30)} mes(es)` : `${Math.floor(dias / 30)} mes(es)`; }
+    const seccion = (t) => { d.setFillColor(...NAVY); d.rect(M, y - 4, 3, 5.5, 'F'); d.setTextColor(...NEGRO); d.setFontSize(11); d.setFont(undefined, 'bold'); d.text(t, M + 6, y); d.setFont(undefined, 'normal'); y += 7; };
+    const fila = (k, v) => { d.setFontSize(9); d.setTextColor(...GRIS); d.text(k, M + 2, y); d.setTextColor(...NEGRO); d.setFont(undefined, 'bold'); d.text(String(v || '—'), M + 52, y); d.setFont(undefined, 'normal'); y += 6; };
+    seccion('IDENTIFICACIÓN');
+    fila('Nombre completo', e.nombre); fila('Puesto', e.puesto); fila('Departamento', e.depto);
+    fila('Fecha de ingreso', ing || '—'); fila('Antigüedad', antig);
+    fila('RFC', e.rfc); fila('NSS', e.nss); fila('Teléfono', e.telefono);
+    y += 4;
+    if (window._esNominaOK()) {
+      const c = (state.nomina_condiciones || []).find(x => x.empleado_id === e.id);
+      seccion('CONDICIONES DE PAGO');
+      if (c) {
+        fila('Sueldo semanal', '$' + fmtNum((Number(c.sueldo_semanal) || 0).toFixed(2)));
+        fila('Fondo de ahorro', Number(c.fondo_semanal) > 0 ? '$' + fmtNum(Number(c.fondo_semanal).toFixed(2)) + ' /sem' : '—');
+        (c.bonos_fijos || []).forEach(b => fila(`Bono fijo: ${b.nombre}`, '$' + fmtNum((Number(b.monto) || 0).toFixed(2))));
+        (c.historial_aumentos || []).slice(-4).forEach(h => fila(`Aumento ${h.fecha || ''}`, `$${fmtNum(h.anterior || 0)} -> $${fmtNum(h.nuevo || 0)} · ${h.motivo || ''}`.substring(0, 60)));
+      } else { d.setFontSize(9); d.setTextColor(...GRIS); d.text('Sin condiciones de pago configuradas', M + 2, y); y += 6; }
+      y += 4;
+      const prs = (state.prestamos_rh || []).filter(p => p.empleado_id === e.id);
+      if (prs.length) {
+        seccion('PRÉSTAMOS');
+        prs.forEach(p => fila(`${p.motivo || 'Préstamo'} (${(Number(p.saldo) || 0) > 0 ? 'ACTIVO' : 'liquidado'})`, `monto $${fmtNum(Number(p.monto) || 0)} · saldo $${fmtNum(Number(p.saldo) || 0)} · abono $${fmtNum(Number(p.abono_periodo) || 0)}`));
+        y += 4;
+      }
+    }
+    y = Math.max(y + 14, 210);
+    d.setDrawColor(...GRIS); d.setLineWidth(0.3);
+    d.line(M + 8, y, M + 78, y); d.line(W - M - 78, y, W - M - 8, y);
+    d.setFontSize(8); d.setTextColor(...NEGRO);
+    d.text(String(e.nombre || ''), M + 43, y + 5, { align: 'center' });
+    d.text('Firma del empleado', M + 43, y + 9.5, { align: 'center' });
+    d.text('Capital Humano', W - M - 43, y + 5, { align: 'center' });
+    d.text('Nombre y firma', W - M - 43, y + 9.5, { align: 'center' });
+    d.setFontSize(7); d.setTextColor(...GRIS);
+    d.text(`${DATOS_EMPRESA.razon_social || ''} · Expediente generado desde NewPack ERP · uso interno`, W / 2, 270, { align: 'center' });
+    _mostrarVistaPreviaPDF(d, `Expediente_${(e.nombre || '').replace(/\s+/g, '_')}.pdf`, `Expediente · ${e.nombre}`);
+  } catch (err) { toast('Error generando expediente: ' + err.message, 'error'); }
+};
+
+// 📜 CONSTANCIA LABORAL — carta membretada "a quien corresponda",
+// con o sin sueldo (créditos bancarios la piden con sueldo).
+window.constanciaPDF = (empId) => {
+  if (!window._esRHOK()) { toast('🔒 Solo Capital Humano y dirección', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const e = (state.empleados || []).find(x => x.id === empId);
+  if (!e) return;
+  const c = (state.nomina_condiciones || []).find(x => x.empleado_id === e.id);
+  const conSueldo = window._esNominaOK() && Number(c?.sueldo_semanal) > 0 && confirm(`📜 Constancia de ${esc(e.nombre)}\n\n¿Incluir el SUELDO en la constancia?\n(los bancos la piden con sueldo; otros trámites sin él)\n\nAceptar = con sueldo · Cancelar = sin sueldo`);
+  try {
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'letter' });
+    const W = 216, M = 22, GRIS = [100, 116, 139], NEGRO = [15, 23, 42];
+    window._rhMembrete(d, 'CONSTANCIA LABORAL', '');
+    const hoy = new Date();
+    const fechaTxt = hoy.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
+    let y = 44;
+    d.setTextColor(...NEGRO); d.setFontSize(10);
+    d.text(`Santa Catarina, N.L., a ${fechaTxt}`, W - M, y, { align: 'right' });
+    y += 14;
+    d.setFont(undefined, 'bold'); d.text('A QUIEN CORRESPONDA:', M, y); d.setFont(undefined, 'normal');
+    y += 12;
+    const ing = e.fecha_ingreso || e.ingreso || '';
+    const ingTxt = ing ? new Date(ing + 'T12:00:00').toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' }) : '(fecha de ingreso)';
+    let cuerpo = `Por medio de la presente, ${DATOS_EMPRESA.razon_social || 'NEW PACK ABASTECEDORA DE EMPAQUES S.A. DE C.V.'}, con RFC ${DATOS_EMPRESA.rfc || ''}, hace constar que ${(e.nombre || '').toUpperCase()} labora en esta empresa desde el ${ingTxt}, desempeñando actualmente el puesto de ${e.puesto || '—'} en el área de ${e.depto || '—'}.`;
+    if (conSueldo) cuerpo += ` Percibe un sueldo semanal de $${fmtNum(Number(c.sueldo_semanal).toFixed(2))} MXN.`;
+    cuerpo += `\n\nSe extiende la presente constancia a petición del interesado, para los fines legales y administrativos que a él convengan.`;
+    d.setFontSize(10.5);
+    const parr = d.splitTextToSize(cuerpo, W - 2 * M);
+    d.text(parr, M, y, { lineHeightFactor: 1.7 });
+    y += parr.length * 6.3 + 26;
+    d.text('A T E N T A M E N T E', W / 2, y, { align: 'center' });
+    y += 26;
+    d.setDrawColor(...GRIS); d.setLineWidth(0.3); d.line(W / 2 - 40, y, W / 2 + 40, y);
+    d.setFontSize(9); d.setFont(undefined, 'bold');
+    d.text('Capital Humano', W / 2, y + 5.5, { align: 'center' });
+    d.setFont(undefined, 'normal'); d.setFontSize(8.5); d.setTextColor(...GRIS);
+    d.text(String(DATOS_EMPRESA.razon_social || ''), W / 2, y + 10.5, { align: 'center' });
+    d.text(`Tel. ${DATOS_EMPRESA.telefono || ''} · ${DATOS_EMPRESA.email || ''}`, W / 2, y + 15, { align: 'center' });
+    _mostrarVistaPreviaPDF(d, `Constancia_${(e.nombre || '').replace(/\s+/g, '_')}.pdf`, `Constancia laboral · ${e.nombre}`);
+    window.logAccion('rh_constancia', e.nombre, conSueldo ? 'con sueldo' : 'sin sueldo');
+  } catch (err) { toast('Error generando constancia: ' + err.message, 'error'); }
+};
+
+// ═══════════════════════════════════════════════════════════
 // ⚡ GENERAR SEMANA COMPLETA — prellena la nómina de TODOS los
 // empleados activos desde sus condiciones de pago (sueldo + fijos
 // + abono de préstamo activo). RH solo revisa excepciones.
@@ -29133,6 +29247,8 @@ function renderRH() {
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               ${nominaOK ? `<button onclick="window.rhCondAbrir('${e.id}')" title="Condiciones de pago: sueldo semanal, bonos y deducciones fijas" style="padding:7px 13px;background:#be185d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💰 ${window._rhCondDe(e.id) ? '$' + fmtNum(Number(window._rhCondDe(e.id).sueldo_semanal || 0)) + '/sem' : 'Condiciones'}</button>
               <button onclick="window.rhAumento('${e.id}')" title="Registrar aumento (con motivo e historial)" style="padding:7px 13px;background:#fff;color:#be185d;border:1.5px solid #be185d;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📈</button>` : ''}
+              <button onclick="window.expedientePDF('${e.id}')" title="Ficha completa membretada para su carpeta física" style="padding:7px 13px;background:#0d2c54;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📇 Expediente</button>
+              <button onclick="window.constanciaPDF('${e.id}')" title="Carta laboral 'a quien corresponda' — con o sin sueldo" style="padding:7px 13px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📜 Constancia</button>
               <button onclick="window.rhEditar('${e.id}')" style="padding:7px 13px;background:#fff;color:#1e40af;border:1.5px solid #93c5fd;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">✏️ Editar</button>
               <button onclick="window.rhBaja('${e.id}')" style="padding:7px 13px;background:#fff;color:#dc2626;border:1.5px solid #fca5a5;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">Baja</button>
             </div>
@@ -30764,6 +30880,7 @@ window.generarReporteEjecutivoPDF = () => {
   docPDF.setTextColor(255, 255, 255);
   docPDF.setFontSize(17); docPDF.setFont(undefined, 'bold');
   docPDF.text('NEW PACK — Reporte de Resultados por Área', M, 14);
+  try { docPDF.setFillColor(255, 255, 255); docPDF.roundedRect(W - M - 30, 6, 30, 15.4, 2, 2, 'F'); docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', W - M - 28.6, 9.5, 27.2, 12.2); } catch (e) {}
   docPDF.setFontSize(10); docPDF.setFont(undefined, 'normal');
   const perTxt = D.dias === 1 ? 'Hoy' : `Últimos ${D.dias} días`;
   docPDF.text(`Periodo: ${perTxt}  ·  Generado: ${new Date().toLocaleString('es-MX')}  ·  Por: ${state.user?.nombre || state.user?.email || ''}`, M, 22);
@@ -40707,7 +40824,7 @@ function _pdfHeaderEmpresa(doc, tituloDoc, folioDoc) {
   // Logo (más grande y visible)
   if (DATOS_EMPRESA.logo_url) {
     try {
-      doc.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 12, 8, 42, 26);
+      doc.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 12, 11.6, 42, 18.8);
     } catch(e) { /* sigue sin logo */ }
   }
   
@@ -43769,7 +43886,7 @@ function _renderHojaOrdenProduccion(docPDF, odp, producto, pedido) {
     const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
     if (logoSrc) {
       const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
-      docPDF.addImage(logoSrc, fmt, margen, 8, 22, 16);
+      docPDF.addImage(logoSrc, fmt, margen, 11.1, 22, 9.85);
     }
   } catch (e) { console.error('Error logo header:', e); }
   
@@ -44155,7 +44272,7 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
     const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
     if (logoSrc) {
       const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
-      docPDF.addImage(logoSrc, fmt, margen, 8, 22, 16);
+      docPDF.addImage(logoSrc, fmt, margen, 11.1, 22, 9.85);
     }
   } catch (e) { console.error('Error logo:', e); }
   
@@ -44654,7 +44771,7 @@ function _renderHojaRegistroDetallado(docPDF, odp, producto, pedido) {
     const logoSrc = (typeof DATOS_EMPRESA !== 'undefined' && DATOS_EMPRESA.logo_url) || window._logoNewPackBase64;
     if (logoSrc) {
       const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
-      docPDF.addImage(logoSrc, fmt, margen, 8, 22, 16);
+      docPDF.addImage(logoSrc, fmt, margen, 11.1, 22, 9.85);
     }
   } catch (e) { console.error('Error logo header:', e); }
   
@@ -45131,7 +45248,7 @@ function _renderEtiqueta(doc, x, y, w, h, d, numEtiq, totalEtiq) {
       try {
         // Detectar formato del data URL (JPEG/PNG)
         const fmt = String(logoSrc).includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(logoSrc, fmt, x + 3, y + 1.5, 22, logoH - 1);
+        doc.addImage(logoSrc, fmt, x + 3, y + 2.6, 22, 9.85);
         logoCargado = true;
       } catch (e) {
         console.error('Error cargando logo NewPack en etiqueta:', e);
@@ -61751,7 +61868,7 @@ function _renderOTIPDF(oti, esPreview) {
   
   // Header
   try {
-    if (DATOS_EMPRESA?.logo_url) docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', margen, 8, 22, 16);
+    if (DATOS_EMPRESA?.logo_url) docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', margen, 11.1, 22, 9.85);
   } catch (e) {}
   
   docPDF.setFont('helvetica', 'bold');
@@ -62136,7 +62253,7 @@ function _renderRecepcionPDF(oti, esPreview) {
   }
   
   try {
-    if (DATOS_EMPRESA?.logo_url) docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', margen, 8, 22, 16);
+    if (DATOS_EMPRESA?.logo_url) docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', margen, 11.1, 22, 9.85);
   } catch (e) {}
   
   docPDF.setFont('helvetica', 'bold');
