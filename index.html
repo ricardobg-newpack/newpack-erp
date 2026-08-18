@@ -4851,7 +4851,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B98-reporte-institucional</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B102-cotizacion-etiquetas</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -23248,7 +23248,7 @@ window.cotSetImpresion = (v) => {
 window._cotSpecTxt = (l) => {
   const p = [`Color: ${l.color || 'Transparente'}`];
   if (l.aditivo && l.aditivo !== 'NINGUNO') p.push(`Aditivo: ${l.aditivo}`);
-  p.push(l.tratado === 'si' ? `⚡ TRATADO corona ${l.tratado_dinas || 38} dinas` : 'Sin tratado');
+  p.push(l.tratado === 'si' ? `TRATADO corona ${l.tratado_dinas || 38} dinas` : 'Sin tratado');
   p.push(l.impresion === 'si' ? `Impresión ${l.tintas || '—'} tinta(s)${l.colores_imp ? `: ${l.colores_imp}` : ''}` : 'Sin impresión');
   if (l.presentacion) p.push(`Presentación: ${l.presentacion}`);
   if (l.minimo) p.push(`Mínimo: ${l.minimo}`);
@@ -23596,11 +23596,11 @@ window._pdfCotizacion = (cot) => {
   y = thead(y);
   (cot.lineas || []).forEach((l, i) => {
     if (y > 235) { docPDF.addPage(); y = thead(20); }
-    const lDesc = docPDF.splitTextToSize(l.descripcion || '—', 92);
+    const lDesc = docPDF.splitTextToSize(l.descripcion || '—', 84);
     const nDesc = Math.min(lDesc.length, 2);
     // 📌 Al cliente NO se le muestra info técnica (peso millar, etc.) — solo la
     //    descripción del producto + su especificación y el precio en su unidad.
-    const lSpec = docPDF.splitTextToSize(window._cotSpecTxt(l), 92);
+    const lSpec = docPDF.splitTextToSize(window._sinEmojiPdf(window._cotSpecTxt(l)), 84);
     const nSpec = Math.min(lSpec.length, 2);
     const hRow = 3 + nDesc * 3.6 + nSpec * 3.2 + 2.5;
     if (i % 2 === 0) { docPDF.setFillColor(248, 250, 252); docPDF.rect(14, y, 182, hRow, 'F'); }
@@ -28368,11 +28368,14 @@ window.rayaRegistrar = async () => {
 // 💰 CONDICIONES DE PAGO por empleado (sueldo semanal + fijos + aumentos con motivo)
 window.rhCondAbrir = (empId) => {
   const c = window._rhCondDe(empId);
-  state.rhCondForm = { empleado_id: empId, sueldo_semanal: String(c?.sueldo_semanal ?? ''), fondo_semanal: String(c?.fondo_semanal ?? ''), bonos_fijos: (c?.bonos_fijos || []).map(b => ({ ...b })), deducciones_fijas: (c?.deducciones_fijas || []).map(d2 => ({ ...d2 })) };
+  state.rhCondForm = { empleado_id: empId, sueldo_semanal: String(c?.sueldo_semanal ?? ''), fondo_semanal: String(c?.fondo_semanal ?? ''), bonos_fijos: (c?.bonos_fijos || []).map(b => ({ ...b })), deducciones_fijas: (c?.deducciones_fijas || []).map(d2 => ({ ...d2 })), bonos_variables: (c?.bonos_variables || []).map(b => ({ ...b })) };
   render();
 };
 window.rhCondSet = (campo, v, focusId) => { if (state.rhCondForm) state.rhCondForm[campo] = v; window.forzarRender(); window._cotFoco(focusId); };
 window.rhCondAdd = (tipo, conceptoId) => { if (!conceptoId || !state.rhCondForm) return; const c = (state.nomina_conceptos || []).find(x => x.id === conceptoId); if (!c) return; (tipo === 'bono' ? state.rhCondForm.bonos_fijos : state.rhCondForm.deducciones_fijas).push({ nombre: c.nombre, monto: Number(c.valor_default) || 0 }); render(); };
+window.rhCondVarAdd = () => { if (!state.rhCondForm) return; (state.rhCondForm.bonos_variables = state.rhCondForm.bonos_variables || []).push({ nombre: '', tarifa: '', unidad: 'vuelta' }); render(); };
+window.rhCondVarSet = (i, campo, v, focusId) => { const b = (state.rhCondForm?.bonos_variables || [])[i]; if (!b) return; b[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.rhCondVarDel = (i) => { (state.rhCondForm?.bonos_variables || []).splice(i, 1); render(); };
 window.rhCondItem = (tipo, idx, v, focusId) => { const f = state.rhCondForm; if (!f) return; const it = (tipo === 'bono' ? f.bonos_fijos : f.deducciones_fijas)[idx]; if (it) it.monto = v; window.forzarRender(); window._cotFoco(focusId); };
 window.rhCondDel = (tipo, idx) => { const f = state.rhCondForm; if (!f) return; (tipo === 'bono' ? f.bonos_fijos : f.deducciones_fijas).splice(idx, 1); render(); };
 window.rhCondGuardar = async () => {
@@ -28384,6 +28387,8 @@ window.rhCondGuardar = async () => {
     sueldo_semanal: Number(f.sueldo_semanal) || 0, fondo_semanal: Number(f.fondo_semanal) || 0,
     bonos_fijos: (f.bonos_fijos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 })),
     deducciones_fijas: (f.deducciones_fijas || []).map(d2 => ({ nombre: d2.nombre, monto: Number(d2.monto) || 0 })),
+    // ⚡ Bonos VARIABLES: por unidad de desempeño (vuelta entregada, kg, día...)
+    bonos_variables: (f.bonos_variables || []).filter(b => (b.nombre || '').trim()).map(b => ({ nombre: b.nombre.trim(), tarifa: Number(b.tarifa) || 0, unidad: b.unidad || 'unidad' })),
     actualizado_por: state.user?.nombre || '', updated_at: serverTimestamp()
   };
   try {
@@ -28673,6 +28678,69 @@ window.expedientePDF = (empId) => {
   } catch (err) { toast('Error generando expediente: ' + err.message, 'error'); }
 };
 
+// 💼 ESQUEMA DE PAGO PDF — el documento que define y FORMALIZA la forma de
+// pago de cada trabajador: sueldo base + bonos fijos + bonos VARIABLES por
+// unidad (vuelta entregada, kg, día...) + deducciones + fondo. Con firmas
+// de empleado, Capital Humano y Dirección — para presentar y archivar.
+window.esquemaPagoPDF = (empId) => {
+  if (!window._esNominaOK()) { toast('🔒 Esquemas de pago: solo Capital Humano y Dirección', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const e = (state.empleados || []).find(x => x.id === empId);
+  if (!e) return;
+  const c = (state.nomina_condiciones || []).find(x => x.empleado_id === empId);
+  if (!c || !(Number(c.sueldo_semanal) > 0)) { toast('Primero configura sus condiciones de pago (botón 💰)', 'error'); return; }
+  try {
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'letter' });
+    const W = 216, M = 16, NAVY = [13, 44, 84], VERDE = [22, 128, 58], AZUL = [30, 64, 175], GRIS = [100, 116, 139], NEGRO = [15, 23, 42];
+    window._rhMembrete(d, 'ESQUEMA DE PAGO', `Vigente desde: ${new Date().toLocaleDateString('es-MX')}`);
+    // Listón de marca bajo el membrete
+    d.setFillColor(63, 211, 75); d.rect(0, 26, W * 0.62, 2.4, 'F');
+    d.setFillColor(56, 182, 255); d.rect(W * 0.62, 26, W * 0.38, 2.4, 'F');
+    let y = 38;
+    d.setTextColor(...NEGRO); d.setFontSize(11); d.setFont(undefined, 'bold');
+    d.text(String(e.nombre || ''), M, y);
+    d.setFont(undefined, 'normal'); d.setFontSize(8.5); d.setTextColor(...GRIS);
+    d.text(`${e.puesto || '—'} · ${e.depto || '—'} · Ingreso: ${e.fecha_ingreso || e.ingreso || '—'}`, M, y + 5);
+    y += 13;
+    const banda = (t, color) => { d.setFillColor(...color); d.roundedRect(M, y - 4.6, W - 2 * M, 7, 1.2, 1.2, 'F'); d.setTextColor(255, 255, 255); d.setFontSize(9.5); d.setFont(undefined, 'bold'); d.text(t, M + 3.5, y); d.setFont(undefined, 'normal'); d.setTextColor(...NEGRO); y += 8; };
+    const filaMonto = (k, v, extra) => { d.setFontSize(9.5); d.setTextColor(...NEGRO); d.text(k, M + 3, y); d.setFont(undefined, 'bold'); d.text(v, W - M - 3, y, { align: 'right' }); d.setFont(undefined, 'normal'); if (extra) { d.setFontSize(7.5); d.setTextColor(...GRIS); d.text(extra, M + 3, y + 3.6); y += 4; } y += 6.5; };
+    banda('PERCEPCIONES FIJAS (cada semana)', VERDE);
+    filaMonto('Sueldo base semanal', '$' + fmtNum(Number(c.sueldo_semanal).toFixed(2)));
+    (c.bonos_fijos || []).forEach(b => filaMonto(`Bono fijo: ${b.nombre}`, '$' + fmtNum((Number(b.monto) || 0).toFixed(2))));
+    y += 2;
+    if ((c.bonos_variables || []).length) {
+      banda('PERCEPCIONES VARIABLES (según desempeño de la semana)', AZUL);
+      (c.bonos_variables || []).forEach(b => filaMonto(b.nombre, `$${fmtNum((Number(b.tarifa) || 0).toFixed(2))} por ${b.unidad || 'unidad'}`, 'la cantidad se registra cada semana según lo realizado'));
+      y += 2;
+    }
+    if ((c.deducciones_fijas || []).length || Number(c.fondo_semanal) > 0) {
+      banda('DEDUCCIONES Y AHORRO', [153, 27, 27]);
+      (c.deducciones_fijas || []).forEach(x => filaMonto(`Deducción fija: ${x.nombre}`, '-$' + fmtNum((Number(x.monto) || 0).toFixed(2))));
+      if (Number(c.fondo_semanal) > 0) filaMonto('Fondo de ahorro semanal', '-$' + fmtNum(Number(c.fondo_semanal).toFixed(2)), 'se acumula a favor del trabajador');
+      y += 2;
+    }
+    y += 4;
+    d.setFontSize(7.5); d.setTextColor(...GRIS);
+    d.text(d.splitTextToSize('Este esquema define la forma de pago acordada entre la empresa y el trabajador. Los conceptos variables se calculan cada semana según el desempeño registrado en el sistema. Cualquier modificación requiere un nuevo esquema firmado. Los préstamos y descuentos eventuales se documentan por separado en el recibo de nómina.', W - 2 * M), M, y);
+    y = Math.max(y + 24, 208);
+    d.setDrawColor(...GRIS); d.setLineWidth(0.3);
+    const f3 = (W - 2 * M - 20) / 3;
+    [[M, e.nombre || '', 'Trabajador'], [M + f3 + 10, 'Capital Humano', 'Elaboró'], [M + 2 * f3 + 20, 'Dirección General', 'Autorizó']].forEach(([x, n, r]) => {
+      d.line(x, y, x + f3, y);
+      d.setFontSize(7.5); d.setTextColor(...NEGRO);
+      d.text(String(n).substring(0, 30), x + f3 / 2, y + 4.5, { align: 'center' });
+      d.setTextColor(...GRIS); d.text(r, x + f3 / 2, y + 8.5, { align: 'center' });
+    });
+    d.setFontSize(7); d.setTextColor(...GRIS);
+    d.text(`${DATOS_EMPRESA.razon_social || ''} · FO-RH-03 Esquema de Pago · Confidencial · Generado desde NewPack ERP`, W / 2, 270, { align: 'center' });
+    d.setFillColor(63, 211, 75); d.rect(0, 274, W * 0.62, 2.4, 'F');
+    d.setFillColor(56, 182, 255); d.rect(W * 0.62, 274, W * 0.38, 2.4, 'F');
+    _mostrarVistaPreviaPDF(d, `Esquema_Pago_${(e.nombre || '').replace(/\s+/g, '_')}.pdf`, `Esquema de pago · ${e.nombre}`);
+    window.logAccion('rh_esquema_pago', e.nombre, `sueldo $${fmtNum(c.sueldo_semanal)} · ${(c.bonos_variables || []).length} variable(s)`);
+  } catch (err) { toast('Error generando esquema: ' + err.message, 'error'); }
+};
+
 // 📜 CONSTANCIA LABORAL — carta membretada "a quien corresponda",
 // con o sin sueldo (créditos bancarios la piden con sueldo).
 window.constanciaPDF = (empId) => {
@@ -28727,7 +28795,10 @@ window.rhGenerarSemana = async (periodo) => {
   if (!window._esNominaOK()) { toast('🔒 Nómina: solo Capital Humano y Dirección', 'error'); return; }
   const activos = (state.empleados || []).filter(e => e.activo !== false);
   const condDe = (id) => (state.nomina_condiciones || []).find(c => c.empleado_id === id);
-  const yaRegistrados = new Set((state.nominas || []).filter(n => n.periodo === periodo).map(n => n.empleado_id));
+  const _hace6d = Date.now() / 1000 - 6 * 86400;
+  // Duplicados: bloquea solo si ya hay registro RECIENTE (últimos 6 días) — así
+  // las 4 semanas del mes se generan sin chocar entre sí
+  const yaRegistrados = new Set((state.nominas || []).filter(n => n.periodo === periodo && (n.created_at?.seconds || 0) > _hace6d).map(n => n.empleado_id));
   const prestamoDe = (id) => (state.prestamos_rh || []).find(p => p.empleado_id === id && (Number(p.saldo) || 0) > 0 && (Number(p.abono_periodo) || 0) > 0);
 
   const filas = [];
@@ -28740,6 +28811,19 @@ window.rhGenerarSemana = async (periodo) => {
     const deducciones = (c.deducciones_fijas || []).map(d => ({ nombre: d.nombre, monto: Number(d.monto) || 0, prestamo_id: '' }));
     const pr = prestamoDe(emp.id);
     if (pr) deducciones.push({ nombre: 'Abono préstamo', monto: Math.min(Number(pr.abono_periodo), Number(pr.saldo)), prestamo_id: pr.id });
+    // ⚡ Bonos VARIABLES (manual — hay mucha rotación): el sistema PREGUNTA la
+    //    cantidad de la semana y multiplica por la tarifa del esquema. Vacío o 0 = no aplica.
+    for (const bv of (c.bonos_variables || [])) {
+      const tarifa = Number(bv.tarifa) || 0;
+      if (tarifa <= 0) continue;
+      const resp = prompt(`⚡ ${emp.nombre}
+${bv.nombre} — $${fmtNum(tarifa.toFixed(2))} por ${bv.unidad || 'unidad'}
+
+¿Cuántas ${bv.unidad || 'unidad'}(s) hizo esta semana?`, '0');
+      if (resp === null) continue;
+      const cant = Number(String(resp).replace(/[^0-9.]/g, '')) || 0;
+      if (cant > 0) bonos.push({ nombre: `${bv.nombre} (${fmtNum(cant)} ${bv.unidad || 'u'} x $${fmtNum(tarifa)})`, monto: cant * tarifa });
+    }
     const sueldo = Number(c.sueldo_semanal) || 0;
     const tb = bonos.reduce((s, b) => s + b.monto, 0);
     const td = deducciones.reduce((s, d) => s + d.monto, 0);
@@ -29204,6 +29288,21 @@ function renderRH() {
             <select class="input" style="width:auto;display:inline-block;padding:2px 5px;font-size:11px;margin-left:6px;" onchange="window.rhCondAdd('ded', this.value); this.value='';"><option value="">agregar…</option>${conceptosC.filter(c => c.tipo === 'deduccion').map(c => `<option value="${c.id}">${esc(c.nombre)}</option>`).join('')}</select></div>
             ${listaFija('ded', cf.deducciones_fijas || []) || '<div style="font-size:11px;color:#94a3b8;">sin deducciones fijas</div>'}</div>
         </div>
+        <div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:9px 12px;margin-bottom:10px;">
+          <div style="font-size:11px;font-weight:800;color:#1e40af;margin-bottom:6px;">⚡ Bonos VARIABLES — por unidad de desempeño <span style="font-weight:600;color:#64748b;">(chofer: $ por vuelta entregada · producción: $ por kg... la cantidad se captura cada semana)</span>
+            <button onclick="window.rhCondVarAdd()" style="margin-left:8px;padding:3px 10px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10.5px;">➕ Agregar</button></div>
+          ${(cf.bonos_variables || []).map((b, i) => `
+            <div style="display:flex;gap:6px;align-items:center;padding:3px 0;flex-wrap:wrap;">
+              <input class="input" id="cv-n-${i}" type="text" placeholder="Concepto (ej. Vuelta entregada)" value="${(b.nombre || '').replace(/"/g, '&quot;')}" style="flex:2;min-width:150px;padding:5px 8px;font-size:12px;" oninput="window.rhCondVarSet(${i},'nombre',this.value,'cv-n-${i}')" />
+              <span style="font-size:11px;color:#64748b;">$</span>
+              <input class="input" id="cv-t-${i}" type="text" inputmode="decimal" placeholder="0.00" value="${b.tarifa}" style="width:84px;text-align:right;padding:5px 8px;font-size:12px;" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.rhCondVarSet(${i},'tarifa',this.value,'cv-t-${i}')" />
+              <span style="font-size:11px;color:#64748b;">por</span>
+              <select class="input" style="width:auto;padding:5px 6px;font-size:12px;" onchange="window.rhCondVarSet(${i},'unidad',this.value)">
+                ${['vuelta', 'día', 'kg', 'millar', 'pieza', 'hora extra', 'unidad'].map(u => `<option value="${u}" ${b.unidad === u ? 'selected' : ''}>${u}</option>`).join('')}
+              </select>
+              <button onclick="window.rhCondVarDel(${i})" style="padding:2px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:5px;cursor:pointer;font-size:10px;font-weight:800;">✕</button>
+            </div>`).join('') || '<div style="font-size:11px;color:#94a3b8;">sin bonos variables — este empleado cobra solo sueldo + fijos</div>'}
+        </div>
         ${(condPrev?.historial_aumentos || []).length ? `<div style="font-size:11px;color:#64748b;margin-bottom:8px;">📈 Historial: ${condPrev.historial_aumentos.slice().reverse().map(h => `$${fmtNum(h.anterior)} → $${fmtNum(h.nuevo)} (${h.fecha} · ${esc(h.motivo)})`).join(' · ')}</div>` : ''}
         <div style="display:flex;gap:8px;">
           <button onclick="window.rhCondGuardar()" style="padding:10px 18px;background:#be185d;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">💾 Guardar condiciones</button>
@@ -29247,6 +29346,7 @@ function renderRH() {
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               ${nominaOK ? `<button onclick="window.rhCondAbrir('${e.id}')" title="Condiciones de pago: sueldo semanal, bonos y deducciones fijas" style="padding:7px 13px;background:#be185d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💰 ${window._rhCondDe(e.id) ? '$' + fmtNum(Number(window._rhCondDe(e.id).sueldo_semanal || 0)) + '/sem' : 'Condiciones'}</button>
               <button onclick="window.rhAumento('${e.id}')" title="Registrar aumento (con motivo e historial)" style="padding:7px 13px;background:#fff;color:#be185d;border:1.5px solid #be185d;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📈</button>` : ''}
+              ${nominaOK ? `<button onclick="window.esquemaPagoPDF('${e.id}')" title="Documento formal del esquema de pago: sueldo + bonos fijos + variables por unidad, con firmas" style="padding:7px 13px;background:#1e40af;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">💼 Esquema</button>` : ''}
               <button onclick="window.expedientePDF('${e.id}')" title="Ficha completa membretada para su carpeta física" style="padding:7px 13px;background:#0d2c54;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📇 Expediente</button>
               <button onclick="window.constanciaPDF('${e.id}')" title="Carta laboral 'a quien corresponda' — con o sin sueldo" style="padding:7px 13px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📜 Constancia</button>
               <button onclick="window.rhEditar('${e.id}')" style="padding:7px 13px;background:#fff;color:#1e40af;border:1.5px solid #93c5fd;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">✏️ Editar</button>
@@ -45138,7 +45238,10 @@ window.imprimirEtiquetasPDF = (odpId) => {
         esIncompleto: false,
         rolloNum: r.numero_rollo || 0
       }));
-      numEtiquetas = listaEtiquetas.length;
+      // 🏷 TRAZABILIDAD TOTAL: numerar hasta el total del PEDIDO, no solo lo capturado
+      const teoricoR = Math.max(numEtiquetas, listaEtiquetas.length);
+      while (listaEtiquetas.length < teoricoR) listaEtiquetas.push({ cantTxt: cantEtiquetaTxt, esIncompleto: false });
+      numEtiquetas = teoricoR;
     } else if (capsPaquete.length > 0) {
       // Desde capturas reales — refleja completas e incompletas con su cantidad
       listaEtiquetas = capsPaquete.map(c => {
@@ -45151,7 +45254,11 @@ window.imprimirEtiquetasPDF = (odpId) => {
           : `${fmtNum(cant)} ${umLblEtq}`;
         return { cantTxt: txt, esIncompleto: inc };
       });
-      numEtiquetas = listaEtiquetas.length;
+      // 🏷 TRAZABILIDAD TOTAL: si el pedido son 120 paquetes, salen 120 etiquetas
+      //    (1 de 120 ... 120 de 120) — las aún no capturadas van con cantidad teórica
+      const teoricoP = Math.max(numEtiquetas, listaEtiquetas.length);
+      while (listaEtiquetas.length < teoricoP) listaEtiquetas.push({ cantTxt: cantEtiquetaTxt, esIncompleto: false });
+      numEtiquetas = teoricoP;
     } else {
       // Sin capturas aún: usar el cálculo teórico (uniforme) — todas completas
       for (let i = 0; i < numEtiquetas; i++) listaEtiquetas.push({ cantTxt: cantEtiquetaTxt, esIncompleto: false });
