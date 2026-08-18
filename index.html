@@ -4851,7 +4851,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B93-sri-esquema</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B95-nomina-auto</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -28603,6 +28603,187 @@ window.rhNominaBorrar = async (id) => {
   try { await deleteDoc(doc(db, 'nominas', id)); toast('Registro eliminado'); } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// ═══════════════════════════════════════════════════════════
+// ⚡ GENERAR SEMANA COMPLETA — prellena la nómina de TODOS los
+// empleados activos desde sus condiciones de pago (sueldo + fijos
+// + abono de préstamo activo). RH solo revisa excepciones.
+// Salta a quien ya tiene registro del período (cero duplicados).
+// ═══════════════════════════════════════════════════════════
+window.rhGenerarSemana = async (periodo) => {
+  if (!window._esNominaOK()) { toast('🔒 Nómina: solo Capital Humano y Dirección', 'error'); return; }
+  const activos = (state.empleados || []).filter(e => e.activo !== false);
+  const condDe = (id) => (state.nomina_condiciones || []).find(c => c.empleado_id === id);
+  const yaRegistrados = new Set((state.nominas || []).filter(n => n.periodo === periodo).map(n => n.empleado_id));
+  const prestamoDe = (id) => (state.prestamos_rh || []).find(p => p.empleado_id === id && (Number(p.saldo) || 0) > 0 && (Number(p.abono_periodo) || 0) > 0);
+
+  const filas = [];
+  const sinCondiciones = [];
+  for (const emp of activos) {
+    if (yaRegistrados.has(emp.id)) continue;
+    const c = condDe(emp.id);
+    if (!c || !(Number(c.sueldo_semanal) > 0)) { sinCondiciones.push(emp.nombre); continue; }
+    const bonos = (c.bonos_fijos || []).map(b => ({ nombre: b.nombre, monto: Number(b.monto) || 0 }));
+    const deducciones = (c.deducciones_fijas || []).map(d => ({ nombre: d.nombre, monto: Number(d.monto) || 0, prestamo_id: '' }));
+    const pr = prestamoDe(emp.id);
+    if (pr) deducciones.push({ nombre: 'Abono préstamo', monto: Math.min(Number(pr.abono_periodo), Number(pr.saldo)), prestamo_id: pr.id });
+    const sueldo = Number(c.sueldo_semanal) || 0;
+    const tb = bonos.reduce((s, b) => s + b.monto, 0);
+    const td = deducciones.reduce((s, d) => s + d.monto, 0);
+    const fondo = Number(c.fondo_semanal) || 0;
+    filas.push({ emp, sueldo, bonos, tb, deducciones, td, fondo, neto: sueldo + tb - td - fondo });
+  }
+  if (!filas.length) {
+    toast(yaRegistrados.size ? `Todos los empleados con condiciones ya tienen registro en ${periodo}` : 'Ningún empleado tiene condiciones de pago configuradas (pestaña Empleados → 💰)', 'info');
+    return;
+  }
+  const totNeto = filas.reduce((s, x) => s + x.neto, 0);
+  const detalle = filas.slice(0, 12).map(x => `• ${x.emp.nombre} → neto $${fmtNum(x.neto.toFixed(2))}${x.deducciones.some(d => d.prestamo_id) ? ' (incluye abono préstamo)' : ''}`).join('\n');
+  if (!confirm(`⚡ GENERAR NÓMINA ${periodo} — ${filas.length} empleado(s)\n\n${detalle}${filas.length > 12 ? `\n...y ${filas.length - 12} más` : ''}\n\nNeto total: $${fmtNum(totNeto.toFixed(2))}${sinCondiciones.length ? `\n\n⚠ Sin condiciones (se saltan): ${sinCondiciones.slice(0, 5).join(', ')}${sinCondiciones.length > 5 ? '…' : ''}` : ''}\n\nDespués podrás ajustar o borrar registros individuales.\n¿Registrar todos?`)) return;
+
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const batch = writeBatch(db);
+    filas.forEach(x => {
+      batch.set(doc(collection(db, 'nominas')), {
+        periodo, empleado_id: x.emp.id, empleado_nombre: x.emp.nombre, puesto: x.emp.puesto || '', depto: x.emp.depto || '',
+        sueldo_fijo: x.sueldo, bonos: x.bonos, total_bonos: x.tb,
+        deducciones: x.deducciones, total_deducciones: x.td,
+        fondo_ahorro: x.fondo, neto: x.neto, notas: '',
+        generada_auto: true, capturado_por: state.user?.nombre || '', created_at: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+    // Abonos de préstamo incluidos → se aplican al saldo (mismo helper del flujo manual)
+    for (const x of filas) for (const d of x.deducciones) {
+      if (d.prestamo_id && d.monto > 0) await window._rhAbonarPrestamo(d.prestamo_id, d.monto, periodo, 'nomina');
+    }
+    window.logAccion('rh_nomina_semana_auto', periodo, `${filas.length} registro(s) generados · neto total $${fmtNum(totNeto.toFixed(2))}`);
+    toast(`⚡ Nómina ${periodo} generada: ${filas.length} registro(s) · neto total $${fmtNum(totNeto.toFixed(2))}`);
+    window.npCelebrar();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// ═══════════════════════════════════════════════════════════
+// 🧾 RECIBO DE NÓMINA PDF — comprobante individual membretado
+// con desglose y firmas. Adiós al Excel para comprobantes.
+// ═══════════════════════════════════════════════════════════
+window.reciboNominaPDF = (nominaId) => {
+  if (!window._esNominaOK()) { toast('🔒 Nómina: solo Capital Humano y Dirección', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const n = (state.nominas || []).find(x => x.id === nominaId);
+  if (!n) return;
+  const emp = (state.empleados || []).find(e => e.id === n.empleado_id) || {};
+  try {
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'letter' });
+    const W = 216, M = 16;
+    const NAVY = [13, 44, 84], VERDE = [22, 128, 58], GRIS = [100, 116, 139], NEGRO = [15, 23, 42];
+    // Membrete
+    d.setFillColor(...NAVY); d.rect(0, 0, W, 26, 'F');
+    try { d.setFillColor(255, 255, 255); d.roundedRect(M, 5, 16, 16, 2, 2, 'F'); d.addImage(DATOS_EMPRESA.logo_url, 'JPEG', M + 1, 7.5, 14, 6.3); } catch (e) {}
+    d.setTextColor(255, 255, 255); d.setFontSize(10.5); d.setFont(undefined, 'bold');
+    d.text(String(DATOS_EMPRESA.razon_social || 'NEW PACK').substring(0, 44), M + 20, 12);
+    d.setFontSize(8); d.setFont(undefined, 'normal');
+    d.text(`RFC ${DATOS_EMPRESA.rfc || ''} · ${DATOS_EMPRESA.telefono || ''}`, M + 20, 17.5);
+    d.setFontSize(12); d.setFont(undefined, 'bold');
+    d.text('RECIBO DE NÓMINA', W - M, 12, { align: 'right' });
+    d.setFontSize(9); d.setFont(undefined, 'normal');
+    d.text(`Período: ${n.periodo || ''}`, W - M, 17.5, { align: 'right' });
+    // Datos del empleado
+    let y = 36;
+    d.setTextColor(...NEGRO); d.setFontSize(10); d.setFont(undefined, 'bold');
+    d.text(String(n.empleado_nombre || ''), M, y);
+    d.setFont(undefined, 'normal'); d.setFontSize(8.5); d.setTextColor(...GRIS);
+    d.text(`${n.puesto || emp.puesto || ''} · ${n.depto || emp.depto || ''}`, M, y + 5);
+    d.text(`RFC: ${emp.rfc || '—'}   NSS: ${emp.nss || '—'}   Ingreso: ${emp.fecha_ingreso || emp.ingreso || '—'}`, M, y + 10);
+    y += 17;
+    // Tabla de conceptos
+    const filas = [['Sueldo del período', '$' + fmtNum((Number(n.sueldo_fijo) || 0).toFixed(2)), '']];
+    (n.bonos || []).forEach(b => filas.push([`Bono: ${b.nombre}`, '$' + fmtNum((Number(b.monto) || 0).toFixed(2)), '']));
+    (n.deducciones || []).forEach(x => filas.push([`Deducción: ${x.nombre}`, '', '-$' + fmtNum((Number(x.monto) || 0).toFixed(2))]));
+    if (Number(n.fondo_ahorro) > 0) filas.push(['Fondo de ahorro', '', '-$' + fmtNum(Number(n.fondo_ahorro).toFixed(2))]);
+    d.autoTable({
+      startY: y, head: [['Concepto', 'Percepciones', 'Deducciones']], body: filas,
+      margin: { left: M, right: M }, styles: { fontSize: 9, cellPadding: 2.5 },
+      headStyles: { fillColor: NAVY, fontSize: 9 },
+      columnStyles: { 1: { halign: 'right', cellWidth: 40 }, 2: { halign: 'right', cellWidth: 40, textColor: [153, 27, 27] } },
+    });
+    y = d.lastAutoTable.finalY + 6;
+    // Neto destacado
+    d.setFillColor(232, 248, 236); d.setDrawColor(...VERDE); d.roundedRect(W - M - 74, y, 74, 14, 2, 2, 'FD');
+    d.setTextColor(...VERDE); d.setFontSize(9); d.setFont(undefined, 'bold');
+    d.text('NETO A PAGAR', W - M - 70, y + 6);
+    d.setFontSize(13);
+    d.text('$' + fmtNum((Number(n.neto) || 0).toFixed(2)), W - M - 4, y + 10.5, { align: 'right' });
+    if (n.notas) { d.setTextColor(...GRIS); d.setFontSize(8); d.setFont(undefined, 'normal'); d.text(d.splitTextToSize(`Notas: ${n.notas}`, W - 2 * M - 80), M, y + 6); }
+    y += 26;
+    // Leyenda + firmas
+    d.setTextColor(...GRIS); d.setFontSize(7.5); d.setFont(undefined, 'normal');
+    d.text(d.splitTextToSize('Recibí de conformidad el importe neto indicado en este recibo, correspondiente a mi salario y demás prestaciones del período señalado, no reservándome acción o derecho alguno que ejercitar en contra de la empresa por estos conceptos.', W - 2 * M), M, y);
+    y += 22;
+    d.setDrawColor(...GRIS); d.setLineWidth(0.3);
+    d.line(M + 8, y, M + 78, y); d.line(W - M - 78, y, W - M - 8, y);
+    d.setFontSize(8); d.setTextColor(...NEGRO);
+    d.text(String(n.empleado_nombre || ''), M + 43, y + 5, { align: 'center' });
+    d.text('Firma del empleado', M + 43, y + 9.5, { align: 'center' });
+    d.text(String(n.capturado_por || 'Capital Humano'), W - M - 43, y + 5, { align: 'center' });
+    d.text('Capital Humano', W - M - 43, y + 9.5, { align: 'center' });
+    d.setFontSize(7); d.setTextColor(...GRIS);
+    d.text(`${DATOS_EMPRESA.razon_social || ''} · Documento generado desde NewPack ERP · ${new Date().toLocaleString('es-MX')}`, W / 2, 270, { align: 'center' });
+    _mostrarVistaPreviaPDF(d, `Recibo_${(n.empleado_nombre || '').replace(/\s+/g, '_')}_${n.periodo}.pdf`, `Recibo de nómina · ${n.empleado_nombre}`);
+  } catch (e) { toast('Error generando recibo: ' + e.message, 'error'); }
+};
+
+// 📄 LISTA DE RAYA PDF — la nómina del período completa, para revisión y firma
+// de dirección (reemplaza la hoja de Excel semanal).
+window.listaRayaPDF = (periodo) => {
+  if (!window._esNominaOK()) { toast('🔒 Nómina: solo Capital Humano y Dirección', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const regs = (state.nominas || []).filter(x => x.periodo === periodo);
+  if (!regs.length) { toast('No hay registros de nómina en este período', 'error'); return; }
+  try {
+    const { jsPDF } = window.jspdf;
+    const d = new jsPDF({ unit: 'mm', format: 'letter', orientation: 'landscape' });
+    const W = 279, M = 12;
+    const NAVY = [13, 44, 84], VERDE = [22, 128, 58], GRIS = [100, 116, 139];
+    d.setFillColor(...NAVY); d.rect(0, 0, W, 22, 'F');
+    d.setTextColor(255, 255, 255); d.setFontSize(13); d.setFont(undefined, 'bold');
+    d.text(`LISTA DE RAYA · ${periodo}`, M, 10);
+    d.setFontSize(8.5); d.setFont(undefined, 'normal');
+    d.text(`${DATOS_EMPRESA.razon_social || ''} · RFC ${DATOS_EMPRESA.rfc || ''} · ${regs.length} empleado(s) · Generado: ${new Date().toLocaleString('es-MX')}`, M, 16.5);
+    const tot = (k) => regs.reduce((s, r) => s + (Number(r[k]) || 0), 0);
+    d.autoTable({
+      startY: 28,
+      head: [['Empleado', 'Depto', 'Sueldo', 'Bonos', 'Deducciones', 'Fondo', 'NETO']],
+      body: regs.map(r => [
+        r.empleado_nombre || '', r.depto || '',
+        '$' + fmtNum((Number(r.sueldo_fijo) || 0).toFixed(2)),
+        '$' + fmtNum((Number(r.total_bonos) || 0).toFixed(2)),
+        '$' + fmtNum((Number(r.total_deducciones) || 0).toFixed(2)),
+        '$' + fmtNum((Number(r.fondo_ahorro) || 0).toFixed(2)),
+        '$' + fmtNum((Number(r.neto) || 0).toFixed(2)),
+      ]),
+      foot: [['TOTALES', '', '$' + fmtNum(tot('sueldo_fijo').toFixed(2)), '$' + fmtNum(tot('total_bonos').toFixed(2)), '$' + fmtNum(tot('total_deducciones').toFixed(2)), '$' + fmtNum(tot('fondo_ahorro').toFixed(2)), '$' + fmtNum(tot('neto').toFixed(2))]],
+      margin: { left: M, right: M }, styles: { fontSize: 8.5, cellPadding: 2 },
+      headStyles: { fillColor: NAVY }, footStyles: { fillColor: VERDE, fontStyle: 'bold' },
+      columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right', fontStyle: 'bold' } },
+      // 🔧 columnStyles solo aplica al CUERPO — el pie de TOTALES hereda izquierda
+      //    y los números quedaban desalineados contra su columna. Esto los alinea.
+      didParseCell: (dt) => { if (dt.section === 'foot' && dt.column.index >= 2) dt.cell.styles.halign = 'right'; },
+    });
+    let y = d.lastAutoTable.finalY + 16;
+    if (y > 185) { d.addPage(); y = 30; }
+    d.setDrawColor(...GRIS); d.setLineWidth(0.3);
+    d.line(M + 15, y, M + 95, y); d.line(W - M - 95, y, W - M - 15, y);
+    d.setFontSize(8); d.setTextColor(15, 23, 42);
+    d.text('Elaboró · Capital Humano', M + 55, y + 5, { align: 'center' });
+    d.text('Autorizó · Dirección General', W - M - 55, y + 5, { align: 'center' });
+    _mostrarVistaPreviaPDF(d, `Lista_de_Raya_${periodo}.pdf`, `Lista de raya · ${periodo}`);
+  } catch (e) { toast('Error generando lista de raya: ' + e.message, 'error'); }
+};
+
 function renderRH() {
   if (!window._esRHOK()) return '<div style="padding:50px;text-align:center;color:#94a3b8;">🔒 Solo Capital Humano y dirección.</div>';
   const tab = state.rhTab || 'empleados';
@@ -28862,13 +29043,16 @@ function renderRH() {
           ${conceptos.map(c => ` <span style="background:${c.tipo === 'bono' ? '#f0fdf4' : '#fef2f2'};padding:2px 7px;border-radius:6px;">${esc(c.nombre)} <a onclick="window.rhConceptoBaja('${c.id}')" style="cursor:pointer;color:#dc2626;font-weight:800;">×</a></span>`).join('')}</div>
         </div>
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;">
-          <div style="display:flex;justify-content:space-between;font-weight:800;font-size:13px;margin-bottom:8px;flex-wrap:wrap;gap:8px;"><span>Nómina de ${periodo} · ${regs.length} registro(s)</span><span style="color:#be185d;">Neto total: $${fmtNum(totNeto.toFixed(2))} · 🏦 Fondo del período: $${fmtNum(totFondo.toFixed(2))}</span></div>
+          <div style="display:flex;justify-content:space-between;font-weight:800;font-size:13px;margin-bottom:8px;flex-wrap:wrap;gap:8px;align-items:center;"><span>Nómina de ${periodo} · ${regs.length} registro(s)
+                <button onclick="window.rhGenerarSemana('${periodo}')" title="Prellena la nómina de TODOS los empleados activos desde sus condiciones de pago (sueldo + fijos + abono de préstamo). Salta a quien ya tiene registro." style="margin-left:8px;padding:6px 13px;background:#be185d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">⚡ Generar semana completa</button>
+                ${regs.length ? `<button onclick="window.listaRayaPDF('${periodo}')" style="margin-left:4px;padding:6px 13px;background:#0d2c54;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11px;">📄 Lista de raya (PDF)</button>` : ''}</span><span style="color:#be185d;">Neto total: $${fmtNum(totNeto.toFixed(2))} · 🏦 Fondo del período: $${fmtNum(totFondo.toFixed(2))}</span></div>
           ${regs.length === 0 ? '<div style="font-size:12px;color:#94a3b8;">Sin registros en este período</div>' : regs.map(n => `
             <div style="font-size:12px;padding:6px 0;border-bottom:1px dashed #f1f5f9;">
               <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
                 <span><strong>${n.empleado_nombre}</strong> <span style="color:#94a3b8;">(${n.depto || '—'})</span></span>
                 <span>neto <strong>$${fmtNum((Number(n.neto) || 0).toFixed(2))}</strong>
-                  <button onclick="window.rhNominaBorrar('${n.id}')" style="margin-left:6px;padding:3px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">✕</button></span>
+                  <button onclick="window.reciboNominaPDF('${n.id}')" title="Recibo de nómina membretado con firmas" style="margin-left:6px;padding:3px 10px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">🧾 Recibo</button>
+                  <button onclick="window.rhNominaBorrar('${n.id}')" style="margin-left:4px;padding:3px 8px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">✕</button></span>
               </div>
               <div style="font-size:11px;color:#64748b;">sueldo $${fmtNum((Number(n.sueldo_fijo ?? n.percepciones) || 0).toFixed(2))}${(n.bonos || []).length ? ` · bonos: ${n.bonos.map(b => `${esc(b.nombre)} $${fmtNum(b.monto)}`).join(', ')}` : ''}${(n.deducciones || []).length && Array.isArray(n.deducciones) ? ` · deducciones: ${n.deducciones.map(d => `${esc(d.nombre)} $${fmtNum(d.monto)}`).join(', ')}` : ''}${Number(n.fondo_ahorro) > 0 ? ` · 🏦 fondo $${fmtNum(Number(n.fondo_ahorro).toFixed(2))}` : ''}${n.notas ? ` · ${esc(n.notas)}` : ''}</div>
             </div>`).join('')}
