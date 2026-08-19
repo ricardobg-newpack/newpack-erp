@@ -5004,7 +5004,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0819-B112-radiales</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0819-B113-fix-cursor-circular</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -18135,6 +18135,41 @@ window.rmaPickDirecto = (tarimaId) => {
 // ═══════════════════════════════════════════════════════════
 window._radNum = (v) => { const n = Number(String(v).replace(',', '.')); return isFinite(n) && n > 0 ? n : 0; };
 
+// 🎯 RADIAL CIRCULAR — el perfil como es físicamente: alrededor de la burbuja.
+// Banda verde = especificación; puntos rojos con guía y número grande = fuera.
+window.radCircularSVG = (valores, minS, maxS, nominal, tam = 340) => {
+  const pts = (valores || []).map((v, i) => ({ i, v: window._radNum(v) })).filter(p => p.v > 0);
+  if (!pts.length) return '';
+  const n = (valores || []).length;
+  const C = tam / 2, rMax = C - 28, rMin = tam * 0.15;
+  const ys = pts.map(p => p.v).concat([minS, maxS, nominal].filter(x => x > 0));
+  let vMin = Math.min(...ys), vMax = Math.max(...ys);
+  const pad = (vMax - vMin) * 0.25 || vMax * 0.08 || 1;
+  vMin -= pad; vMax += pad;
+  const R = (v) => rMin + ((v - vMin) / (vMax - vMin)) * (rMax - rMin);
+  const ang = (i) => (i / n) * 2 * Math.PI - Math.PI / 2;
+  const PX = (i, r) => C + r * Math.cos(ang(i));
+  const PY = (i, r) => C + r * Math.sin(ang(i));
+  const esFuera = (v) => (minS > 0 && v < minS) || (maxS > 0 && v > maxS);
+  const nFuera = pts.filter(p => esFuera(p.v)).length;
+  const poly = pts.map(p => `${PX(p.i, R(p.v)).toFixed(1)},${PY(p.i, R(p.v)).toFixed(1)}`).join(' ');
+  const paso = n > 40 ? 3 : n > 24 ? 2 : 1;
+  return `<svg viewBox="0 0 ${tam} ${tam}" style="width:100%;max-width:${tam}px;height:auto;display:block;margin:0 auto;background:var(--surface-card);border:1px solid #e2e8f0;border-radius:12px;">
+    ${minS > 0 && maxS > 0 ? `
+    <circle cx="${C}" cy="${C}" r="${((R(minS) + R(maxS)) / 2).toFixed(1)}" fill="none" stroke="rgba(63,211,75,.18)" stroke-width="${Math.max(R(maxS) - R(minS), 0).toFixed(1)}"/>
+    <circle cx="${C}" cy="${C}" r="${R(minS).toFixed(1)}" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="5 4"/>
+    <circle cx="${C}" cy="${C}" r="${R(maxS).toFixed(1)}" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="5 4"/>` : ''}
+    ${nominal > 0 ? `<circle cx="${C}" cy="${C}" r="${R(nominal).toFixed(1)}" fill="none" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 4"/>` : ''}
+    <polygon points="${poly}" fill="rgba(30,64,175,.07)" stroke="#1e40af" stroke-width="1.6"/>
+    ${pts.map(p => { const f = esFuera(p.v); return `
+      ${f ? `<line x1="${PX(p.i, R(p.v)).toFixed(1)}" y1="${PY(p.i, R(p.v)).toFixed(1)}" x2="${PX(p.i, rMax + 6).toFixed(1)}" y2="${PY(p.i, rMax + 6).toFixed(1)}" stroke="#dc2626" stroke-width=".8" stroke-dasharray="2 2"/>` : ''}
+      <circle cx="${PX(p.i, R(p.v)).toFixed(1)}" cy="${PY(p.i, R(p.v)).toFixed(1)}" r="${f ? 5 : 3}" fill="${f ? '#dc2626' : '#1e40af'}"${f ? ' stroke="#fff" stroke-width="1.2"' : ''}/>`; }).join('')}
+    ${Array.from({ length: n }, (_, i) => { const p = pts.find(x => x.i === i); const f = p && esFuera(p.v); if (!f && i % paso !== 0) return ''; return `<text x="${PX(i, rMax + 16).toFixed(1)}" y="${(PY(i, rMax + 16) + 3.5).toFixed(1)}" text-anchor="middle" font-size="${f ? 12 : 8.5}" font-weight="${f ? '900' : '600'}" fill="${f ? '#dc2626' : '#94a3b8'}">${i + 1}</text>`; }).join('')}
+    <text x="${C}" y="${C - 6}" text-anchor="middle" font-size="11.5" font-weight="800" fill="#64748b">${pts.length}/${n} pts</text>
+    <text x="${C}" y="${C + 11}" text-anchor="middle" font-size="11" font-weight="900" fill="${nFuera ? '#dc2626' : '#16a34a'}">${nFuera ? nFuera + ' FUERA' : 'en banda'}</text>
+  </svg>`;
+};
+
 window.radStats = (valores, minS, maxS) => {
   const vals = (valores || []).map(window._radNum).filter(v => v > 0);
   if (!vals.length) return { capturados: 0, prom: 0, min: 0, max: 0, fuera: 0 };
@@ -18160,10 +18195,10 @@ window.radSVG = (valores, minS, maxS, nominal, alto = 190) => {
     ${minS > 0 && maxS > 0 ? `<rect x="${PL}" y="${Y(maxS).toFixed(1)}" width="${W - PL - PR}" height="${Math.max(Y(minS) - Y(maxS), 0).toFixed(1)}" fill="rgba(63,211,75,.13)"/>
     <line x1="${PL}" x2="${W - PR}" y1="${Y(minS).toFixed(1)}" y2="${Y(minS).toFixed(1)}" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="6 3"/>
     <line x1="${PL}" x2="${W - PR}" y1="${Y(maxS).toFixed(1)}" y2="${Y(maxS).toFixed(1)}" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="6 3"/>
-    <text x="${PL - 5}" y="${(Y(maxS) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#16a34a" font-weight="700">${maxS}</text>
-    <text x="${PL - 5}" y="${(Y(minS) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#16a34a" font-weight="700">${minS}</text>` : ''}
-    ${nominal > 0 ? `<line x1="${PL}" x2="${W - PR}" y1="${Y(nominal).toFixed(1)}" y2="${Y(nominal).toFixed(1)}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 4"/>
-    <text x="${W - PR - 2}" y="${(Y(nominal) - 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#94a3b8">nominal ${nominal}</text>` : ''}
+    <text x="${PL - 5}" y="${(Y(maxS) - 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#16a34a" font-weight="700">${maxS}</text>
+    <text x="${PL - 5}" y="${(Y(minS) + 11).toFixed(1)}" text-anchor="end" font-size="10" fill="#16a34a" font-weight="700">${minS}</text>` : ''}
+    ${nominal > 0 ? `<line x1="${PL}" x2="${W - PR}" y1="${Y(nominal).toFixed(1)}" y2="${Y(nominal).toFixed(1)}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 4"/>` : ''}
+    ${nominal > 0 && (!(minS > 0) || (Math.abs(Y(nominal) - Y(minS)) > 13 && Math.abs(Y(nominal) - Y(maxS)) > 13)) ? `<text x="${W - PR - 4}" y="${(Y(nominal) - 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#94a3b8">nominal ${nominal}</text>` : ''}
     <polyline points="${poly}" fill="none" stroke="#1e40af" stroke-width="2"/>
     ${pts.map(p => { const fuera = (minS && p.v < minS) || (maxS && p.v > maxS); return `<circle cx="${X(p.i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="${fuera ? 4 : 2.6}" fill="${fuera ? '#dc2626' : '#1e40af'}"/>`; }).join('')}
     <text x="${PL}" y="${H - 6}" font-size="10" fill="#94a3b8">pt 1</text>
@@ -18280,7 +18315,7 @@ window.radPDF = (id) => {
       ['Producto', r.producto_codigo || '—', 'Cliente', r.cliente_nombre || '—'],
       [esLargos ? 'Medida' : 'Rollo', (esLargos ? r.medida : r.num_rollo) || '—', 'Inspector', `${r.inspector_nombre || ''} · turno ${r.turno || ''}`],
       ['Fecha y hora', r.created_at?.seconds ? new Date(r.created_at.seconds * 1000).toLocaleString('es-MX') : '—',
-       esLargos ? 'Largo nominal' : 'Calibre nominal', `${r.nominal} (±${r.tol_pct}% → ${r.spec_min} - ${r.spec_max})`],
+       esLargos ? 'Largo nominal' : 'Calibre nominal', `${r.nominal} (±${r.tol_pct}%: ${r.spec_min} a ${r.spec_max})`],
     ],
     theme: 'grid',
     styles: { fontSize: 8, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
@@ -18291,6 +18326,53 @@ window.radPDF = (id) => {
 
   // Gráfica del perfil
   const pts = (r.valores || []).map((v, i) => ({ i, v: Number(v) || 0 })).filter(p => p.v > 0);
+  const _esFueraPDF = (v) => (r.spec_min && v < r.spec_min) || (r.spec_max && v > r.spec_max);
+
+  // 🎯 Círculo radial (solo tipo radial): dónde están los puntos malos alrededor de la burbuja
+  if (!esLargos && pts.length) {
+    const nn = (r.valores || []).length;
+    const Cx = 105, rMaxP = 33, rMinP = 9;
+    const cy = y + rMaxP + 8;
+    const ysC = pts.map(p => p.v).concat([r.spec_min, r.spec_max, r.nominal].filter(Boolean));
+    let vMinC = Math.min(...ysC), vMaxC = Math.max(...ysC);
+    const padC = (vMaxC - vMinC) * 0.25 || 1; vMinC -= padC; vMaxC += padC;
+    const RC = (v) => rMinP + ((v - vMinC) / (vMaxC - vMinC)) * (rMaxP - rMinP);
+    const angC = (i) => (i / nn) * 2 * Math.PI - Math.PI / 2;
+    const PXc = (i, rr) => Cx + rr * Math.cos(angC(i));
+    const PYc = (i, rr) => cy + rr * Math.sin(angC(i));
+    if (r.spec_min && r.spec_max) {
+      docPDF.setFillColor(220, 252, 231); docPDF.circle(Cx, cy, RC(r.spec_max), 'F');
+      docPDF.setFillColor(255, 255, 255); docPDF.circle(Cx, cy, RC(r.spec_min), 'F');
+      docPDF.setDrawColor(22, 163, 74); docPDF.setLineDashPattern([1.5, 1], 0);
+      docPDF.circle(Cx, cy, RC(r.spec_max)); docPDF.circle(Cx, cy, RC(r.spec_min));
+    }
+    if (r.nominal) { docPDF.setDrawColor(148, 163, 184); docPDF.setLineDashPattern([0.6, 1.2], 0); docPDF.circle(Cx, cy, RC(r.nominal)); }
+    docPDF.setLineDashPattern([], 0);
+    docPDF.setDrawColor(30, 64, 175); docPDF.setLineWidth(0.4);
+    for (let k = 0; k < pts.length; k++) {
+      const a = pts[k], b = pts[(k + 1) % pts.length];
+      docPDF.line(PXc(a.i, RC(a.v)), PYc(a.i, RC(a.v)), PXc(b.i, RC(b.v)), PYc(b.i, RC(b.v)));
+    }
+    const pasoC = nn > 40 ? 3 : nn > 24 ? 2 : 1;
+    docPDF.setLineWidth(0.2);
+    for (let i = 0; i < nn; i++) {
+      const p = pts.find(x => x.i === i);
+      const f = p && _esFueraPDF(p.v);
+      if (p) {
+        docPDF.setFillColor(f ? 220 : 30, f ? 38 : 64, f ? 38 : 175);
+        docPDF.circle(PXc(p.i, RC(p.v)), PYc(p.i, RC(p.v)), f ? 1.3 : 0.7, 'F');
+      }
+      if (f || i % pasoC === 0) {
+        docPDF.setFontSize(f ? 7 : 5.5);
+        docPDF.setTextColor(f ? 220 : 148, f ? 38 : 163, f ? 38 : 184);
+        docPDF.setFont('helvetica', f ? 'bold' : 'normal');
+        docPDF.text(String(i + 1), PXc(i, rMaxP + 4.5), PYc(i, rMaxP + 4.5) + 1, { align: 'center' });
+      }
+    }
+    docPDF.setFont('helvetica', 'normal');
+    y = cy + rMaxP + 10;
+  }
+
   if (pts.length) {
     const gx = 26, gw = 168, gh = 42;
     const ys = pts.map(p => p.v).concat([r.spec_min, r.spec_max, r.nominal].filter(Boolean));
@@ -18357,7 +18439,11 @@ window.radPDF = (id) => {
   docPDF.autoTable({
     startY: y,
     body: [[`Capturados: ${s.capturados || 0}`, `Promedio: ${s.prom || 0}`, `Mínimo: ${s.min || 0}`, `Máximo: ${s.max || 0}`,
-      { content: `Fuera de banda: ${s.fuera || 0}`, styles: s.fuera ? { textColor: [220, 38, 38], fontStyle: 'bold' } : { textColor: [22, 163, 74], fontStyle: 'bold' } }]],
+      { content: `Fuera de banda: ${s.fuera || 0}`, styles: s.fuera ? { textColor: [220, 38, 38], fontStyle: 'bold' } : { textColor: [22, 163, 74], fontStyle: 'bold' } }]]
+      .concat((() => {
+        const malos = (r.valores || []).map((v, i) => ({ i, v: Number(v) || 0 })).filter(p => p.v > 0 && ((r.spec_min && p.v < r.spec_min) || (r.spec_max && p.v > r.spec_max)));
+        return malos.length ? [[{ content: `Puntos fuera de banda: ${malos.map(p => `#${p.i + 1} (${p.v})`).join(', ')}`, colSpan: 5, styles: { textColor: [220, 38, 38], fontStyle: 'bold', halign: 'left' } }]] : [];
+      })()),
     theme: 'grid', styles: { fontSize: 8, cellPadding: 2, halign: 'center', lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0], fontStyle: 'bold' },
     margin: { left: 14, right: 14 },
   });
@@ -18435,9 +18521,9 @@ window.renderRadiales = () => {
         <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">No. de rollo</label>
           <input class="input" id="rad-rollo" value="${esc(f.num_rollo || '')}" placeholder="ARRANQUE" oninput="window.radSet('num_rollo',this.value,'rad-rollo')" /></div>`}
         <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">${esLargos ? 'Largo NOMINAL' : 'Calibre NOMINAL'}</label>
-          <input class="input" id="rad-nom" type="number" step="any" inputmode="decimal" value="${f.nominal || ''}" style="font-size:16px;" oninput="window.radSet('nominal',this.value,'rad-nom')" /></div>
+          <input class="input" id="rad-nom" type="text" inputmode="decimal" autocomplete="off" value="${f.nominal || ''}" style="font-size:16px;" oninput="window.radSet('nominal',this.value,'rad-nom')" /></div>
         <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Tolerancia ±%</label>
-          <input class="input" id="rad-tol" type="number" step="any" inputmode="decimal" value="${f.tol_pct}" oninput="window.radSet('tol_pct',this.value,'rad-tol')" /></div>
+          <input class="input" id="rad-tol" type="text" inputmode="decimal" autocomplete="off" value="${f.tol_pct}" oninput="window.radSet('tol_pct',this.value,'rad-tol')" /></div>
       </div>
       ${!esLargos ? `
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
@@ -18445,7 +18531,11 @@ window.renderRadiales = () => {
         ${[22, 33, 66].map(nn => `<button class="tab-btn ${Number(f.puntos_n) === nn ? 'active' : ''}" onclick="window.radSet('puntos_n',${nn})">${nn} PUNTOS</button>`).join('')}
         ${specMin ? `<span style="margin-left:auto;font-size:11.5px;font-weight:800;color:#16a34a;">Banda: ${specMin} — ${specMax}</span>` : ''}
       </div>` : (specMin ? `<div style="text-align:right;font-size:11.5px;font-weight:800;color:#16a34a;margin-bottom:10px;">Banda: ${specMin} — ${specMax}</div>` : '')}
-      ${window.radSVG(f.valores, specMin, specMax, nominal)}
+      ${!esLargos && window.radCircularSVG(f.valores, specMin, specMax, nominal) ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;align-items:center;">
+        ${window.radCircularSVG(f.valores, specMin, specMax, nominal)}
+        ${window.radSVG(f.valores, specMin, specMax, nominal)}
+      </div>` : window.radSVG(f.valores, specMin, specMax, nominal)}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">
         <span class="tab-btn" style="cursor:default;">📝 ${stats.capturados}/${f.valores.length}</span>
         <span class="tab-btn" style="cursor:default;">Promedio <strong>&nbsp;${stats.prom || '—'}</strong></span>
@@ -18459,7 +18549,7 @@ window.renderRadiales = () => {
           const fuera = nv > 0 && ((specMin && nv < specMin) || (specMax && nv > specMax));
           return `<div style="position:relative;">
             <span style="position:absolute;top:3px;left:7px;font-size:9px;font-weight:800;color:${fuera ? '#dc2626' : '#94a3b8'};">${i + 1}</span>
-            <input class="input" id="rad-v-${i}" type="number" step="any" inputmode="decimal" value="${v}"
+            <input class="input" id="rad-v-${i}" type="text" inputmode="decimal" autocomplete="off" value="${v}"
               style="padding:14px 6px 6px;text-align:center;font-size:15px;${fuera ? 'border-color:#dc2626;background:#fef2f2;color:#dc2626;font-weight:800;' : nv > 0 ? 'border-color:#16a34a;' : ''}"
               oninput="window.radVal(${i},this.value,'rad-v-${i}')" /></div>`;
         }).join('')}
@@ -18761,7 +18851,7 @@ window.renderVQProceso = () => {
                 <div style="font-weight:700;font-size:13px;">${esc(pt.nombre)}</div>
                 <div style="font-size:11px;color:var(--text-muted);">Meta: <strong>${pt.meta || '—'}${pt.unidad ? ' ' + pt.unidad : ''}</strong>${pt.min ? ' mínimo' : pt.meta ? ` ±${Math.round((pt.tol || 0.1) * 100)}%` : ' (informativo)'}</div>
               </div>
-              <input class="input" id="vq-med-${i}" type="number" step="any" inputmode="decimal" placeholder="Medido" value="${pt.medido}" style="width:118px;font-size:16px;padding:10px;" oninput="window.vqPunto(${i},'medido',this.value,'vq-med-${i}')" />
+              <input class="input" id="vq-med-${i}" type="text" inputmode="decimal" autocomplete="off" placeholder="Medido" value="${pt.medido}" style="width:118px;font-size:16px;padding:10px;" oninput="window.vqPunto(${i},'medido',this.value,'vq-med-${i}')" />
               <div style="width:66px;text-align:center;font-weight:900;font-size:11.5px;color:${ok === false ? '#dc2626' : ok === true ? '#16a34a' : '#94a3b8'};">${ok === false ? '✖ FUERA' : ok === true ? '✔ DENTRO' : '—'}</div>
             </div>`;
           return `
@@ -24490,7 +24580,14 @@ window._cotDraft = () => {
 window._cotFoco = (id) => {
   if (!id) return;
   const el = document.getElementById(id);
-  if (el) { el.focus(); try { const p = el.value.length; el.setSelectionRange(p, p); } catch (e) {} }
+  if (!el) return;
+  el.focus();
+  try { const p = el.value.length; el.setSelectionRange(p, p); }
+  catch (e) {
+    // type=number/date/time no soportan setSelectionRange (InvalidStateError).
+    // Re-asignar el value mueve el caret al FINAL — sin esto se escribe al revés.
+    try { const v = el.value; el.value = ''; el.value = v; } catch (e2) {}
+  }
 };
 
 // Unidades de venta disponibles por línea según su modo de cálculo
