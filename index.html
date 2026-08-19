@@ -694,6 +694,37 @@ tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--brand-vivid); }
 @keyframes npAntTrek { from { transform: translateX(-70px); } to { transform: translateX(105vw); } }
 @keyframes npAntBob { from { transform: translateY(0); } to { transform: translateY(-2.5px); } }
 
+/* ❓ CENTRO DE AYUDA — el caminito de la hormiga.
+   Los pasos de cada guía son un sendero: marcadores circulares unidos por
+   una línea punteada (la ruta de feromonas) y la hormiga llega al final. */
+.ayuda-buscar { position: relative; margin-bottom: 14px; }
+.ayuda-buscar .input { width: 100%; padding: 15px 18px 15px 52px; font-size: 16px; border-radius: 16px; border-width: 2px; }
+.ayuda-hormiga-busca { position: absolute; left: 18px; top: 50%; width: 22px; margin-top: -11px; pointer-events: none; }
+.ayuda-buscar.buscando .ayuda-hormiga-busca { animation: npAntBob .45s ease-in-out infinite alternate; }
+.ayuda-card { padding: 18px 20px; margin-bottom: 12px; transition: transform var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+.ayuda-card:hover { transform: translateY(-2px); box-shadow: var(--sh-lg); }
+.ayuda-pregunta { font-family: var(--font-display); font-weight: 800; font-size: 15.5px; color: var(--text); margin-bottom: 13px; }
+.ayuda-hit { background: color-mix(in srgb, var(--brand-vivid) 24%, transparent); color: var(--brand-strong); border-radius: 3px; padding: 0 2px; }
+.ayuda-pasos { display: flex; flex-direction: column; margin-bottom: 13px; }
+.ayuda-paso { position: relative; padding: 0 0 17px 36px; font-size: 13px; color: var(--text-muted); line-height: 1.55; }
+.ayuda-paso:last-child { padding-bottom: 2px; }
+.ayuda-paso::before {
+  content: ''; position: absolute; left: 10px; top: 24px; bottom: -2px;
+  border-left: 2px dotted color-mix(in srgb, var(--brand) 65%, transparent);
+}
+.ayuda-paso:last-child::before { display: none; }
+.ayuda-num {
+  position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--brand); background: var(--surface-card); color: var(--brand-strong);
+  font-weight: 800; font-size: 11px; display: flex; align-items: center; justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+.ayuda-paso:last-child .ayuda-num { background: var(--brand); }
+.ayuda-num img { width: 13px; display: block; }
+.ayuda-chip { border-radius: 999px; padding: 7px 16px; font-size: 12.5px; transition: transform var(--t-fast) var(--ease); }
+.ayuda-chip:hover { transform: translateY(-1px); }
+
+
 @keyframes npBellPop { from { opacity: 0; transform: scale(.96) translateY(-4px); } to { opacity: 1; transform: none; } }
 .notif-backdrop { position: fixed; inset: 0; z-index: 94; }
 .notif-item {
@@ -4330,6 +4361,14 @@ async function cargarTodo() {
         state.maquinas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
+      onSnapshot(query(collection(db, 'verificaciones_calidad'), orderBy('created_at', 'desc'), limit(600)), (snap) => {
+        state.verificaciones_calidad = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
+      onSnapshot(query(collection(db, 'radiales'), orderBy('created_at', 'desc'), limit(400)), (snap) => {
+        state.radiales = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       onSnapshot(collection(db, 'operadores'), (snap) => {
         state.operadores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -4965,7 +5004,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0818-B109-centro-ayuda</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0819-B112-radiales</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -5044,6 +5083,7 @@ function renderApp() {
         ` : ''}
         ${esCAL ? `
           <button class="nav-item ${state.vista === 'calidad' ? 'active' : ''}" data-vista="calidad">✅ Liberación Calidad${_badge(_bCalPend, _bCalPend > 2)}</button>
+          <button class="nav-item ${state.vista === 'radiales' ? 'active' : ''}" data-vista="radiales">📐 Radiales y Control</button>
         ` : ''}
         ${(esCS || esKAM || esCAL || esCEO || esADMIN) ? `
           <button class="nav-item ${state.vista === 'certificados_calidad' ? 'active' : ''}" data-vista="certificados_calidad">📜 Certificados de Calidad</button>
@@ -5320,6 +5360,7 @@ function tituloVista() {
     seguimiento_pedidos: '📍 Seguimiento Producción',
     captura_produccion: 'Captura de Producción',
     calidad: 'Liberación de Calidad',
+    radiales: '📐 Radiales y Control',
     seguimiento: '📊 Seguimiento Comercial',
     almacen_planta: '🏭 Almacén Planta-MTY',
     oti_planta: '🚚 OTI Planta → CEDIS-MTY',
@@ -5416,6 +5457,7 @@ window._vistaPermitida = (v) => {
     embarques_mex: () => en('CS', 'KAM', 'CEDMEX'),
     // Calidad y trazabilidad
     calidad: () => en('CAL', 'ALP'),
+    radiales: () => en('CAL', 'ALP'),  // 📐 solo Calidad captura (decisión de dirección)
     certificados_calidad: () => en('CS', 'KAM', 'CAL', 'ALP'),
     devoluciones: () => en('CS', 'KAM', 'CAL', 'ALP'),
     recall: () => en('CS', 'KAM', 'CAL', 'ALP'),
@@ -5446,6 +5488,7 @@ function renderVista() {
   if (v === 'seguimiento_pedidos') return renderSeguimientoPedidos();
   if (v === 'captura_produccion') return renderPanelOperador();
   if (v === 'panel_operador') return renderPanelOperador();
+  if (v === 'radiales') return window.renderRadiales();
   if (v === 'calidad') return renderCalidad();
   if (v === 'certificados_calidad') return renderCertificadosCalidad();
   if (v === 'recall') return renderRecall();
@@ -6068,6 +6111,8 @@ window.NP_AYUDA = [
   { p: '¿Cómo instalo el sistema en mi teléfono?', k: 'instalar telefono celular app movil icono pwa', v: null, pasos: ['Abre erp.newpackusa.com en el navegador del teléfono e inicia sesión', 'Android/Chrome: menú ⋮ → "Instalar aplicación"', 'iPhone/Safari: botón Compartir → "Agregar a pantalla de inicio"', 'Aparece el ícono NewPack como una app normal'] },
   { p: '¿Qué hago si me sale "Missing permissions"?', k: 'missing permissions error permiso denegado no puedo guardar', v: null, pasos: ['Significa que tu perfil no tiene permiso para ESA acción exacta', 'Verifica que estás en el módulo de tu departamento', 'Si es parte de tu trabajo diario, repórtalo a Dirección con captura de pantalla — puede faltar un permiso por configurar'] },
   { p: '¿Cómo recibo material de una OC en almacén?', k: 'recibir material oc almacen entrada mercancia proveedor', v: 'recepciones_mp', pasos: ['Recibir material → elige la OC que llegó', 'Captura cantidades recibidas por línea y el documento (factura/remisión)', 'Si algo no cumple calidad, márcalo — entra en cuarentena', 'El stock y el kardex se actualizan en un solo paso'] },
+  { p: '¿Cómo registro una verificación de calidad en proceso?', k: 'verificacion calidad proceso vq medir gramaje calibre semaforo inspeccion', v: 'calidad', pasos: ['Liberación Calidad → pestaña "🔬 En proceso"', 'Los rojos van primero: son ODPs con más de 8 horas sin verificar', 'Pica "Verificar", elige el proceso y captura lo MEDIDO — la meta sale sola de la ficha', 'Guarda como Aprobada, Con observaciones o Rechazada (esta última abre NC y avisa a Producción)'] },
+  { p: '¿Cómo capturo un radial de calibre o control de largos?', k: 'radial calibre puntos 66 33 22 largos whirlpool arranque grafica extrusor perfil', v: 'radiales', pasos: ['Radiales y Control (sección Calidad) → "📐 Nuevo radial" o "📏 Control de largos"', 'Elige la ODP: producto, extrusor y nominal se llenan solos (o captura la OP manual)', 'Elige 22/33/66 puntos y teclea los calibres — la gráfica y el promedio se dibujan al instante', 'Los puntos fuera de banda se pintan rojos; guarda y saca el PDF con la gráfica'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -6097,31 +6142,44 @@ function renderAyuda() {
   const resultados = !palabras.length ? [] : window.NP_AYUDA
     .map(a => { const txt = window._ayudaNorm(a.p + ' ' + a.k); const hits = palabras.filter(w => txt.includes(w)).length; return { a, hits, frac: hits / palabras.length }; })
     .filter(x => x.hits > 0).sort((x, y) => y.frac - x.frac || y.hits - x.hits).slice(0, 6);
+  // Resalta las palabras buscadas en la pregunta (una sola pasada: sin anidar marks).
+  const resalta = (t) => {
+    const h = esc(t);
+    if (!palabras.length) return h;
+    const acc = { a: '[aáà]', e: '[eéè]', i: '[ií]', o: '[oó]', u: '[uúü]', n: '[nñ]', c: '[cç]' };
+    const pats = palabras.map(w => w.split('').map(ch => acc[ch] || ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(''));
+    try { return h.replace(new RegExp('(' + pats.join('|') + ')', 'gi'), '<mark class="ayuda-hit">$1</mark>'); } catch (e) { return h; }
+  };
   const tarjeta = (a) => `
-    <div class="panel" style="padding:16px 18px;margin-bottom:10px;">
-      <div style="font-weight:800;font-size:14.5px;color:var(--text);margin-bottom:8px;">💡 ${esc(a.p)}</div>
-      <ol style="margin:0 0 10px 18px;padding:0;display:flex;flex-direction:column;gap:5px;">
-        ${a.pasos.map(p => `<li style="font-size:13px;color:var(--text-muted);line-height:1.45;">${esc(p)}</li>`).join('')}
-      </ol>
+    <div class="panel ayuda-card">
+      <div class="ayuda-pregunta">${resalta(a.p)}</div>
+      <div class="ayuda-pasos">
+        ${a.pasos.map((p, i) => `
+          <div class="ayuda-paso">
+            <span class="ayuda-num">${i === a.pasos.length - 1 ? `<img src="${window.NP_HORMIGA}" alt="" />` : i + 1}</span>
+            <span>${esc(p)}</span>
+          </div>`).join('')}
+      </div>
       ${a.v && (!window._vistaPermitida || window._vistaPermitida(a.v)) ? `<button class="btn-primary" style="padding:8px 16px;font-size:12.5px;" onclick="state.vista='${a.v}';render();">🧭 Llévame ahí</button>` : ''}
     </div>`;
   return `
     <div style="max-width:860px;margin:0 auto;">
-      <div style="text-align:center;padding:18px 0 6px;">
-        <img src="${window.NP_HORMIGA}" style="width:46px;" alt="" />
-        <h2 style="font-family:var(--font-display);font-size:26px;font-weight:900;margin:8px 0 4px;">¿Cómo se hace?</h2>
-        <div style="font-size:13px;color:var(--text-muted);">Escribe tu duda y el sistema te dice los pasos — así evitamos errores antes de que pasen.</div>
+      <div style="text-align:center;padding:20px 0 10px;">
+        <h2 style="font-family:var(--font-display);font-size:30px;font-weight:900;margin:0 0 5px;letter-spacing:-.5px;">¿Cómo se hace?</h2>
+        <div style="font-size:13px;color:var(--text-muted);">Escribe tu duda y la hormiga te marca el camino — así evitamos errores antes de que pasen.</div>
       </div>
-      <input class="input" id="ayuda-q" placeholder="Ej: ¿cómo capturo mi producción? · ¿cómo cotizo por kg? · ¿cómo genero la nómina?"
-        value="${(state.ayudaQ || '').replace(/"/g, '&quot;')}" autocomplete="off"
-        style="padding:15px 18px;font-size:15px;border-radius:14px;border-width:2px;margin-bottom:14px;"
-        oninput="window.ayudaBuscar(this.value);window._cotFoco('ayuda-q')" />
+      <div class="ayuda-buscar${q ? ' buscando' : ''}">
+        <img class="ayuda-hormiga-busca" src="${window.NP_HORMIGA}" alt="" />
+        <input class="input" id="ayuda-q" placeholder="Ej: ¿cómo capturo mi producción? · ¿cómo cotizo por kg? · ¿cómo genero la nómina?"
+          value="${(state.ayudaQ || '').replace(/"/g, '&quot;')}" autocomplete="off"
+          oninput="window.ayudaBuscar(this.value);window._cotFoco('ayuda-q')" />
+      </div>
       ${!q ? `
         <div style="text-align:center;font-size:11.5px;color:var(--text-subtle);margin-bottom:10px;">o explora por tema:</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:14px;">
-          ${['producción', 'cotizar', 'pedido', 'embarcar', 'nómina', 'calidad', 'pagar', 'etiquetas', 'teléfono', 'buscar'].map(t => `<button class="tab-btn" onclick="window.ayudaBuscar('${t}')">${t}</button>`).join('')}
+          ${['producción', 'cotizar', 'pedido', 'embarcar', 'nómina', 'calidad', 'pagar', 'etiquetas', 'teléfono', 'buscar'].map(t => `<button class="tab-btn ayuda-chip" onclick="window.ayudaBuscar('${t}')">${t}</button>`).join('')}
         </div>` : ''}
-      ${q && resultados.length ? resultados.map(x => tarjeta(x.a)).join('') : ''}
+      ${q && resultados.length ? `<div class="np-stagger">${resultados.map(x => tarjeta(x.a)).join('')}</div>` : ''}
       ${q && !resultados.length ? `
         <div class="panel" style="padding:26px;text-align:center;">
           <img src="${window.NP_HORMIGA}" style="width:34px;opacity:.6;" alt="" />
@@ -15322,7 +15380,7 @@ function renderMiniCardODP(o, proc, subTab) {
   const atrasada = o.fecha_entrega_programada && new Date(o.fecha_entrega_programada) < new Date() && o.estatus !== 'completada';
   
   return `
-    <div class="np-minicard" draggable="true" ondragstart="window.npDragStart(event,'${o.id}','${proc.codigo}')" ondragend="window.npDragEnd(event)" title="🖐 Arrástrala a otra máquina para reasignarla" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${prio.col};border-radius:6px;padding:8px 10px;cursor:grab;" onclick="abrirModal('detalle-odp','${o.id}')">
+    <div class="np-minicard" draggable="true" ondragstart="window.npDragStart(event,'${o.id}','${proc.codigo}')" ondragend="window.npDragEnd(event)" title="🖐 Arrástrala a otra máquina para reasignarla" style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid ${prio.col};border-radius:6px;padding:8px 10px;cursor:grab;" onclick="abrirModal('detalle-odp','${o.id}')">${window.vqHallazgoAbierto && window.vqHallazgoAbierto(o.id) ? '<span title="Hallazgo de calidad abierto" style="float:right;color:#dc2626;font-weight:900;font-size:11px;">⚠</span>' : ''}
       <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
@@ -18069,7 +18127,702 @@ window.rmaPickDirecto = (tarimaId) => {
 };
 
 
+// ═══════════════════════════════════════════════════════════
+// 📐 RADIALES Y CONTROL — perfil radial de calibre (22/33/66 puntos
+// alrededor de la burbuja) y control de largos (33 muestras), como el
+// formato Excel de Whirlpool pero con gráfica y cálculo al instante.
+// Registro INMUTABLE con folio RAD-AAAA-#### (evidencia de auditoría).
+// ═══════════════════════════════════════════════════════════
+window._radNum = (v) => { const n = Number(String(v).replace(',', '.')); return isFinite(n) && n > 0 ? n : 0; };
+
+window.radStats = (valores, minS, maxS) => {
+  const vals = (valores || []).map(window._radNum).filter(v => v > 0);
+  if (!vals.length) return { capturados: 0, prom: 0, min: 0, max: 0, fuera: 0 };
+  const prom = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const fuera = vals.filter(v => (minS && v < minS) || (maxS && v > maxS)).length;
+  return { capturados: vals.length, prom: Math.round(prom * 100) / 100, min: Math.min(...vals), max: Math.max(...vals), fuera };
+};
+
+// 📈 Gráfica SVG del perfil: banda verde de especificación + línea de puntos
+window.radSVG = (valores, minS, maxS, nominal, alto = 190) => {
+  const pts = (valores || []).map((v, i) => ({ i, v: window._radNum(v) })).filter(p => p.v > 0);
+  if (!pts.length) return '<div style="padding:26px;text-align:center;color:#94a3b8;font-size:12px;border:1.5px dashed #cbd5e1;border-radius:10px;">📈 La gráfica se dibuja sola conforme captures puntos</div>';
+  const W = 720, H = alto, PL = 44, PR = 12, PT = 12, PB = 22;
+  const n = (valores || []).length;
+  const ys = pts.map(p => p.v).concat([minS, maxS, nominal].filter(x => x > 0));
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  const pad = (yMax - yMin) * 0.15 || yMax * 0.05 || 1;
+  yMin -= pad; yMax += pad;
+  const X = (i) => PL + (i / Math.max(n - 1, 1)) * (W - PL - PR);
+  const Y = (v) => PT + (1 - (v - yMin) / (yMax - yMin)) * (H - PT - PB);
+  const poly = pts.map(p => `${X(p.i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;background:var(--surface-card);border:1px solid #e2e8f0;border-radius:10px;">
+    ${minS > 0 && maxS > 0 ? `<rect x="${PL}" y="${Y(maxS).toFixed(1)}" width="${W - PL - PR}" height="${Math.max(Y(minS) - Y(maxS), 0).toFixed(1)}" fill="rgba(63,211,75,.13)"/>
+    <line x1="${PL}" x2="${W - PR}" y1="${Y(minS).toFixed(1)}" y2="${Y(minS).toFixed(1)}" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="6 3"/>
+    <line x1="${PL}" x2="${W - PR}" y1="${Y(maxS).toFixed(1)}" y2="${Y(maxS).toFixed(1)}" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="6 3"/>
+    <text x="${PL - 5}" y="${(Y(maxS) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#16a34a" font-weight="700">${maxS}</text>
+    <text x="${PL - 5}" y="${(Y(minS) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#16a34a" font-weight="700">${minS}</text>` : ''}
+    ${nominal > 0 ? `<line x1="${PL}" x2="${W - PR}" y1="${Y(nominal).toFixed(1)}" y2="${Y(nominal).toFixed(1)}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 4"/>
+    <text x="${W - PR - 2}" y="${(Y(nominal) - 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#94a3b8">nominal ${nominal}</text>` : ''}
+    <polyline points="${poly}" fill="none" stroke="#1e40af" stroke-width="2"/>
+    ${pts.map(p => { const fuera = (minS && p.v < minS) || (maxS && p.v > maxS); return `<circle cx="${X(p.i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="${fuera ? 4 : 2.6}" fill="${fuera ? '#dc2626' : '#1e40af'}"/>`; }).join('')}
+    <text x="${PL}" y="${H - 6}" font-size="10" fill="#94a3b8">pt 1</text>
+    <text x="${W - PR}" y="${H - 6}" text-anchor="end" font-size="10" fill="#94a3b8">pt ${n}</text>
+  </svg>`;
+};
+
+// ODPs de extrusión activas SIN radial de ARRANQUE (semáforo del hábito)
+window.radSinArranque = () => (state.ordenes_produccion || []).filter(o =>
+  !o.archivada && o.estatus === 'en_produccion' && (o.ruta_procesos || []).includes('P1-EXT')
+  && !(state.radiales || []).some(r => r.tipo === 'radial' && r.odp_id === o.id && String(r.num_rollo || '').toUpperCase() === 'ARRANQUE'));
+
+window.radNuevo = (tipo, odpId = '') => {
+  state.tabs.radiales = tipo;
+  state.radForm = tipo === 'largos' ? {
+    tipo: 'largos', odp_id: '', op_texto: '', producto_codigo: '', cliente_nombre: '',
+    sellador: '', medida: '', nominal: 0, tol_pct: 1,
+    valores: Array(33).fill(''), ent_pro: '', ent_mto: '', ent_cal: '', observaciones: '',
+  } : {
+    tipo: 'radial', odp_id: '', op_texto: '', producto_codigo: '', cliente_nombre: '',
+    extrusor: '', puntos_n: 33, num_rollo: 'ARRANQUE', nominal: 0, tol_pct: 10,
+    valores: Array(33).fill(''), observaciones: '',
+  };
+  if (odpId) window.radOdp(odpId);
+  window.forzarRender();
+};
+window.radOdp = (odpId) => {
+  const f = state.radForm; if (!f) return;
+  f.odp_id = odpId;
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { window.forzarRender(); return; }
+  f.op_texto = odp.folio || '';
+  f.producto_codigo = odp.producto_codigo || '';
+  f.cliente_nombre = odp.cliente_nombre || '';
+  if (f.tipo === 'radial') f.extrusor = odp.maquinas_asignadas?.['P1-EXT'] || '';
+  const p = (state.productos_pt || []).find(x => x.codigo === odp.producto_codigo);
+  if (p) f.nominal = f.tipo === 'largos' ? (Number(p.largo) || 0) : (Number(p.calibre) || 0);
+  window.forzarRender();
+};
+window.radSet = (campo, v, focusId) => {
+  const f = state.radForm; if (!f) return;
+  f[campo] = v;
+  if (campo === 'puntos_n') {
+    const n = Number(v) || 33;
+    const nuevos = Array(n).fill('');
+    (f.valores || []).forEach((x, i) => { if (i < n) nuevos[i] = x; });
+    f.valores = nuevos;
+  }
+  window.forzarRender(); if (focusId) window._cotFoco(focusId);
+};
+window.radVal = (i, v, focusId) => { const f = state.radForm; if (!f) return; f.valores[i] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.radObs = (v) => { if (state.radForm) state.radForm.observaciones = v; };
+
+window.radGuardar = async () => {
+  const f = state.radForm; if (!f) return;
+  const u = state.user || {};
+  const nominal = window._radNum(f.nominal);
+  if (!nominal) { toast(f.tipo === 'largos' ? 'Captura el largo nominal' : 'Captura el calibre nominal (la banda min/max sale de ahí)', 'error'); return; }
+  const stats0 = window.radStats(f.valores, 0, 0);
+  if (!stats0.capturados) { toast('Captura al menos una medición', 'error'); return; }
+  if (!String(f.op_texto || '').trim() && !f.odp_id) { toast('Indica la ODP o captura la OP manual', 'error'); return; }
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const tol = window._radNum(f.tol_pct) || (f.tipo === 'largos' ? 1 : 10);
+    const specMin = Math.round(nominal * (1 - tol / 100) * 100) / 100;
+    const specMax = Math.round(nominal * (1 + tol / 100) * 100) / 100;
+    const stats = window.radStats(f.valores, specMin, specMax);
+    const anio = new Date().getFullYear();
+    const n = await siguienteFolio(`rad_${anio}`);
+    const folio = `RAD-${anio}-${String(n).padStart(4, '0')}`;
+    await addDoc(collection(db, 'radiales'), {
+      folio, tipo: f.tipo,
+      odp_id: f.odp_id || '', op_texto: String(f.op_texto || '').trim(),
+      producto_codigo: String(f.producto_codigo || '').trim(), cliente_nombre: f.cliente_nombre || '',
+      extrusor: String(f.extrusor || '').trim(), sellador: String(f.sellador || '').trim(), medida: String(f.medida || '').trim(),
+      puntos_n: f.tipo === 'radial' ? (Number(f.puntos_n) || 33) : (f.valores || []).length,
+      num_rollo: f.tipo === 'radial' ? (String(f.num_rollo || 'ARRANQUE').trim() || 'ARRANQUE') : '',
+      nominal, tol_pct: tol, spec_min: specMin, spec_max: specMax,
+      valores: (f.valores || []).map(v => window._radNum(v) || null),
+      stats,
+      ent_pro: String(f.ent_pro || '').trim(), ent_mto: String(f.ent_mto || '').trim(), ent_cal: String(f.ent_cal || '').trim(),
+      observaciones: String(f.observaciones || '').trim(),
+      turno: window.vqTurno(),
+      inspector: u.id || '', inspector_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp(),
+    });
+    window.logAccion('radial_registrado', folio, `${f.tipo} · ${f.op_texto || ''} · ${stats.capturados} pts · prom ${stats.prom} · ${stats.fuera} fuera`);
+    toast(stats.fuera ? `📐 ${folio} guardado — ⚠ ${stats.fuera} punto(s) FUERA de banda` : `📐 ${folio} guardado — perfil dentro de especificación`, stats.fuera ? 'error' : 'success');
+    if (!stats.fuera && window.npObrera) window.npObrera();
+    state.radForm = null;
+    state.tabs.radiales = 'historial';
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// 📄 PDF del radial/largos con gráfica dibujada (NPA-CAL-FR-06/07)
+window.radPDF = (id) => {
+  const r = (state.radiales || []).find(x => x.id === id); if (!r) return;
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const docPDF = new window.jspdf.jsPDF();
+  const esLargos = r.tipo === 'largos';
+  try { docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 14, 10, 36, 36 * 0.4475); } catch (e) {}
+  docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(13); docPDF.setTextColor(11, 27, 46);
+  docPDF.text(esLargos ? 'CONTROL DE LARGOS' : 'RADIAL DE CALIBRE', 196, 16, { align: 'right' });
+  docPDF.setFontSize(8.5); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(100, 116, 139);
+  docPDF.text(`${r.folio} · Formato ${esLargos ? 'NPA-CAL-FR-07' : 'NPA-CAL-FR-06'}`, 196, 22, { align: 'right' });
+  docPDF.text(`Emitido ${new Date().toLocaleString('es-MX')}`, 196, 27, { align: 'right' });
+  let y = 32;
+  docPDF.autoTable({
+    startY: y,
+    body: [
+      ['OP / ODP', r.op_texto || '—', esLargos ? 'Sellador' : 'Extrusor', (esLargos ? r.sellador : r.extrusor) || '—'],
+      ['Producto', r.producto_codigo || '—', 'Cliente', r.cliente_nombre || '—'],
+      [esLargos ? 'Medida' : 'Rollo', (esLargos ? r.medida : r.num_rollo) || '—', 'Inspector', `${r.inspector_nombre || ''} · turno ${r.turno || ''}`],
+      ['Fecha y hora', r.created_at?.seconds ? new Date(r.created_at.seconds * 1000).toLocaleString('es-MX') : '—',
+       esLargos ? 'Largo nominal' : 'Calibre nominal', `${r.nominal} (±${r.tol_pct}% → ${r.spec_min} - ${r.spec_max})`],
+    ],
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+    columnStyles: { 0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 30 }, 2: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 30 } },
+    margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 4;
+
+  // Gráfica del perfil
+  const pts = (r.valores || []).map((v, i) => ({ i, v: Number(v) || 0 })).filter(p => p.v > 0);
+  if (pts.length) {
+    const gx = 26, gw = 168, gh = 42;
+    const ys = pts.map(p => p.v).concat([r.spec_min, r.spec_max, r.nominal].filter(Boolean));
+    let yMin = Math.min(...ys), yMax = Math.max(...ys);
+    const pad = (yMax - yMin) * 0.15 || 1; yMin -= pad; yMax += pad;
+    const nn = (r.valores || []).length;
+    const GX = (i) => gx + (i / Math.max(nn - 1, 1)) * gw;
+    const GY = (v) => y + (1 - (v - yMin) / (yMax - yMin)) * gh;
+    if (r.spec_min && r.spec_max) {
+      docPDF.setFillColor(220, 252, 231);
+      docPDF.rect(gx, GY(r.spec_max), gw, Math.max(GY(r.spec_min) - GY(r.spec_max), 0), 'F');
+    }
+    docPDF.setDrawColor(226, 232, 240); docPDF.rect(gx, y, gw, gh);
+    if (r.spec_min && r.spec_max) {
+      docPDF.setDrawColor(22, 163, 74); docPDF.setLineDashPattern([1.5, 1], 0);
+      docPDF.line(gx, GY(r.spec_min), gx + gw, GY(r.spec_min));
+      docPDF.line(gx, GY(r.spec_max), gx + gw, GY(r.spec_max));
+      docPDF.setFontSize(6.5); docPDF.setTextColor(22, 163, 74);
+      docPDF.text(String(r.spec_max), gx - 1.5, GY(r.spec_max) + 1, { align: 'right' });
+      docPDF.text(String(r.spec_min), gx - 1.5, GY(r.spec_min) + 1, { align: 'right' });
+    }
+    if (r.nominal) { docPDF.setDrawColor(148, 163, 184); docPDF.setLineDashPattern([0.6, 1.2], 0); docPDF.line(gx, GY(r.nominal), gx + gw, GY(r.nominal)); }
+    docPDF.setLineDashPattern([], 0);
+    docPDF.setDrawColor(30, 64, 175); docPDF.setLineWidth(0.45);
+    for (let k = 1; k < pts.length; k++) docPDF.line(GX(pts[k - 1].i), GY(pts[k - 1].v), GX(pts[k].i), GY(pts[k].v));
+    pts.forEach(p => {
+      const fuera = (r.spec_min && p.v < r.spec_min) || (r.spec_max && p.v > r.spec_max);
+      docPDF.setFillColor(fuera ? 220 : 30, fuera ? 38 : 64, fuera ? 38 : 175);
+      docPDF.circle(GX(p.i), GY(p.v), fuera ? 1 : 0.6, 'F');
+    });
+    docPDF.setLineWidth(0.2);
+    y += gh + 5;
+  }
+
+  // Tabla de puntos en columnas compactas (pares Pt/Valor)
+  const nVals = (r.valores || []).length;
+  const porCol = 11;
+  const nCols = Math.ceil(nVals / porCol);
+  const filasT = [];
+  for (let fila = 0; fila < porCol; fila++) {
+    const filaArr = [];
+    for (let c = 0; c < nCols; c++) {
+      const idx = c * porCol + fila;
+      if (idx < nVals) {
+        const v = Number(r.valores[idx]) || 0;
+        const fuera = v > 0 && ((r.spec_min && v < r.spec_min) || (r.spec_max && v > r.spec_max));
+        filaArr.push(String(idx + 1));
+        filaArr.push({ content: v > 0 ? String(v) : '—', styles: fuera ? { textColor: [220, 38, 38], fontStyle: 'bold' } : {} });
+      } else { filaArr.push(''); filaArr.push(''); }
+    }
+    filasT.push(filaArr);
+  }
+  const headT = [];
+  for (let c = 0; c < nCols; c++) { headT.push('Pt'); headT.push(esLargos ? 'Largo' : 'Cal'); }
+  docPDF.autoTable({
+    startY: y, head: [headT], body: filasT, theme: 'grid',
+    headStyles: { fillColor: [63, 211, 75], textColor: [255, 255, 255], fontSize: 6.5, halign: 'center', cellPadding: 1 },
+    styles: { fontSize: 6.8, cellPadding: 1, halign: 'center', lineColor: [210, 214, 220], lineWidth: 0.15, textColor: [0, 0, 0] },
+    margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 3;
+
+  const s = r.stats || {};
+  docPDF.autoTable({
+    startY: y,
+    body: [[`Capturados: ${s.capturados || 0}`, `Promedio: ${s.prom || 0}`, `Mínimo: ${s.min || 0}`, `Máximo: ${s.max || 0}`,
+      { content: `Fuera de banda: ${s.fuera || 0}`, styles: s.fuera ? { textColor: [220, 38, 38], fontStyle: 'bold' } : { textColor: [22, 163, 74], fontStyle: 'bold' } }]],
+    theme: 'grid', styles: { fontSize: 8, cellPadding: 2, halign: 'center', lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0], fontStyle: 'bold' },
+    margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 5;
+
+  if (r.observaciones) {
+    docPDF.setFontSize(8); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(0, 0, 0);
+    docPDF.text('OBSERVACIONES:', 14, y + 2);
+    docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(60, 72, 88);
+    const obsL = docPDF.splitTextToSize(r.observaciones, 180);
+    docPDF.text(obsL, 14, y + 7);
+    y += 7 + obsL.length * 3.6 + 4;
+  }
+  if (y > 250) { docPDF.addPage(); y = 30; } else { y = Math.max(y, 245); }
+  docPDF.setDrawColor(148, 163, 184); docPDF.setFontSize(7.5); docPDF.setTextColor(0, 0, 0);
+  const firmas = esLargos
+    ? [['ENTERADO PRODUCCIÓN', r.ent_pro], ['ENTERADO MANTENIMIENTO', r.ent_mto], ['ENTERADO CALIDAD', r.ent_cal || r.inspector_nombre]]
+    : [['INSPECTOR DE CALIDAD', r.inspector_nombre], ['SUPERVISOR DE EXTRUSIÓN', ''], ['ENTERADO PRODUCCIÓN', '']];
+  firmas.forEach(([tit, nom], i) => {
+    const fx = 14 + i * 63;
+    docPDF.line(fx, y + 10, fx + 52, y + 10);
+    docPDF.setFont('helvetica', 'bold'); docPDF.text(tit, fx + 26, y + 14, { align: 'center' });
+    if (nom) { docPDF.setFont('helvetica', 'normal'); docPDF.text(String(nom), fx + 26, y + 18, { align: 'center' }); }
+  });
+  const blob = docPDF.output('blob');
+  state.pdfPreview = { blobUrl: URL.createObjectURL(blob), filename: `${r.folio}-${esLargos ? 'largos' : 'radial'}.pdf`, titulo: `${r.folio} · ${esLargos ? 'Control de largos' : 'Radial de calibre'}`, blob };
+  state.modal = 'pdf-preview';
+  window.forzarRender();
+};
+
+window.renderRadiales = () => {
+  const tab = state.tabs.radiales || 'radial';
+  const f = state.radForm;
+  const sinArr = window.radSinArranque();
+  const odpsExt = (state.ordenes_produccion || []).filter(o => !o.archivada && ['programada', 'en_produccion', 'pendiente_calidad'].includes(o.estatus)).sort((a, b) => (b.folio || '').localeCompare(a.folio || ''));
+
+  // Chips de hábito: extrusión corriendo sin radial de arranque
+  const chipsArr = sinArr.length ? `
+    <div style="background:#fffbeb;border:1.5px solid #fbbf24;border-radius:12px;padding:12px 16px;margin-bottom:14px;">
+      <div style="font-weight:800;font-size:12.5px;color:#92400e;margin-bottom:8px;">⚠ ${sinArr.length} ODP(s) de extrusión en producción SIN radial de arranque:</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${sinArr.slice(0, 12).map(o => `<button class="tab-btn" style="border-color:#f59e0b;color:#92400e;" onclick="window.radNuevo('radial','${o.id}')">📐 ${esc(o.folio)} · ${esc(o.maquinas_asignadas?.['P1-EXT'] || 'sin máq')}</button>`).join('')}
+      </div>
+    </div>` : '';
+
+  let formHTML = '';
+  if (f && (tab === 'radial' || tab === 'largos') && f.tipo === tab) {
+    const nominal = window._radNum(f.nominal);
+    const tol = window._radNum(f.tol_pct) || (f.tipo === 'largos' ? 1 : 10);
+    const specMin = nominal ? Math.round(nominal * (1 - tol / 100) * 100) / 100 : 0;
+    const specMax = nominal ? Math.round(nominal * (1 + tol / 100) * 100) / 100 : 0;
+    const stats = window.radStats(f.valores, specMin, specMax);
+    const esLargos = f.tipo === 'largos';
+    formHTML = `
+    <div class="panel" style="padding:18px 20px;margin-bottom:16px;border:2px solid var(--brand);">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:12px;">
+        <div>
+          <label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">ODP (jala producto y especificaciones)</label>
+          <select class="input" onchange="window.radOdp(this.value)">
+            <option value="">— OP manual —</option>
+            ${odpsExt.map(o => `<option value="${o.id}" ${f.odp_id === o.id ? 'selected' : ''}>${esc(o.folio)} · ${esc(o.producto_codigo || '')}</option>`).join('')}
+          </select>
+        </div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">OP / referencia</label>
+          <input class="input" id="rad-op" value="${esc(f.op_texto || '')}" oninput="window.radSet('op_texto',this.value,'rad-op')" /></div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Código de producto</label>
+          <input class="input" id="rad-prod" value="${esc(f.producto_codigo || '')}" oninput="window.radSet('producto_codigo',this.value,'rad-prod')" /></div>
+        ${esLargos ? `
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">No. de sellador</label>
+          <input class="input" id="rad-sel" value="${esc(f.sellador || '')}" oninput="window.radSet('sellador',this.value,'rad-sel')" /></div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Medida</label>
+          <input class="input" id="rad-med" value="${esc(f.medida || '')}" oninput="window.radSet('medida',this.value,'rad-med')" /></div>` : `
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Extrusor No.</label>
+          <input class="input" id="rad-ext" value="${esc(f.extrusor || '')}" oninput="window.radSet('extrusor',this.value,'rad-ext')" /></div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">No. de rollo</label>
+          <input class="input" id="rad-rollo" value="${esc(f.num_rollo || '')}" placeholder="ARRANQUE" oninput="window.radSet('num_rollo',this.value,'rad-rollo')" /></div>`}
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">${esLargos ? 'Largo NOMINAL' : 'Calibre NOMINAL'}</label>
+          <input class="input" id="rad-nom" type="number" step="any" inputmode="decimal" value="${f.nominal || ''}" style="font-size:16px;" oninput="window.radSet('nominal',this.value,'rad-nom')" /></div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Tolerancia ±%</label>
+          <input class="input" id="rad-tol" type="number" step="any" inputmode="decimal" value="${f.tol_pct}" oninput="window.radSet('tol_pct',this.value,'rad-tol')" /></div>
+      </div>
+      ${!esLargos ? `
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+        <span style="font-size:11px;font-weight:800;color:var(--text-muted);">RADIAL DE:</span>
+        ${[22, 33, 66].map(nn => `<button class="tab-btn ${Number(f.puntos_n) === nn ? 'active' : ''}" onclick="window.radSet('puntos_n',${nn})">${nn} PUNTOS</button>`).join('')}
+        ${specMin ? `<span style="margin-left:auto;font-size:11.5px;font-weight:800;color:#16a34a;">Banda: ${specMin} — ${specMax}</span>` : ''}
+      </div>` : (specMin ? `<div style="text-align:right;font-size:11.5px;font-weight:800;color:#16a34a;margin-bottom:10px;">Banda: ${specMin} — ${specMax}</div>` : '')}
+      ${window.radSVG(f.valores, specMin, specMax, nominal)}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;">
+        <span class="tab-btn" style="cursor:default;">📝 ${stats.capturados}/${f.valores.length}</span>
+        <span class="tab-btn" style="cursor:default;">Promedio <strong>&nbsp;${stats.prom || '—'}</strong></span>
+        <span class="tab-btn" style="cursor:default;">Mín <strong>&nbsp;${stats.min || '—'}</strong></span>
+        <span class="tab-btn" style="cursor:default;">Máx <strong>&nbsp;${stats.max || '—'}</strong></span>
+        <span class="tab-btn" style="cursor:default;${stats.fuera ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : 'color:#16a34a;'}">${stats.fuera ? `✖ ${stats.fuera} FUERA` : '✔ en banda'}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px;margin-bottom:12px;">
+        ${f.valores.map((v, i) => {
+          const nv = window._radNum(v);
+          const fuera = nv > 0 && ((specMin && nv < specMin) || (specMax && nv > specMax));
+          return `<div style="position:relative;">
+            <span style="position:absolute;top:3px;left:7px;font-size:9px;font-weight:800;color:${fuera ? '#dc2626' : '#94a3b8'};">${i + 1}</span>
+            <input class="input" id="rad-v-${i}" type="number" step="any" inputmode="decimal" value="${v}"
+              style="padding:14px 6px 6px;text-align:center;font-size:15px;${fuera ? 'border-color:#dc2626;background:#fef2f2;color:#dc2626;font-weight:800;' : nv > 0 ? 'border-color:#16a34a;' : ''}"
+              oninput="window.radVal(${i},this.value,'rad-v-${i}')" /></div>`;
+        }).join('')}
+      </div>
+      ${esLargos ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:12px;">
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Enterado PRODUCCIÓN</label>
+          <input class="input" id="rad-ep" value="${esc(f.ent_pro || '')}" oninput="window.radSet('ent_pro',this.value,'rad-ep')" /></div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Enterado MANTENIMIENTO</label>
+          <input class="input" id="rad-em" value="${esc(f.ent_mto || '')}" oninput="window.radSet('ent_mto',this.value,'rad-em')" /></div>
+        <div><label style="font-size:10.5px;font-weight:800;color:var(--text-muted);">Enterado CALIDAD</label>
+          <input class="input" id="rad-ec" value="${esc(f.ent_cal || '')}" oninput="window.radSet('ent_cal',this.value,'rad-ec')" /></div>
+      </div>` : ''}
+      <textarea class="input" placeholder="Observaciones: ajustes realizados (dancing, tornillo, dado...), a quién se avisó..." style="min-height:52px;margin-bottom:12px;width:100%;" oninput="window.radObs(this.value)">${esc(f.observaciones || '')}</textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-primary" style="flex:1;min-width:170px;padding:13px;" ${state.loadingAccion ? 'disabled' : ''} onclick="window.radGuardar()">💾 Guardar ${esLargos ? 'control de largos' : 'radial'}</button>
+        <button class="tab-btn" onclick="state.radForm=null;render();">✕ Cancelar</button>
+      </div>
+    </div>`;
+  }
+
+  const filtroH = (state.filtros.radiales || '').toLowerCase();
+  let hist = state.radiales || [];
+  if (filtroH) hist = hist.filter(r => (r.folio + ' ' + (r.op_texto || '') + ' ' + (r.producto_codigo || '') + ' ' + (r.extrusor || '')).toLowerCase().includes(filtroH));
+  const histHTML = `
+    <div class="toolbar">
+      <input class="input" id="rad-filtro" style="max-width:360px;" placeholder="Buscar folio, OP, producto, extrusor..." value="${esc(state.filtros.radiales || '')}" autocomplete="off" oninput="state.filtros.radiales=this.value;window.forzarRender();window._cotFoco('rad-filtro')" />
+      <span style="font-size:12px;color:#64748b;">${hist.length} registros</span>
+    </div>
+    ${hist.slice(0, 60).map(r => {
+      const s = r.stats || {};
+      return `
+      <div class="panel" style="padding:12px 16px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:220px;">
+            <div style="font-weight:900;font-size:13px;">${r.tipo === 'largos' ? '📏' : '📐'} ${esc(r.folio)} · ${esc(r.op_texto || '')} ${Number(s.fuera) > 0 ? `<span style="background:#dc2626;color:#fff;padding:1px 8px;border-radius:99px;font-size:10px;font-weight:800;">${s.fuera} FUERA</span>` : '<span style="background:#16a34a;color:#fff;padding:1px 8px;border-radius:99px;font-size:10px;font-weight:800;">EN BANDA</span>'}</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">${esc(r.producto_codigo || '')} · ${r.tipo === 'largos' ? `sellador ${esc(r.sellador || '—')}` : `${esc(r.extrusor || '—')} · rollo ${esc(r.num_rollo || '')}`} · ${r.puntos_n} pts · prom ${s.prom || '—'} (${r.spec_min}-${r.spec_max}) · ${r.created_at?.seconds ? new Date(r.created_at.seconds * 1000).toLocaleString('es-MX') : ''} · ${esc(r.inspector_nombre || '')}</div>
+          </div>
+          <button class="tab-btn" onclick="window.radPDF('${r.id}')">📄 PDF</button>
+        </div>
+      </div>`;
+    }).join('') || '<div class="panel" style="padding:30px;text-align:center;color:#94a3b8;">Aún no hay radiales registrados. El primero está a un clic. 📐</div>'}`;
+
+  return `
+    ${chipsArr}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
+      <button class="tab-btn ${tab === 'radial' ? 'active' : ''}" onclick="window.radNuevo('radial')">📐 Nuevo radial</button>
+      <button class="tab-btn ${tab === 'largos' ? 'active' : ''}" onclick="window.radNuevo('largos')">📏 Nuevo control de largos</button>
+      <button class="tab-btn ${tab === 'historial' ? 'active' : ''}" onclick="state.tabs.radiales='historial';state.radForm=null;render();">📜 Historial (${(state.radiales || []).length})</button>
+    </div>
+    ${tab === 'historial' ? histHTML : (formHTML || `<div class="panel" style="padding:30px;text-align:center;color:#94a3b8;">Elige "📐 Nuevo radial" o "📏 Nuevo control de largos" para empezar.</div>`)}`;
+};
+
+// ═══════════════════════════════════════════════════════════
+// 🔬 VERIFICACIÓN DE CALIDAD EN PROCESO (VQ)// ═══════════════════════════════════════════════════════════
+// 🔬 VERIFICACIÓN DE CALIDAD EN PROCESO (VQ)
+// Calidad recorre la planta y verifica cada ODP en producción contra la
+// ficha del producto. Registro INMUTABLE (evidencia ISO 9001 §8.5.1).
+// Semáforo: 🟢 <4h · 🟡 4-8h · 🔴 >8h o nunca verificada.
+// Rechazo → NC automática (CAPA) + aviso a PRO y PLN. No detiene máquinas.
+// ═══════════════════════════════════════════════════════════
+const VQ_VERDE_H = 4, VQ_ROJO_H = 8;
+
+window.vqTurno = () => { const h = new Date().getHours(); return h >= 6 && h < 14 ? 'matutino' : h >= 14 && h < 22 ? 'vespertino' : 'nocturno'; };
+
+// Checklist estándar por proceso; metas AUTO desde la ficha del producto.
+// tipo 'num': se captura lo medido y se compara contra meta con tolerancia.
+// tipo 'ok': visto bueno visual. Punto numérico sin meta = informativo.
+window.vqChecklist = (procCod, producto) => {
+  const p = producto || {};
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const gramajeM = r2((window.calcularGramaje ? window.calcularGramaje(p) : 0) * 1000);   // g por metro
+  const pesoBolsa = r2((window.calcularPesoPieza ? window.calcularPesoPieza(p) : 0) * 1000); // g por bolsa
+  if (procCod.startsWith('P1')) return [
+    { clave: 'calibre', nombre: 'Calibre', unidad: '', meta: Number(p.calibre) || 0, tol: 0.10, tipo: 'num' },
+    { clave: 'ancho', nombre: 'Ancho de película', unidad: 'cm', meta: Number(p.ancho) || 0, tol: 0.05, tipo: 'num' },
+    { clave: 'gramaje', nombre: 'Gramaje (peso de 1 metro)', unidad: 'g/m', meta: gramajeM, tol: 0.10, tipo: 'num' },
+    ...(p.tratado === 'si' ? [{ clave: 'dinas', nombre: 'Tratamiento corona (plumón dyne)', unidad: 'dinas', meta: Number(p.tratado_dinas) || 38, tol: 0, tipo: 'num', min: true }] : []),
+    { clave: 'apariencia', nombre: 'Apariencia y olor (sin geles, rayas ni olor)', tipo: 'ok' },
+  ];
+  if (procCod.startsWith('P2')) return [
+    { clave: 'registro', nombre: 'Registro de impresión centrado', tipo: 'ok' },
+    { clave: 'tono', nombre: 'Tono vs estándar aprobado', tipo: 'ok' },
+    { clave: 'adherencia', nombre: 'Adherencia de tinta (prueba cinta)', tipo: 'ok' },
+    { clave: 'legible', nombre: 'Textos y códigos legibles', tipo: 'ok' },
+  ];
+  if (procCod.startsWith('P3') || procCod.startsWith('P4')) return [
+    { clave: 'largo', nombre: 'Largo de bolsa', unidad: 'cm', meta: Number(p.largo) || 0, tol: 0.05, tipo: 'num' },
+    { clave: 'ancho', nombre: 'Ancho de bolsa', unidad: 'cm', meta: Number(p.ancho) || 0, tol: 0.05, tipo: 'num' },
+    { clave: 'calibre', nombre: 'Calibre (re-verificación)', unidad: '', meta: Number(p.calibre) || 0, tol: 0.10, tipo: 'num' },
+    { clave: 'gramaje_bolsa', nombre: 'Gramaje (peso por bolsa)', unidad: 'g', meta: pesoBolsa, tol: 0.10, tipo: 'num' },
+    { clave: 'sello', nombre: 'Resistencia de sello (no abre, no quema)', tipo: 'ok' },
+    { clave: 'conteo', nombre: 'Conteo por paquete correcto', tipo: 'ok' },
+  ];
+  if (procCod.startsWith('P6')) return [
+    { clave: 'ancho', nombre: 'Ancho refilado', unidad: 'cm', meta: Number(p.ancho) || 0, tol: 0.05, tipo: 'num' },
+    { clave: 'bobina', nombre: 'Bobina alineada (sin telescopeo)', tipo: 'ok' },
+    { clave: 'tension', nombre: 'Tensión de embobinado uniforme', tipo: 'ok' },
+  ];
+  return [
+    { clave: 'apariencia', nombre: 'Apariencia del pellet uniforme', tipo: 'ok' },
+    { clave: 'contaminacion', nombre: 'Libre de contaminación', tipo: 'ok' },
+  ];
+};
+
+window.vqPuntoOk = (pt) => {
+  if (pt.tipo === 'ok') return pt.valor === 'ok' ? true : pt.valor === 'no' ? false : null;
+  const med = Number(pt.medido);
+  if (!med) return null;                    // sin capturar
+  const meta = Number(pt.meta) || 0;
+  if (!meta) return true;                   // informativo (la ficha no trae meta)
+  if (pt.min) return med >= meta;           // dinas: mínimo requerido
+  return Math.abs(med - meta) / meta <= (pt.tol || 0.1);
+};
+
+window.vqUltima = (odpId) => {
+  let ult = null;
+  (state.verificaciones_calidad || []).forEach(v => { if (v.odp_id === odpId && (!ult || (v.created_at?.seconds || 0) > (ult.created_at?.seconds || 0))) ult = v; });
+  return ult;
+};
+window.vqHoras = (odpId) => {
+  const u = window.vqUltima(odpId);
+  if (!u || !u.created_at?.seconds) return null;
+  return (Date.now() / 1000 - u.created_at.seconds) / 3600;
+};
+window.vqSemaforo = (odpId) => {
+  const h = window.vqHoras(odpId);
+  if (h === null) return { color: '#dc2626', bg: '#fef2f2', icono: '🔴', txt: 'nunca verificada' };
+  const t = h < 1 ? `hace ${Math.max(1, Math.round(h * 60))} min` : `hace ${h.toFixed(1)} h`;
+  if (h < VQ_VERDE_H) return { color: '#16a34a', bg: '#f0fdf4', icono: '🟢', txt: t };
+  if (h < VQ_ROJO_H) return { color: '#d97706', bg: '#fffbeb', icono: '🟡', txt: t };
+  return { color: '#dc2626', bg: '#fef2f2', icono: '🔴', txt: t };
+};
+// ⚠ Hallazgo abierto: NC generada por una VQ que sigue sin cerrarse
+window.vqHallazgoAbierto = (odpId) => (state.no_conformidades || []).some(nc => nc.odp_id === odpId && nc.vq_folio && nc.estado !== 'cerrada');
+
+window.vqAbrir = (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId); if (!odp) return;
+  const ruta = odp.ruta_procesos || [];
+  const idx = Math.min(Number(odp.proceso_actual_idx) || 0, Math.max(ruta.length - 1, 0));
+  window.vqSetProceso(odpId, ruta[idx] || 'P1-EXT');
+};
+window.vqSetProceso = (odpId, procCod) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId); if (!odp) return;
+  const producto = (state.productos_pt || []).find(p => p.codigo === odp.producto_codigo);
+  state.vqForm = {
+    odp_id: odpId, odp_folio: odp.folio, proc: procCod,
+    maquina: odp.maquinas_asignadas?.[procCod] || '',
+    puntos: window.vqChecklist(procCod, producto).map(pt => ({ ...pt, medido: '', valor: '' })),
+    observaciones: state.vqForm?.odp_id === odpId ? (state.vqForm.observaciones || '') : '',
+  };
+  window.forzarRender();
+  setTimeout(() => { const el = document.getElementById('vq-form'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80);
+};
+window.vqCerrar = () => { state.vqForm = null; window.forzarRender(); };
+window.vqPunto = (i, campo, v, focusId) => { const f = state.vqForm; if (!f || !f.puntos[i]) return; f.puntos[i][campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
+window.vqObs = (v) => { if (state.vqForm) state.vqForm.observaciones = v; };
+window.vqVerHistorial = (odpId) => { state.vqVer = state.vqVer === odpId ? null : odpId; window.forzarRender(); };
+
+window.vqGuardar = async (resultado) => {
+  const f = state.vqForm; if (!f) return;
+  const u = state.user || {};
+  const capturados = f.puntos.filter(pt => (pt.tipo === 'num' && Number(pt.medido) > 0) || (pt.tipo === 'ok' && pt.valor));
+  if (!capturados.length) { toast('Captura al menos una medición o un visto bueno', 'error'); return; }
+  const sinContestar = f.puntos.length - capturados.length;
+  if (sinContestar > 0 && !confirm(`Hay ${sinContestar} punto(s) sin capturar. ¿Guardar la verificación así?`)) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const anio = new Date().getFullYear();
+    const n = await siguienteFolio(`vq_${anio}`);
+    const folio = `VQ-${anio}-${String(n).padStart(4, '0')}`;
+    const odp = (state.ordenes_produccion || []).find(o => o.id === f.odp_id) || {};
+    const puntos = f.puntos.map(pt => ({
+      clave: pt.clave, nombre: pt.nombre, tipo: pt.tipo, unidad: pt.unidad || '',
+      meta: pt.tipo === 'num' ? (Number(pt.meta) || 0) : '',
+      medido: pt.tipo === 'num' ? (Number(pt.medido) || 0) : '',
+      valor: pt.tipo === 'ok' ? (pt.valor || '') : '',
+      ok: window.vqPuntoOk(pt),
+    }));
+    const fuera = puntos.filter(pt => pt.ok === false);
+    await addDoc(collection(db, 'verificaciones_calidad'), {
+      folio, odp_id: f.odp_id, odp_folio: f.odp_folio,
+      proceso: f.proc, proceso_nombre: getProc(f.proc)?.nombre || f.proc,
+      maquina: f.maquina || '',
+      producto_codigo: odp.producto_codigo || '', cliente_codigo: odp.cliente_codigo || '', cliente_nombre: odp.cliente_nombre || '',
+      puntos, resultado, puntos_fuera: fuera.length,
+      observaciones: (f.observaciones || '').trim(),
+      turno: window.vqTurno(),
+      verificado_por: u.id || '', verificado_por_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp(),
+    });
+    window.logAccion('vq_registrada', folio, `${f.odp_folio} · ${f.proc} · ${resultado} · ${fuera.length} fuera de espec`);
+    if (resultado === 'rechazada') {
+      // 🧯 NC automática ligada + avisos: la evidencia mueve a la acción
+      const nNC = await siguienteFolio(`nc_${anio}`);
+      const folioNC = `NC-${anio}-${String(nNC).padStart(4, '0')}`;
+      const desc = `Verificación ${folio} RECHAZADA en ${f.odp_folio} (${getProc(f.proc)?.nombre || f.proc}${f.maquina ? ' · ' + f.maquina : ''}). Fuera de especificación: ${fuera.map(pt => pt.nombre + (pt.tipo === 'num' ? ` (medido ${pt.medido} vs meta ${pt.meta}${pt.unidad ? ' ' + pt.unidad : ''})` : '')).join('; ') || 'ver observaciones'}. ${(f.observaciones || '').trim()}`.trim();
+      await addDoc(collection(db, 'no_conformidades'), {
+        folio: folioNC, estado: 'abierta', origen: 'interna', tipo: 'producto',
+        referencia: `${f.odp_folio} · ${folio}`, odp_id: f.odp_id, vq_folio: folio,
+        descripcion: desc, accion_inmediata: '', responsable: '', fecha_compromiso: '',
+        causa_raiz: '', accion_correctiva: '', eficaz: null, verificado_por: '',
+        seguimientos: [{ fecha: new Date().toLocaleDateString('en-CA'), usuario: u.nombre || u.email || '', nota: `Generada automáticamente por verificación ${folio}` }],
+        creado_por: u.id || '', creado_por_nombre: u.nombre || u.email || '', depto_origen: u.depto || '',
+        created_at: serverTimestamp(), updated_at: serverTimestamp(),
+      });
+      window.logAccion('nc_creada', folioNC, desc.slice(0, 200));
+      ['PRO', 'PLN'].forEach(dep => addDoc(collection(db, 'notificaciones'), {
+        titulo: `🚨 Rechazo de calidad en proceso — ${f.odp_folio}`,
+        mensaje: `${folio} rechazada (${getProc(f.proc)?.nombre || f.proc}${f.maquina ? ' · ' + f.maquina : ''}). Se abrió ${folioNC}. ${fuera.length} punto(s) fuera de especificación.`,
+        depto_destino: dep, tipo: 'error', folio_ref: f.odp_folio, leida: false, created_at: serverTimestamp(),
+      }).catch(() => {}));
+      toast(`🚨 ${folio} RECHAZADA — se abrió ${folioNC} y se avisó a Producción y Planeación`, 'error');
+    } else {
+      toast(`🔬 ${folio} registrada — ${resultado === 'aprobada' ? 'todo dentro de especificación' : 'con observaciones'}`);
+      if (resultado === 'aprobada' && window.npObrera) window.npObrera();
+    }
+    state.vqForm = null;
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
+// 📄 Historial de verificaciones de una ODP (formato NPA-CAL-FR-05)
+window.vqHistorialPDF = (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId); if (!odp) return;
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const vqs = (state.verificaciones_calidad || []).filter(v => v.odp_id === odpId).sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0));
+  if (!vqs.length) { toast('Esta ODP no tiene verificaciones registradas todavía', 'error'); return; }
+  const docPDF = new window.jspdf.jsPDF();
+  try { docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 14, 10, 36, 36 * 0.4475); } catch (e) {}
+  docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(12); docPDF.setTextColor(11, 27, 46);
+  docPDF.text('HISTORIAL DE VERIFICACIONES DE CALIDAD EN PROCESO', 196, 15, { align: 'right' });
+  docPDF.setFontSize(8.5); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(100, 116, 139);
+  docPDF.text(`${odp.folio} · ${odp.producto_codigo || ''} · ${odp.cliente_nombre || ''}`, 196, 21, { align: 'right' });
+  docPDF.text(`Formato NPA-CAL-FR-05 · ${vqs.length} verificación(es) · Emitido ${new Date().toLocaleString('es-MX')}`, 196, 26, { align: 'right' });
+  let y = 34;
+  vqs.forEach(v => {
+    const colR = v.resultado === 'aprobada' ? [22, 163, 74] : v.resultado === 'rechazada' ? [220, 38, 38] : [217, 119, 6];
+    const filas = (v.puntos || []).map(pt => [
+      pt.nombre,
+      pt.tipo === 'num' ? `${pt.meta || '—'}${pt.unidad ? ' ' + pt.unidad : ''}${pt.min ? ' mín.' : ''}` : 'Visto bueno',
+      pt.tipo === 'num' ? (pt.medido ? `${pt.medido}${pt.unidad ? ' ' + pt.unidad : ''}` : '—') : (pt.valor === 'ok' ? 'OK' : pt.valor === 'no' ? 'NO OK' : '—'),
+      { content: pt.ok === true ? 'DENTRO' : pt.ok === false ? 'FUERA' : '—', styles: { textColor: pt.ok === false ? [220, 38, 38] : pt.ok === true ? [22, 163, 74] : [148, 163, 184], fontStyle: 'bold', halign: 'center' } },
+    ]);
+    if (v.observaciones) filas.push([{ content: `Observaciones: ${v.observaciones}`, colSpan: 4, styles: { fontStyle: 'italic', textColor: [100, 116, 139] } }]);
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: `${v.folio}  ·  ${v.proceso_nombre || v.proceso}${v.maquina ? ' · ' + v.maquina : ''}  ·  turno ${v.turno || '—'}  ·  ${v.created_at?.seconds ? new Date(v.created_at.seconds * 1000).toLocaleString('es-MX') : ''}  ·  ${v.verificado_por_nombre || ''}  —  ${(v.resultado || '').toUpperCase()}`, colSpan: 4 }]],
+      body: filas,
+      theme: 'grid',
+      headStyles: { fillColor: colR, textColor: [255, 255, 255], fontSize: 7.5 },
+      styles: { fontSize: 8, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+      columnStyles: { 0: { cellWidth: 72 }, 3: { cellWidth: 20 } },
+      margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 4;
+    if (y > 262) { docPDF.addPage(); y = 20; }
+  });
+  const blob = docPDF.output('blob');
+  state.pdfPreview = { blobUrl: URL.createObjectURL(blob), filename: `Verificaciones-${odp.folio}.pdf`, titulo: `Verificaciones ${odp.folio}`, blob };
+  state.modal = 'pdf-preview';
+  window.forzarRender();
+};
+
+// 🔬 Tablero "En proceso": semáforo por ODP + formulario de verificación
+window.renderVQProceso = () => {
+  const filtro = (state.filtros.calidad || '').toLowerCase();
+  let enProd = (state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion');
+  if (filtro) enProd = enProd.filter(o => (o.folio + ' ' + (o.cliente_nombre || '') + ' ' + (o.producto_codigo || '')).toLowerCase().includes(filtro));
+  const lista = enProd.map(o => ({ o, sem: window.vqSemaforo(o.id), h: window.vqHoras(o.id) }));
+  lista.sort((a, b) => (b.h === null ? 1e9 : b.h) - (a.h === null ? 1e9 : a.h));
+  const rojos = lista.filter(x => x.h === null || x.h >= VQ_ROJO_H).length;
+  const hoyVQ = (state.verificaciones_calidad || []).filter(v => v.created_at?.seconds && new Date(v.created_at.seconds * 1000).toLocaleDateString('en-CA') === window.hoyLocalISO()).length;
+
+  const f = state.vqForm;
+  let formHTML = '';
+  if (f) {
+    const odp = (state.ordenes_produccion || []).find(o => o.id === f.odp_id) || {};
+    const ruta = odp.ruta_procesos || [];
+    formHTML = `
+    <div class="panel" id="vq-form" style="padding:18px 20px;margin-bottom:16px;border:2px solid var(--brand);">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div style="font-weight:900;font-size:15px;">🔬 Verificando ${esc(f.odp_folio)} — ${esc(odp.cliente_nombre || '')}</div>
+        <button class="tab-btn" onclick="window.vqCerrar()">✕ Cancelar</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin:2px 0 10px;">${esc(odp.producto_codigo || '')} · ${esc((odp.descripcion || '').slice(0, 90))}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+        ${ruta.map(pc => `<button class="tab-btn ${f.proc === pc ? 'active' : ''}" onclick="window.vqSetProceso('${f.odp_id}','${pc}')">${getProc(pc)?.icono || ''} ${esc(getProc(pc)?.nombre || pc)}${odp.maquinas_asignadas?.[pc] ? ' · ' + esc(odp.maquinas_asignadas[pc]) : ''}</button>`).join('')}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:9px;margin-bottom:12px;">
+        ${f.puntos.map((pt, i) => {
+          const ok = window.vqPuntoOk(pt);
+          const borde = ok === false ? '#dc2626' : ok === true ? '#16a34a' : '#cbd5e1';
+          const fondo = ok === false ? '#fef2f2' : ok === true ? '#f0fdf4' : 'var(--surface-card)';
+          if (pt.tipo === 'num') return `
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1.5px solid ${borde};border-radius:10px;background:${fondo};">
+              <div style="flex:1;min-width:170px;">
+                <div style="font-weight:700;font-size:13px;">${esc(pt.nombre)}</div>
+                <div style="font-size:11px;color:var(--text-muted);">Meta: <strong>${pt.meta || '—'}${pt.unidad ? ' ' + pt.unidad : ''}</strong>${pt.min ? ' mínimo' : pt.meta ? ` ±${Math.round((pt.tol || 0.1) * 100)}%` : ' (informativo)'}</div>
+              </div>
+              <input class="input" id="vq-med-${i}" type="number" step="any" inputmode="decimal" placeholder="Medido" value="${pt.medido}" style="width:118px;font-size:16px;padding:10px;" oninput="window.vqPunto(${i},'medido',this.value,'vq-med-${i}')" />
+              <div style="width:66px;text-align:center;font-weight:900;font-size:11.5px;color:${ok === false ? '#dc2626' : ok === true ? '#16a34a' : '#94a3b8'};">${ok === false ? '✖ FUERA' : ok === true ? '✔ DENTRO' : '—'}</div>
+            </div>`;
+          return `
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1.5px solid ${borde};border-radius:10px;background:${fondo};">
+              <div style="flex:1;min-width:170px;font-weight:700;font-size:13px;">${esc(pt.nombre)}</div>
+              <button class="tab-btn ${pt.valor === 'ok' ? 'active' : ''}" style="min-width:72px;" onclick="window.vqPunto(${i},'valor','ok')">✔ OK</button>
+              <button class="tab-btn" style="min-width:72px;${pt.valor === 'no' ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : ''}" onclick="window.vqPunto(${i},'valor','no')">✖ NO</button>
+            </div>`;
+        }).join('')}
+      </div>
+      <textarea class="input" placeholder="Observaciones (opcional): qué viste, qué se ajustó, a quién avisaste..." style="min-height:54px;margin-bottom:12px;width:100%;" oninput="window.vqObs(this.value)">${esc(f.observaciones || '')}</textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn-primary" style="flex:1;min-width:150px;padding:13px;font-size:13px;" ${state.loadingAccion ? 'disabled' : ''} onclick="window.vqGuardar('aprobada')">✅ Aprobada</button>
+        <button style="flex:1;min-width:150px;padding:13px;background:#f59e0b;color:#fff;border:none;border-radius:9px;font-weight:800;font-size:13px;cursor:pointer;" ${state.loadingAccion ? 'disabled' : ''} onclick="window.vqGuardar('observaciones')">📝 Con observaciones</button>
+        <button style="flex:1;min-width:150px;padding:13px;background:#dc2626;color:#fff;border:none;border-radius:9px;font-weight:800;font-size:13px;cursor:pointer;" ${state.loadingAccion ? 'disabled' : ''} onclick="window.vqGuardar('rechazada')">🚨 Rechazada (abre NC)</button>
+      </div>
+    </div>`;
+  }
+
+  const cards = lista.map(({ o, sem }) => {
+    const vqsO = (state.verificaciones_calidad || []).filter(v => v.odp_id === o.id);
+    const ruta = o.ruta_procesos || [];
+    const idx = Math.min(Number(o.proceso_actual_idx) || 0, Math.max(ruta.length - 1, 0));
+    const procAct = ruta[idx] || '';
+    const maq = o.maquinas_asignadas?.[procAct] || '';
+    const hallazgo = window.vqHallazgoAbierto(o.id);
+    const abierto = state.vqVer === o.id;
+    return `
+    <div class="panel" style="padding:13px 16px;margin-bottom:9px;border-left:4px solid ${sem.color};background:${sem.bg};">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;">
+          <div style="font-weight:900;font-size:13.5px;">${sem.icono} ${esc(o.folio)} · ${esc(o.cliente_nombre || '')} ${hallazgo ? '<span style="background:#dc2626;color:#fff;padding:1px 8px;border-radius:99px;font-size:10px;font-weight:800;">⚠ HALLAZGO ABIERTO</span>' : ''}</div>
+          <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">${esc(o.producto_codigo || '')} · ${getProc(procAct)?.icono || ''} ${esc(getProc(procAct)?.nombre || procAct)}${maq ? ' · ' + esc(maq) : ''} · <strong style="color:${sem.color};">${sem.txt}</strong> · ${vqsO.length} VQ</div>
+        </div>
+        <button class="btn-primary" style="padding:9px 16px;font-size:12px;" onclick="window.vqAbrir('${o.id}')">🔬 Verificar</button>
+        <button class="tab-btn" onclick="window.vqVerHistorial('${o.id}')">📜 ${vqsO.length}</button>
+        ${vqsO.length ? `<button class="tab-btn" onclick="window.vqHistorialPDF('${o.id}')">📄 PDF</button>` : ''}
+      </div>
+      ${abierto && vqsO.length ? `
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:5px;">
+          ${vqsO.sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0)).slice(0, 8).map(v => `
+            <div style="font-size:11.5px;background:var(--surface-card);border:1px solid #e2e8f0;border-radius:8px;padding:7px 10px;">
+              <strong>${esc(v.folio)}</strong> · ${esc(v.proceso_nombre || v.proceso)}${v.maquina ? ' · ' + esc(v.maquina) : ''} · turno ${esc(v.turno || '—')} · ${v.created_at?.seconds ? new Date(v.created_at.seconds * 1000).toLocaleString('es-MX') : ''} · ${esc(v.verificado_por_nombre || '')}
+              — <strong style="color:${v.resultado === 'aprobada' ? '#16a34a' : v.resultado === 'rechazada' ? '#dc2626' : '#d97706'};">${(v.resultado || '').toUpperCase()}</strong>${Number(v.puntos_fuera) > 0 ? ` · ${v.puntos_fuera} fuera` : ''}
+            </div>`).join('')}
+        </div>` : ''}
+    </div>`;
+  }).join('');
+
+  return `
+    ${formHTML}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+      <div class="panel" style="padding:10px 18px;flex:1;min-width:130px;text-align:center;"><div style="font-size:22px;font-weight:900;">${lista.length}</div><div style="font-size:11px;color:var(--text-muted);">ODPs en producción</div></div>
+      <div class="panel" style="padding:10px 18px;flex:1;min-width:130px;text-align:center;border:1.5px solid ${rojos ? '#dc2626' : '#e2e8f0'};"><div style="font-size:22px;font-weight:900;color:${rojos ? '#dc2626' : 'var(--text)'};">${rojos}</div><div style="font-size:11px;color:var(--text-muted);">🔴 urgen verificación</div></div>
+      <div class="panel" style="padding:10px 18px;flex:1;min-width:130px;text-align:center;"><div style="font-size:22px;font-weight:900;color:#16a34a;">${hoyVQ}</div><div style="font-size:11px;color:var(--text-muted);">verificaciones hoy</div></div>
+    </div>
+    ${cards || '<div class="panel" style="padding:30px;text-align:center;color:#94a3b8;">No hay ODPs en producción en este momento.</div>'}`;
+};
+
 function renderCalidad() {
+
   const subTab = state.tabs.calidad || 'pendientes';
 
   // 🔧 Helper: ¿la ODP ya terminó TODA su producción? (produjo su meta, no queda por producir)
@@ -18164,6 +18917,7 @@ function renderCalidad() {
     })()}
     <div style="margin-bottom:18px;">
       <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;">
+        <button class="tab-btn ${subTab === 'proceso' ? 'active' : ''}" onclick="cambiarTab('calidad','proceso')">🔬 En proceso (${(state.ordenes_produccion || []).filter(o => !o.archivada && o.estatus === 'en_produccion').length})</button>
         <button class="tab-btn ${subTab === 'pendientes' ? 'active' : ''}" onclick="cambiarTab('calidad','pendientes')">🟡 Por liberar (${odpsPendientes.length})</button>
         <button class="tab-btn ${subTab === 'disponible' ? 'active' : ''}" onclick="cambiarTab('calidad','disponible')">📦 Disponible para jalar (${odpsConMaterial.length})</button>
         <button class="tab-btn ${subTab === 'liberadas' ? 'active' : ''}" onclick="cambiarTab('calidad','liberadas')">✅ Liberadas (${odpsLiberadas.length})</button>
@@ -18172,6 +18926,7 @@ function renderCalidad() {
       ${(() => {
         // Banner explicativo según la pestaña activa
         const banners = {
+          proceso: { c:'#eef2ff', b:'#c7d2fe', t:'#3730a3', txt:'<strong>🔬 En proceso:</strong> verificaciones periódicas de cada ODP MIENTRAS se fabrica. Semáforo: 🟢 verificada hace menos de 4 h · 🟡 4–8 h · 🔴 más de 8 h o nunca. Un rechazo abre No Conformidad y avisa a Producción y Planeación.' },
           pendientes: { c:'#fffbeb', b:'#fde68a', t:'#92400e', txt:'<strong>🟡 Por liberar:</strong> órdenes que YA TERMINARON toda su producción. Aquí liberas <strong>TODO</strong> el material de una vez.' },
           disponible: { c:'#eff6ff', b:'#bfdbfe', t:'#1e40af', txt:'<strong>📦 Disponible para jalar:</strong> órdenes que <strong>siguen produciendo</strong>, pero ya hay material listo. Aquí sacas una <strong>PARCIALIDAD</strong> (parte del total) sin detener la orden.' },
           liberadas: { c:'#f0fdf4', b:'#bbf7d0', t:'#15803d', txt:'<strong>✅ Liberadas:</strong> órdenes ya liberadas (total o por parciales). Aquí reimprimes certificados, etiquetas y packing lists.' },
@@ -18187,6 +18942,7 @@ function renderCalidad() {
       <span style="font-size:12px;color:#64748b;">${arr.length} ODPs</span>
     </div>
     
+    ${subTab === 'proceso' ? window.renderVQProceso() : ''}
     ${subTab === 'disponible' ? (() => {
       // 📦 Material disponible para jalar (flujo pull): calidad decide qué jalar
       const filtroD = (state.filtros.calidad || '').toLowerCase();
@@ -47158,6 +47914,36 @@ window.imprimirCertificadoCalidadPDF = async (odpId, factura, pklFilter = null) 
     });
     y = docPDF.lastAutoTable.finalY + 12;
 
+    // ====== 🔬 CONTROL DE CALIDAD EN PROCESO (verificaciones VQ) ======
+    const vqsCert = (state.verificaciones_calidad || []).filter(v => v.odp_id === odpId)
+      .sort((a, b) => (a.created_at?.seconds || 0) - (b.created_at?.seconds || 0));
+    if (vqsCert.length) {
+      const rangoDe = (clave) => {
+        const vals = [];
+        vqsCert.forEach(v => (v.puntos || []).forEach(pt => { if (pt.clave === clave && Number(pt.medido) > 0) vals.push(Number(pt.medido)); }));
+        if (!vals.length) return null;
+        const mn = Math.min(...vals), mx = Math.max(...vals);
+        return mn === mx ? String(mn) : `${mn} - ${mx}`;
+      };
+      const filasVQ = [['Verificaciones realizadas', `${vqsCert.length} (${vqsCert.filter(v => v.resultado === 'aprobada').length} aprobadas) · ${vqsCert.map(v => v.folio).join(', ')}`]];
+      const rCal = rangoDe('calibre'); if (rCal) filasVQ.push(['Calibre medido en proceso', rCal]);
+      const rGrm = rangoDe('gramaje'); if (rGrm) filasVQ.push(['Gramaje medido (g/m)', rGrm]);
+      const rGrb = rangoDe('gramaje_bolsa'); if (rGrb) filasVQ.push(['Peso por bolsa medido (g)', rGrb]);
+      const rDin = rangoDe('dinas'); if (rDin) filasVQ.push(['Tratamiento corona medido (dinas)', rDin]);
+      filasVQ.push(['Inspector(es)', [...new Set(vqsCert.map(v => v.verificado_por_nombre).filter(Boolean))].join(', ') || '—']);
+      docPDF.autoTable({
+        startY: y,
+        head: [[{ content: 'Control de calidad en proceso (verificaciones durante la fabricación)', colSpan: 2, styles: { halign: 'center' } }]],
+        body: filasVQ,
+        theme: 'grid',
+        headStyles: { fillColor: _COL_VERDE, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+        styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+        columnStyles: { 0: { fontStyle: 'bold', fillColor: [232, 245, 233], cellWidth: 62 } },
+        margin: { left: 14, right: 14 },
+      });
+      y = docPDF.lastAutoTable.finalY + 12;
+    }
+
     // ====== FIRMA ======
     if (y > 275) { docPDF.addPage(); y = 30; }
     docPDF.setDrawColor(_COL_GRIS_MEDIO[0], _COL_GRIS_MEDIO[1], _COL_GRIS_MEDIO[2]);
@@ -60484,6 +61270,18 @@ window._aplicarCierreExtrusionConMP = async () => {
 // LIBERACIÓN DE CALIDAD: aplica regla del 90%
 // ============================================================
 window.confirmarLiberarCalidad = async (odpId) => {
+  // 🔬 VQ: advertencia FUERTE (no candado) si se libera sin evidencia en proceso
+  {
+    const _odpVQ = (state.ordenes_produccion || []).find(o => o.id === odpId);
+    if (_odpVQ) {
+      const _vqsODP = (state.verificaciones_calidad || []).filter(v => v.odp_id === odpId);
+      if (!_vqsODP.length) {
+        if (!confirm(`⚠ ATENCIÓN: ${_odpVQ.folio} NO tiene NINGUNA verificación de calidad en proceso.\n\nEl certificado saldrá sin evidencia de vigilancia durante la fabricación.\n\n¿Liberar de todas formas?`)) return;
+      } else if (window.vqHallazgoAbierto && window.vqHallazgoAbierto(odpId)) {
+        if (!confirm(`⚠ ${_odpVQ.folio} tiene un HALLAZGO DE CALIDAD ABIERTO (No Conformidad sin cerrar).\n\n¿Liberar de todas formas?`)) return;
+      }
+    }
+  }
   const f = state.modalForm;
   if (!f) return;
   
