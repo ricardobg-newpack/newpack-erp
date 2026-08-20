@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B122-cola-como-producir</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B123-codigo-perforaciones</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6132,6 +6132,8 @@ window.NP_AYUDA = [
   { p: '¿Cómo saco el corte financiero semanal?', k: 'corte financiero semanal pdf ventas cartera cxp flujo caja junta decision', v: 'facturacion', pasos: ['Finanzas → pestaña 📈 Flujo de caja (solo Tesorería y Dirección)', 'Botón "📄 Corte semanal PDF"', 'Sale el documento completo: ventas, cobrado, aging de cartera, calendario de pagos y flujo 6 semanas', 'Confidencial: fírmalo con Dirección en la junta semanal'] },
   { p: '¿Cómo registro la factura de un proveedor?', k: 'factura proveedor registrar compras evidencia recepcion conciliar cxp', v: 'ordenes_compra', pasos: ['Órdenes de Compra → en la OC recibida pica "🧾 Registrar factura prov."', 'Captura folio de la factura, monto, fecha y la evidencia (recepción/remisión)', 'El vencimiento se calcula solo con los días de crédito del proveedor', 'Tesorería la concilia contra la OC y la recepción, y de ahí sigue el pago'] },
   { p: '¿Cómo importo las facturas de CONTPAQ al sistema?', k: 'contpaq importar cfdi xml sat facturas masivo clientes proveedores uuid', v: 'facturacion', pasos: ['Exporta los XML desde CONTPAQi (o descárgalos del portal del SAT)', 'Finanzas → pestaña 📥 Importar CFDI → arrastra TODOS los XML juntos', 'El sistema clasifica solo: emitidas = clientes, recibidas = proveedores (nunca duplica, valida por UUID)', 'Importa las pendientes a cartera viva y las viejas como pagadas (histórico)'] },
+  { p: '¿Cómo cambio el código de un producto que ya tiene pedidos?', k: 'cambiar codigo producto matricula propagar renombrar bs bp direccion', v: 'productos_pt', pasos: ['Solo Dirección: abre Editar Producto → botón "🆔 Cambiar código"', 'Escribe el código correcto (ej. LDBS → LDBP) — valida que no exista', 'El sistema propaga EN CADENA: línea del PI, OVs, ODPs, tarimas, lotes y relaciones cliente', 'Etiquetas, hojas y planos salen solos con el código nuevo; avisa a PLN/PRO/CS automáticamente'] },
+  { p: '¿Cómo configuro las perforaciones para que salgan en el plano?', k: 'perforacion microperforada plano mecanico diametro filas distribucion bolsa', v: 'productos_pt', pasos: ['Editar Producto → sección "🕳 PERFORACIÓN"', 'Elige perforada o microperforada, Ø en mm, filas, perforaciones por fila y la zona de la bolsa', 'Guarda y saca el 📐 Plano Mecánico: el patrón se dibuja sobre la bolsa con su Ø acotado y la nota de distribución', 'Dale esa hoja al operador de bolseo — ve exactamente cómo van repartidas'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -49246,6 +49248,54 @@ function _drawPoligono(pdf, puntos, estilo) {
 // ═══════════════════════════════════════════════════════════
 // BOLSA SUELTA
 // ═══════════════════════════════════════════════════════════
+// 🕳 PERFORACIONES en el plano — patrón de círculos dentro del cuerpo de la
+// bolsa según zona/filas/columnas, con acotación de Ø y nota de distribución.
+function _dibujarPerforaciones(pdf, bx, by, bw, bh, p) {
+  if (!p || !p.perforacion || p.perforacion === 'no') return;
+  const esMicro = p.perforacion === 'micro';
+  const filas = Math.max(1, Math.min(Number(p.perf_filas) || (esMicro ? 6 : 3), 14));
+  const cols = Math.max(1, Math.min(Number(p.perf_cols) || (esMicro ? 10 : 5), 20));
+  const diam = Number(p.perf_diametro_mm) || (esMicro ? 0.5 : 4);
+  const zona = p.perf_zona || 'todo';
+  // Zona efectiva dentro del cuerpo
+  let zy = by + bh * 0.12, zh = bh * 0.76;
+  if (zona === 'centro') { zy = by + bh * 0.32; zh = bh * 0.36; }
+  else if (zona === 'franja_superior') { zy = by + bh * 0.06; zh = bh * 0.22; }
+  else if (zona === 'franja_inferior') { zy = by + bh * 0.70; zh = bh * 0.24; }
+  const zx = bx + bw * 0.10, zw = bw * 0.80;
+  const r = esMicro ? 0.45 : Math.min(2.2, Math.max(1.1, diam * 0.35));
+  pdf.setDrawColor(15, 23, 42);
+  pdf.setLineWidth(0.35);
+  let primera = null;
+  for (let fi = 0; fi < filas; fi++) {
+    const cy = filas === 1 ? zy + zh / 2 : zy + (fi / (filas - 1)) * zh;
+    for (let ci = 0; ci < cols; ci++) {
+      const cx = cols === 1 ? zx + zw / 2 : zx + (ci / (cols - 1)) * zw;
+      if (esMicro) { pdf.setFillColor(15, 23, 42); pdf.circle(cx, cy, r, 'F'); }
+      else pdf.circle(cx, cy, r, 'S');
+      if (!primera) primera = { cx, cy };
+    }
+  }
+  // Acotación del Ø hacia la primera perforación
+  if (primera) {
+    pdf.setDrawColor(100, 116, 139);
+    pdf.setLineWidth(0.25);
+    pdf.line(primera.cx + r, primera.cy - r, primera.cx + r + 9, primera.cy - r - 6);
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(15, 23, 42);
+    pdf.text(`${esMicro ? 'MICRO ' : ''}Ø ${diam} mm`, primera.cx + r + 10, primera.cy - r - 7);
+  }
+  // Nota de distribución bajo el dibujo
+  const zonaTxt = zona === 'centro' ? 'al centro' : zona === 'franja_superior' ? 'en franja superior (boca)' : zona === 'franja_inferior' ? 'en franja inferior (antes del sello)' : 'en todo el cuerpo';
+  pdf.setFontSize(7.5);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setTextColor(180, 83, 9);
+  pdf.text(`PERFORACION: ${filas} fila(s) x ${cols} = ${filas * cols} perforaciones de ${diam} mm, ${zonaTxt}${p.perf_notas ? ' - ' + p.perf_notas : ''}`, bx + bw / 2, by + bh + 12, { align: 'center', maxWidth: bw + 60 });
+  pdf.setTextColor(0, 0, 0);
+  pdf.setFont('helvetica', 'normal');
+}
+
 function _dibujarBolsaSuelta(pdf, bbox, producto) {
   const { x, y, w, h } = bbox;
   const mt = 30, mb = 28, ml = 50, mr = 50;
@@ -49269,6 +49319,9 @@ function _dibujarBolsaSuelta(pdf, bbox, producto) {
   // Re-trazar el borde inferior
   _estiloEstructural(pdf, { grosor: 0.6 });
   pdf.line(dx, dy + dh, dx + dw, dy + dh);
+
+  // 🕳 Perforaciones (si el producto las lleva)
+  _dibujarPerforaciones(pdf, dx, dy, dw, dh - cejaH, producto);
 
   // Cotas
   if (Number(producto.ancho) > 0) {
@@ -49317,6 +49370,9 @@ function _dibujarBolsaFuelle(pdf, bbox, producto) {
   pdf.rect(dx1 + 0.3, dy1 + dh1 - cejaH + 0.3, dw1 - 0.6, cejaH - 0.6, 'F');
   _estiloEstructural(pdf, { grosor: 0.6 });
   pdf.line(dx1, dy1 + dh1, dx1 + dw1, dy1 + dh1);
+
+  // 🕳 Perforaciones (si el producto las lleva)
+  _dibujarPerforaciones(pdf, dx1, dy1, dw1, dh1 - cejaH, producto);
 
   // Indicadores A — A (estilo CAD: marca dónde está el corte de la sección)
   const yCorteA = dy1 + dh1 * 0.45;
@@ -49787,7 +49843,7 @@ window.imprimirPlanoMecanicoPDF = (productoCodigo, clienteCodigo) => {
     // ====== ÁREA DE DIBUJO ======
     // Marco del área de dibujo (sutil, estilo plano técnico)
     const dibujoY = y;
-    const dibujoH = 145;
+    const dibujoH = 137;  // compacto para que la tabla (con fila de perforación) quepa en 1 página
     docPDF.setDrawColor(200, 200, 200);
     docPDF.setLineWidth(0.3);
     docPDF.setLineDashPattern([], 0);
@@ -49832,6 +49888,8 @@ window.imprimirPlanoMecanicoPDF = (productoCodigo, clienteCodigo) => {
         ['Tipo de Producto', tipoDesc, 'Calibre', String(calibre), { content: 'Autorizado', styles: { fillColor: [220, 240, 220], fontStyle: 'bold', halign: 'center', valign: 'middle' } }],
         // ⚡ Tratamiento corona: el cliente y Calidad deben verlo en la especificación
         ['Tratado (corona)', p.tratado === 'si' ? `SI - ${p.tratado_dinas || 38} dinas` : 'No', 'Impresion', p.impresion || 'Sin impresion', ''],
+        ['Perforacion', p.perforacion === 'micro' ? `MICRO O ${p.perf_diametro_mm || 0.5} mm` : p.perforacion === 'perforada' ? `O ${p.perf_diametro_mm || 4} mm` : 'N/A',
+         'Distribucion', (p.perforacion && p.perforacion !== 'no') ? `${p.perf_filas || '-'} filas x ${p.perf_cols || '-'} = ${(Number(p.perf_filas) || 0) * (Number(p.perf_cols) || 0) || '-'} perf.` : 'N/A', ''],
       ],
       theme: 'grid',
       headStyles: { fillColor: _COL_VERDE, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8, halign: 'center' },
@@ -54976,7 +55034,14 @@ function modalEditarProductoPT() {
       color_peletizado: p.color_peletizado || (p.color === 'Transparente' ? 'TPTE' : (p.color || '').toUpperCase()),
       requiere_proceso_secundario: !!p.requiere_proceso_secundario,
       _flujo_definido_manual: !!p._flujo_definido_manual,
-      proceso_secundario_codigo: p.proceso_secundario_codigo || ''
+      proceso_secundario_codigo: p.proceso_secundario_codigo || '',
+      // 🕳 Perforación (se dibuja en el plano mecánico)
+      perforacion: p.perforacion || '',
+      perf_diametro_mm: p.perf_diametro_mm || '',
+      perf_filas: p.perf_filas || '',
+      perf_cols: p.perf_cols || '',
+      perf_zona: p.perf_zona || 'todo',
+      perf_notas: p.perf_notas || ''
     };
   }
   const f = state.modalForm;
@@ -55255,6 +55320,33 @@ function modalEditarProductoPT() {
           ${renderBloqueFormulacion(f)}
           
           <!-- ESTANDARIZACIÓN EXTRUSIÓN -->
+          <div style="border:2px solid ${(f.perforacion && f.perforacion !== 'no') ? '#f59e0b' : '#e2e8f0'};border-radius:12px;padding:14px 16px;margin-bottom:14px;background:${(f.perforacion && f.perforacion !== 'no') ? '#fffbeb' : '#fff'};">
+            <div style="font-weight:800;font-size:12.5px;margin-bottom:8px;">🕳 PERFORACIÓN <span style="font-weight:600;color:#94a3b8;">(se dibuja en el Plano Mecánico para que el operador la vea)</span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+              <div><label style="display:block;font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">¿Lleva perforación?</label>
+                <select class="input" onchange="state.modalForm.perforacion=this.value;window.forzarRender()">
+                  <option value="" ${!f.perforacion || f.perforacion === 'no' ? 'selected' : ''}>No</option>
+                  <option value="perforada" ${f.perforacion === 'perforada' ? 'selected' : ''}>Perforada (Ø visible)</option>
+                  <option value="micro" ${f.perforacion === 'micro' ? 'selected' : ''}>Microperforada</option>
+                </select></div>
+              ${(f.perforacion && f.perforacion !== 'no') ? `
+              <div><label style="display:block;font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">Ø perforación (mm)</label>
+                <input class="input" type="text" inputmode="decimal" value="${f.perf_diametro_mm || ''}" placeholder="${f.perforacion === 'micro' ? '0.5' : '4'}" oninput="window.modalFormSetSilent('perf_diametro_mm', this.value)" /></div>
+              <div><label style="display:block;font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">Filas (a lo largo)</label>
+                <input class="input" type="text" inputmode="numeric" value="${f.perf_filas || ''}" placeholder="ej. 4" oninput="window.modalFormSetSilent('perf_filas', this.value)" /></div>
+              <div><label style="display:block;font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">Perforaciones por fila</label>
+                <input class="input" type="text" inputmode="numeric" value="${f.perf_cols || ''}" placeholder="ej. 6" oninput="window.modalFormSetSilent('perf_cols', this.value)" /></div>
+              <div><label style="display:block;font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">Zona de la bolsa</label>
+                <select class="input" onchange="state.modalForm.perf_zona=this.value">
+                  <option value="todo" ${(f.perf_zona || 'todo') === 'todo' ? 'selected' : ''}>Todo el cuerpo</option>
+                  <option value="centro" ${f.perf_zona === 'centro' ? 'selected' : ''}>Centro</option>
+                  <option value="franja_superior" ${f.perf_zona === 'franja_superior' ? 'selected' : ''}>Franja superior (boca)</option>
+                  <option value="franja_inferior" ${f.perf_zona === 'franja_inferior' ? 'selected' : ''}>Franja inferior (antes del sello)</option>
+                </select></div>
+              <div style="grid-column:1/-1;"><label style="display:block;font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">Notas de perforación (opcional)</label>
+                <input class="input" type="text" value="${(f.perf_notas || '').replace(/"/g, '&quot;')}" placeholder="ej. perforación en línea con separación de 5 cm, no perforar la ceja" oninput="window.modalFormSetSilent('perf_notas', this.value)" /></div>` : ''}
+            </div>
+          </div>
           ${renderBloqueEstandarizacion(f, p)}
           
         </div>
@@ -55263,6 +55355,7 @@ function modalEditarProductoPT() {
           <button class="btn-secondary" onclick="window.eliminarProductoPTDef('${p.codigo}')" style="background:#dc2626;color:#fff;border-color:#dc2626;font-weight:800;">🗑 Eliminar</button>
           <button class="btn-secondary" onclick="window.imprimirFichaTecnicaPDF('${p.codigo}')" style="background:#dbeafe;color:#1e40af;border-color:#bfdbfe;">📄 Ficha Técnica</button>
           <button class="btn-secondary" onclick="window.imprimirPlanoMecanicoPDF('${p.codigo}')" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;">📐 Plano Mecánico</button>
+          ${(state.user?.depto === 'CEO' || state.user?.depto === 'ADMIN' || state.user?.rol === 'admin') ? `<button class="btn-secondary" onclick="window.dirCambiarCodigoProducto('${p.codigo}')" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:800;">🆔 Cambiar código</button>` : ''}
           <button class="btn-secondary" onclick="cerrarModalPT()" style="margin-left:auto;">Cancelar</button>
           <button class="btn-primary" onclick="guardarProductoPT('${p.codigo}')">${ICONS.check} Guardar cambios</button>
         </div>
@@ -58577,6 +58670,13 @@ window.crearProductoPT = async () => {
       // ⚡ Tratamiento corona: viaja a extrusión, hoja de specs y certificado
       tratado: f.tratado || '',
       tratado_dinas: f.tratado === 'si' ? (Number(f.tratado_dinas) || 38) : 0,
+      // 🕳 Perforación — el plano mecánico la dibuja para el operador
+      perforacion: f.perforacion || '',
+      perf_diametro_mm: Number(f.perf_diametro_mm) || 0,
+      perf_filas: Number(f.perf_filas) || 0,
+      perf_cols: Number(f.perf_cols) || 0,
+      perf_zona: f.perf_zona || 'todo',
+      perf_notas: f.perf_notas || '',
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
@@ -58648,6 +58748,75 @@ window.crearProductoPT = async () => {
   } finally {
     state.loadingAccion = false; render();
   }
+};
+
+// ═══════════════════════════════════════════════════════════
+// 🆔 CAMBIAR CÓDIGO DE PRODUCTO — SOLO DIRECCIÓN. El caso real:
+// LDBS...NANN1 debió ser LDBP (perforada) y ya tiene pedidos corriendo.
+// Renombra la matrícula y la PROPAGA a todo lo vivo: línea del PI, OVs,
+// ODPs, tarimas, lotes y relaciones cliente-producto — en lotes atómicos.
+// Los documentos (etiquetas, hojas, planos, certificados) se generan en
+// vivo de esos campos, así que salen solos con el código nuevo.
+// VQ y Radiales son evidencia INMUTABLE: conservan el código histórico;
+// el producto guarda codigos_anteriores para la trazabilidad completa.
+// ═══════════════════════════════════════════════════════════
+window.dirCambiarCodigoProducto = async (codigoViejo) => {
+  const u = state.user || {};
+  if (!(u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin')) { toast('🔒 Solo Dirección puede cambiar códigos', 'error'); return; }
+  const prod = (state.productos_pt || []).find(p => p.codigo === codigoViejo);
+  if (!prod || !prod.id) { toast('Producto no encontrado', 'error'); return; }
+  const resp = prompt(`🆔 CAMBIAR CÓDIGO (Dirección)\n\nActual: ${codigoViejo}\n\nEscribe el código CORRECTO (ej. cambia BS por BP):`, codigoViejo);
+  if (resp === null) return;
+  const nuevo = String(resp).trim().toUpperCase();
+  if (!nuevo || nuevo === codigoViejo) { toast('Sin cambios', 'info'); return; }
+  if (!/^[A-Z0-9]{6,30}$/.test(nuevo)) { toast('Código inválido (solo letras y números, 6-30 caracteres)', 'error'); return; }
+  if ((state.productos_pt || []).some(p => p.codigo === nuevo)) { toast(`⛔ Ya existe un producto con el código ${nuevo}`, 'error'); return; }
+  const tipoNuevo = window._ptTipoDelCodigo ? window._ptTipoDelCodigo(nuevo) : '';
+
+  // Censo de lo que se va a propagar (todo está en memoria)
+  const pedidosAf = (state.pedidos || []).filter(pd => (pd.lineas || []).some(l => l.producto_codigo === codigoViejo));
+  const ovsAf = (state.ordenes_venta || []).filter(o => o.producto_codigo === codigoViejo);
+  const odpsAf = (state.ordenes_produccion || []).filter(o => o.producto_codigo === codigoViejo);
+  const tarimasAf = (state.tarimas || []).filter(t => t.producto_codigo === codigoViejo);
+  const lotesAf = (state.lotes || []).filter(l => l.producto_codigo === codigoViejo);
+  const relAf = (state.cliente_productos || []).filter(r => r.producto_codigo === codigoViejo);
+
+  const resumen = `🆔 CONFIRMA EL CAMBIO DE CÓDIGO\n\n${codigoViejo}\n→ ${nuevo}${tipoNuevo ? `\nTipo según matrícula nueva: ${tipoNuevo} (se alinea solo)` : ''}\n\nSe actualizará EN CADENA:\n· ${pedidosAf.length} pedido(s) (línea del PI)\n· ${ovsAf.length} OV(s) · ${odpsAf.length} ODP(s)\n· ${tarimasAf.length} tarima(s) · ${lotesAf.length} lote(s)\n· ${relAf.length} relación(es) cliente-producto\n\nEtiquetas, hojas, planos y certificados saldrán con el código nuevo automáticamente.\nLas verificaciones VQ y radiales YA registradas conservan el código anterior (evidencia histórica).\n\n¿Ejecutar?`;
+  if (!confirm(resumen)) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    const ops = [];
+    ops.push(['productos_pt', prod.id, {
+      codigo: nuevo,
+      ...(tipoNuevo ? { tipo: tipoNuevo } : {}),
+      codigos_anteriores: [...(prod.codigos_anteriores || []), { codigo: codigoViejo, fecha: window.hoyLocalISO(), por: u.nombre || u.email || '' }],
+      updated_at: serverTimestamp(),
+    }]);
+    pedidosAf.forEach(pd => ops.push(['pedidos', pd.id, {
+      lineas: (pd.lineas || []).map(l => l.producto_codigo === codigoViejo ? { ...l, producto_codigo: nuevo } : l),
+      updated_at: serverTimestamp(),
+    }]));
+    ovsAf.forEach(o => ops.push(['ordenes_venta', o.id, { producto_codigo: nuevo, updated_at: serverTimestamp() }]));
+    odpsAf.forEach(o => ops.push(['ordenes_produccion', o.id, { producto_codigo: nuevo, updated_at: serverTimestamp() }]));
+    tarimasAf.forEach(t => ops.push(['tarimas', t.id, { producto_codigo: nuevo }]));
+    lotesAf.forEach(l => ops.push(['lotes', l.id, { producto_codigo: nuevo }]));
+    relAf.forEach(r => ops.push(['cliente_productos', r.id, { producto_codigo: nuevo }]));
+    for (let i = 0; i < ops.length; i += 400) {
+      const b = writeBatch(db);
+      ops.slice(i, i + 400).forEach(([col, id, data]) => b.update(doc(db, col, id), data));
+      await b.commit();
+    }
+    window.logAccion('codigo_producto_cambiado', nuevo, `antes ${codigoViejo} · ${ops.length - 1} documentos propagados (${pedidosAf.length} PI, ${ovsAf.length} OV, ${odpsAf.length} ODP, ${tarimasAf.length} tarimas, ${lotesAf.length} lotes)`);
+    ['PLN', 'PRO', 'CS'].forEach(dep => addDoc(collection(db, 'notificaciones'), {
+      titulo: `🆔 Código de producto cambiado por Dirección`,
+      mensaje: `${codigoViejo} → ${nuevo}. Pedidos, OVs, ODPs, tarimas y lotes ya traen el código nuevo; reimprime etiquetas/hojas si las tenías impresas.`,
+      depto_destino: dep, tipo: 'warning', folio_ref: nuevo, leida: false, created_at: serverTimestamp(),
+    }).catch(() => {}));
+    toast(`🆔 ${codigoViejo} → ${nuevo} · ${ops.length - 1} documento(s) actualizados en cadena`);
+    state.modal = null; state.modalForm = null;
+  } catch (e) { toast('Error al propagar: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
 window.guardarProductoPT = async (codigo) => {
@@ -58735,6 +58904,13 @@ window.guardarProductoPT = async (codigo) => {
       // ⚡ Tratamiento corona: viaja a extrusión, hoja de specs y certificado
       tratado: f.tratado || '',
       tratado_dinas: f.tratado === 'si' ? (Number(f.tratado_dinas) || 38) : 0,
+      // 🕳 Perforación — el plano mecánico la dibuja para el operador
+      perforacion: f.perforacion || '',
+      perf_diametro_mm: Number(f.perf_diametro_mm) || 0,
+      perf_filas: Number(f.perf_filas) || 0,
+      perf_cols: Number(f.perf_cols) || 0,
+      perf_zona: f.perf_zona || 'todo',
+      perf_notas: f.perf_notas || '',
       tipo_sellado: f.tipo_sellado || '',
       estructura_rollo_ext: f.estructura_rollo_ext || '',
       salidas_extrusion: Math.max(1, Number(f.salidas_extrusion) || 1),
