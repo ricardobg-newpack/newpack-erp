@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B125-mtto-auxiliares</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B126-pausa-genera-falla</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -13175,6 +13175,57 @@ window.confirmarPausaODP = async (odpId, motivoTxt, mandarAlFinal = false) => {
     }
     const sufijoCola = (mandarAlFinal && maqPausada) ? ' · enviada al final de la cola' : '';
     toast(`⏸ ${getProc(procPausar)?.nombre || procPausar} pausado en ${odp.folio}${sufijoCola} · ${motivoTxt}`, 'info');
+
+    // 🔧 PAUSA POR MANTENIMIENTO = REPORTE DE FALLA AUTOMÁTICO (un solo registro).
+    //    Antes eran 2 pasos manuales y los operadores solo pausaban — MTTO nunca
+    //    se enteraba. Ahora la pausa genera la falla y notifica al instante.
+    if (/^mantenimiento/i.test(motivoTxt)) {
+      try {
+        const u2 = state.user || {};
+        const fallaAbierta = (state.fallas_mantenimiento || []).find(x =>
+          x.maquina_codigo === maqPausada && maqPausada && !['resuelta', 'cancelada'].includes(x.estatus));
+        if (fallaAbierta) {
+          toast(`🔧 Esa máquina ya tiene la falla ${fallaAbierta.folio} abierta — Mantenimiento ya está enterado`, 'info');
+        } else {
+          const detalle = prompt(`🔧 Se reportará la FALLA a Mantenimiento automáticamente.\n\n¿Qué falló? (breve — puedes dejarlo vacío)`, '') || '';
+          const maq2 = (state.maquinas || []).find(m => m.codigo === maqPausada);
+          const numFolio2 = await siguienteFolio('falla');
+          const folio2 = `FALLA-${new Date().getFullYear()}-${String(numFolio2).padStart(4, '0')}`;
+          await addDoc(collection(db, 'fallas_mantenimiento'), {
+            folio: folio2,
+            maquina_codigo: maqPausada || '',
+            maquina_nombre: maq2?.nombre || maqPausada || (getProc(procPausar)?.nombre || procPausar),
+            proceso: maq2?.proceso || procPausar || '',
+            prioridad: 'critica',
+            tipo_falla: 'Paro de máquina',
+            descripcion: `${detalle.trim() ? detalle.trim() + ' · ' : ''}Generada automáticamente al PAUSAR ${odp.folio} por "${motivoTxt}" — máquina parada con orden corriendo.`,
+            estatus: 'reportada',
+            odp_id: odpId, odp_folio: odp.folio, origen: 'pausa_odp',
+            reportada_at: serverTimestamp(),
+            reportada_por_id: u2.id || '',
+            reportada_por_nombre: u2.nombre || u2.email || 'Usuario',
+            reportada_por_depto: u2.depto || '',
+            recibida_at: null, recibida_por_nombre: '',
+            atencion_at: null, atencion_por_nombre: '',
+            resuelta_at: null, resuelta_por_nombre: '',
+            solucion: '',
+            created_at: serverTimestamp(),
+          });
+          const batchN = writeBatch(db);
+          ['MTTO', 'CEO'].forEach(depto => {
+            batchN.set(doc(collection(db, 'notificaciones')), {
+              titulo: `🚨 Máquina PARADA · ${maq2?.nombre || maqPausada || procPausar}`,
+              mensaje: `${folio2} generada automáticamente: ${odp.folio} pausada por mantenimiento${detalle.trim() ? ' — ' + detalle.trim().slice(0, 70) : ''}. Orden detenida esperando reparación.`,
+              depto_destino: depto, tipo: 'error', folio_ref: folio2,
+              leida: false, created_at: serverTimestamp(),
+            });
+          });
+          await batchN.commit();
+          window.logAccion('falla_auto_pausa', folio2, `${odp.folio} · ${maqPausada || procPausar} · ${motivoTxt}`);
+          toast(`🔧 ${folio2} reportada AUTOMÁTICAMENTE a Mantenimiento — máquina parada`, 'success');
+        }
+      } catch (eF) { console.error('Falla automática desde pausa:', eF); toast('⚠ La pausa se registró, pero la falla automática falló: ' + eF.message, 'error'); }
+    }
   } catch (e) {
     console.error('Error pausar ODP:', e);
     const msgErr = e.message?.includes('PERMISSION_DENIED')
