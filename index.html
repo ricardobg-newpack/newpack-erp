@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B123-codigo-perforaciones</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B124-fix-renombrado</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -58768,9 +58768,12 @@ window.dirCambiarCodigoProducto = async (codigoViejo) => {
   const resp = prompt(`🆔 CAMBIAR CÓDIGO (Dirección)\n\nActual: ${codigoViejo}\n\nEscribe el código CORRECTO (ej. cambia BS por BP):`, codigoViejo);
   if (resp === null) return;
   const nuevo = String(resp).trim().toUpperCase();
-  if (!nuevo || nuevo === codigoViejo) { toast('Sin cambios', 'info'); return; }
+  // 🔧 REPARACIÓN: si el doc quedó desalineado (ID del documento ≠ campo codigo,
+  //    por la versión anterior de esta herramienta), mismo código = reparar.
+  const desalineado = prod.id !== prod.codigo;
+  if (!nuevo || (nuevo === codigoViejo && !desalineado)) { toast('Sin cambios', 'info'); return; }
   if (!/^[A-Z0-9]{6,30}$/.test(nuevo)) { toast('Código inválido (solo letras y números, 6-30 caracteres)', 'error'); return; }
-  if ((state.productos_pt || []).some(p => p.codigo === nuevo)) { toast(`⛔ Ya existe un producto con el código ${nuevo}`, 'error'); return; }
+  if (nuevo !== codigoViejo && (state.productos_pt || []).some(p => p.codigo === nuevo)) { toast(`⛔ Ya existe un producto con el código ${nuevo}`, 'error'); return; }
   const tipoNuevo = window._ptTipoDelCodigo ? window._ptTipoDelCodigo(nuevo) : '';
 
   // Censo de lo que se va a propagar (todo está en memoria)
@@ -58786,13 +58789,24 @@ window.dirCambiarCodigoProducto = async (codigoViejo) => {
   if (state.loadingAccion) return;
   state.loadingAccion = true; window.forzarRender();
   try {
-    const ops = [];
-    ops.push(['productos_pt', prod.id, {
+    // 🔑 En productos_pt el ID del documento ES el código: renombrar = CREAR el
+    //    doc con el ID nuevo (copiando todo) + BORRAR el doc con el ID viejo.
+    const { id: _idViejo, ...datosProd } = prod;
+    const datosNuevo = {
+      ...datosProd,
       codigo: nuevo,
       ...(tipoNuevo ? { tipo: tipoNuevo } : {}),
-      codigos_anteriores: [...(prod.codigos_anteriores || []), { codigo: codigoViejo, fecha: window.hoyLocalISO(), por: u.nombre || u.email || '' }],
+      codigos_anteriores: [...(prod.codigos_anteriores || []), { codigo: prod.id, fecha: window.hoyLocalISO(), por: u.nombre || u.email || '' }],
       updated_at: serverTimestamp(),
-    }]);
+    };
+    const b0 = writeBatch(db);
+    b0.set(doc(db, 'productos_pt', nuevo), datosNuevo);
+    if (prod.id !== nuevo) b0.delete(doc(db, 'productos_pt', prod.id));
+    await b0.commit();
+    // productos_pt se carga con getDocs (no snapshot): reflejar el cambio local
+    state.productos_pt = (state.productos_pt || []).filter(x => x.id !== prod.id).concat([{ ...datosNuevo, id: nuevo, updated_at: null }]);
+
+    const ops = [];
     pedidosAf.forEach(pd => ops.push(['pedidos', pd.id, {
       lineas: (pd.lineas || []).map(l => l.producto_codigo === codigoViejo ? { ...l, producto_codigo: nuevo } : l),
       updated_at: serverTimestamp(),
@@ -58807,13 +58821,13 @@ window.dirCambiarCodigoProducto = async (codigoViejo) => {
       ops.slice(i, i + 400).forEach(([col, id, data]) => b.update(doc(db, col, id), data));
       await b.commit();
     }
-    window.logAccion('codigo_producto_cambiado', nuevo, `antes ${codigoViejo} · ${ops.length - 1} documentos propagados (${pedidosAf.length} PI, ${ovsAf.length} OV, ${odpsAf.length} ODP, ${tarimasAf.length} tarimas, ${lotesAf.length} lotes)`);
+    window.logAccion('codigo_producto_cambiado', nuevo, `antes ${prod.id}${desalineado ? ' (reparación de doc desalineado)' : ''} · ${ops.length} documentos propagados (${pedidosAf.length} PI, ${ovsAf.length} OV, ${odpsAf.length} ODP, ${tarimasAf.length} tarimas, ${lotesAf.length} lotes)`);
     ['PLN', 'PRO', 'CS'].forEach(dep => addDoc(collection(db, 'notificaciones'), {
       titulo: `🆔 Código de producto cambiado por Dirección`,
       mensaje: `${codigoViejo} → ${nuevo}. Pedidos, OVs, ODPs, tarimas y lotes ya traen el código nuevo; reimprime etiquetas/hojas si las tenías impresas.`,
       depto_destino: dep, tipo: 'warning', folio_ref: nuevo, leida: false, created_at: serverTimestamp(),
     }).catch(() => {}));
-    toast(`🆔 ${codigoViejo} → ${nuevo} · ${ops.length - 1} documento(s) actualizados en cadena`);
+    toast(`🆔 ${prod.id} → ${nuevo} · producto renombrado${ops.length ? ` + ${ops.length} documento(s) en cadena` : ''}${desalineado ? ' · doc reparado' : ''}`);
     state.modal = null; state.modalForm = null;
   } catch (e) { toast('Error al propagar: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
