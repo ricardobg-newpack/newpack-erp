@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B120-ciclo-contable</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B121-cfdi-contable</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6131,6 +6131,7 @@ window.NP_AYUDA = [
   { p: '¿Cómo programo y autorizo pagos a proveedores?', k: 'programar pago proveedor autorizar direccion calendario cxp tesoreria spei', v: 'facturacion', pasos: ['Finanzas → pestaña 💸 Pagos', 'CyC pica "📅 Programar" en la OC recibida y propone la fecha', 'Dirección entra a la misma pestaña y pica "✅ Autorizar"', 'Ya autorizada: "💵 Pagada" con la referencia SPEI — queda huella de quién propuso y quién autorizó'] },
   { p: '¿Cómo saco el corte financiero semanal?', k: 'corte financiero semanal pdf ventas cartera cxp flujo caja junta decision', v: 'facturacion', pasos: ['Finanzas → pestaña 📈 Flujo de caja (solo Tesorería y Dirección)', 'Botón "📄 Corte semanal PDF"', 'Sale el documento completo: ventas, cobrado, aging de cartera, calendario de pagos y flujo 6 semanas', 'Confidencial: fírmalo con Dirección en la junta semanal'] },
   { p: '¿Cómo registro la factura de un proveedor?', k: 'factura proveedor registrar compras evidencia recepcion conciliar cxp', v: 'ordenes_compra', pasos: ['Órdenes de Compra → en la OC recibida pica "🧾 Registrar factura prov."', 'Captura folio de la factura, monto, fecha y la evidencia (recepción/remisión)', 'El vencimiento se calcula solo con los días de crédito del proveedor', 'Tesorería la concilia contra la OC y la recepción, y de ahí sigue el pago'] },
+  { p: '¿Cómo importo las facturas de CONTPAQ al sistema?', k: 'contpaq importar cfdi xml sat facturas masivo clientes proveedores uuid', v: 'facturacion', pasos: ['Exporta los XML desde CONTPAQi (o descárgalos del portal del SAT)', 'Finanzas → pestaña 📥 Importar CFDI → arrastra TODOS los XML juntos', 'El sistema clasifica solo: emitidas = clientes, recibidas = proveedores (nunca duplica, valida por UUID)', 'Importa las pendientes a cartera viva y las viejas como pagadas (histórico)'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -29413,6 +29414,150 @@ window.tesCortePDF = () => {
 // → TESORERÍA concilia (factura vs OC vs recepción) → programa →
 // Dirección autoriza → se paga con referencia. Cada paso con huella.
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// 📥 IMPORTADOR CFDI — puente con CONTPAQi/SAT: arrastra los XML y el
+// sistema clasifica solo (RFC emisor = NewPack → factura de CLIENTE;
+// RFC receptor = NewPack → factura de PROVEEDOR), deduplica por UUID
+// e importa en lote. Datos EXACTOS del SAT: subtotal, IVA, total, fecha.
+// ═══════════════════════════════════════════════════════════
+window._cfdiCampo = (nodo, tag) => {
+  if (!nodo) return null;
+  const els = nodo.getElementsByTagName('*');
+  for (let i = 0; i < els.length; i++) if (els[i].localName === tag) return els[i];
+  return null;
+};
+window.cfdiParse = (xmlText, nombreArchivo) => {
+  try {
+    const docX = new DOMParser().parseFromString(xmlText, 'text/xml');
+    const comp = window._cfdiCampo(docX, 'Comprobante') || docX.documentElement;
+    if (!comp || comp.localName !== 'Comprobante') return { error: 'No es un CFDI', archivo: nombreArchivo };
+    const emisor = window._cfdiCampo(comp, 'Emisor');
+    const receptor = window._cfdiCampo(comp, 'Receptor');
+    const timbre = window._cfdiCampo(comp, 'TimbreFiscalDigital');
+    const at = (n, a) => (n && (n.getAttribute(a) || n.getAttribute(a.toLowerCase()))) || '';
+    const uuid = (at(timbre, 'UUID') || '').toUpperCase();
+    const tipo = at(comp, 'TipoDeComprobante') || 'I';
+    const rfcE = (at(emisor, 'Rfc') || '').toUpperCase();
+    const rfcR = (at(receptor, 'Rfc') || '').toUpperCase();
+    const NP = (DATOS_EMPRESA.rfc || '').toUpperCase();
+    let clase = 'otro';
+    if (tipo === 'I' && rfcE === NP) clase = 'cliente';
+    else if (tipo === 'I' && rfcR === NP) clase = 'proveedor';
+    else if (tipo === 'P') clase = 'pago';
+    else if (tipo === 'E') clase = 'nota_credito';
+    // IVA trasladado (total de impuestos trasladados del comprobante)
+    let iva = 0;
+    const imp = window._cfdiCampo(comp, 'Impuestos');
+    if (imp && imp.parentNode === comp) iva = Number(at(imp, 'TotalImpuestosTrasladados')) || 0;
+    else {
+      const todos = comp.getElementsByTagName('*');
+      for (let i = 0; i < todos.length; i++) if (todos[i].localName === 'Impuestos' && todos[i].parentNode === comp) { iva = Number(todos[i].getAttribute('TotalImpuestosTrasladados')) || 0; break; }
+    }
+    return {
+      archivo: nombreArchivo, uuid, clase, tipo,
+      serie: at(comp, 'Serie'), folio: at(comp, 'Folio'),
+      fecha: (at(comp, 'Fecha') || '').slice(0, 10),
+      subtotal: Number(at(comp, 'SubTotal')) || 0,
+      total: Number(at(comp, 'Total')) || 0,
+      iva,
+      moneda: at(comp, 'Moneda') || 'MXN',
+      metodo: at(comp, 'MetodoPago') || '',
+      emisor_rfc: rfcE, emisor_nombre: at(emisor, 'Nombre'),
+      receptor_rfc: rfcR, receptor_nombre: at(receptor, 'Nombre'),
+    };
+  } catch (e) { return { error: e.message, archivo: nombreArchivo }; }
+};
+
+window.cfdiArchivos = async (files) => {
+  const lista = Array.from(files || []).filter(f => /\.xml$/i.test(f.name));
+  if (!lista.length) { toast('Arrastra archivos .xml (CFDI del SAT / CONTPAQi)', 'error'); return; }
+  toast(`📥 Leyendo ${lista.length} XML...`);
+  const parseados = [];
+  for (const f of lista) {
+    const txt = await f.text();
+    parseados.push(window.cfdiParse(txt, f.name));
+  }
+  const uuidsCli = new Set((state.facturas || []).map(f => (f.uuid || '').toUpperCase()).filter(Boolean));
+  const uuidsProv = new Set((state.facturas_proveedor || []).map(f => (f.uuid || '').toUpperCase()).filter(Boolean));
+  const vistos = new Set();
+  parseados.forEach(p => {
+    if (p.error) { p.estatus = 'error'; return; }
+    if (!p.uuid) { p.estatus = 'sin_uuid'; return; }
+    if (vistos.has(p.uuid)) { p.estatus = 'repetido_en_lote'; return; }
+    vistos.add(p.uuid);
+    if (p.clase === 'cliente' && uuidsCli.has(p.uuid)) { p.estatus = 'ya_existe'; return; }
+    if (p.clase === 'proveedor' && uuidsProv.has(p.uuid)) { p.estatus = 'ya_existe'; return; }
+    p.estatus = 'nuevo';
+  });
+  state.cfdiLote = parseados;
+  window.forzarRender();
+  const n = parseados.filter(p => p.estatus === 'nuevo').length;
+  toast(`📥 ${lista.length} XML leídos — ${n} nuevos por importar`);
+};
+
+window.cfdiImportar = async (clase, comoPagadas) => {
+  const u = state.user || {};
+  const esFACu = u.rol === 'admin' || ['FAC', 'CEO', 'ADMIN'].includes(u.depto);
+  const esTESu = u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto);
+  if (clase === 'cliente' && !esFACu) { toast('🔒 Facturas de clientes: importa Facturación o Dirección', 'error'); return; }
+  if (clase === 'proveedor' && !esTESu) { toast('🔒 Facturas de proveedor: importa Tesorería o Dirección', 'error'); return; }
+  const lote = (state.cfdiLote || []).filter(p => p.estatus === 'nuevo' && p.clase === clase);
+  if (!lote.length) { toast('Nada nuevo que importar en este grupo', 'error'); return; }
+  if (!confirm(`📥 Importar ${lote.length} factura(s) de ${clase === 'cliente' ? 'CLIENTES' : 'PROVEEDORES'} como ${comoPagadas ? 'PAGADAS (histórico)' : 'PENDIENTES (cartera viva)'}\n\nTotal: $${fmtNum(lote.reduce((s, p) => s + p.total, 0).toFixed(2))}\n\n¿Continuar?`)) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    let importados = 0;
+    for (let i = 0; i < lote.length; i += 400) {
+      const chunk = lote.slice(i, i + 400);
+      const b = writeBatch(db);
+      chunk.forEach(p => {
+        const folioDoc = (p.serie ? p.serie + '-' : '') + (p.folio || p.uuid.slice(0, 8));
+        if (clase === 'cliente') {
+          const cli = (state.clientes || []).find(c => (c.rfc || '').toUpperCase() === p.receptor_rfc)
+            || (state.clientes || []).find(c => window._ayudaNorm(c.nombre || '') === window._ayudaNorm(p.receptor_nombre || ''));
+          const dias = Number(cli?.dias_credito) || 0;
+          const vd = new Date(p.fecha + 'T12:00:00'); vd.setDate(vd.getDate() + dias);
+          b.set(doc(collection(db, 'facturas')), {
+            folio: folioDoc, uuid: p.uuid,
+            cliente_codigo: cli?.codigo || '', cliente_nombre: cli?.nombre || p.receptor_nombre || p.receptor_rfc,
+            fecha: p.fecha, dias_credito: dias, vence: vd.toLocaleDateString('en-CA'),
+            subtotal: p.subtotal, iva: p.iva, monto: p.total, moneda: p.moneda,
+            estado: comoPagadas ? 'pagada' : 'emitida',
+            ...(comoPagadas ? { pagada_at: serverTimestamp(), importada_pagada: true } : {}),
+            origen: 'cfdi_import', metodo_pago: p.metodo,
+            creado_por_nombre: u.nombre || u.email || '', created_at: serverTimestamp(),
+          });
+        } else {
+          const prov = (state.proveedores || []).find(x => (x.rfc || '').toUpperCase() === p.emisor_rfc)
+            || (state.proveedores || []).find(x => window._ayudaNorm(x.nombre || '') === window._ayudaNorm(p.emisor_nombre || ''));
+          const dias = Number(prov?.dias_credito) || 0;
+          const vd = new Date(p.fecha + 'T12:00:00'); vd.setDate(vd.getDate() + dias);
+          b.set(doc(collection(db, 'facturas_proveedor')), {
+            folio_prov: folioDoc, uuid: p.uuid, oc_id: '', oc_folio: '',
+            proveedor: p.emisor_nombre || p.emisor_rfc, proveedor_rfc: p.emisor_rfc,
+            fecha: p.fecha, dias_credito: dias, vence: vd.toLocaleDateString('en-CA'),
+            subtotal: p.subtotal, iva: p.iva, monto: p.total, moneda: p.moneda,
+            evidencia: 'Importada de CFDI (' + p.archivo + ')',
+            estado: comoPagadas ? 'pagada' : 'registrada',
+            ...(comoPagadas ? { pago_fecha: p.fecha, pago_referencia: 'histórico CONTPAQ', pagada_por: u.nombre || u.email || '' } : {}),
+            pago_prog: null, registrada_por: u.nombre || u.email || '', registrada_por_depto: u.depto || '',
+            created_at: serverTimestamp(),
+          });
+        }
+        importados++;
+      });
+      await b.commit();
+    }
+    lote.forEach(p => { p.estatus = 'importado'; });
+    window.logAccion('cfdi_import', clase, `${importados} facturas ${comoPagadas ? 'pagadas' : 'pendientes'} · $${fmtNum(lote.reduce((s, p) => s + p.total, 0).toFixed(0))}`);
+    toast(`✅ ${importados} factura(s) de ${clase === 'cliente' ? 'clientes' : 'proveedores'} importadas ${comoPagadas ? 'como pagadas (histórico)' : 'a la cartera viva'}`);
+    if (window.npObrera) window.npObrera();
+    window.forzarRender();
+  } catch (e) { toast('Error al importar: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
 window.provFacRegistrar = async (ocId) => {
   const u = state.user || {};
   if (!(u.rol === 'admin' || ['COMP', 'CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Compras y Tesorería registran facturas de proveedor', 'error'); return; }
@@ -29871,6 +30016,42 @@ function renderFacturacion() {
       </div>
 
       ${esTES ? `
+      ${(() => {
+        // 📒 MODELO CONTABLE MENSUAL — la foto de "en qué situación estamos"
+        const meses = [];
+        const hoyMC = new Date();
+        for (let i = 5; i >= 0; i--) { const d = new Date(hoyMC.getFullYear(), hoyMC.getMonth() - i, 15); meses.push(d.toLocaleDateString('en-CA').slice(0, 7)); }
+        const filas = meses.map(m => {
+          const fCli = (state.facturas || []).filter(f => f.estado !== 'cancelada' && (f.fecha || '').startsWith(m));
+          const fProv = (state.facturas_proveedor || []).filter(f => (f.fecha || '').startsWith(m));
+          const nomM = (state.nominas || []).filter(n => (n.periodo || '').startsWith(m)).reduce((s, n) => s + (Number(n.neto) || 0), 0);
+          const ing = fCli.reduce((s, f) => s + (Number(f.subtotal) || (Number(f.monto) || 0) / 1.16), 0);
+          const ivaT = fCli.reduce((s, f) => s + (Number(f.iva) || ((Number(f.monto) || 0) - (Number(f.subtotal) || (Number(f.monto) || 0) / 1.16))), 0);
+          const egr = fProv.reduce((s, f) => s + (Number(f.subtotal) || (Number(f.monto) || 0) / 1.16), 0);
+          const ivaA = fProv.reduce((s, f) => s + (Number(f.iva) || ((Number(f.monto) || 0) - (Number(f.subtotal) || (Number(f.monto) || 0) / 1.16))), 0);
+          return { m, ing, ivaT, egr, ivaA, nom: nomM, bruta: ing - egr - nomM, ivaNeto: ivaT - ivaA };
+        });
+        const $k = (v) => (v < 0 ? '-$' : '$') + fmtNum(Math.abs(v).toFixed(0));
+        return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:14px;">
+        <div style="font-weight:800;font-size:12.5px;margin-bottom:2px;">📒 Modelo contable mensual (sin IVA · aprox. con datos del sistema)</div>
+        <div style="font-size:10px;color:#94a3b8;margin-bottom:8px;">Ingresos = facturado a clientes · Egresos = facturas de proveedor · Nómina = módulo Capital Humano · IVA neto estimado = trasladado − acreditable. Importa tus CFDIs para que la foto sea exacta.</div>
+        <div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+          <thead><tr style="background:#f8fafc;">${['Mes', 'Ingresos', 'Egresos prov.', 'Nómina', 'Utilidad bruta', 'IVA trasladado', 'IVA acreditable', 'IVA neto est.'].map(h => `<th style="padding:6px 9px;text-align:right;font-size:10px;color:#64748b;border-bottom:2px solid #e2e8f0;">${h}</th>`).join('')}</tr></thead>
+          <tbody>${filas.map(r => `
+            <tr style="border-bottom:1px solid #f1f5f9;">
+              <td style="padding:6px 9px;text-align:right;font-weight:800;">${r.m}</td>
+              <td style="padding:6px 9px;text-align:right;color:#16a34a;font-weight:700;">${$k(r.ing)}</td>
+              <td style="padding:6px 9px;text-align:right;color:#dc2626;">${$k(r.egr)}</td>
+              <td style="padding:6px 9px;text-align:right;color:#be185d;">${$k(r.nom)}</td>
+              <td style="padding:6px 9px;text-align:right;font-weight:900;color:${r.bruta < 0 ? '#dc2626' : '#0f172a'};">${$k(r.bruta)}</td>
+              <td style="padding:6px 9px;text-align:right;color:#64748b;">${$k(r.ivaT)}</td>
+              <td style="padding:6px 9px;text-align:right;color:#64748b;">${$k(r.ivaA)}</td>
+              <td style="padding:6px 9px;text-align:right;font-weight:800;color:${r.ivaNeto > 0 ? '#d97706' : '#16a34a'};">${$k(r.ivaNeto)}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+      </div>`;
+      })()}
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 14px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;padding:10px 14px;">
         <span style="font-size:11.5px;font-weight:800;color:#475569;">🧮 PARA CONTABILIDAD (CSV → Excel):</span>
         <button onclick="window.tesCSV('ventas')" class="tab-btn" style="font-size:11px;">⬇ Ventas desglosado</button>
@@ -30050,6 +30231,54 @@ function renderFacturacion() {
           </tr>`).join('')}</tbody>
       </table></div>
       <div style="font-size:10.5px;color:#94a3b8;margin-top:8px;">Entradas = facturas con saldo por su fecha prometida (o vencimiento) · Salidas = pagos programados/autorizados · Lo vencido sin promesa cae en la semana actual. Es proyección, no garantía — la promesa rota se re-gestiona en 📅 Cobranza.</div>`;
+  } else if (subtab === 'cfdi' && (esFACv || esTES)) {
+    // 📥 IMPORTADOR CFDI — puente con CONTPAQi / SAT
+    const lote = state.cfdiLote || [];
+    const grupos = { cliente: [], proveedor: [], otros: [] };
+    lote.forEach(p => {
+      if (p.estatus === 'error' || p.estatus === 'sin_uuid') grupos.otros.push(p);
+      else if (p.clase === 'cliente' || p.clase === 'proveedor') grupos[p.clase].push(p);
+      else grupos.otros.push(p);
+    });
+    const filaCFDI = (p) => `
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11.5px;padding:5px 10px;border-bottom:1px dashed #f1f5f9;align-items:center;${p.estatus === 'nuevo' ? '' : 'opacity:.55;'}">
+        <span style="flex:1;min-width:200px;"><strong>${esc((p.serie ? p.serie + '-' : '') + (p.folio || (p.uuid || '').slice(0, 8)))}</strong> · ${esc(p.clase === 'cliente' ? (p.receptor_nombre || p.receptor_rfc || '') : (p.emisor_nombre || p.emisor_rfc || ''))} · ${p.fecha || ''}</span>
+        <strong>$${fmtNum((p.total || 0).toFixed(2))} ${p.moneda || ''}</strong>
+        <span style="font-size:10px;font-weight:800;color:${p.estatus === 'nuevo' ? '#16a34a' : p.estatus === 'importado' ? '#1e40af' : '#94a3b8'};">${p.estatus === 'nuevo' ? 'NUEVO' : p.estatus === 'importado' ? '✅ IMPORTADO' : p.estatus === 'ya_existe' ? 'YA EXISTE' : p.estatus === 'repetido_en_lote' ? 'REPETIDO' : (p.error ? 'ERROR' : p.estatus.toUpperCase())}</span>
+      </div>`;
+    const grupoUI = (titulo, arr, clase, puede) => {
+      const nuevos = arr.filter(p => p.estatus === 'nuevo');
+      return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <div style="font-weight:900;font-size:13px;">${titulo} — ${arr.length} XML · ${nuevos.length} nuevos · $${fmtNum(nuevos.reduce((s, p) => s + (p.total || 0), 0).toFixed(2))}</div>
+          ${nuevos.length && puede ? `
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button onclick="window.cfdiImportar('${clase}', false)" style="padding:7px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">📥 Importar PENDIENTES (cartera viva)</button>
+            <button onclick="window.cfdiImportar('${clase}', true)" style="padding:7px 14px;background:#64748b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-size:11.5px;">🗄 Importar PAGADAS (histórico)</button>
+          </div>` : (nuevos.length && !puede ? '<span style="font-size:10.5px;color:#94a3b8;font-weight:700;">sin permiso para este grupo</span>' : '')}
+        </div>
+        ${arr.slice(0, 40).map(filaCFDI).join('') || '<div style="font-size:11.5px;color:#94a3b8;">—</div>'}
+        ${arr.length > 40 ? `<div style="font-size:10px;color:#94a3b8;margin-top:4px;">Mostrando 40 de ${arr.length} (el importe toma TODOS)</div>` : ''}
+      </div>`;
+    };
+    cuerpo = `
+      <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 14px;font-size:12px;color:#3730a3;margin-bottom:12px;">📥 <strong>Puente con CONTPAQi / SAT:</strong> exporta los XML (CFDI) desde CONTPAQi o descárgalos del portal del SAT y arrástralos aquí — TODOS juntos. El sistema clasifica solo por RFC (las que emitió NewPack = clientes; las que le emitieron = proveedores), calcula vencimientos con los días de crédito, trae subtotal e IVA exactos y NUNCA duplica (valida por UUID fiscal).</div>
+      <label style="display:block;border:2.5px dashed #94a3b8;border-radius:14px;padding:26px;text-align:center;cursor:pointer;background:var(--surface-card, #fff);margin-bottom:14px;"
+        ondragover="event.preventDefault();this.style.borderColor='#16a34a';" ondragleave="this.style.borderColor='#94a3b8';"
+        ondrop="event.preventDefault();this.style.borderColor='#94a3b8';window.cfdiArchivos(event.dataTransfer.files);">
+        <div style="font-size:26px;">📥</div>
+        <div style="font-weight:900;font-size:14px;">Arrastra aquí tus XML del SAT / CONTPAQi</div>
+        <div style="font-size:11.5px;color:#64748b;">o haz clic para elegirlos — puedes soltar cientos a la vez</div>
+        <input type="file" multiple accept=".xml" style="display:none;" onchange="window.cfdiArchivos(this.files);this.value='';" />
+      </label>
+      ${lote.length ? `
+        ${grupoUI('🧾 FACTURAS DE CLIENTES (emitidas por NewPack)', grupos.cliente, 'cliente', esFACv)}
+        ${grupoUI('🏭 FACTURAS DE PROVEEDORES (recibidas)', grupos.proveedor, 'proveedor', esTES)}
+        ${grupos.otros.length ? `
+        <div style="background:#f8fafc;border:1px dashed #cbd5e1;border-radius:12px;padding:10px 15px;font-size:11.5px;color:#64748b;">
+          ℹ ${grupos.otros.length} XML no importables por ahora: complementos de pago (tipo P), notas de crédito (tipo E), sin UUID o con error de lectura. Los complementos de pago se aplicarán como cobros en una fase siguiente.
+        </div>` : ''}` : ''}`;
   } else if (subtab === 'comisiones' && window._veComisiones()) {
     // 💰 COMISIONES — config + reporte del mes (facturas PAGADAS)
     const esDir = state.user?.rol === 'admin' || ['CEO', 'ADMIN'].includes(state.user?.depto);
@@ -30244,6 +30473,7 @@ function renderFacturacion() {
         return `<button class="tab-btn ${subtab === 'pagos' ? 'active' : ''}" onclick="window.facTab('pagos')">💸 Pagos${props ? ` (${props})` : ''}</button>`;
       })() : ''}
       ${esTES ? `<button class="tab-btn ${subtab === 'flujo' ? 'active' : ''}" onclick="window.facTab('flujo')">📈 Flujo de caja</button>` : ''}
+      ${(esFACv || esTES) ? `<button class="tab-btn ${subtab === 'cfdi' ? 'active' : ''}" onclick="window.facTab('cfdi')">📥 Importar CFDI</button>` : ''}
       ${window._veComisiones() ? `<button class="tab-btn ${subtab === 'comisiones' ? 'active' : ''}" onclick="window.facTab('comisiones')" style="border-color:#be185d;">💰 Comisiones</button>` : ''}
       <span style="flex:1;"></span>
       <input class="input" id="fac-filtro" style="max-width:280px;" placeholder="🔍 Folio, cliente, remisión, UUID..." autocomplete="off" value="${(state.filtros.facturacion || '').replace(/"/g, '&quot;')}" oninput="window.facFiltro(this.value)" />
