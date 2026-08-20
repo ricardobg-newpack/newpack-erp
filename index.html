@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B126-pausa-genera-falla</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B127-lotes-cfdi</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -29579,6 +29579,39 @@ window.cfdiArchivos = async (files) => {
   toast(`📥 ${lista.length} XML leídos — ${n} nuevos por importar`);
 };
 
+// 🗑 DESHACER UN LOTE DE IMPORTACIÓN — SOLO DIRECCIÓN (las rules ya lo exigen).
+// Borra completo el lote (o el grupo LEGADO importado antes de los lotes).
+// Candado: una factura con COBROS aplicados jamás se borra — se excluye y avisa.
+window.cfdiEliminarLote = async (col, loteKey) => {
+  const u = state.user || {};
+  if (!(u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin')) { toast('🔒 Solo Dirección puede deshacer importaciones', 'error'); return; }
+  const fuente = col === 'facturas' ? (state.facturas || []) : (state.facturas_proveedor || []);
+  const esDeImport = (f) => f.origen === 'cfdi_import' || (col === 'facturas_proveedor' && String(f.evidencia || '').startsWith('Importada de CFDI'));
+  let docs = fuente.filter(f => esDeImport(f) && ((f.import_lote || 'LEGADO') === loteKey));
+  if (!docs.length) { toast('Ese lote ya no tiene registros', 'info'); return; }
+  let excluidas = [];
+  if (col === 'facturas') {
+    excluidas = docs.filter(f => (state.cobros || []).some(c => c.factura_id === f.id));
+    docs = docs.filter(f => !excluidas.includes(f));
+  }
+  const total = docs.reduce((s, f) => s + (Number(f.monto) || 0), 0);
+  if (!docs.length) { toast('⛔ Todas las facturas de ese lote ya tienen cobros aplicados — no se pueden borrar', 'error'); return; }
+  const msj = `🗑 DESHACER IMPORTACIÓN — ${col === 'facturas' ? 'FACTURAS DE CLIENTES' : 'FACTURAS DE PROVEEDOR'}\nLote: ${loteKey}\n\nSe BORRARÁN ${docs.length} registro(s) por $${fmtNum(total.toFixed(2))}${excluidas.length ? `\n⚠ ${excluidas.length} factura(s) con cobros aplicados NO se tocan` : ''}\n\nLos XML no se pierden: puedes volver a arrastrarlos e importar correctamente.\n\n¿Borrar el lote?`;
+  if (!confirm(msj)) return;
+  if (state.loadingAccion) return;
+  state.loadingAccion = true; window.forzarRender();
+  try {
+    for (let i = 0; i < docs.length; i += 400) {
+      const b = writeBatch(db);
+      docs.slice(i, i + 400).forEach(f => b.delete(doc(db, col, f.id)));
+      await b.commit();
+    }
+    window.logAccion('cfdi_lote_eliminado', loteKey, `${col} · ${docs.length} registros · $${fmtNum(total.toFixed(0))}${excluidas.length ? ` · ${excluidas.length} excluidas por cobros` : ''}`);
+    toast(`🗑 Lote deshecho: ${docs.length} registro(s) eliminados · vuelve a arrastrar los XML para importarlos bien`);
+  } catch (e) { toast('Error al deshacer: ' + e.message, 'error'); }
+  finally { state.loadingAccion = false; window.forzarRender(); }
+};
+
 window.cfdiImportar = async (clase, comoPagadas) => {
   const u = state.user || {};
   const esFACu = u.rol === 'admin' || ['FAC', 'CEO', 'ADMIN'].includes(u.depto);
@@ -29591,6 +29624,9 @@ window.cfdiImportar = async (clase, comoPagadas) => {
   if (state.loadingAccion) return;
   state.loadingAccion = true; window.forzarRender();
   try {
+    // 🏷 LOTE de importación: todo lo de esta corrida queda etiquetado junto,
+    //    visible en el historial y reversible con "Deshacer lote".
+    const loteId = `LOTE-${window.hoyLocalISO()}-${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}`;
     let importados = 0;
     for (let i = 0; i < lote.length; i += 400) {
       const chunk = lote.slice(i, i + 400);
@@ -29610,6 +29646,7 @@ window.cfdiImportar = async (clase, comoPagadas) => {
             estado: comoPagadas ? 'pagada' : 'emitida',
             ...(comoPagadas ? { pagada_at: serverTimestamp(), importada_pagada: true } : {}),
             origen: 'cfdi_import', metodo_pago: p.metodo,
+            import_lote: loteId, import_por: u.nombre || u.email || '', import_modo: comoPagadas ? 'pagadas' : 'pendientes',
             creado_por_nombre: u.nombre || u.email || '', created_at: serverTimestamp(),
           });
         } else {
@@ -29623,6 +29660,7 @@ window.cfdiImportar = async (clase, comoPagadas) => {
             fecha: p.fecha, dias_credito: dias, vence: vd.toLocaleDateString('en-CA'),
             subtotal: p.subtotal, iva: p.iva, monto: p.total, moneda: p.moneda,
             evidencia: 'Importada de CFDI (' + p.archivo + ')',
+            origen: 'cfdi_import', import_lote: loteId, import_por: u.nombre || u.email || '', import_modo: comoPagadas ? 'pagadas' : 'pendientes',
             estado: comoPagadas ? 'pagada' : 'registrada',
             ...(comoPagadas ? { pago_fecha: p.fecha, pago_referencia: 'histórico CONTPAQ', pagada_por: u.nombre || u.email || '' } : {}),
             pago_prog: null, registrada_por: u.nombre || u.email || '', registrada_por_depto: u.depto || '',
@@ -29635,7 +29673,7 @@ window.cfdiImportar = async (clase, comoPagadas) => {
     }
     lote.forEach(p => { p.estatus = 'importado'; });
     window.logAccion('cfdi_import', clase, `${importados} facturas ${comoPagadas ? 'pagadas' : 'pendientes'} · $${fmtNum(lote.reduce((s, p) => s + p.total, 0).toFixed(0))}`);
-    toast(`✅ ${importados} factura(s) de ${clase === 'cliente' ? 'clientes' : 'proveedores'} importadas ${comoPagadas ? 'como pagadas (histórico)' : 'a la cartera viva'}`);
+    toast(`✅ ${importados} factura(s) importadas ${comoPagadas ? 'como PAGADAS (histórico)' : 'a la cartera viva'} · lote ${loteId} — si algo salió mal, Dirección puede deshacer el lote completo en el historial de abajo`);
     if (window.npObrera) window.npObrera();
     window.forzarRender();
   } catch (e) { toast('Error al importar: ' + e.message, 'error'); }
@@ -30356,6 +30394,40 @@ function renderFacturacion() {
         <div style="font-size:11.5px;color:#64748b;">o haz clic para elegirlos — puedes soltar cientos a la vez</div>
         <input type="file" multiple accept=".xml" style="display:none;" onchange="window.cfdiArchivos(this.files);this.value='';" />
       </label>
+      ${(() => {
+        // 📜 HISTORIAL DE IMPORTACIONES: agrupado por lote (lo viejo sin lote = LEGADO)
+        const esDir = u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto);
+        const gruposH = {};
+        const mete = (col, f) => {
+          const esImp = f.origen === 'cfdi_import' || (col === 'facturas_proveedor' && String(f.evidencia || '').startsWith('Importada de CFDI'));
+          if (!esImp) return;
+          const k = col + '|' + (f.import_lote || 'LEGADO');
+          if (!gruposH[k]) gruposH[k] = { col, lote: f.import_lote || 'LEGADO', n: 0, total: 0, pagadas: 0, por: f.import_por || '', ts: f.created_at?.seconds || 0 };
+          const g = gruposH[k];
+          g.n++; g.total += Number(f.monto) || 0;
+          if (f.estado === 'pagada') g.pagadas++;
+          if ((f.created_at?.seconds || 0) > g.ts) g.ts = f.created_at?.seconds || 0;
+          if (!g.por && f.import_por) g.por = f.import_por;
+        };
+        (state.facturas || []).forEach(f => mete('facturas', f));
+        (state.facturas_proveedor || []).forEach(f => mete('facturas_proveedor', f));
+        const lista = Object.values(gruposH).sort((a, b) => b.ts - a.ts);
+        if (!lista.length) return '';
+        return `
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 15px;margin-bottom:14px;">
+          <div style="font-weight:900;font-size:13px;margin-bottom:2px;">📜 Historial de importaciones (${lista.length} lote(s))</div>
+          <div style="font-size:10.5px;color:#94a3b8;margin-bottom:8px;">Si un lote entró mal (ej. como pagadas cuando eran pendientes), Dirección lo deshace completo y se vuelven a arrastrar los XML. Las facturas con cobros aplicados nunca se borran.</div>
+          ${lista.map(g => `
+            <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:7px 10px;border-bottom:1px dashed #f1f5f9;">
+              <div style="flex:1;min-width:240px;font-size:11.5px;">
+                <strong>${g.col === 'facturas' ? '🧾 Clientes' : '🏭 Proveedores'}</strong> · <span class="text-mono">${esc(g.lote)}</span>
+                · ${g.n} factura(s) · $${fmtNum(g.total.toFixed(0))} · ${g.pagadas === g.n ? 'todas PAGADAS' : g.pagadas === 0 ? 'todas pendientes' : g.pagadas + ' pagadas / ' + (g.n - g.pagadas) + ' pendientes'}
+                ${g.por ? ` · importó ${esc(g.por)}` : ''}${g.ts ? ` · ${new Date(g.ts * 1000).toLocaleString('es-MX')}` : ''}
+              </div>
+              ${esDir ? `<button onclick="window.cfdiEliminarLote('${g.col}', '${g.lote}')" style="padding:6px 12px;background:#dc2626;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">🗑 Deshacer lote</button>` : '<span style="font-size:10px;color:#94a3b8;font-weight:700;">deshacer: solo Dirección</span>'}
+            </div>`).join('')}
+        </div>`;
+      })()}
       ${lote.length ? `
         ${grupoUI('🧾 FACTURAS DE CLIENTES (emitidas por NewPack)', grupos.cliente, 'cliente', esFACv)}
         ${grupoUI('🏭 FACTURAS DE PROVEEDORES (recibidas)', grupos.proveedor, 'proveedor', esTES)}
