@@ -4482,6 +4482,14 @@ async function cargarTodo() {
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }),
       // 🧾 Facturas y 💵 cobros (FAC/CYC — el flujo remisión → factura → cobro)
+      onSnapshot(query(collection(db, 'facturas_proveedor'), orderBy('created_at', 'desc'), limit(800)), (snap) => {
+        state.facturas_proveedor = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
+      onSnapshot(collection(db, 'tesoreria'), (snap) => {
+        state.tesoreria = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       onSnapshot(query(collection(db, 'facturas'), orderBy('created_at', 'desc'), limit(1000)), (snap) => {
         state.facturas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -5004,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0819-B117-ajuste-cantidad-dir</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B120-ciclo-contable</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -5098,7 +5106,7 @@ function renderApp() {
         ` : ''}
         ${(esFAC || esCYC || esCS || esKAM || esADMIN || esRH) ? `
           <div class="sidebar-section">Administración</div>
-          ${(esFAC || esCYC || esCS || esKAM || esADMIN) ? `<button class="nav-item ${state.vista === 'facturacion' ? 'active' : ''}" data-vista="facturacion">🧾 Facturación y Cobranza</button>` : ''}
+          ${(esFAC || esCYC || esCS || esKAM || esADMIN) ? `<button class="nav-item ${state.vista === 'facturacion' ? 'active' : ''}" data-vista="facturacion">💰 Finanzas y Tesorería</button>` : ''}
           ${(esRH || esADMIN) ? `<button class="nav-item ${state.vista === 'rh' ? 'active' : ''}" data-vista="rh">👥 Capital Humano</button>` : ''}
         ` : ''}
         
@@ -5143,7 +5151,7 @@ function renderApp() {
           <div class="sidebar-section">Compras</div>
           <button class="nav-item ${state.vista === 'compras_tablero' ? 'active' : ''}" data-vista="compras_tablero">🧭 Seguimiento de compras</button>
           <button class="nav-item ${state.vista === 'requisiciones' ? 'active' : ''}" data-vista="requisiciones">📋 Solicitar material (RC)</button>
-          ${(esCOMP || esFAC || esCYC || esCEO || esADMIN) ? `
+          ${(esCOMP || esCYC || esCEO || esADMIN) ? `
             <!-- 💰 FAC/CyC entran a OCs para el seguimiento de CUENTAS POR PAGAR -->
             <button class="nav-item ${state.vista === 'ordenes_compra' ? 'active' : ''}" data-vista="ordenes_compra">📑 Órdenes de Compra${_badge(_bOcPagar)}</button>
           ` : ''}
@@ -5384,7 +5392,7 @@ function tituloVista() {
     recall: '🚨 Recall — Trazabilidad bidireccional MP ↔ Cliente',
     bitacora: '📜 Bitácora de Auditoría — quién hizo qué',
     nc: '🧯 No Conformidades y Acciones Correctivas (CAPA)',
-    facturacion: '🧾 Facturación y Cobranza — remisión → factura → cobro',
+    facturacion: '💰 Finanzas — Facturación · Cobranza · Tesorería',
     rh: '👥 Capital Humano — expedientes y nómina',
     peletizado: '♻️ Almacén Peletizado P-5',
     almacen_intermedio: '🧵 Almacén Producto Intermedio',
@@ -6119,6 +6127,10 @@ window.NP_AYUDA = [
   { p: '¿Cómo registro una verificación de calidad en proceso?', k: 'verificacion calidad proceso vq medir gramaje calibre semaforo inspeccion', v: 'calidad', pasos: ['Liberación Calidad → pestaña "🔬 En proceso"', 'Los rojos van primero: son ODPs con más de 8 horas sin verificar', 'Pica "Verificar", elige el proceso y captura lo MEDIDO — la meta sale sola de la ficha', 'Guarda como Aprobada, Con observaciones o Rechazada (esta última abre NC y avisa a Producción)'] },
   { p: '¿Cómo capturo un radial de calibre o control de largos?', k: 'radial calibre puntos 66 33 22 largos whirlpool arranque grafica extrusor perfil', v: 'radiales', pasos: ['Radiales y Control (sección Calidad) → "📐 Nuevo radial" o "📏 Control de largos"', 'Elige la ODP: producto, extrusor y nominal se llenan solos (o captura la OP manual)', 'Elige 22/33/66 puntos y teclea los calibres — la gráfica y el promedio se dibujan al instante', 'Los puntos fuera de banda se pintan rojos; guarda y saca el PDF con la gráfica'] },
   { p: '¿Dónde veo mi manual, mi tarjeta rápida y las políticas?', k: 'manual tarjeta rapida documentacion politicas cartas kit documento pdf', v: 'documentacion', pasos: ['Mi Documentación (sección GENERAL) — ves solo TU kit según tu departamento', 'Tu tarjeta rápida se abre directo en pantalla; con 🖨 sacas el PDF para imprimir', 'Manuales, políticas y cartas para clientes: botón "Ver / Imprimir"', 'Si te falta un documento de tu puesto, avisa a Capital Humano'] },
+  { p: '¿Cómo registro una promesa de pago de un cliente?', k: 'promesa cobro cobranza gestion llamada cartera vencida agenda martha', v: 'facturacion', pasos: ['Finanzas → pestaña 📅 Cobranza', 'En la factura con saldo pica "📞 Gestión" y captura la fecha prometida y la nota', 'El tablero la agenda solo: HOY cuando venza, ROTA en rojo si no pagan', 'Al caer el pago: botón 💰 Cobro con su referencia'] },
+  { p: '¿Cómo programo y autorizo pagos a proveedores?', k: 'programar pago proveedor autorizar direccion calendario cxp tesoreria spei', v: 'facturacion', pasos: ['Finanzas → pestaña 💸 Pagos', 'CyC pica "📅 Programar" en la OC recibida y propone la fecha', 'Dirección entra a la misma pestaña y pica "✅ Autorizar"', 'Ya autorizada: "💵 Pagada" con la referencia SPEI — queda huella de quién propuso y quién autorizó'] },
+  { p: '¿Cómo saco el corte financiero semanal?', k: 'corte financiero semanal pdf ventas cartera cxp flujo caja junta decision', v: 'facturacion', pasos: ['Finanzas → pestaña 📈 Flujo de caja (solo Tesorería y Dirección)', 'Botón "📄 Corte semanal PDF"', 'Sale el documento completo: ventas, cobrado, aging de cartera, calendario de pagos y flujo 6 semanas', 'Confidencial: fírmalo con Dirección en la junta semanal'] },
+  { p: '¿Cómo registro la factura de un proveedor?', k: 'factura proveedor registrar compras evidencia recepcion conciliar cxp', v: 'ordenes_compra', pasos: ['Órdenes de Compra → en la OC recibida pica "🧾 Registrar factura prov."', 'Captura folio de la factura, monto, fecha y la evidencia (recepción/remisión)', 'El vencimiento se calcula solo con los días de crédito del proveedor', 'Tesorería la concilia contra la OC y la recepción, y de ahí sigue el pago'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -29247,6 +29259,14 @@ window.pdfEstadoCuenta = (clienteCodigo) => {
       docPDF.text('$' + fmtNum(b[1].toFixed(2)), bx + bw / 2, y + 11.5, { align: 'center' });
     });
     y += 20;
+
+    // 🧮 HISTORIAL COMERCIAL — cuánto se le ha vendido y cobrado en total
+    const ventasHist = facs.reduce((s, f) => s + (Number(f.monto) || 0), 0);
+    const cobradoHist = facs.reduce((s, f) => s + ((Number(f.monto) || 0) - window._facSaldo(f)), 0);
+    docPDF.setFillColor(238, 242, 255); docPDF.roundedRect(14, y, 182, 10, 1.5, 1.5, 'F');
+    docPDF.setFontSize(7.5); docPDF.setFont('helvetica', 'bold'); docPDF.setTextColor(55, 48, 163);
+    docPDF.text(`HISTORIAL: ${facs.length} facturas por $${fmtNum(ventasHist.toFixed(2))} vendidos · $${fmtNum(cobradoHist.toFixed(2))} cobrados · ${facs.filter(f => window._facSaldo(f) <= 0.01).length} liquidadas`, 105, y + 6.5, { align: 'center' });
+    y += 14;
     const totalSaldo = abiertas.reduce((s, f) => s + window._facSaldo(f), 0);
     docPDF.setFillColor(_COL_AZUL_OSCURO[0], _COL_AZUL_OSCURO[1], _COL_AZUL_OSCURO[2]);
     docPDF.roundedRect(110, y, 86, 11, 2, 2, 'F');
@@ -29279,10 +29299,365 @@ window.facCancelar = async (facturaId) => {
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 };
 
+// ═══════════════════════════════════════════════════════════
+// 💰 TESORERÍA — la capa de PLANEACIÓN financiera de Martha (CyC):
+// promesas de cobro por factura, calendario de pagos a proveedores
+// (Martha propone → Dirección autoriza → se paga), y flujo de caja
+// proyectado a 6 semanas con saldo bancario semilla.
+// ═══════════════════════════════════════════════════════════
+// 📄 CORTE FINANCIERO SEMANAL — el documento para decidir (Tesorería/Dirección).
+// Ventas, cobrado, CxC con aging y top deudores, CxP con calendario, flujo 6 semanas.
+window.tesCortePDF = () => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Tesorería y Dirección', 'error'); return; }
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const hoy = window.hoyLocalISO();
+  const mes = hoy.slice(0, 7);
+  const anio = hoy.slice(0, 4);
+  const facs = (state.facturas || []).filter(f => f.estado !== 'cancelada');
+  const fMes = facs.filter(f => (f.fecha || '').startsWith(mes));
+  const fAnio = facs.filter(f => (f.fecha || '').startsWith(anio));
+  const cobMes = (state.cobros || []).filter(c => (c.fecha || '').startsWith(mes));
+  const conSaldo = facs.filter(f => window._facSaldo(f) > 0.01);
+  const suma = (arr, fn) => arr.reduce((s, x) => s + (Number(fn(x)) || 0), 0);
+  const aging = { vig: 0, d30: 0, d60: 0, m60: 0 };
+  conSaldo.forEach(f => {
+    const dias = f.vence && f.vence < hoy ? Math.floor((new Date(hoy) - new Date(f.vence)) / 86400000) : 0;
+    aging[dias <= 0 ? 'vig' : dias <= 30 ? 'd30' : dias <= 60 ? 'd60' : 'm60'] += window._facSaldo(f);
+  });
+  const porCli = {};
+  conSaldo.forEach(f => { const k = f.cliente_nombre || f.cliente_codigo || '-'; porCli[k] = (porCli[k] || 0) + window._facSaldo(f); });
+  const topDeud = Object.entries(porCli).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const ocsAb = (state.ordenes_compra || []).filter(o => !o.pagada && o.estatus !== 'cancelada');
+  const cxpRec = ocsAb.filter(o => ['recibida', 'recepcion_parcial'].includes(o.estatus));
+  const pagosCal = (state.facturas_proveedor || []).filter(f => f.estado !== 'pagada' && f.pago_prog).sort((a, b) => (a.pago_prog.fecha || '').localeCompare(b.pago_prog.fecha || ''));
+  // flujo 6 semanas (mismo cálculo de la pestaña)
+  const lun0 = window._tesLunes(hoy);
+  const semanas = [];
+  for (let i = 0; i < 6; i++) { const d = new Date(lun0 + 'T12:00:00'); d.setDate(d.getDate() + i * 7); semanas.push({ ini: d.toLocaleDateString('en-CA'), e: 0, s: 0 }); }
+  const wI = (iso) => { const lw = window._tesLunes(iso < hoy ? hoy : iso); const ix = semanas.findIndex(x => x.ini === lw); return ix === -1 ? (lw < semanas[0].ini ? 0 : 5) : ix; };
+  conSaldo.forEach(f => { semanas[wI(f.fecha_promesa || f.vence || hoy)].e += window._facSaldo(f); });
+  (state.facturas_proveedor || []).filter(f => f.estado !== 'pagada' && (f.pago_prog || f.vence)).forEach(f => { semanas[wI(f.pago_prog?.fecha || f.vence || hoy)].s += Number(f.pago_prog?.monto ?? f.monto) || 0; });
+  const semilla = (state.tesoreria || []).find(x => x.id === 'saldo');
+  let acum = Number(semilla?.monto) || 0;
+  semanas.forEach(s => { acum += s.e - s.s; s.saldo = acum; });
+
+  const docPDF = new window.jspdf.jsPDF();
+  try { docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 14, 10, 36, 36 * 0.4475); } catch (e) {}
+  docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(14); docPDF.setTextColor(11, 27, 46);
+  docPDF.text('CORTE FINANCIERO SEMANAL', 196, 16, { align: 'right' });
+  docPDF.setFontSize(8.5); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(100, 116, 139);
+  docPDF.text(`Formato NPA-FIN-FR-01 · Confidencial - Tesorería y Dirección`, 196, 22, { align: 'right' });
+  docPDF.text(`Emitido ${new Date().toLocaleString('es-MX')} por ${u.nombre || ''}`, 196, 27, { align: 'right' });
+  let y = 34;
+  const $n = (v) => '$' + fmtNum((Number(v) || 0).toFixed(0));
+  docPDF.autoTable({
+    startY: y,
+    head: [[{ content: '1. VENTAS Y COBRANZA', colSpan: 4, styles: { halign: 'left' } }]],
+    body: [[`Facturado ${mes}: ${$n(suma(fMes, f => f.monto))} (${fMes.length} fact.)`,
+            `Facturado ${anio}: ${$n(suma(fAnio, f => f.monto))}`,
+            `Cobrado ${mes}: ${$n(suma(cobMes, c => c.monto))}`,
+            `Cartera total: ${$n(suma(conSaldo, window._facSaldo))}`]],
+    theme: 'grid', headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 9 },
+    styles: { fontSize: 8, cellPadding: 2.2, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] }, margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 3;
+  docPDF.autoTable({
+    startY: y,
+    head: [[{ content: '2. CUENTAS POR COBRAR - ANTIGUEDAD', colSpan: 5, styles: { halign: 'left' } }], ['Vigente', '1-30 dias', '31-60 dias', '+60 dias', 'TOTAL']],
+    body: [[$n(aging.vig), $n(aging.d30), $n(aging.d60), $n(aging.m60), $n(aging.vig + aging.d30 + aging.d60 + aging.m60)]]
+      .concat([[{ content: 'TOP DEUDORES: ' + (topDeud.map(([k, v]) => `${k} ${$n(v)}`).join('  ·  ') || 'cartera limpia'), colSpan: 5, styles: { halign: 'left', fontSize: 7.5, textColor: [100, 116, 139] } }]]),
+    theme: 'grid', headStyles: { fillColor: [22, 163, 74], textColor: [255, 255, 255], fontSize: 8, halign: 'center' },
+    styles: { fontSize: 8.5, cellPadding: 2.2, halign: 'center', lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0], fontStyle: 'bold' }, margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 3;
+  docPDF.autoTable({
+    startY: y,
+    head: [[{ content: `3. CUENTAS POR PAGAR - Recibido no pagado: ${$n(suma(cxpRec, o => o.costo_total))} (${cxpRec.length} OC) · Comprometido total: ${$n(suma(ocsAb, o => o.costo_total))}`, colSpan: 4, styles: { halign: 'left' } }],
+      ['Fecha pago', 'OC / Proveedor', 'Monto', 'Estado']],
+    body: pagosCal.length ? pagosCal.slice(0, 12).map(o => [o.pago_prog.fecha || '-', `${o.folio_prov} · ${o.proveedor || ''}`, $n(o.pago_prog.monto), (o.pago_prog.estado || '').toUpperCase() + (o.pago_prog.autorizado_por ? ' (' + o.pago_prog.autorizado_por + ')' : '')])
+      : [[{ content: 'Sin pagos programados', colSpan: 4, styles: { halign: 'center', textColor: [148, 163, 184] } }]],
+    theme: 'grid', headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontSize: 8 },
+    styles: { fontSize: 8, cellPadding: 2, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+    columnStyles: { 2: { halign: 'right' } }, margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 3;
+  docPDF.autoTable({
+    startY: y,
+    head: [[{ content: `4. FLUJO DE CAJA PROYECTADO - Saldo bancos: ${semilla ? $n(semilla.monto) + ' (' + (semilla.fecha || '') + ')' : 'SIN CAPTURAR'}`, colSpan: 5, styles: { halign: 'left' } }],
+      ['Semana del', 'Entradas esperadas', 'Pagos programados', 'Neto', 'Saldo proyectado']],
+    body: semanas.map(s => [s.ini, $n(s.e), $n(s.s), $n(s.e - s.s),
+      { content: $n(s.saldo), styles: s.saldo < 0 ? { textColor: [220, 38, 38], fontStyle: 'bold' } : { fontStyle: 'bold' } }]),
+    theme: 'grid', headStyles: { fillColor: [30, 64, 175], textColor: [255, 255, 255], fontSize: 8, halign: 'center' },
+    styles: { fontSize: 8, cellPadding: 2, halign: 'right', lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] }, margin: { left: 14, right: 14 },
+  });
+  y = docPDF.lastAutoTable.finalY + 14;
+  if (y > 260) { docPDF.addPage(); y = 30; }
+  docPDF.setDrawColor(148, 163, 184); docPDF.setFontSize(7.5); docPDF.setTextColor(0, 0, 0);
+  [['TESORERIA - CREDITO Y COBRANZA', u.nombre || ''], ['DIRECCION GENERAL', '']].forEach(([tit, nom], i) => {
+    const fx = 30 + i * 90;
+    docPDF.line(fx, y + 8, fx + 62, y + 8);
+    docPDF.setFont('helvetica', 'bold'); docPDF.text(tit, fx + 31, y + 12, { align: 'center' });
+    if (nom) { docPDF.setFont('helvetica', 'normal'); docPDF.text(nom, fx + 31, y + 16, { align: 'center' }); }
+  });
+  const blob = docPDF.output('blob');
+  state.pdfPreview = { blobUrl: URL.createObjectURL(blob), filename: `Corte-Financiero-${hoy}.pdf`, titulo: `Corte Financiero ${hoy}`, blob };
+  state.modal = 'pdf-preview';
+  window.logAccion('corte_financiero', hoy, 'PDF generado');
+  window.forzarRender();
+};
+
+// ═══════════════════════════════════════════════════════════
+// 🧾 FACTURAS DE PROVEEDOR — el ciclo contable real de CxP:
+// COMPRAS registra la factura al recibir (evidencia + liga a la OC)
+// → TESORERÍA concilia (factura vs OC vs recepción) → programa →
+// Dirección autoriza → se paga con referencia. Cada paso con huella.
+// ═══════════════════════════════════════════════════════════
+window.provFacRegistrar = async (ocId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['COMP', 'CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Compras y Tesorería registran facturas de proveedor', 'error'); return; }
+  const oc = (state.ordenes_compra || []).find(x => x.id === ocId); if (!oc) return;
+  const folio = prompt(`🧾 REGISTRAR FACTURA DE PROVEEDOR\n${oc.folio} · ${oc.proveedor || ''} · OC por $${fmtNum((Number(oc.costo_total) || 0).toFixed(2))} ${oc.moneda || 'MXN'}\n\nFolio de la factura del proveedor:`, '');
+  if (folio === null || !String(folio).trim()) return;
+  const montoTxt = prompt('Monto TOTAL de la factura (con IVA):', String(oc.costo_total || ''));
+  if (montoTxt === null) return;
+  const monto = Number(String(montoTxt).replace(/[$,\s]/g, ''));
+  if (!isFinite(monto) || monto <= 0) { toast('Monto inválido', 'error'); return; }
+  const fecha = prompt('Fecha de la factura (AAAA-MM-DD):', window.hoyLocalISO());
+  if (fecha === null || !/^\d{4}-\d{2}-\d{2}$/.test(fecha.trim())) { toast('Fecha inválida', 'error'); return; }
+  const evid = prompt('Evidencia / referencia (recepción, remisión del proveedor, notas):', '') || '';
+  const prov = (state.proveedores || []).find(p => window._ayudaNorm(p.nombre || '') === window._ayudaNorm(oc.proveedor || ''));
+  const diasCred = Number(prov?.dias_credito) || 0;
+  const vd = new Date(fecha.trim() + 'T12:00:00'); vd.setDate(vd.getDate() + diasCred);
+  const vence = vd.toLocaleDateString('en-CA');
+  try {
+    await addDoc(collection(db, 'facturas_proveedor'), {
+      folio_prov: String(folio).trim(), oc_id: oc.id, oc_folio: oc.folio,
+      proveedor: oc.proveedor || '', fecha: fecha.trim(), dias_credito: diasCred, vence,
+      monto, moneda: oc.moneda || 'MXN', evidencia: String(evid).trim(),
+      estado: 'registrada', pago_prog: null,
+      registrada_por: u.nombre || u.email || '', registrada_por_depto: u.depto || '',
+      created_at: serverTimestamp(),
+    });
+    window.logAccion('factura_prov_registrada', oc.folio, `${String(folio).trim()} · $${fmtNum(monto.toFixed(0))} · vence ${vence}`);
+    addDoc(collection(db, 'notificaciones'), { titulo: `🧾 Factura de proveedor registrada — ${oc.folio}`, mensaje: `${oc.proveedor || ''} · ${String(folio).trim()} · $${fmtNum(monto.toFixed(2))} ${oc.moneda || 'MXN'} · vence ${vence}. Lista para conciliar en Tesorería.`, depto_destino: 'CYC', tipo: 'info', folio_ref: oc.folio, leida: false, created_at: serverTimestamp() }).catch(() => {});
+    toast(`🧾 Factura ${String(folio).trim()} registrada — Tesorería la conciliará (vence ${vence}${diasCred ? ', ' + diasCred + 'd crédito' : ', contado'})`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.provFacConciliar = async (fpId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Tesorería concilia', 'error'); return; }
+  const fp = (state.facturas_proveedor || []).find(x => x.id === fpId); if (!fp) return;
+  const oc = (state.ordenes_compra || []).find(x => x.id === fp.oc_id);
+  const dif = oc ? (Number(fp.monto) || 0) - (Number(oc.costo_total) || 0) : 0;
+  const msj = `✔ CONCILIAR — factura ${fp.folio_prov} de ${fp.proveedor}\n\nFactura: $${fmtNum((Number(fp.monto) || 0).toFixed(2))} ${fp.moneda}\nOC ${fp.oc_folio}: $${fmtNum((Number(oc?.costo_total) || 0).toFixed(2))}${Math.abs(dif) > 0.01 ? `\n⚠ DIFERENCIA: $${fmtNum(dif.toFixed(2))}` : '\n✓ Coincide con la OC'}\nRecepción: ${oc ? (oc.estatus === 'recibida' ? '✓ recibida completa' : oc.estatus === 'recepcion_parcial' ? '⚠ recepción PARCIAL' : '✗ AÚN NO RECIBIDA') : '—'}\nEvidencia: ${fp.evidencia || '—'}\n\n¿Confirmas que factura, OC y recepción cuadran?`;
+  if (!confirm(msj)) return;
+  try {
+    await updateDoc(doc(db, 'facturas_proveedor', fpId), { estado: 'conciliada', conciliada_por: u.nombre || u.email || '', conciliada_at: serverTimestamp() });
+    window.logAccion('factura_prov_conciliada', fp.oc_folio, `${fp.folio_prov}${Math.abs(dif) > 0.01 ? ' con diferencia $' + fmtNum(dif.toFixed(2)) : ''}`);
+    toast(`✔ ${fp.folio_prov} conciliada — ya puedes programar su pago`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.provFacPagar = async (fpId) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Tesorería registra pagos', 'error'); return; }
+  const fp = (state.facturas_proveedor || []).find(x => x.id === fpId); if (!fp) return;
+  if (fp.pago_prog?.estado !== 'autorizado') { toast('⏳ Falta autorización de Dirección', 'error'); return; }
+  const ref = prompt(`💵 PAGAR — ${fp.folio_prov} de ${fp.proveedor}\n$${fmtNum((Number(fp.monto) || 0).toFixed(2))} ${fp.moneda}\n\nReferencia del pago (SPEI, cheque...):`, '');
+  if (ref === null || !String(ref).trim()) return;
+  try {
+    await updateDoc(doc(db, 'facturas_proveedor', fpId), { estado: 'pagada', pago_fecha: window.hoyLocalISO(), pago_referencia: String(ref).trim(), pagada_por: u.nombre || u.email || '' });
+    // Si lo pagado cubre la OC, la OC se marca pagada también
+    const hermanas = (state.facturas_proveedor || []).filter(x => x.oc_id === fp.oc_id);
+    const pagado = hermanas.reduce((s, x) => s + (x.id === fpId || x.estado === 'pagada' ? (Number(x.monto) || 0) : 0), 0);
+    const oc = (state.ordenes_compra || []).find(x => x.id === fp.oc_id);
+    if (oc && pagado >= (Number(oc.costo_total) || 0) * 0.99) {
+      updateDoc(doc(db, 'ordenes_compra', oc.id), { pagada: true, pago_fecha: window.hoyLocalISO(), pago_referencia: String(ref).trim(), pagada_por: u.nombre || u.email || '', updated_at: serverTimestamp() }).catch(() => {});
+    }
+    window.logAccion('factura_prov_pagada', fp.oc_folio, `${fp.folio_prov} · $${fmtNum((Number(fp.monto) || 0).toFixed(0))} · ref ${String(ref).trim()}`);
+    toast(`💵 ${fp.folio_prov} PAGADA — ref ${String(ref).trim()}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// 📄 Estado de cuenta del PROVEEDOR — desglose completo para conciliación
+window.pdfEstadoProveedor = (proveedor) => {
+  if (!window.jspdf) { toast('jsPDF no cargó. Refresca la página.', 'error'); return; }
+  const hoy = window.hoyLocalISO();
+  const fps = (state.facturas_proveedor || []).filter(f => window._ayudaNorm(f.proveedor || '') === window._ayudaNorm(proveedor || '')).sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+  const ocsSin = (state.ordenes_compra || []).filter(o => !o.pagada && o.estatus !== 'cancelada' && window._ayudaNorm(o.proveedor || '') === window._ayudaNorm(proveedor || '') && !(state.facturas_proveedor || []).some(f => f.oc_id === o.id));
+  if (!fps.length && !ocsSin.length) { toast('Este proveedor no tiene facturas ni OCs abiertas', 'error'); return; }
+  const docPDF = new window.jspdf.jsPDF();
+  try { docPDF.addImage(DATOS_EMPRESA.logo_url, 'JPEG', 14, 10, 36, 36 * 0.4475); } catch (e) {}
+  docPDF.setFont('helvetica', 'bold'); docPDF.setFontSize(13); docPDF.setTextColor(11, 27, 46);
+  docPDF.text('ESTADO DE CUENTA - PROVEEDOR', 196, 16, { align: 'right' });
+  docPDF.setFontSize(9); docPDF.setFont('helvetica', 'normal'); docPDF.setTextColor(100, 116, 139);
+  docPDF.text(`${proveedor} · Corte al ${hoy} · Formato NPA-FIN-FR-02 · Confidencial`, 196, 22, { align: 'right' });
+  const $n = (v) => '$' + fmtNum((Number(v) || 0).toFixed(2));
+  const debe = fps.filter(f => f.estado !== 'pagada');
+  const pagadas = fps.filter(f => f.estado === 'pagada');
+  docPDF.autoTable({
+    startY: 30,
+    head: [[{ content: `FACTURAS PENDIENTES DE PAGO — deben: ${$n(debe.reduce((s, f) => s + (Number(f.monto) || 0), 0))}`, colSpan: 7, styles: { halign: 'left' } }],
+      ['Factura', 'OC', 'Emision', 'Vence', 'Credito', 'Monto', 'Estado']],
+    body: debe.length ? debe.map(f => [f.folio_prov, f.oc_folio || '-', f.fecha || '-', { content: f.vence || '-', styles: f.vence && f.vence < hoy ? { textColor: [220, 38, 38], fontStyle: 'bold' } : {} }, (f.dias_credito || 0) + 'd', $n(f.monto), (f.estado || '').toUpperCase() + (f.pago_prog ? ' · pago ' + f.pago_prog.fecha + ' (' + f.pago_prog.estado + ')' : '')])
+      : [[{ content: 'Sin facturas pendientes', colSpan: 7, styles: { halign: 'center', textColor: [148, 163, 184] } }]],
+    theme: 'grid', headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontSize: 7.5 },
+    styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+    columnStyles: { 5: { halign: 'right', fontStyle: 'bold' } }, margin: { left: 14, right: 14 },
+  });
+  let y = docPDF.lastAutoTable.finalY + 3;
+  if (ocsSin.length) {
+    docPDF.autoTable({
+      startY: y,
+      head: [[{ content: `OCs ABIERTAS SIN FACTURA REGISTRADA — comprometido: ${$n(ocsSin.reduce((s, o) => s + (Number(o.costo_total) || 0), 0))}`, colSpan: 4, styles: { halign: 'left' } }], ['OC', 'Estatus', 'Promesa entrega', 'Monto']],
+      body: ocsSin.map(o => [o.folio, o.estatus || '-', o.fecha_promesa || '-', $n(o.costo_total)]),
+      theme: 'grid', headStyles: { fillColor: [217, 119, 6], textColor: [255, 255, 255], fontSize: 7.5 },
+      styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+      columnStyles: { 3: { halign: 'right' } }, margin: { left: 14, right: 14 },
+    });
+    y = docPDF.lastAutoTable.finalY + 3;
+  }
+  docPDF.autoTable({
+    startY: y,
+    head: [[{ content: `HISTORIAL PAGADO — ${pagadas.length} factura(s) · ${$n(pagadas.reduce((s, f) => s + (Number(f.monto) || 0), 0))}`, colSpan: 5, styles: { halign: 'left' } }], ['Factura', 'OC', 'Monto', 'Pagada el', 'Referencia']],
+    body: pagadas.length ? pagadas.slice(-15).map(f => [f.folio_prov, f.oc_folio || '-', $n(f.monto), f.pago_fecha || '-', f.pago_referencia || '-'])
+      : [[{ content: 'Sin pagos registrados aun', colSpan: 5, styles: { halign: 'center', textColor: [148, 163, 184] } }]],
+    theme: 'grid', headStyles: { fillColor: [22, 163, 74], textColor: [255, 255, 255], fontSize: 7.5 },
+    styles: { fontSize: 7.5, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [0, 0, 0] },
+    columnStyles: { 2: { halign: 'right' } }, margin: { left: 14, right: 14 },
+  });
+  const blob = docPDF.output('blob');
+  state.pdfPreview = { blobUrl: URL.createObjectURL(blob), filename: `EdoCta-Proveedor-${(proveedor || '').replace(/\s+/g, '_')}.pdf`, titulo: `Edo. cuenta ${proveedor}`, blob };
+  state.modal = 'pdf-preview';
+  window.forzarRender();
+};
+
+// ⬇ CSV CONTABLES — todas las columnas, listos para Excel del contador
+window.tesCSV = (tipo) => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Tesorería y Dirección', 'error'); return; }
+  const esc2 = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  let filas = [], nombre = '';
+  if (tipo === 'ventas') {
+    nombre = 'ventas-facturas';
+    filas = [['Folio', 'UUID', 'Cliente', 'Codigo', 'Fecha factura', 'Vence', 'Dias credito', 'Moneda', 'Subtotal', 'Total', 'Cobrado', 'Saldo', 'Estado', 'Remision', 'OV']];
+    (state.facturas || []).forEach(f => {
+      const s = window._facSaldo(f);
+      filas.push([f.folio, f.uuid || '', f.cliente_nombre, f.cliente_codigo, f.fecha, f.vence, f.dias_credito || 0, f.moneda || 'MXN', f.subtotal || '', f.monto, (Number(f.monto) || 0) - s, s, f.estado, f.remision_folio || '', f.ov_folio || '']);
+    });
+  } else if (tipo === 'cobranza') {
+    nombre = 'cobros';
+    filas = [['Fecha', 'Factura', 'Cliente', 'Monto', 'Moneda', 'Referencia', 'Registro por']];
+    (state.cobros || []).forEach(c => {
+      const f = (state.facturas || []).find(x => x.id === c.factura_id);
+      filas.push([c.fecha || '', f?.folio || c.factura_folio || '', f?.cliente_nombre || '', c.monto, c.moneda || 'MXN', c.referencia || '', c.registrado_por || c.creado_por_nombre || '']);
+    });
+  } else {
+    nombre = 'cxp-facturas-proveedor';
+    filas = [['Factura prov', 'Proveedor', 'OC', 'Fecha factura', 'Vence', 'Dias credito', 'Moneda', 'Monto', 'Estado', 'Pago programado', 'Autorizado por', 'Pagada el', 'Referencia', 'Registro por', 'Evidencia']];
+    (state.facturas_proveedor || []).forEach(f => {
+      filas.push([f.folio_prov, f.proveedor, f.oc_folio, f.fecha, f.vence, f.dias_credito || 0, f.moneda || 'MXN', f.monto, f.estado, f.pago_prog?.fecha || '', f.pago_prog?.autorizado_por || '', f.pago_fecha || '', f.pago_referencia || '', f.registrada_por || '', f.evidencia || '']);
+    });
+  }
+  const csv = '\ufeff' + filas.map(r => r.map(esc2).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `${nombre}-${window.hoyLocalISO()}.csv`;
+  a.click();
+  window.logAccion('csv_contable', tipo, `${filas.length - 1} filas`);
+  toast(`⬇ ${nombre}.csv — ${filas.length - 1} registros para contabilidad`);
+};
+
+window.tesGestion = async (facturaId) => {
+  const f = (state.facturas || []).find(x => x.id === facturaId); if (!f) return;
+  const u = state.user || {};
+  const fecha = prompt(`📞 GESTIÓN DE COBRANZA — ${f.folio || ''} · ${f.cliente_nombre || f.cliente_codigo || ''}\nSaldo: $${fmtNum(window._facSaldo(f).toFixed(2))} ${f.moneda || 'MXN'} · vence ${f.vence || '—'}\n\n¿Fecha PROMETIDA de pago? (AAAA-MM-DD · vacío = solo registrar llamada)`, f.fecha_promesa || '');
+  if (fecha === null) return;
+  const fechaOk = (fecha || '').trim();
+  if (fechaOk && !/^\d{4}-\d{2}-\d{2}$/.test(fechaOk)) { toast('Fecha inválida — usa AAAA-MM-DD', 'error'); return; }
+  const nota = prompt('Nota de la gestión (con quién hablaste, qué dijo):', '');
+  if (nota === null) return;
+  try {
+    const gestion = { fecha: window.hoyLocalISO(), tipo: fechaOk ? 'promesa' : 'llamada', fecha_promesa: fechaOk || '', nota: (nota || '').trim(), por: u.nombre || u.email || '' };
+    const cambios = { gestiones: [...(f.gestiones || []), gestion], updated_at: serverTimestamp() };
+    if (fechaOk) { cambios.fecha_promesa = fechaOk; cambios.promesa_por = gestion.por; }
+    await updateDoc(doc(db, 'facturas', facturaId), cambios);
+    window.logAccion('cobranza_gestion', f.folio || facturaId, `${fechaOk ? 'promesa ' + fechaOk : 'llamada'} · ${(nota || '').slice(0, 120)}`);
+    toast(fechaOk ? `📅 Promesa registrada: pagan el ${fechaOk}` : '📞 Gestión registrada');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.tesProgramarPago = async (fpId) => {
+  const fp = (state.facturas_proveedor || []).find(x => x.id === fpId); if (!fp) return;
+  const u = state.user || {};
+  const fecha = prompt(`💸 PROGRAMAR PAGO — ${fp.folio_prov} · ${fp.proveedor}\nMonto: $${fmtNum((Number(fp.monto) || 0).toFixed(2))} ${fp.moneda} · vence ${fp.vence || '—'}\n\n¿Fecha propuesta de pago? (AAAA-MM-DD)`, fp.pago_prog?.fecha || fp.vence || window.hoyLocalISO(7));
+  if (fecha === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test((fecha || '').trim())) { toast('Fecha inválida — usa AAAA-MM-DD', 'error'); return; }
+  try {
+    await updateDoc(doc(db, 'facturas_proveedor', fpId), {
+      pago_prog: { fecha: fecha.trim(), monto: Number(fp.monto) || 0, moneda: fp.moneda || 'MXN', estado: 'propuesto', por: u.nombre || u.email || '', propuesto_at: new Date().toISOString() },
+    });
+    window.logAccion('pago_programado', fp.oc_folio, `${fp.folio_prov} · ${fecha.trim()} · $${fmtNum((Number(fp.monto) || 0).toFixed(0))}`);
+    toast(`💸 ${fp.folio_prov} propuesta para el ${fecha.trim()} — falta autorización de Dirección`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.tesAutorizarPago = async (fpId) => {
+  const u = state.user || {};
+  if (!(u.depto === 'CEO' || u.depto === 'ADMIN' || u.rol === 'admin')) { toast('🔒 Solo Dirección autoriza pagos', 'error'); return; }
+  const fp = (state.facturas_proveedor || []).find(x => x.id === fpId); if (!fp || !fp.pago_prog) return;
+  try {
+    await updateDoc(doc(db, 'facturas_proveedor', fpId), {
+      pago_prog: { ...fp.pago_prog, estado: 'autorizado', autorizado_por: u.nombre || u.email || '', autorizado_at: new Date().toISOString() },
+    });
+    window.logAccion('pago_autorizado', fp.oc_folio, `${fp.folio_prov} · ${fp.pago_prog.fecha} · $${fmtNum((Number(fp.pago_prog.monto) || 0).toFixed(0))}`);
+    toast(`✅ ${fp.folio_prov} AUTORIZADA para pagarse el ${fp.pago_prog.fecha}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.tesQuitarPago = async (fpId) => {
+  const fp = (state.facturas_proveedor || []).find(x => x.id === fpId); if (!fp) return;
+  if (!confirm(`¿Quitar la programación de pago de ${fp.folio_prov}?`)) return;
+  try {
+    await updateDoc(doc(db, 'facturas_proveedor', fpId), { pago_prog: null });
+    toast(`${fp.folio_prov} fuera del calendario de pagos`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+window.tesSaldoSet = async () => {
+  const u = state.user || {};
+  const actual = (state.tesoreria || []).find(x => x.id === 'saldo');
+  const m = prompt(`🏦 SALDO REAL EN BANCOS (semilla del flujo de caja)\nÚltimo capturado: ${actual ? '$' + fmtNum(Number(actual.monto).toFixed(2)) + ' (' + (actual.fecha || '') + ' por ' + (actual.por || '') + ')' : 'nunca'}\n\nSaldo total hoy (MXN):`, actual ? String(actual.monto) : '');
+  if (m === null) return;
+  const monto = Number(String(m).replace(/[$,\s]/g, ''));
+  if (!isFinite(monto)) { toast('Monto inválido', 'error'); return; }
+  try {
+    await setDoc(doc(db, 'tesoreria', 'saldo'), { monto, fecha: window.hoyLocalISO(), por: u.nombre || u.email || '', updated_at: serverTimestamp() });
+    window.logAccion('saldo_bancos', 'tesoreria', `$${fmtNum(monto.toFixed(2))}`);
+    toast(`🏦 Saldo semilla actualizado: $${fmtNum(monto.toFixed(2))}`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+// Lunes de la semana de una fecha ISO (para bucketing semanal del flujo)
+window._tesLunes = (iso) => {
+  const d = new Date((iso || window.hoyLocalISO()) + 'T12:00:00');
+  const dia = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dia);
+  return d.toLocaleDateString('en-CA');
+};
+
 function renderFacturacion() {
   const u = state.user || {};
   const esFACv = u.rol === 'admin' || ['FAC', 'CEO', 'ADMIN'].includes(u.depto);
   const esCYCv = u.rol === 'admin' || ['CYC', 'FAC', 'CEO', 'ADMIN'].includes(u.depto);
+  // 🏦 SEGREGACIÓN (matriz Dirección 20-ago): Tesorería = CYC + Dirección.
+  //    FAC factura y cobra, pero NO ve CxP, pagos, flujo de caja ni saldo.
+  const esTES = u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto);
+  // Comercial: SOLO la pestaña de cartera, filtrada a SUS clientes (por vendedor)
+  const esComFin = !esCYCv && ['CS', 'KAM'].includes(u.depto);
+  if (esComFin && state.facSubtab !== 'cartera') state.facSubtab = 'cartera';
   const hoy = new Date().toLocaleDateString('en-CA');
   const subtab = state.facSubtab || 'por_facturar';
   const filtro = (state.filtros.facturacion || '').toLowerCase().trim();
@@ -29291,7 +29666,14 @@ function renderFacturacion() {
   const rems = window._remFacturables();
   const porFacturar = rems.filter(r => !window._facDeRemision(r));
   const facturas = (state.facturas || []).slice().sort((a, b) => (b.created_at?.seconds || 0) - (a.created_at?.seconds || 0));
-  const cartera = facturas.filter(f => f.estado !== 'cancelada' && window._facEstadoPago(f) !== 'pagada');
+  // 👔 Comercial solo ve las facturas de SUS clientes (campo vendedor del cliente)
+  const _facBase = esComFin ? facturas.filter(f => {
+    const cli = (state.clientes || []).find(c => c.codigo === f.cliente_codigo);
+    const v = window._ayudaNorm(cli?.vendedor || '');
+    const yo = window._ayudaNorm(u.nombre || '');
+    return v && yo && (v.split(' ')[0] === yo.split(' ')[0] || v.includes(yo) || yo.includes(v));
+  }) : facturas;
+  const cartera = _facBase.filter(f => f.estado !== 'cancelada' && window._facEstadoPago(f) !== 'pagada');
   const vencidas = cartera.filter(f => window._facEstadoPago(f) === 'vencida');
   const enCamino = rems.filter(r => ['en_transito', 'por_cargar'].includes(r.estatus));
 
@@ -29488,6 +29870,13 @@ function renderFacturacion() {
           </div>`).join('')}
       </div>
 
+      ${esTES ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 14px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;padding:10px 14px;">
+        <span style="font-size:11.5px;font-weight:800;color:#475569;">🧮 PARA CONTABILIDAD (CSV → Excel):</span>
+        <button onclick="window.tesCSV('ventas')" class="tab-btn" style="font-size:11px;">⬇ Ventas desglosado</button>
+        <button onclick="window.tesCSV('cobranza')" class="tab-btn" style="font-size:11px;">⬇ Cobranza</button>
+        <button onclick="window.tesCSV('cxp')" class="tab-btn" style="font-size:11px;">⬇ CxP proveedores</button>
+      </div>
       <div style="font-weight:900;font-size:14px;margin:2px 0 8px;">🏭 CUENTAS POR PAGAR (proveedores — compras)</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px;">
         ${kpi('POR PAGAR (recibido no pagado)', _sumaOC(cxpRecibidas), `${cxpRecibidas.length} OC(s)`, '#dc2626')}
@@ -29502,8 +29891,165 @@ function renderFacturacion() {
             <span><strong>$${fmtNum((Number(o.costo_total) || 0).toFixed(2))} ${o.moneda || 'MXN'}</strong> ${esFACv ? `<button onclick="window.ocMarcarPagada('${o.id}')" style="margin-left:8px;padding:4px 10px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">💵 Pagada</button>` : ''}</span>
           </div>`).join('')}
         ${ocsPend.length > 10 ? `<div style="font-size:10px;color:#94a3b8;margin-top:6px;">Mostrando 10 de ${ocsPend.length} — el resto en Órdenes de Compra</div>` : ''}
-      </div>
+      </div> ` : ''}
     `;
+  } else if (subtab === 'cobranza' && esCYCv) {
+    // 📅 COBRANZA PROGRAMADA — promesas por factura + aging POR CLIENTE
+    const hoyC = window.hoyLocalISO();
+    const en7 = window.hoyLocalISO(7);
+    const conSaldo = facturas.filter(f => f.estado !== 'cancelada' && window._facSaldo(f) > 0.01);
+    const rotas = conSaldo.filter(f => f.fecha_promesa && f.fecha_promesa < hoyC).sort((a, b) => (a.fecha_promesa || '').localeCompare(b.fecha_promesa || ''));
+    const deHoy = conSaldo.filter(f => f.fecha_promesa === hoyC);
+    const semana = conSaldo.filter(f => f.fecha_promesa && f.fecha_promesa > hoyC && f.fecha_promesa <= en7);
+    const vencSinProm = conSaldo.filter(f => !f.fecha_promesa && f.vence && f.vence < hoyC).sort((a, b) => (a.vence || '').localeCompare(b.vence || ''));
+    const filaFac = (f, color) => {
+      const ult = (f.gestiones || []).slice(-1)[0];
+      return `
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#fff;border:1px solid #e2e8f0;border-left:4px solid ${color};border-radius:9px;margin-bottom:6px;">
+        <div style="flex:1;min-width:230px;">
+          <div style="font-weight:800;font-size:12.5px;">${esc(f.cliente_nombre || f.cliente_codigo || '')} · <span class="text-mono">${esc(f.folio || '')}</span> · <strong>$${fmtNum(window._facSaldo(f).toFixed(2))} ${f.moneda || 'MXN'}</strong></div>
+          <div style="font-size:11px;color:#64748b;">vence ${f.vence || '—'}${f.fecha_promesa ? ` · 📅 prometieron ${f.fecha_promesa}${f.promesa_por ? ' (' + esc(f.promesa_por) + ')' : ''}` : ' · sin promesa'}${ult ? ` · última gestión: ${esc((ult.nota || '').slice(0, 60))}` : ''}</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button onclick="window.tesGestion('${f.id}')" style="padding:6px 12px;background:#1e40af;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">📞 Gestión</button>
+          <button onclick="window.facCobro('${f.id}')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">💰 Cobro</button>
+        </div>
+      </div>`;
+    };
+    const bloque = (tit, arr, color, vacio) => `
+      <div style="font-weight:900;font-size:13px;margin:14px 0 8px;color:${color};">${tit} (${arr.length})</div>
+      ${arr.length ? arr.slice(0, 25).map(f => filaFac(f, color)).join('') : `<div style="font-size:12px;color:#94a3b8;padding:4px 0 8px;">${vacio}</div>`}`;
+    // Aging por cliente
+    const porCliente = {};
+    conSaldo.forEach(f => {
+      const k = f.cliente_nombre || f.cliente_codigo || '—';
+      if (!porCliente[k]) porCliente[k] = { vig: 0, d30: 0, d60: 0, m60: 0, tot: 0, cod: f.cliente_codigo || '' };
+      const saldo = window._facSaldo(f);
+      const dias = f.vence && f.vence < hoyC ? Math.floor((new Date(hoyC) - new Date(f.vence)) / 86400000) : 0;
+      const b = dias <= 0 ? 'vig' : dias <= 30 ? 'd30' : dias <= 60 ? 'd60' : 'm60';
+      porCliente[k][b] += saldo; porCliente[k].tot += saldo;
+    });
+    const clientesA = Object.entries(porCliente).sort((a, b) => b[1].tot - a[1].tot).slice(0, 15);
+    cuerpo = `
+      ${bloque('🔴 PROMESAS ROTAS — re-llamar YA', rotas, '#dc2626', 'Ninguna promesa rota 🎉')}
+      ${bloque('📅 PROMETIERON PAGAR HOY', deHoy, '#d97706', 'Nada prometido para hoy')}
+      ${bloque('🗓 PROMESAS DE LA SEMANA', semana, '#1e40af', 'Sin promesas próximas — a conseguirlas 📞')}
+      ${bloque('⚠ VENCIDAS SIN PROMESA — conseguir compromiso', vencSinProm, '#7c2d12', 'Todo lo vencido tiene promesa registrada 💪')}
+      <div style="font-weight:900;font-size:13px;margin:18px 0 8px;">👥 Antigüedad de saldos POR CLIENTE (top ${clientesA.length})</div>
+      <div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#f8fafc;">${['Cliente', 'Vigente', '1-30d', '31-60d', '+60d', 'TOTAL', ''].map(h => `<th style="padding:7px 10px;text-align:right;font-size:10.5px;color:#64748b;border-bottom:2px solid #e2e8f0;${h === 'Cliente' ? 'text-align:left;' : ''}">${h}</th>`).join('')}</tr></thead>
+        <tbody>${clientesA.map(([k, v]) => `
+          <tr style="border-bottom:1px solid #f1f5f9;">
+            <td style="padding:7px 10px;font-weight:700;">${esc(k)}</td>
+            <td style="padding:7px 10px;text-align:right;color:#16a34a;">${v.vig > 0.01 ? '$' + fmtNum(v.vig.toFixed(0)) : '—'}</td>
+            <td style="padding:7px 10px;text-align:right;color:#d97706;">${v.d30 > 0.01 ? '$' + fmtNum(v.d30.toFixed(0)) : '—'}</td>
+            <td style="padding:7px 10px;text-align:right;color:#ea580c;">${v.d60 > 0.01 ? '$' + fmtNum(v.d60.toFixed(0)) : '—'}</td>
+            <td style="padding:7px 10px;text-align:right;color:#dc2626;font-weight:800;">${v.m60 > 0.01 ? '$' + fmtNum(v.m60.toFixed(0)) : '—'}</td>
+            <td style="padding:7px 10px;text-align:right;font-weight:900;">$${fmtNum(v.tot.toFixed(0))}</td>
+            <td style="padding:7px 10px;text-align:right;">${v.cod ? `<button onclick="window.pdfEstadoCuenta('${v.cod.replace(/'/g, "\\'")}')" style="padding:4px 9px;background:#0f172a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:800;font-size:10px;">📄 Edo.</button>` : ''}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>`;
+  } else if (subtab === 'pagos' && esTES) {
+    // 💸 CxP REAL: facturas de proveedor — registra Compras, concilia y paga Tesorería
+    const esDirT = u.rol === 'admin' || ['CEO', 'ADMIN'].includes(u.depto);
+    const fps = (state.facturas_proveedor || []).filter(f => f.estado !== 'pagada');
+    const ocsSinFac = (state.ordenes_compra || []).filter(o => !o.pagada && o.estatus !== 'cancelada' && ['recibida', 'recepcion_parcial'].includes(o.estatus) && !(state.facturas_proveedor || []).some(f => f.oc_id === o.id));
+    const porConciliar = fps.filter(f => f.estado === 'registrada');
+    const porProgramar = fps.filter(f => f.estado === 'conciliada' && !f.pago_prog);
+    const propuestos = fps.filter(f => f.pago_prog && f.pago_prog.estado === 'propuesto').sort((a, b) => (a.pago_prog.fecha || '').localeCompare(b.pago_prog.fecha || ''));
+    const autorizados = fps.filter(f => f.pago_prog && f.pago_prog.estado === 'autorizado').sort((a, b) => (a.pago_prog.fecha || '').localeCompare(b.pago_prog.fecha || ''));
+    const hoyP = window.hoyLocalISO();
+    const filaFP = (f, modo) => `
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#fff;border:1px solid #e2e8f0;border-radius:9px;margin-bottom:6px;">
+        <div style="flex:1;min-width:240px;">
+          <div style="font-weight:800;font-size:12.5px;"><span class="text-mono">${esc(f.folio_prov)}</span> · ${esc(f.proveedor || '')} · <strong>$${fmtNum((Number(f.monto) || 0).toFixed(2))} ${f.moneda || 'MXN'}</strong></div>
+          <div style="font-size:11px;color:#64748b;">OC ${esc(f.oc_folio || '—')} · emitida ${f.fecha || '—'} · <span style="${f.vence && f.vence < hoyP ? 'color:#dc2626;font-weight:800;' : ''}">vence ${f.vence || '—'}</span> (${f.dias_credito || 0}d)${f.evidencia ? ` · 📎 ${esc((f.evidencia || '').slice(0, 40))}` : ''}${f.pago_prog ? ` · 💸 pago ${f.pago_prog.fecha}${f.pago_prog.autorizado_por ? ` · ✅ ${esc(f.pago_prog.autorizado_por)}` : ''}` : ''} · registró ${esc(f.registrada_por || '')}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button onclick="window.pdfEstadoProveedor('${(f.proveedor || '').replace(/'/g, "\\'")}')" class="tab-btn" style="font-size:11px;">📄 Edo.</button>
+          ${modo === 'conc' ? `<button onclick="window.provFacConciliar('${f.id}')" style="padding:6px 12px;background:#0f766e;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✔ Conciliar</button>` : ''}
+          ${modo === 'prog' ? `<button onclick="window.tesProgramarPago('${f.id}')" style="padding:6px 12px;background:#1e40af;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">📅 Programar</button>` : ''}
+          ${modo === 'prop' ? `
+            ${esDirT ? `<button onclick="window.tesAutorizarPago('${f.id}')" style="padding:6px 12px;background:#7c3aed;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">✅ Autorizar</button>` : '<span style="font-size:10.5px;color:#7c3aed;font-weight:800;">⏳ espera a Dirección</span>'}
+            <button onclick="window.tesProgramarPago('${f.id}')" class="tab-btn" style="font-size:11px;">📅</button>
+            <button onclick="window.tesQuitarPago('${f.id}')" class="tab-btn" style="font-size:11px;">✕</button>` : ''}
+          ${modo === 'aut' ? `<button onclick="window.provFacPagar('${f.id}')" style="padding:6px 12px;background:#16a34a;color:#fff;border:none;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">💵 Pagada (ref)</button>` : ''}
+        </div>
+      </div>`;
+    const seccFP = (tit, arr, modo, vacio) => `
+      <div style="font-weight:900;font-size:13px;margin:14px 0 8px;">${tit} (${arr.length})</div>
+      ${arr.length ? arr.slice(0, 30).map(f => filaFP(f, modo)).join('') : `<div style="font-size:12px;color:#94a3b8;padding:4px 0 8px;">${vacio}</div>`}`;
+    cuerpo = `
+      <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:10px 14px;font-size:12px;color:#3730a3;margin-bottom:6px;">🧾 <strong>Ciclo contable:</strong> COMPRAS registra la factura del proveedor (con evidencia y liga a la OC) → TESORERÍA concilia contra OC y recepción → programa → DIRECCIÓN autoriza → se paga con referencia. Cada paso deja huella.</div>
+      ${ocsSinFac.length ? `
+        <div style="font-weight:900;font-size:13px;margin:14px 0 8px;color:#d97706;">📥 RECIBIDAS SIN FACTURA — pídesela a Compras (${ocsSinFac.length})</div>
+        ${ocsSinFac.slice(0, 15).map(o => `
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:9px;margin-bottom:6px;">
+            <div style="font-size:12px;"><strong class="text-mono">${o.folio}</strong> · ${esc(o.proveedor || '')} · $${fmtNum((Number(o.costo_total) || 0).toFixed(2))} ${o.moneda || 'MXN'} · ${o.estatus === 'recibida' ? '✅ recibida' : '📦 parcial'}</div>
+            <button onclick="window.provFacRegistrar('${o.id}')" class="tab-btn" style="font-size:11px;">🧾 Registrar factura</button>
+          </div>`).join('')}` : ''}
+      ${seccFP('🔎 REGISTRADAS — por conciliar (factura vs OC vs recepción)', porConciliar, 'conc', 'Nada por conciliar')}
+      ${seccFP('📅 CONCILIADAS — dales fecha de pago', porProgramar, 'prog', 'Todo lo conciliado ya tiene fecha')}
+      ${seccFP('⏳ PROPUESTOS — esperando autorización de Dirección', propuestos, 'prop', 'Nada esperando autorización')}
+      ${seccFP('✅ AUTORIZADOS — listos para pagar', autorizados, 'aut', 'Nada autorizado pendiente')}`;
+  } else if (subtab === 'flujo' && esTES) {
+    // 📈 FLUJO DE CAJA — 6 semanas: saldo semilla + entradas esperadas − pagos programados
+    const hoyF = window.hoyLocalISO();
+    const lun0 = window._tesLunes(hoyF);
+    const semanas = [];
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(lun0 + 'T12:00:00'); d.setDate(d.getDate() + i * 7);
+      semanas.push({ ini: d.toLocaleDateString('en-CA'), entradas: 0, salidas: 0 });
+    }
+    const wIdx = (iso) => {
+      const lw = window._tesLunes(iso < hoyF ? hoyF : iso);
+      const idx = semanas.findIndex(s => s.ini === lw);
+      return idx === -1 ? (lw < semanas[0].ini ? 0 : 5) : idx;
+    };
+    facturas.filter(f => f.estado !== 'cancelada' && window._facSaldo(f) > 0.01)
+      .forEach(f => { semanas[wIdx(f.fecha_promesa || f.vence || hoyF)].entradas += window._facSaldo(f); });
+    (state.facturas_proveedor || []).filter(f => f.estado !== 'pagada' && (f.pago_prog || f.vence))
+      .forEach(f => { semanas[wIdx(f.pago_prog?.fecha || f.vence || hoyF)].salidas += Number(f.pago_prog?.monto ?? f.monto) || 0; });
+    const semilla = (state.tesoreria || []).find(x => x.id === 'saldo');
+    let acum = Number(semilla?.monto) || 0;
+    semanas.forEach(s => { acum += s.entradas - s.salidas; s.saldo = acum; });
+    const maxV = Math.max(...semanas.map(s => Math.max(s.entradas, s.salidas)), 1);
+    const H = 150, BW = 38;
+    const grafica = `<svg viewBox="0 0 720 ${H + 42}" style="width:100%;height:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;">
+      ${semanas.map((s, i) => {
+        const x = 40 + i * 112;
+        const he = Math.round((s.entradas / maxV) * H), hs = Math.round((s.salidas / maxV) * H);
+        return `
+        <rect x="${x}" y="${8 + H - he}" width="${BW}" height="${he}" rx="4" fill="rgba(22,163,74,.75)"/>
+        <rect x="${x + BW + 6}" y="${8 + H - hs}" width="${BW}" height="${hs}" rx="4" fill="rgba(220,38,38,.7)"/>
+        <text x="${x + BW + 3}" y="${H + 22}" text-anchor="middle" font-size="10" fill="#64748b">${s.ini.slice(5)}</text>
+        <text x="${x + BW + 3}" y="${H + 35}" text-anchor="middle" font-size="10.5" font-weight="900" fill="${s.saldo < 0 ? '#dc2626' : '#0f172a'}">$${fmtNum((s.saldo / 1000).toFixed(0))}k</text>`;
+      }).join('')}
+      <text x="40" y="${H + 35}" text-anchor="end" font-size="9" fill="#94a3b8">saldo→</text>
+    </svg>`;
+    cuerpo = `
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="panel" style="padding:10px 18px;flex:1;min-width:200px;">
+          <div style="font-size:10.5px;font-weight:800;color:#64748b;">🏦 SALDO EN BANCOS (semilla)</div>
+          <div style="font-size:20px;font-weight:900;">${semilla ? '$' + fmtNum(Number(semilla.monto).toFixed(2)) : '— sin capturar'}</div>
+          <div style="font-size:10px;color:#94a3b8;">${semilla ? `capturado ${semilla.fecha || ''} por ${esc(semilla.por || '')}` : 'captúralo para proyectar el saldo real'}</div>
+        </div>
+        <button onclick="window.tesSaldoSet()" style="padding:12px 18px;background:#0f172a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">🏦 Actualizar saldo</button>
+        <button onclick="window.tesCortePDF()" style="padding:12px 18px;background:#7c3aed;color:#fff;border:none;border-radius:10px;cursor:pointer;font-weight:800;">📄 Corte semanal PDF</button>
+      </div>
+      ${grafica}
+      <div class="table-wrap" style="margin-top:12px;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#f8fafc;">${['Semana del', '🟢 Entradas esperadas', '🔴 Pagos programados', 'Neto', 'Saldo proyectado'].map(h => `<th style="padding:7px 10px;text-align:right;font-size:10.5px;color:#64748b;border-bottom:2px solid #e2e8f0;">${h}</th>`).join('')}</tr></thead>
+        <tbody>${semanas.map(s => `
+          <tr style="border-bottom:1px solid #f1f5f9;${s.saldo < 0 ? 'background:#fef2f2;' : ''}">
+            <td style="padding:7px 10px;text-align:right;font-weight:700;">${s.ini}</td>
+            <td style="padding:7px 10px;text-align:right;color:#16a34a;">$${fmtNum(s.entradas.toFixed(0))}</td>
+            <td style="padding:7px 10px;text-align:right;color:#dc2626;">$${fmtNum(s.salidas.toFixed(0))}</td>
+            <td style="padding:7px 10px;text-align:right;font-weight:700;">$${fmtNum((s.entradas - s.salidas).toFixed(0))}</td>
+            <td style="padding:7px 10px;text-align:right;font-weight:900;color:${s.saldo < 0 ? '#dc2626' : '#0f172a'};">$${fmtNum(s.saldo.toFixed(0))}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+      <div style="font-size:10.5px;color:#94a3b8;margin-top:8px;">Entradas = facturas con saldo por su fecha prometida (o vencimiento) · Salidas = pagos programados/autorizados · Lo vencido sin promesa cae en la semana actual. Es proyección, no garantía — la promesa rota se re-gestiona en 📅 Cobranza.</div>`;
   } else if (subtab === 'comisiones' && window._veComisiones()) {
     // 💰 COMISIONES — config + reporte del mes (facturas PAGADAS)
     const esDir = state.user?.rol === 'admin' || ['CEO', 'ADMIN'].includes(state.user?.depto);
@@ -29683,11 +30229,21 @@ function renderFacturacion() {
 
     <!-- Tabs + filtro -->
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:12px;">
-      <button class="tab-btn ${subtab === 'panel' ? 'active' : ''}" onclick="window.facTab('panel')" style="border-color:#7c3aed;">📊 Panel</button>
-      <button class="tab-btn ${subtab === 'por_facturar' ? 'active' : ''}" onclick="window.facTab('por_facturar')">🧾 Por facturar (${porFacturar.length})</button>
-      <button class="tab-btn ${subtab === 'facturadas' ? 'active' : ''}" onclick="window.facTab('facturadas')">📋 Facturadas (${facturas.filter(f => f.estado !== 'cancelada').length})</button>
-      <button class="tab-btn ${subtab === 'envios' ? 'active' : ''}" onclick="window.facTab('envios')">🚚 Envíos</button>
+      ${!esComFin ? `<button class="tab-btn ${subtab === 'panel' ? 'active' : ''}" onclick="window.facTab('panel')" style="border-color:#7c3aed;">📊 Panel</button>` : ''}
+      ${!esComFin ? `<button class="tab-btn ${subtab === 'por_facturar' ? 'active' : ''}" onclick="window.facTab('por_facturar')">🧾 Por facturar (${porFacturar.length})</button>` : ''}
+      ${!esComFin ? `<button class="tab-btn ${subtab === 'facturadas' ? 'active' : ''}" onclick="window.facTab('facturadas')">📋 Facturadas (${facturas.filter(f => f.estado !== 'cancelada').length})</button>` : ''}
+      ${!esComFin ? `<button class="tab-btn ${subtab === 'envios' ? 'active' : ''}" onclick="window.facTab('envios')">🚚 Envíos</button>` : ''}
       <button class="tab-btn ${subtab === 'cartera' ? 'active' : ''}" onclick="window.facTab('cartera')">💵 Cartera (${cartera.length})</button>
+      ${esCYCv ? (() => {
+        const hoyT = window.hoyLocalISO();
+        const urg = (state.facturas || []).filter(f => f.estado !== 'cancelada' && window._facSaldo(f) > 0.01 && f.fecha_promesa && f.fecha_promesa <= hoyT).length;
+        return `<button class="tab-btn ${subtab === 'cobranza' ? 'active' : ''}" onclick="window.facTab('cobranza')" style="${urg ? 'border-color:#dc2626;color:#dc2626;' : ''}">📅 Cobranza${urg ? ` (${urg}!)` : ''}</button>`;
+      })() : ''}
+      ${esTES ? (() => {
+        const props = (state.facturas_proveedor || []).filter(f => f.estado === 'registrada' || (f.pago_prog && f.pago_prog.estado === 'propuesto')).length;
+        return `<button class="tab-btn ${subtab === 'pagos' ? 'active' : ''}" onclick="window.facTab('pagos')">💸 Pagos${props ? ` (${props})` : ''}</button>`;
+      })() : ''}
+      ${esTES ? `<button class="tab-btn ${subtab === 'flujo' ? 'active' : ''}" onclick="window.facTab('flujo')">📈 Flujo de caja</button>` : ''}
       ${window._veComisiones() ? `<button class="tab-btn ${subtab === 'comisiones' ? 'active' : ''}" onclick="window.facTab('comisiones')" style="border-color:#be185d;">💰 Comisiones</button>` : ''}
       <span style="flex:1;"></span>
       <input class="input" id="fac-filtro" style="max-width:280px;" placeholder="🔍 Folio, cliente, remisión, UUID..." autocomplete="off" value="${(state.filtros.facturacion || '').replace(/"/g, '&quot;')}" oninput="window.facFiltro(this.value)" />
@@ -37307,7 +37863,7 @@ window._ocVencePago = (oc) => {
   d.setDate(d.getDate() + dias);
   return d.toISOString().split('T')[0];
 };
-window._cxpPuede = () => { const u = state.user || {}; return u.rol === 'admin' || ['COMP', 'FAC', 'CYC', 'CEO', 'ADMIN'].includes(u.depto); };
+window._cxpPuede = () => { const u = state.user || {}; return u.rol === 'admin' || ['CYC', 'CEO', 'ADMIN'].includes(u.depto); };  // 🔒 20-ago: pagar = Tesorería/Dirección (ni FAC ni COMP)
 window.ocMarcarPagada = async (id) => {
   if (!window._cxpPuede()) { toast('🔒 Solo Compras, Facturación y Tesorería registran pagos', 'error'); return; }
   const oc = (state.ordenes_compra || []).find(o => o.id === id); if (!oc) return;
@@ -40854,7 +41410,7 @@ function renderTarjetaOC(oc, esCOMP) {
         ` : ''}
         ${window._ocEsCxP && window._ocEsCxP(oc) ? `
           <span style="padding:6px 10px;background:#fef3c7;color:#92400e;border:1.5px solid #f59e0b;border-radius:6px;font-weight:800;font-size:10.5px;">💰 POR PAGAR${(() => { const v = window._ocVencePago(oc); const hoy = new Date().toLocaleDateString('en-CA'); return v ? ` · vence ${v}${v < hoy ? ' ⚠ VENCIDO' : ''}` : ''; })()}</span>
-          ${window._cxpPuede() ? `<button onclick="window.ocMarcarPagada('${oc.id}')" style="padding:6px 12px;background:#0f766e;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">💰 Registrar pago</button>` : ''}
+          ${(state.user?.rol === 'admin' || ['COMP', 'CYC', 'CEO', 'ADMIN'].includes(state.user?.depto)) && !(state.facturas_proveedor || []).some(f => f.oc_id === oc.id) ? `<button onclick="window.provFacRegistrar('${oc.id}')" style="padding:6px 12px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">🧾 Registrar factura prov.</button>` : ''}${window._cxpPuede() ? `<button onclick="window.ocMarcarPagada('${oc.id}')" style="padding:6px 12px;background:#0f766e;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:11px;">💰 Registrar pago</button>` : ''}
         ` : ''}
         ${oc.pagada === true ? `
           <span style="padding:6px 10px;background:#dcfce7;color:#166534;border:1.5px solid #16a34a;border-radius:6px;font-weight:800;font-size:10.5px;" title="Ref: ${(oc.pago_referencia || '').replace(/"/g, '&quot;')} · registró ${oc.pago_registrado_por || ''}">✅ PAGADA ${oc.pago_fecha || ''}</span>

@@ -54,6 +54,17 @@ service cloud.firestore {
       return isAuth() && (isAdmin() || userDept() in ['FAC','CYC','CEO','ADMIN']);
     }
 
+    // 🧪 VALIDACIÓN DE ESQUEMA (18-ago): si el campo viene en la escritura, debe
+    //    ser NÚMERO no negativo dentro de rango. No exige campos (los flujos
+    //    legítimos varían) — bloquea texto basura, negativos y cifras absurdas.
+    //    Aplica a TODOS, incluido admin: la basura es basura.
+    function numOpc(campo, max) {
+      return !(campo in request.resource.data)
+        || (request.resource.data[campo] is number
+            && request.resource.data[campo] >= 0
+            && request.resource.data[campo] <= max);
+    }
+
     // ────────────────────────────────────────────────────────────
     // USUARIOS
     // ────────────────────────────────────────────────────────────
@@ -67,7 +78,9 @@ service cloud.firestore {
             && request.resource.data.depto == resource.data.depto
             && request.resource.data.rol == resource.data.rol
             // 🔒 evita auto-marcarse jefe (ahora habilita ver costos $ en Planeación)
-            && request.resource.data.get('es_jefe', false) == resource.data.get('es_jefe', false));
+            && request.resource.data.get('es_jefe', false) == resource.data.get('es_jefe', false)
+            // 🔒 evita auto-otorgarse el permiso personal de COMISIONES
+            && request.resource.data.get('ve_comisiones', false) == resource.data.get('ve_comisiones', false));
       allow delete: if isAdminOrCEO();
     }
 
@@ -76,7 +89,8 @@ service cloud.firestore {
     // ────────────────────────────────────────────────────────────
     // 🆕 CLIENTES: FAC y CYC pueden editar datos fiscales y código
     match /clientes/{id} {
-      allow read: if userExists();
+      // 🔒 RLS 18-ago: datos fiscales de clientes: quienes venden, planean, certifican o embarcan (PRO/MTTO/RH fuera)
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','COMP','CEO','ADMIN','FAC','CYC','PLN','CAL','ALP','CEDMTY','CEDMEX']);
       allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','FAC','CYC'];
     }
 
@@ -88,8 +102,10 @@ service cloud.firestore {
     }
 
     match /cliente_productos/{id} {
-      allow read: if userExists();
-      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN'];
+      // 🔒 RLS 18-ago: PRECIOS por cliente — el piso no los necesita y no debe verlos
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','COMP','CEO','ADMIN','FAC','CYC']);
+      // 💲 FAC/CYC también capturan/actualizan PRECIOS por cliente-producto
+      allow write: if isAdmin() || userDept() in ['CS','KAM','CEO','COMP','ADMIN','FAC','CYC'];
     }
 
     match /almacenes/{id} {
@@ -121,7 +137,8 @@ service cloud.firestore {
       // 🆕 create ampliado a ALP/CEDMTY/CEDMEX: al ENTREGAR una parcialidad por ruta el sistema
       //    genera la OV de SALDO automática (y esos deptos hacen la entrega). También el botón
       //    "Generar OV" desde Stock para desatorar material de cliente sin OV.
-      allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN','CS','KAM','ALP','CEDMTY','CEDMEX','FAC']);
+      // 🆕 PLN: Planeación APRUEBA los PI y el aprobado genera las OV en el mismo batch.
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN','CS','KAM','ALP','CEDMTY','CEDMEX','FAC','PLN']);
       allow update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CAL','ALP','CEDMTY','CEDMEX','CEO','ADMIN','FAC','CYC']);
       allow delete: if isAdmin();
     }
@@ -136,23 +153,33 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ⏳ TEMPORAL 14-ago: PLN también CAPTURA producción mientras se ajustan los
+    //    ritmos de trabajo. Cuando el piso quede parejo, quitar 'PLN' del create.
     match /capturas_produccion/{id} {
       allow read: if userExists();
-      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CEO','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']);
+      allow create: if (isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']))
+        && numOpc('producido_kg', 50000) && numOpc('mermas_kg', 50000);
+      allow update: if (isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']))
+        && numOpc('producido_kg', 50000) && numOpc('mermas_kg', 50000);
       allow delete: if isAdmin();
     }
 
+    // ⏳ TEMPORAL 14-ago: PLN también captura rollos (mismo motivo de arriba)
     match /rollos_extrusion/{id} {
       allow read: if userExists();
-      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CEO','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']);
+      allow create: if (isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']))
+        && numOpc('peso_kg', 20000) && numOpc('mermas_kg', 20000);
+      allow update: if (isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN']))
+        && numOpc('peso_kg', 20000) && numOpc('mermas_kg', 20000);
       allow delete: if isAdmin();
     }
 
+    // 🔧 FIX 12-ago: CEDMTY/CEDMEX pueden CREAR lotes — el ALTA INICIAL de inventario
+    //    físico (herramienta de arranque) crea lote + tarimas en un batch, y el batch
+    //    completo era rechazado porque lotes.create no incluía a los CEDIS.
     match /lotes/{id} {
       allow read: if userExists();
-      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CAL','ALP','CEO','ADMIN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','CAL','ALP','CEDMTY','CEDMEX','CEO','ADMIN']);
       allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','PRO','CAL','CEO','ADMIN','CS','KAM']);
       allow delete: if isAdmin();
     }
@@ -161,8 +188,10 @@ service cloud.firestore {
       allow read: if userExists();
       // 🆕 create ampliado a CEDMTY/CEDMEX/CS/KAM: la toma parcial de una tarima crea la
       //    tarima REMANENTE al asignar a la OV (embarques), y eso lo hacen esos deptos.
-      allow create: if isAuth() && (isAdmin() || userDept() in ['CAL','ALP','CEDMTY','CEDMEX','CS','KAM','CEO','ADMIN']);
-      allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CAL','CEO','ADMIN','CS','KAM','FAC']);
+      allow create: if (isAuth() && (isAdmin() || userDept() in ['CAL','ALP','CEDMTY','CEDMEX','CS','KAM','CEO','ADMIN']))
+        && numOpc('cantidad', 1000000) && numOpc('cantidad_actual', 1000000);
+      allow update: if (isAuth() && (isAdmin() || userDept() in ['ALP','CEDMTY','CEDMEX','CAL','CEO','ADMIN','CS','KAM','FAC']))
+        && numOpc('cantidad', 1000000) && numOpc('cantidad_actual', 1000000);
       allow delete: if isAdmin();
     }
 
@@ -240,19 +269,51 @@ service cloud.firestore {
     // 🆕 FACTURACIÓN, CRÉDITO Y COBRANZA
     // ────────────────────────────────────────────────────────────
     match /facturas/{id} {
-      allow read: if userExists();
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['FAC','CEO','ADMIN']);
+      // 🔒 RLS 18-ago: montos facturados: finanzas, comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['FAC','CYC','CS','KAM','PLN','CEO','ADMIN']);
+      // Emitir/cancelar: solo FAC. 🔒 FIX: CYC también ACTUALIZA (marcar pagada al
+      //    liquidar cobros y registrar gestiones de cobranza) — antes le daba
+      //    Missing permissions al liquidar una factura.
+      allow create: if (isAuth() && (isAdmin() || userDept() in ['FAC','CEO','ADMIN']))
+        && request.resource.data.monto is number && request.resource.data.monto > 0 && request.resource.data.monto <= 50000000 && numOpc('subtotal', 50000000);
+      allow update: if (isAuth() && (isAdmin() || userDept() in ['FAC','CYC','CEO','ADMIN']))
+        && numOpc('monto', 50000000) && numOpc('saldo', 50000000) && numOpc('subtotal', 50000000);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
 
+    // ────────────────────────────────────────────────────────────
+    // 🏦 TESORERÍA — saldo bancario semilla del flujo de caja.
+    //    Dato SENSIBLE: solo Finanzas (FAC/CYC) y Dirección.
+    // ────────────────────────────────────────────────────────────
+    match /tesoreria/{id} {
+      // 🔒 SEGREGACIÓN 20-ago: saldo de bancos solo Tesorería (CYC) y Dirección — FAC no
+      allow read, write: if isAuth() && (isAdmin() || userDept() in ['CYC', 'CEO', 'ADMIN']);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 🧾 FACTURAS DE PROVEEDOR — el CxP real: registra Compras (con
+    //    evidencia, ligada a la OC), concilia/programa/paga Tesorería,
+    //    autoriza Dirección. No se borran (registro contable).
+    // ────────────────────────────────────────────────────────────
+    match /facturas_proveedor/{id} {
+      allow read: if isAuth() && (isAdmin() || userDept() in ['COMP', 'CYC', 'CEO', 'ADMIN']);
+      allow create: if (isAuth() && (isAdmin() || userDept() in ['COMP', 'CYC', 'CEO', 'ADMIN']))
+        && request.resource.data.monto is number && request.resource.data.monto > 0 && request.resource.data.monto <= 50000000;
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CYC', 'CEO', 'ADMIN']);
+      allow delete: if isAdminOrCEO();
+    }
+
     match /cobros/{id} {
-      allow read: if userExists();
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CEO','ADMIN']);
+      // 🔒 RLS 18-ago: cobros: finanzas, comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['FAC','CYC','CS','KAM','PLN','CEO','ADMIN']);
+      allow create, update: if (isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CEO','ADMIN']))
+        && request.resource.data.monto is number && request.resource.data.monto > 0 && request.resource.data.monto <= 50000000;
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
 
     match /movimientos_credito/{id} {
-      allow read: if userExists();
+      // 🔒 RLS 18-ago: crédito: finanzas, comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['FAC','CYC','CS','KAM','PLN','CEO','ADMIN']);
       allow create: if isAuth() && (isAdmin() || userDept() in ['CYC','FAC','CEO','ADMIN']);
       allow update, delete: if isAdmin();
     }
@@ -311,6 +372,146 @@ service cloud.firestore {
     }
 
     // ────────────────────────────────────────────────────────────
+    // 🔬 VERIFICACIONES DE CALIDAD EN PROCESO (VQ) — registro INMUTABLE
+    //    (evidencia ISO 9001). Crea Calidad/dirección; lee todos (a
+    //    Producción le sirve ver sus resultados); nadie edita; borra
+    //    solo dirección (corrección de errores graves).
+    // ────────────────────────────────────────────────────────────
+    match /verificaciones_calidad/{id} {
+      allow read: if userExists();
+      allow create: if isCalidad();
+      allow update: if false;
+      allow delete: if isAdminOrCEO();
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 📐 RADIALES Y CONTROL — perfil radial de calibre y control de
+    //    largos (reemplaza el Excel). Mismo modelo que las VQ:
+    //    registro inmutable, solo Calidad captura.
+    // ────────────────────────────────────────────────────────────
+    match /radiales/{id} {
+      allow read: if userExists();
+      allow create: if isCalidad();
+      allow update: if false;
+      allow delete: if isAdminOrCEO();
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 🧯 NO CONFORMIDADES / CAPA — cualquiera reporta; gestiona
+    //    Calidad (CAL/ALP) y dirección. No se borran (histórico).
+    // ────────────────────────────────────────────────────────────
+    match /no_conformidades/{id} {
+      allow read: if userExists();
+      allow create: if userExists();
+      allow update: if isAuth() && (isAdmin()
+        || userDept() in ['CAL','ALP','CEO','ADMIN']
+        || resource.data.creado_por == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 📜 CERTIFICADOS DE CALIDAD EMITIDOS — registro inmutable
+    //    (folio único por emisión; la reimpresión reutiliza el folio)
+    // ────────────────────────────────────────────────────────────
+    match /certificados_calidad/{id} {
+      allow read: if userExists();
+      allow create: if userExists();
+      // Reimpresión: cualquier usuario solo puede tocar el contador de reimpresiones
+      allow update: if isAdmin() || (userExists()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reimpresiones','ultima_reimpresion_at','ultima_reimpresion_por']));
+      allow delete: if isAdmin();
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 👥 CAPITAL HUMANO
+    //    empleados (expedientes): RH, CEO y ADMIN.
+    //    🔐 nominas: ULTRA SENSIBLE — SOLO deptos RH y CEO. Deliberadamente
+    //    NO incluye isAdmin() ni depto ADMIN (instrucción de dirección).
+    //    💰 comisiones: permiso POR PERSONA (flag ve_comisiones en su usuario),
+    //    no por departamento — más RH y CEO.
+    // ────────────────────────────────────────────────────────────
+    match /empleados/{id} {
+      allow read, create, update: if isAuth() && userDept() in ['RH','CEO','ADMIN'];
+      allow delete: if isAuth() && userDept() in ['RH','CEO'];
+    }
+
+    match /nominas/{id} {
+      allow read, create, update, delete: if isAuth() && userDept() in ['RH','CEO'];
+    }
+    // Catálogo de conceptos de nómina (bonos, deducciones, fondo) — mismo blindaje
+    match /nomina_conceptos/{id} {
+      allow read, create, update, delete: if isAuth() && userDept() in ['RH','CEO'];
+    }
+    // 💳 Préstamos a empleados — se descuentan vía nómina. Mismo blindaje.
+    match /prestamos_rh/{id} {
+      allow read, create, update, delete: if isAuth() && userDept() in ['RH','CEO'];
+    }
+    // 💰 Condiciones de pago por empleado (sueldo semanal, fijos, aumentos) — blindado
+    match /nomina_condiciones/{id} {
+      allow read, create, update, delete: if isAuth() && userDept() in ['RH','CEO'];
+    }
+    // 💸 Gastos (renta, caja chica, servicios, transporte...) — SOLO RH/CEO
+    match /gastos_rh/{id} {
+      allow read, create, update, delete: if isAuth() && userDept() in ['RH','CEO'];
+    }
+
+    function veComisiones() {
+      return userExists() && userProfile().get('ve_comisiones', false) == true;
+    }
+    match /comisiones_vendedores/{id} {
+      allow read, create, update: if isAuth() && (veComisiones() || userDept() in ['CEO','RH']);
+      allow delete: if isAuth() && userDept() in ['CEO','RH'];
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 🤝 CRM F1 — cuentas (prospectos) y contactos. Escritura: comercial
+    //    y dirección. Borrado duro solo dirección (lo normal es activo:false).
+    // ────────────────────────────────────────────────────────────
+    match /crm_cuentas/{id} {
+      // 🔒 RLS 18-ago: pipeline e importes: solo comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow delete: if isAdminOrCEO();
+    }
+    match /crm_contactos/{id} {
+      // 🔒 RLS 18-ago: pipeline e importes: solo comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow delete: if isAdminOrCEO();
+    }
+    // 🎯 CRM F2 — oportunidades del pipeline (mismo perfil que cuentas)
+    match /crm_oportunidades/{id} {
+      // 🔒 RLS 18-ago: pipeline e importes: solo comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow delete: if isAdminOrCEO();
+    }
+    // 📞 CRM F3 — actividad comercial (contactos con próxima acción obligatoria)
+    match /crm_actividades/{id} {
+      // 🔒 RLS 18-ago: pipeline e importes: solo comercial y dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEO','ADMIN']);
+      allow delete: if isAdminOrCEO();
+    }
+    // 📇 DIRECTORIO INTERNO — lo ven todos; lo mantienen dirección y RH
+    match /directorio/{id} {
+      allow read: if userExists();
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN','RH']);
+      allow delete: if isAdminOrCEO();
+    }
+    // 🕸 CAMBIOS DE MALLA (extrusión) — lo registran operadores y supervisores de
+    //    producción; MTTO/PLN/CAL lo consultan. NO se borra (es bitácora del equipo):
+    //    un registro equivocado se anula con motivo (update), nunca se elimina.
+    match /cambios_malla/{id} {
+      allow read: if userExists();
+      allow create: if isAuth() && (isAdmin() || userDept() in ['PRO','PLN','CEO','ADMIN','MTTO']);
+      // 🔒 Solo Planeación/Dirección ANULAN un registro (con motivo): el operador
+      //    registra pero no puede borrar ni maquillar su propio historial.
+      allow update: if isAuth() && (isAdmin() || userDept() in ['PLN','CEO','ADMIN']);
+      allow delete: if false;
+    }
+
+    // ────────────────────────────────────────────────────────────
     // 📜 BITÁCORA DE AUDITORÍA — INMUTABLE
     //    Se escribe con cada acción crítica; nadie la edita ni la
     //    borra (ni siquiera en los resets). Lectura: solo dirección.
@@ -362,7 +563,11 @@ service cloud.firestore {
 
     match /lotes_mp/{id} {
       allow read: if userExists();
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ALP','COMP','CEO','PRO','ADMIN']);
+      // 🔬 FD: +CAL — Calidad libera/rechaza lotes en cuarentena
+      // 🔧 FIX 15-ago: +CEDIS en CREATE — la vista "Recibir material" también la tienen
+      //    los CEDIS; si reciben una OC con línea de MP, el batch crea el lote_mp.
+      allow create: if isAuth() && (isAdmin() || userDept() in ['ALP','COMP','CEO','PRO','ADMIN','CAL','CEDMTY','CEDMEX']);
+      allow update: if isAuth() && (isAdmin() || userDept() in ['ALP','COMP','CEO','PRO','ADMIN','CAL']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
 
@@ -380,16 +585,28 @@ service cloud.firestore {
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
 
+    // 💰 COTIZACIONES DE PROVEEDOR — el comparativo que arma Abastecimiento antes
+    //    de generar la OC. Es evidencia de la decisión de compra: no se borra, se anula.
+    match /cotizaciones_proveedor/{id} {
+      // 🔒 RLS 18-ago: comparativos de proveedores: compras y finanzas
+      allow read: if isAuth() && (isAdmin() || userDept() in ['COMP','FAC','CYC','CEO','ADMIN']);
+      allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
+      allow delete: if false;
+    }
+
     match /ordenes_compra/{id} {
-      allow read: if userExists();
+      // 🔒 RLS 18-ago: costos de compra; almacenes conservan lectura SOLO porque reciben OCs (su vista de OCs sigue bloqueada en UI)
+      // 🔒 SEGREGACIÓN 20-ago: FAC fuera — CxP y pagos son de Tesorería (CYC) y Dirección
+      allow read: if isAuth() && (isAdmin() || userDept() in ['COMP','CYC','ALP','CEDMTY','CEDMEX','PLN','CEO','ADMIN']);
       allow create: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
-      // 🆕 FAC también edita OCs (facturas de proveedores)
-      allow update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','ALP','CEDMTY','CEDMEX','FAC']);
+      // CYC programa y registra PAGOS (cuentas por pagar); Dirección autoriza
+      allow update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','ALP','CEDMTY','CEDMEX','CYC']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
     }
 
     match /proveedores/{id} {
-      allow read: if userExists();
+      // 🔒 RLS 18-ago: catálogo de proveedores: compras y finanzas
+      allow read: if isAuth() && (isAdmin() || userDept() in ['COMP','FAC','CYC','CEO','ADMIN']);
       // 🆕 FAC y CYC editan datos fiscales de proveedores
       allow create, update: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN','FAC','CYC']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['COMP','CEO','ADMIN']);
@@ -409,13 +626,20 @@ service cloud.firestore {
     // ────────────────────────────────────────────────────────────
     match /productos_mtto/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP']);
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['MTTO','CEO','ADMIN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['MTTO','CEO','ADMIN']);
+      // 🔧 FIX 15-ago: la RECEPCIÓN de una OC con refacciones actualiza el stock del
+      //    producto MTTO dentro del MISMO batch (atómico) que crea el movimiento y
+      //    actualiza la OC. Quien recibe es COMP/ALP/CEDIS → sin este update el batch
+      //    completo moría con "missing permissions" (misma clase que el alta de CEDIS).
+      allow update: if isAuth() && (isAdmin() || userDept() in ['MTTO','CEO','ADMIN','COMP','ALP','CEDMTY','CEDMEX']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
 
     match /movimientos_mtto/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP']);
-      allow create: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP']);
+      // 🔧 FIX 15-ago: +CEDIS — si un CEDIS ejecuta la recepción de una OC con línea
+      //    MTTO, el batch crea el movimiento de entrada a su nombre.
+      allow create: if isAuth() && (isAdmin() || userDept() in ['MTTO','COMP','CEO','ADMIN','ALP','CEDMTY','CEDMEX']);
       allow update, delete: if false;
     }
 
@@ -461,7 +685,11 @@ service cloud.firestore {
         'ALP','CEDMTY','CEDMEX','ADMIN','COMP','CEO',
         'CS','KAM','PLN','PRO','CAL','MTTO','FAC','CYC'
       ]);
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO']);
+      // 🔧 FIX 15-ago: +ALP/CEDIS/FAC/CYC en UPDATE — salidas/ajustes/recepción de OC
+      //    actualizan el stock EN el producto (mismo batch). El ALTA sigue COMP/dir.
+      //    (Módulo aún oculto en el sidebar; queda listo para cuando se active.)
+      allow update: if isAuth() && (isAdmin() || userDept() in ['ADMIN','COMP','CEO','ALP','CEDMTY','CEDMEX','FAC','CYC']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
 
@@ -479,7 +707,12 @@ service cloud.firestore {
     // ────────────────────────────────────────────────────────────
     match /productos_comercializados/{id} {
       allow read: if isAuth() && (isAdmin() || userDept() in ['CS','KAM','CEDMTY','CEDMEX','COMP','CEO','ADMIN']);
-      allow create, update: if isAuth() && (isAdmin() || userDept() in ['CS','COMP','CEO','ADMIN']);
+      allow create: if isAuth() && (isAdmin() || userDept() in ['CS','COMP','CEO','ADMIN']);
+      // 🔧 FIX 15-ago: +CEDIS/ALP en UPDATE — las salidas, ajustes, transferencias y la
+      //    recepción de OC actualizan stock_por_almacen/stock_actual EN el producto
+      //    (mismo batch atómico). Los CEDIS operan ese inventario a diario; sin esto
+      //    cada salida les daba "missing permissions". El ALTA sigue solo CS/COMP/dir.
+      allow update: if isAuth() && (isAdmin() || userDept() in ['CS','COMP','CEO','ADMIN','CEDMTY','CEDMEX','ALP']);
       allow delete: if isAuth() && (isAdmin() || userDept() in ['CEO','ADMIN']);
     }
 
@@ -504,17 +737,21 @@ service cloud.firestore {
     // CONTADORES (FOLIOS)
     // ────────────────────────────────────────────────────────────
     // 🔒 FC: antes CUALQUIER usuario podía sobrescribir/resetear los folios.
-    //    Ahora: solo se permite el incremento de +1 que hace siguienteFolio();
-    //    resetear a 0 (o cualquier otro cambio) queda reservado a dirección.
+    //    Ahora: solo se permite el incremento de +1. El sistema usa DOS esquemas
+    //    de campo: 'ultimo' (siguienteFolio) y 'valor' (remisiones/OTI/RC/OC) —
+    //    ambos se aceptan. Resetear a 0 queda reservado a dirección.
+    function _cntIncOk(campo) {
+      return request.resource.data.get(campo, null) is number
+        && (!(resource.data.get(campo, null) is number)
+            || request.resource.data[campo] == resource.data[campo] + 1);
+    }
     match /contadores/{id} {
       allow read: if userExists();
-      allow create: if userExists() && request.resource.data.ultimo is number;
+      allow create: if userExists()
+        && ((request.resource.data.get('ultimo', null) is number)
+            || (request.resource.data.get('valor', null) is number));
       allow update: if isAdminOrCEO()
-        || (userExists()
-            && request.resource.data.ultimo is number
-            // contador legado no-numérico: se permite repararlo; numérico: SOLO +1
-            && (!(resource.data.ultimo is number)
-                || request.resource.data.ultimo == resource.data.ultimo + 1));
+        || (userExists() && (_cntIncOk('ultimo') || _cntIncOk('valor')));
       allow delete: if isAdminOrCEO();
     }
   }
