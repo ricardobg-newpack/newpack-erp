@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B124-fix-renombrado</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B125-mtto-auxiliares</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6134,6 +6134,7 @@ window.NP_AYUDA = [
   { p: '¿Cómo importo las facturas de CONTPAQ al sistema?', k: 'contpaq importar cfdi xml sat facturas masivo clientes proveedores uuid', v: 'facturacion', pasos: ['Exporta los XML desde CONTPAQi (o descárgalos del portal del SAT)', 'Finanzas → pestaña 📥 Importar CFDI → arrastra TODOS los XML juntos', 'El sistema clasifica solo: emitidas = clientes, recibidas = proveedores (nunca duplica, valida por UUID)', 'Importa las pendientes a cartera viva y las viejas como pagadas (histórico)'] },
   { p: '¿Cómo cambio el código de un producto que ya tiene pedidos?', k: 'cambiar codigo producto matricula propagar renombrar bs bp direccion', v: 'productos_pt', pasos: ['Solo Dirección: abre Editar Producto → botón "🆔 Cambiar código"', 'Escribe el código correcto (ej. LDBS → LDBP) — valida que no exista', 'El sistema propaga EN CADENA: línea del PI, OVs, ODPs, tarimas, lotes y relaciones cliente', 'Etiquetas, hojas y planos salen solos con el código nuevo; avisa a PLN/PRO/CS automáticamente'] },
   { p: '¿Cómo configuro las perforaciones para que salgan en el plano?', k: 'perforacion microperforada plano mecanico diametro filas distribucion bolsa', v: 'productos_pt', pasos: ['Editar Producto → sección "🕳 PERFORACIÓN"', 'Elige perforada o microperforada, Ø en mm, filas, perforaciones por fila y la zona de la bolsa', 'Guarda y saca el 📐 Plano Mecánico: el patrón se dibuja sobre la bolsa con su Ø acotado y la nota de distribución', 'Dale esa hoja al operador de bolseo — ve exactamente cómo van repartidas'] },
+  { p: '¿Cómo doy de alta un chiller, compresor u otro equipo auxiliar?', k: 'chiller compresor secador intercambiador auxiliar equipo alta maquina mantenimiento', v: 'maquinas', pasos: ['Máquinas → ➕ Nueva máquina → categoría "⚙️ Equipo auxiliar"', 'Elige el tipo (chiller, compresor de aire, secador, intercambiador...) y su ubicación', 'Queda disponible para reportarle fallas y ver su historial de mantenimiento', 'NO aparece en Programación ni en el Panel Operador — solo en Mantenimiento'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -7019,11 +7020,25 @@ function renderFallasMTTO() {
       <button onclick="window.abrirReportarFalla()" style="padding:10px 18px;background:#dc2626;color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:800;font-size:14px;">🔴 Reportar falla</button>
     </div>
 
-    <!-- KPIs -->
+    <!-- KPIs + TIEMPOS DE ACCIÓN (30 días) -->
+    ${(() => {
+      const ahora = Date.now() / 1000;
+      const en30 = (f) => (f.reportada_at?.seconds || 0) > ahora - 30 * 86400;
+      const prom = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+      const fmtMin = (min) => !min ? '—' : min >= 90 ? (min / 60).toFixed(1) + ' h' : Math.round(min) + ' min';
+      const mtta = prom(fallas.filter(f => en30(f) && f.recibida_at?.seconds && f.reportada_at?.seconds).map(f => (f.recibida_at.seconds - f.reportada_at.seconds) / 60));
+      const mttr = prom(fallas.filter(f => en30(f) && f.resuelta_at?.seconds && f.reportada_at?.seconds).map(f => (f.resuelta_at.seconds - f.reportada_at.seconds) / 60));
+      const esperas = fallas.filter(f => f.estatus === 'reportada' && f.reportada_at?.seconds).map(f => (ahora - f.reportada_at.seconds) / 60);
+      const esperaMax = esperas.length ? Math.max(...esperas) : 0;
+      const cnt = {};
+      fallas.filter(en30).forEach(f => { const k = f.maquina_nombre || f.maquina_codigo || '—'; cnt[k] = (cnt[k] || 0) + 1; });
+      const top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0];
+      return `
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:10px;margin-bottom:16px;">
-      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #dc2626;">
+      <div style="background:${esperaMax > 15 ? '#fef2f2' : '#fff'};padding:14px;border-radius:12px;border-left:4px solid #dc2626;${esperaMax > 15 ? 'border:1.5px solid #fca5a5;border-left:4px solid #dc2626;' : ''}">
         <div style="font-size:10px;font-weight:700;color:#64748b;">🔴 SIN RECIBIR</div>
         <div style="font-size:24px;font-weight:900;color:#dc2626;">${reportadas}</div>
+        ${esperaMax ? `<div style="font-size:10.5px;font-weight:800;color:${esperaMax > 15 ? '#dc2626' : '#94a3b8'};">⏱ la más vieja lleva ${fmtMin(esperaMax)}</div>` : ''}
       </div>
       <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #3b82f6;">
         <div style="font-size:10px;font-weight:700;color:#64748b;">🔵 EN PROCESO</div>
@@ -7033,11 +7048,23 @@ function renderFallasMTTO() {
         <div style="font-size:10px;font-weight:700;color:#64748b;">🚨 CRÍTICAS ABIERTAS</div>
         <div style="font-size:24px;font-weight:900;color:#dc2626;">${criticasAbiertas}</div>
       </div>
-      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #16a34a;">
-        <div style="font-size:10px;font-weight:700;color:#64748b;">🟢 RESUELTAS</div>
-        <div style="font-size:24px;font-weight:900;color:#16a34a;">${resueltasMes}</div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #0891b2;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">⏱ RESPUESTA PROM. (30d)</div>
+        <div style="font-size:24px;font-weight:900;color:#0891b2;">${fmtMin(mtta)}</div>
+        <div style="font-size:9.5px;color:#94a3b8;">de reportada a recibida</div>
       </div>
-    </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #7c3aed;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🔧 REPARACIÓN PROM. (30d)</div>
+        <div style="font-size:24px;font-weight:900;color:#7c3aed;">${fmtMin(mttr)}</div>
+        <div style="font-size:9.5px;color:#94a3b8;">de reportada a resuelta</div>
+      </div>
+      <div style="background:#fff;padding:14px;border-radius:12px;border-left:4px solid #d97706;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;">🏆 MÁS FALLAS (30d)</div>
+        <div style="font-size:15px;font-weight:900;color:#d97706;line-height:1.2;margin-top:4px;">${top ? esc(top[0]).slice(0, 22) : '—'}</div>
+        <div style="font-size:9.5px;color:#94a3b8;">${top ? top[1] + ' falla(s) — candidata a preventivo' : 'sin fallas en 30 días'}</div>
+      </div>
+    </div>`;
+    })()}
 
     <!-- Tabs -->
     <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px;">
@@ -7725,8 +7752,8 @@ function renderHistorialMaquina() {
           const nOT = (state.ordenes_trabajo_mtto||[]).filter(x => x.maquina_codigo === m.codigo).length;
           return `
             <div onclick="window.abrirHistorialMaquina('${m.codigo}')" style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;cursor:pointer;transition:box-shadow 0.15s;" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'" onmouseout="this.style.boxShadow=''">
-              <div style="font-size:15px;font-weight:800;color:#0f172a;">🏭 ${esc(m.nombre)}</div>
-              <div style="font-size:11px;color:#64748b;margin-top:3px;">${m.proceso || ''} ${m.codigo}</div>
+              <div style="font-size:15px;font-weight:800;color:#0f172a;">${m.categoria === 'auxiliar' ? '⚙️' : '🏭'} ${esc(m.nombre)}</div>
+              <div style="font-size:11px;color:#64748b;margin-top:3px;">${m.categoria === 'auxiliar' ? esc(m.tipo_equipo || 'Equipo auxiliar') + (m.ubicacion ? ' · ' + esc(m.ubicacion) : '') : (m.proceso || '')} ${m.codigo}</div>
               <div style="display:flex;gap:12px;margin-top:10px;font-size:11px;">
                 <span style="color:#dc2626;font-weight:700;">🔧 ${nFallas} falla(s)</span>
                 <span style="color:#7c3aed;font-weight:700;">🛠️ ${nOT} OT</span>
@@ -10309,7 +10336,7 @@ function renderKanbanMaquinas() {
   }
   
   // Obtener máquinas activas — múltiples campos posibles
-  const todasMaquinas = (state.maquinas || []).filter(m => m && m.activa !== false);
+  const todasMaquinas = (state.maquinas || []).filter(m => m && m.activa !== false && m.categoria !== 'auxiliar');
   
   // Filtrar por proceso seleccionado (acepta varios formatos del campo)
   let maquinas = todasMaquinas;
@@ -34722,7 +34749,7 @@ function modalMaquina(esEdicion) {
   if (esEdicion && !m) return '';
   
   if (!state.modalForm) {
-    state.modalForm = m ? { ...m, coex_capas: m.coex_capas || 1 } : { codigo: '', nombre: '', proceso_codigo: '', capacidad_kg_hr: '', coex_capas: 1, activa: true, observaciones: '' };
+    state.modalForm = m ? { ...m, coex_capas: m.coex_capas || 1, categoria: m.categoria || 'produccion' } : { codigo: '', nombre: '', proceso_codigo: '', capacidad_kg_hr: '', coex_capas: 1, activa: true, observaciones: '', categoria: 'produccion', tipo_equipo: '', ubicacion: '' };
   }
   const f = state.modalForm;
   
@@ -34746,12 +34773,31 @@ function modalMaquina(esEdicion) {
             <input class="input" id="maq-nombre" value="${f.nombre || ''}" placeholder="Ej: Extrusor 04, Bolseo nuevo" />
           </div>
           <div class="field">
+            <label class="field-label">Categoría del equipo *</label>
+            <div style="display:flex;gap:6px;">
+              <button type="button" onclick="window.modalFormSet('categoria','produccion')" style="flex:1;padding:10px 6px;border:2px solid ${f.categoria !== 'auxiliar' ? '#16a34a' : '#cbd5e1'};background:${f.categoria !== 'auxiliar' ? '#16a34a' : '#fff'};color:${f.categoria !== 'auxiliar' ? '#fff' : '#16a34a'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">🏭 Producción<div style="font-size:9px;font-weight:600;opacity:.85;">extrusoras, bolseadoras, selladoras...</div></button>
+              <button type="button" onclick="window.modalFormSet('categoria','auxiliar')" style="flex:1;padding:10px 6px;border:2px solid ${f.categoria === 'auxiliar' ? '#0891b2' : '#cbd5e1'};background:${f.categoria === 'auxiliar' ? '#0891b2' : '#fff'};color:${f.categoria === 'auxiliar' ? '#fff' : '#0891b2'};border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">⚙️ Equipo auxiliar<div style="font-size:9px;font-weight:600;opacity:.85;">chiller, compresor, secador...</div></button>
+            </div>
+            <div style="font-size:10px;color:#64748b;margin-top:5px;">Los auxiliares se reportan en Fallas y tienen su historial, pero NO aparecen en Programación ni en el Panel Operador.</div>
+          </div>
+          ${f.categoria === 'auxiliar' ? `
+          <div class="field">
+            <label class="field-label">Tipo de equipo auxiliar *</label>
+            <select class="input" id="maq-tipoeq">
+              ${['Chiller', 'Intercambiador de calor', 'Compresor de aire', 'Secador de aire', 'Torre de enfriamiento', 'Caldera', 'Subestación eléctrica', 'Planta de emergencia', 'Montacargas', 'Báscula', 'Bomba de agua', 'Otro'].map(t => `<option value="${t}" ${f.tipo_equipo === t ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Ubicación / a qué sirve <span style="font-weight:400;color:#94a3b8;">(opcional)</span></label>
+            <input class="input" id="maq-ubi" value="${f.ubicacion || ''}" placeholder="Ej: azotea, enfría COEX01-03, sala de compresores" />
+          </div>` : `
+          <div class="field">
             <label class="field-label">Proceso al que pertenece *</label>
             <select class="input" id="maq-proceso" onchange="window.modalFormSet('proceso_codigo', this.value)">
               <option value="">— Selecciona proceso —</option>
               ${PROCESOS.map(p => `<option value="${p.codigo}" ${f.proceso_codigo === p.codigo ? 'selected' : ''}>${p.icono} ${p.codigo} — ${esc(p.nombre)}</option>`).join('')}
             </select>
-          </div>
+          </div>`}
           
           ${esExtrusion ? `
             <div class="field">
@@ -34799,8 +34845,11 @@ window.confirmarMaquina = async (id) => {
   const cap = Number($('#maq-cap')?.value) || 0;
   const obs = ($('#maq-obs')?.value || '').trim();
   
+  const catMaq = state.modalForm?.categoria === 'auxiliar' ? 'auxiliar' : 'produccion';
+  const tipoEq = ($('#maq-tipoeq')?.value || '').trim();
+  const ubiEq = ($('#maq-ubi')?.value || '').trim();
   if (!codigo) { toast('Código de máquina obligatorio', 'error'); return; }
-  if (!proceso) { toast('Selecciona el proceso', 'error'); return; }
+  if (catMaq !== 'auxiliar' && !proceso) { toast('Selecciona el proceso', 'error'); return; }
   
   // Validar código único
   if (!id) {
@@ -34813,9 +34862,13 @@ window.confirmarMaquina = async (id) => {
     const data = {
       codigo,
       nombre,
-      proceso_codigo: proceso,
+      // ⚙️ Auxiliares: sin proceso — así NUNCA aparecen en Programación/Panel Operador
+      categoria: catMaq,
+      tipo_equipo: catMaq === 'auxiliar' ? (tipoEq || 'Otro') : '',
+      ubicacion: catMaq === 'auxiliar' ? ubiEq : '',
+      proceso_codigo: catMaq === 'auxiliar' ? '' : proceso,
       capacidad_kg_hr: cap,
-      coex_capas: proceso === 'P1-EXT' ? (Number(state.modalForm?.coex_capas) || 1) : 0,
+      coex_capas: proceso === 'P1-EXT' && catMaq !== 'auxiliar' ? (Number(state.modalForm?.coex_capas) || 1) : 0,
       observaciones: obs,
       updated_at: serverTimestamp()
     };
@@ -42230,8 +42283,14 @@ function modalCrearPreventivo() {
         <div class="modal-body" style="padding:20px;">
           <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🏭 Máquina/equipo *</label>
           <select class="input" onchange="state.modalForm.maquina=this.value;window.forzarRender();" style="margin-bottom:14px;">
-            <option value="">— Selecciona máquina —</option>
-            ${maquinas.map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+            <option value="">— Selecciona equipo —</option>
+            <optgroup label="🏭 MÁQUINAS DE PRODUCCIÓN">
+              ${maquinas.filter(m => m.categoria !== 'auxiliar').map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+            </optgroup>
+            ${maquinas.some(m => m.categoria === 'auxiliar') ? `
+            <optgroup label="⚙️ EQUIPOS AUXILIARES">
+              ${maquinas.filter(m => m.categoria === 'auxiliar').map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)} · ${esc(m.tipo_equipo || 'auxiliar')}${m.ubicacion ? ' (' + esc(m.ubicacion) + ')' : ''}</option>`).join('')}
+            </optgroup>` : ''}
           </select>
 
           <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Tarea a realizar *</label>
@@ -42297,8 +42356,14 @@ function modalCrearOT() {
 
           <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🏭 Máquina/equipo *</label>
           <select class="input" onchange="state.modalForm.maquina=this.value;" style="margin-bottom:14px;">
-            <option value="">— Selecciona máquina —</option>
-            ${maquinas.map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+            <option value="">— Selecciona equipo —</option>
+            <optgroup label="🏭 MÁQUINAS DE PRODUCCIÓN">
+              ${maquinas.filter(m => m.categoria !== 'auxiliar').map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+            </optgroup>
+            ${maquinas.some(m => m.categoria === 'auxiliar') ? `
+            <optgroup label="⚙️ EQUIPOS AUXILIARES">
+              ${maquinas.filter(m => m.categoria === 'auxiliar').map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)} · ${esc(m.tipo_equipo || 'auxiliar')}${m.ubicacion ? ' (' + esc(m.ubicacion) + ')' : ''}</option>`).join('')}
+            </optgroup>` : ''}
           </select>
 
           <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">Título del trabajo *</label>
@@ -42387,8 +42452,14 @@ function modalReportarFalla() {
         <div class="modal-body" style="padding:20px;">
           <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🏭 ¿Qué máquina/equipo falló? *</label>
           <select class="input" onchange="state.modalForm.maquina=this.value;" style="margin-bottom:14px;">
-            <option value="">— Selecciona máquina —</option>
-            ${maquinas.map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+            <option value="">— Selecciona equipo —</option>
+            <optgroup label="🏭 MÁQUINAS DE PRODUCCIÓN">
+              ${maquinas.filter(m => m.categoria !== 'auxiliar').map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)}${m.proceso?` (${m.proceso})`:''}</option>`).join('')}
+            </optgroup>
+            ${maquinas.some(m => m.categoria === 'auxiliar') ? `
+            <optgroup label="⚙️ EQUIPOS AUXILIARES">
+              ${maquinas.filter(m => m.categoria === 'auxiliar').map(m => `<option value="${m.codigo}" ${f.maquina===m.codigo?'selected':''}>${esc(m.nombre)} · ${esc(m.tipo_equipo || 'auxiliar')}${m.ubicacion ? ' (' + esc(m.ubicacion) + ')' : ''}</option>`).join('')}
+            </optgroup>` : ''}
           </select>
 
           <label style="display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px;">🚦 ¿Qué tan urgente es?</label>
