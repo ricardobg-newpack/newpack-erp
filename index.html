@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B129-crm-autonomo</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B130-estudio-mercado</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6138,6 +6138,7 @@ window.NP_AYUDA = [
   { p: '¿Cómo le asigno ubicación a una tarima en CEDIS?', k: 'ubicacion tarima pasillo rack nivel posicion cedis almacen ubicar pick', v: 'inv_mty', pasos: ['Inventario CEDIS MTY → panel "📍 Ubicaciones de almacén" (las SIN UBICAR salen primero en ámbar)', 'Pica "📍 Ubicar": 4 toques — pasillo A-F, rack 1-8, nivel 1-4, posición 1-2 (ej. B-5-2-1)', 'La ubicación aparece en las tablas de preparación y en el PDF de pick: "Tomar tarima T03 [B-5-2-1]"', 'Al armar pedidos ya no se busca — se va directo al rack'] },
   { p: '¿Tengo que registrar la actividad cuando cotizo a un prospecto?', k: 'cotizar prospecto actividad automatica sincronizar crm etapa doble captura', v: 'crm', pasos: ['NO — al guardar la cotización, el CRM se actualiza SOLO', 'Se registra la actividad "📄 Cotización enviada" en la cuenta', 'Si hay oportunidad abierta, brinca sola a la etapa 🧮 Cotizada', 'Tú solo registra lo que el sistema no ve: llamadas, visitas y acuerdos'] },
   { p: '¿Cómo se crean los productos de un prospecto que convertí a cliente?', k: 'convertir prospecto productos codigo automatico cotizacion pedido alta', v: 'crm', pasos: ['Al picar ✨ Convertir, el sistema revisa TODAS sus cotizaciones', 'Te propone crear los códigos de producto de lo cotizado (ficha básica automática)', 'Aceptas y los códigos quedan listos para capturar su primer pedido', 'Producción completa después el empaque y la ficha técnica'] },
+  { p: '¿Dónde veo las ventas por estado, industria o tamaño de empresa?', k: 'estudio mercado ventas estado ciudad industria tamano region diagramas junta', v: 'crm', pasos: ['CRM → pestaña 🗺 Mercado', 'Elige la dimensión (estado, ciudad, industria, tamaño, territorio, vendedor) y la métrica (ventas reales 12m, potencial o cuentas)', 'Las barras se rearman al instante — perfecto para la junta con Dirección', 'Los grupos "Sin dato" en rojo son cuentas por completar: el estudio vale lo que la captura'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -27108,6 +27109,86 @@ window.actHecha = async (id) => {
 };
 
 window.crmTabSet = (t) => { state.crmTab = t; render(); };
+
+// ═══════════════════════════════════════════════════════════
+// 🗺 ESTUDIO DE MERCADO — la vista de junta Comercial + Dirección:
+// potencial capturado y VENTAS REALES (facturas 12 meses) cruzados por
+// estado, ciudad, industria, tamaño, clasificación, territorio o vendedor.
+// Los "Sin dato" delatan lo que falta capturar: el estudio vale lo que la captura.
+// ═══════════════════════════════════════════════════════════
+window._renderCRMMercado = () => {
+  const dim = state.mkDim || 'estado';
+  const met = state.mkMet || 'ventas';
+  const cuentas = (window._crmCuentas ? window._crmCuentas() : []);
+  const hoyMs = Date.now();
+  // Ventas reales 12 meses por código de cliente
+  const ventasPorCli = {};
+  (state.facturas || []).forEach(fa => {
+    if (fa.estado === 'cancelada') return;
+    const ts = fa.fecha ? new Date(fa.fecha + 'T12:00:00').getTime() : 0;
+    if (!ts || hoyMs - ts > 365 * 86400000) return;
+    const cod = fa.cliente_codigo || '';
+    if (!cod) return;
+    ventasPorCli[cod] = (ventasPorCli[cod] || 0) + (Number(fa.subtotal) || (Number(fa.monto) || 0) / 1.16);
+  });
+  const DIMS = {
+    estado: ['🗺 Estado', (c) => c.estado || ''],
+    ciudad: ['🏙 Ciudad', (c) => c.ciudad || ''],
+    industria: ['🏭 Industria', (c) => c.industria || c.sector || ''],
+    tamano: ['📏 Tamaño de empresa', (c) => c.tamano || c['tamaño'] || ''],
+    clasificacion: ['🎯 Clasificación', (c) => c.clasificacion || ''],
+    territorio: ['🧭 Territorio', (c) => c.territorio || ''],
+    vendedor: ['👤 Vendedor', (c) => c.vendedor || ''],
+  };
+  const grupos = {};
+  cuentas.forEach(c => {
+    const k = String(DIMS[dim][1](c) || '').trim() || '— Sin dato —';
+    if (!grupos[k]) grupos[k] = { cuentas: 0, potencial: 0, ventas: 0, clientes: 0 };
+    grupos[k].cuentas++;
+    grupos[k].potencial += Number(c.potencial_anual) || Number(c.potencial) || 0;
+    if (c.esCliente && c.codigo) { grupos[k].clientes++; grupos[k].ventas += ventasPorCli[c.codigo] || 0; }
+    else if (c.esCliente && c.key) { const cod = String(c.key).slice(2); grupos[k].clientes++; grupos[k].ventas += ventasPorCli[cod] || 0; }
+  });
+  const valorDe = (g) => met === 'ventas' ? g.ventas : met === 'potencial' ? g.potencial : g.cuentas;
+  const lista = Object.entries(grupos).map(([k, g]) => ({ k, g, v: valorDe(g) })).sort((a, b) => b.v - a.v);
+  const total = lista.reduce((s, x) => s + x.v, 0) || 1;
+  const maxV = lista[0]?.v || 1;
+  const fmtV = (v) => met === 'cuentas' ? fmtNum(v) : '$' + fmtNum(v.toFixed(0));
+  const top1pct = lista.length ? Math.round((lista[0].v / total) * 100) : 0;
+  const sinDato = grupos['— Sin dato —'];
+  const btn = (activo, onclick, txt) => `<button class="tab-btn ${activo ? 'active' : ''}" onclick="${onclick}">${txt}</button>`;
+  return `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;">
+      <span style="font-size:11px;font-weight:800;color:var(--text-muted);">VER POR:</span>
+      ${Object.entries(DIMS).map(([id, [nom]]) => btn(dim === id, `state.mkDim='${id}';render();`, nom)).join('')}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
+      <span style="font-size:11px;font-weight:800;color:var(--text-muted);">MEDIR:</span>
+      ${btn(met === 'ventas', `state.mkMet='ventas';render();`, '💵 Ventas reales 12m (sin IVA)')}
+      ${btn(met === 'potencial', `state.mkMet='potencial';render();`, '🔮 Potencial anual capturado')}
+      ${btn(met === 'cuentas', `state.mkMet='cuentas';render();`, '👥 Número de cuentas')}
+    </div>
+    ${lista.length > 1 && top1pct >= 50 && lista[0].k !== '— Sin dato —' ? `
+    <div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:10px;padding:9px 14px;font-size:12px;color:#92400e;margin-bottom:10px;">💡 <strong>${esc(lista[0].k)}</strong> concentra el <strong>${top1pct}%</strong> — gran fortaleza y gran riesgo: diversificar ${DIMS[dim][0].replace(/^[^ ]+ /, '')} protege el negocio.</div>` : ''}
+    ${sinDato && sinDato.cuentas > 3 && dim !== 'vendedor' ? `
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:9px 14px;font-size:12px;color:#991b1b;margin-bottom:10px;">✏️ Hay <strong>${sinDato.cuentas} cuenta(s) sin ${DIMS[dim][0].replace(/^[^ ]+ /, '').toLowerCase()}</strong> capturado — el estudio vale lo que la captura: complétalas.</div>` : ''}
+    <div class="panel" style="padding:16px 18px;">
+      <div style="font-weight:900;font-size:14px;margin-bottom:12px;">${DIMS[dim][0]} · ${met === 'ventas' ? 'Ventas reales últimos 12 meses' : met === 'potencial' ? 'Potencial anual capturado' : 'Cuentas'} — total ${fmtV(total === 1 && !lista.length ? 0 : total)}</div>
+      ${lista.slice(0, 14).map(({ k, g, v }) => `
+        <div style="margin-bottom:9px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+            <span style="font-weight:800;${k === '— Sin dato —' ? 'color:#dc2626;' : ''}">${esc(k)} <span style="font-weight:600;color:var(--text-subtle);">· ${g.cuentas} cuenta(s)${g.clientes ? ` · ${g.clientes} cliente(s)` : ''}</span></span>
+            <span style="font-weight:900;">${fmtV(v)} <span style="font-weight:600;color:var(--text-subtle);">(${Math.round((v / total) * 100)}%)</span></span>
+          </div>
+          <div style="height:14px;background:var(--surface-alt, #f1f5f9);border-radius:7px;overflow:hidden;">
+            <div style="height:100%;width:${Math.max(2, Math.round((v / maxV) * 100))}%;border-radius:7px;background:${k === '— Sin dato —' ? '#dc2626' : 'linear-gradient(90deg,#0f766e,#3fd34b)'};transition:width .4s var(--ease, ease);"></div>
+          </div>
+        </div>`).join('') || '<div style="color:#94a3b8;font-size:12px;padding:12px;">Sin datos aún — captura cuentas con su estado, industria y tamaño</div>'}
+      ${lista.length > 14 ? `<div style="font-size:10.5px;color:#94a3b8;">+ ${lista.length - 14} grupo(s) más pequeños</div>` : ''}
+      <div style="font-size:10.5px;color:var(--text-subtle);margin-top:10px;">💵 Ventas = facturas reales (sin IVA) ligadas al código de cliente · 🔮 Potencial = lo capturado en cada cuenta · cruce por ${DIMS[dim][0].toLowerCase()} según la ficha de la cuenta. Cambia de dimensión en un clic durante la junta.</div>
+    </div>`;
+};
+
 window.crmFiltro = (v) => { state.filtros.crm = v; window.forzarRender(); window._cotFoco('crm-buscar'); };
 window.crmSet = (campo, v, focusId) => { if (!state.crmExpForm) return; state.crmExpForm[campo] = v; window.forzarRender(); if (focusId) window._cotFoco(focusId); };
 
@@ -27851,10 +27932,12 @@ function renderCRM() {
       <button class="tab-btn ${crmTab === 'pipeline' ? 'active' : ''}" onclick="window.crmTabSet('pipeline')" style="border-color:#b45309;">🎯 Pipeline (${nOppAb})</button>
       <button class="tab-btn ${crmTab === 'actividades' ? 'active' : ''}" onclick="window.crmTabSet('actividades')" style="border-color:#16a34a;">📞 Actividades${nVencidas ? ` <span style="background:#dc2626;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:900;">${nVencidas}</span>` : nHoyAct ? ` <span style="background:#f59e0b;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:900;">${nHoyAct}</span>` : ''}</button>
       <button class="tab-btn ${crmTab === 'kpis' ? 'active' : ''}" onclick="window.crmTabSet('kpis')" style="border-color:#7c3aed;">📊 KPIs</button>
+      <button class="tab-btn ${crmTab === 'mercado' ? 'active' : ''}" onclick="window.crmTabSet('mercado')" style="border-color:#0f766e;">🗺 Mercado</button>
     </div>`;
   if (crmTab === 'pipeline') return tabsBar + window._renderCRMPipeline();
   if (crmTab === 'actividades') return tabsBar + window._renderCRMActividades();
   if (crmTab === 'kpis') return tabsBar + window._renderCRMKpis();
+  if (crmTab === 'mercado') return tabsBar + window._renderCRMMercado();
   const filtro = (state.filtros.crm || '').toLowerCase();
   const fTipo = state.crmFiltroTipo || 'todas';
   const fPrio = state.crmFiltroPrio || 'todas';
@@ -27914,8 +27997,28 @@ function renderCRM() {
             <select class="input" style="width:105px;" onchange="window.crmSet('fact_periodo', this.value)"><option value="mensual" ${(f.fact_periodo || 'mensual') === 'mensual' ? 'selected' : ''}>Mensual</option><option value="anual" ${f.fact_periodo === 'anual' ? 'selected' : ''}>Anual</option></select>
           </div></div>
         <div>${lbl('Página web')}<input class="input" id="crm-web" type="text" value="${(f.web || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('web', this.value, 'crm-web')" placeholder="www..." /></div>
-        <div>${lbl('Ciudad')}<input class="input" id="crm-ciu" type="text" value="${(f.ciudad || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('ciudad', this.value, 'crm-ciu')" /></div>
-        <div>${lbl('País')}<input class="input" id="crm-pais" type="text" value="${(f.pais || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('pais', this.value, 'crm-pais')" /></div>
+        <div>${lbl('País')}
+          <select class="input" onchange="window.crmSet('pais', this.value)">
+            ${window.PAISES_NP.map(p2 => `<option value="${p2}" ${(f.pais || 'México') === p2 ? 'selected' : ''}>${p2}</option>`).join('')}
+          </select></div>
+        <div>${lbl('Estado')}
+          <select class="input" onchange="window.crmSet('estado', this.value)">
+            <option value="">— Elige estado —</option>
+            ${(typeof ESTADOS_MX !== 'undefined' ? ESTADOS_MX : Object.keys(window.CIUDADES_MX)).map(e2 => `<option value="${e2}" ${f.estado === e2 ? 'selected' : ''}>${e2}</option>`).join('')}
+          </select></div>
+        <div>${lbl('Ciudad')}
+          ${(() => {
+            const cds2 = window.CIUDADES_MX[f.estado] || [];
+            const esOtra2 = f.ciudad && cds2.length && !cds2.includes(f.ciudad);
+            if (!cds2.length) return `<input class="input" id="crm-ciu" type="text" value="${(f.ciudad || '').replace(/"/g, '&quot;')}" placeholder="elige primero el estado" oninput="window.crmSet('ciudad', this.value, 'crm-ciu')" />`;
+            return `
+            <select class="input" onchange="if(this.value==='__otra'){window.crmSet('ciudad','')}else{window.crmSet('ciudad',this.value)}">
+              <option value="">— Elige —</option>
+              ${cds2.map(c2 => `<option value="${c2}" ${f.ciudad === c2 ? 'selected' : ''}>${c2}</option>`).join('')}
+              <option value="__otra" ${esOtra2 ? 'selected' : ''}>✏️ Otra...</option>
+            </select>
+            ${esOtra2 ? `<input class="input" id="crm-ciu" style="margin-top:6px;" value="${(f.ciudad || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('ciudad', this.value, 'crm-ciu')" />` : ''}`;
+          })()}</div>
         <div>${lbl('Territorio')}<input class="input" id="crm-terr" type="text" list="crm-dl-terr" value="${(f.territorio || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('territorio', this.value, 'crm-terr')" /><datalist id="crm-dl-terr">${['Norte', 'Bajío', 'Centro', 'Sur', 'Pacífico', 'Golfo', 'USA'].map(t => `<option value="${t}"></option>`).join('')}</datalist></div>
         <div>${lbl('Origen del lead')}<select class="input" onchange="window.crmSet('origen_lead', this.value)"><option value="">—</option>${selOpts(CRM_ORIGENES, f.origen_lead)}</select></div>
         <div>${lbl('Vendedor asignado')}<input class="input" id="crm-ven" type="text" list="crm-dl-ven" value="${(f.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('vendedor', this.value, 'crm-ven')" /><datalist id="crm-dl-ven">${(state.usuarios_sistema || []).filter(x => x.activo !== false && ['CS', 'KAM', 'CEO'].includes(x.depto)).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
