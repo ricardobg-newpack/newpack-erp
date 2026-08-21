@@ -5030,7 +5030,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B133-puntos-radiales</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0821-B134-fix-pausa</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -12936,15 +12936,24 @@ window.iniciarProduccionODP = async (odpId, procEspecifico = null) => {
         (o.maquinas_asignadas?.[procAIniciar] === maqCodigo)
       );
       for (const otra of otrasCorriendo) {
+        // 🔧 Sincronizar TAMBIÉN el estado por-proceso: antes solo se pausaba el
+        //    global y avance_procesos quedaba 'en_proceso' — datos contradictorios
+        //    que después bloqueaban pausar/reanudar esa orden desde el tablero.
+        const avOtra = JSON.parse(JSON.stringify(otra.avance_procesos || {}));
+        if (!avOtra[procAIniciar]) avOtra[procAIniciar] = {};
+        avOtra[procAIniciar].estatus = 'pausado';
+        avOtra[procAIniciar].pausa_motivo = `Pausada automáticamente al iniciar ${odp.folio} en ${maqCodigo}`;
+        avOtra[procAIniciar].pausa_iniciada_at_ms = Date.now();
         await updateDoc(doc(db, 'ordenes_produccion', otra.id), {
           proceso_estatus_actual: 'pausado',
+          avance_procesos: avOtra,
           pausa_motivo: `Pausada automáticamente al iniciar ${odp.folio} en ${maqCodigo}`,
           pausa_iniciada_at: serverTimestamp(),
           pausa_por: state.user?.nombre || state.user?.email || 'sistema',
           updated_at: serverTimestamp()
         });
         const otraLocal = state.ordenes_produccion.find(x => x.id === otra.id);
-        if (otraLocal) otraLocal.proceso_estatus_actual = 'pausado';
+        if (otraLocal) { otraLocal.proceso_estatus_actual = 'pausado'; otraLocal.avance_procesos = avOtra; }
       }
       if (otrasCorriendo.length > 0) {
         toast(`⏸ ${otrasCorriendo.map(o => o.folio).join(', ')} pausada(s) — ${maqCodigo} solo corre una a la vez`, 'info');
@@ -12979,11 +12988,28 @@ window.pausarODP = async (odpId, procEspecifico = null) => {
   if (!odp) { toast('ODP no encontrada', 'error'); return; }
   // 🆕 MODELO PARALELO: el proceso a pausar es el del panel/botón, no el global.
   const ruta = odp.ruta_procesos || [];
-  const procPausar = procEspecifico || state.panelOpProc || odp.proceso_actual || ruta[odp.proceso_actual_idx || 0] || '';
-  // Validar usando el estado REAL del proceso (no el global)
+  // ¿Este proceso está corriendo según CUALQUIERA de las dos fuentes de verdad?
+  //  - por-proceso (avance_procesos, vía estadoProceso)
+  //  - tablero (estadoODPenProceso, que usa el global para el proceso actual)
+  const _corre = (p) => p && (window.estadoProceso(odp, p) === 'en_proceso' || window.estadoODPenProceso(odp, p).corriendo === true);
+  // 🔧 FIX: si el botón no dijo cuál proceso, pausar el que REALMENTE corre:
+  //    primero el del panel (si corre ahí), luego el primero corriendo en la ruta,
+  //    y al final los respaldos de siempre.
+  const procPausar = procEspecifico
+    || (_corre(state.panelOpProc) ? state.panelOpProc : '')
+    || ruta.find(_corre)
+    || state.panelOpProc || odp.proceso_actual || ruta[odp.proceso_actual_idx || 0] || '';
+  // 🔧 FIX DESCONEXIÓN TABLERO↔PAUSA (espejo del fix de iniciarProduccionODP): el
+  //    tablero pinta "CORRIENDO" con el estado global, pero esta validación usaba
+  //    solo el por-proceso Y exigía estatus 'en_produccion' exacto. Con datos
+  //    desincronizados el botón Pausar aparecía pero la pausa se rechazaba.
+  //    Regla nueva: orden viva + cualquiera de las dos fuentes corriendo → se pausa.
+  const _cerradas = ['cancelada', 'completada', 'liberada', 'liberada_empaque', 'entregada', 'pendiente_calidad'];
   const estProc = window.estadoProceso(odp, procPausar);
-  if (odp.estatus !== 'en_produccion' || estProc !== 'en_proceso') {
-    toast('Solo se pueden pausar procesos que estén corriendo', 'error');
+  if (_cerradas.includes(odp.estatus) || !_corre(procPausar)) {
+    console.warn(`[pausarODP] ${odp.folio} rechazada: estatus=${odp.estatus} · estadoProceso(${procPausar})=${estProc} · global=${odp.proceso_estatus_actual || '—'}`);
+    const _estTxt = { sin_iniciar: 'sin iniciar', pausado: 'ya pausado', completado: 'completado', esperando: 'esperando material' }[estProc] || estProc || 'sin estado';
+    toast(`No se puede pausar ${getProc(procPausar)?.nombre || procPausar || 'el proceso'} de ${odp.folio}: está "${_estTxt}" — solo se pausan procesos corriendo`, 'error');
     return;
   }
   // Abrir modal de selección de motivo (botones grandes, sin prompt)
