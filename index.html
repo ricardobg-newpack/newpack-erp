@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B127-lotes-cfdi</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B128-ubicaciones-cedis</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6135,6 +6135,7 @@ window.NP_AYUDA = [
   { p: '¿Cómo cambio el código de un producto que ya tiene pedidos?', k: 'cambiar codigo producto matricula propagar renombrar bs bp direccion', v: 'productos_pt', pasos: ['Solo Dirección: abre Editar Producto → botón "🆔 Cambiar código"', 'Escribe el código correcto (ej. LDBS → LDBP) — valida que no exista', 'El sistema propaga EN CADENA: línea del PI, OVs, ODPs, tarimas, lotes y relaciones cliente', 'Etiquetas, hojas y planos salen solos con el código nuevo; avisa a PLN/PRO/CS automáticamente'] },
   { p: '¿Cómo configuro las perforaciones para que salgan en el plano?', k: 'perforacion microperforada plano mecanico diametro filas distribucion bolsa', v: 'productos_pt', pasos: ['Editar Producto → sección "🕳 PERFORACIÓN"', 'Elige perforada o microperforada, Ø en mm, filas, perforaciones por fila y la zona de la bolsa', 'Guarda y saca el 📐 Plano Mecánico: el patrón se dibuja sobre la bolsa con su Ø acotado y la nota de distribución', 'Dale esa hoja al operador de bolseo — ve exactamente cómo van repartidas'] },
   { p: '¿Cómo doy de alta un chiller, compresor u otro equipo auxiliar?', k: 'chiller compresor secador intercambiador auxiliar equipo alta maquina mantenimiento', v: 'maquinas', pasos: ['Máquinas → ➕ Nueva máquina → categoría "⚙️ Equipo auxiliar"', 'Elige el tipo (chiller, compresor de aire, secador, intercambiador...) y su ubicación', 'Queda disponible para reportarle fallas y ver su historial de mantenimiento', 'NO aparece en Programación ni en el Panel Operador — solo en Mantenimiento'] },
+  { p: '¿Cómo le asigno ubicación a una tarima en CEDIS?', k: 'ubicacion tarima pasillo rack nivel posicion cedis almacen ubicar pick', v: 'inv_mty', pasos: ['Inventario CEDIS MTY → panel "📍 Ubicaciones de almacén" (las SIN UBICAR salen primero en ámbar)', 'Pica "📍 Ubicar": 4 toques — pasillo A-F, rack 1-8, nivel 1-4, posición 1-2 (ej. B-5-2-1)', 'La ubicación aparece en las tablas de preparación y en el PDF de pick: "Tomar tarima T03 [B-5-2-1]"', 'Al armar pedidos ya no se busca — se va directo al rack'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -20232,6 +20233,7 @@ function renderModal() {
   if (m === 'editar-ruta-odp') return modalEditarRutaODP();
   if (m === 'salida-mp') return modalSalidaMP();
   if (m === 'detalle-oc') return modalDetalleOC();
+  if (m === 'ubicar-tarima') return modalUbicarTarima();
   if (m === 'reportar-falla') return modalReportarFalla();
   if (m === 'resolver-falla') return modalResolverFalla();
   if (m === 'crear-ot') return modalCrearOT();
@@ -24421,6 +24423,75 @@ window.invAltaGuardar = async (almFijo) => {
   finally { state.loadingAccion = false; window.forzarRender(); }
 };
 
+// ═══════════════════════════════════════════════════════════
+// 📍 UBICACIONES DE ALMACÉN (CEDIS MTY) — Pasillo A-F · Rack 1-8 ·
+// Nivel 1-4 · Posición 1-2. Código práctico: "B-5-2-1". La ubicación
+// viaja a la lista de preparación (pantalla y PDF) para pickear sin buscar.
+// ═══════════════════════════════════════════════════════════
+window.ubiAbrir = (tarimaId) => {
+  const t = (state.tarimas || []).find(x => x.id === tarimaId); if (!t) return;
+  const cur = String(t.ubicacion_cedis || '').split('-');
+  state.ubiForm = { tarimaId, pasillo: cur[0] || '', rack: cur[1] || '', nivel: cur[2] || '', pos: cur[3] || '' };
+  state.modal = 'ubicar-tarima';
+  window.forzarRender();
+};
+window.ubiSet = (campo, v) => { if (state.ubiForm) { state.ubiForm[campo] = v; window.forzarRender(); } };
+window.ubiGuardar = async () => {
+  const f = state.ubiForm; if (!f) return;
+  const u = state.user || {};
+  if (!(f.pasillo && f.rack && f.nivel && f.pos)) { toast('Completa pasillo, rack, nivel y posición', 'error'); return; }
+  const ubi = `${f.pasillo}-${f.rack}-${f.nivel}-${f.pos}`;
+  try {
+    await updateDoc(doc(db, 'tarimas', f.tarimaId), { ubicacion_cedis: ubi, ubicacion_at: serverTimestamp(), ubicacion_por: u.nombre || u.email || '' });
+    const t = (state.tarimas || []).find(x => x.id === f.tarimaId);
+    if (t) t.ubicacion_cedis = ubi;
+    window.logAccion('tarima_ubicada', t?.codigo || f.tarimaId, ubi);
+    toast(`📍 ${t?.codigo || 'Tarima'} ubicada en ${ubi}`);
+    state.modal = null; state.ubiForm = null;
+    window.forzarRender();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
+function modalUbicarTarima() {
+  const f = state.ubiForm || {};
+  const t = (state.tarimas || []).find(x => x.id === f.tarimaId);
+  if (!t) return '';
+  const fila = (titulo, campo, ops, color) => `
+    <div style="margin-bottom:12px;">
+      <div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:5px;">${titulo}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${ops.map(o => `<button type="button" onclick="window.ubiSet('${campo}','${o}')" style="min-width:44px;padding:11px 0;border-radius:9px;font-weight:900;font-size:15px;cursor:pointer;border:2px solid ${String(f[campo]) === String(o) ? color : '#cbd5e1'};background:${String(f[campo]) === String(o) ? color : '#fff'};color:${String(f[campo]) === String(o) ? '#fff' : '#475569'};flex:1;">${o}</button>`).join('')}
+      </div>
+    </div>`;
+  const preview = `${f.pasillo || '·'}-${f.rack || '·'}-${f.nivel || '·'}-${f.pos || '·'}`;
+  const completa = f.pasillo && f.rack && f.nivel && f.pos;
+  return `
+    <div class="modal-bg" onclick="if(event.target===this)cerrarModal()">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header">
+          <h2 style="font-size:17px;font-weight:800;">📍 Ubicar ${esc(t.codigo || '')}</h2>
+          <button class="icon-btn" onclick="cerrarModal()">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:12px;color:#64748b;margin-bottom:10px;">${esc(t.producto_codigo || '')} · lote ${esc(t.lote_codigo || '—')} · ${fmtCantidadUM(t.cantidad_actual ?? t.cantidad, t.um)}</div>
+          <div style="text-align:center;background:${completa ? '#f0fdf4' : '#f8fafc'};border:2px ${completa ? 'solid #16a34a' : 'dashed #cbd5e1'};border-radius:12px;padding:10px;margin-bottom:14px;">
+            <div style="font-size:10px;font-weight:800;color:#64748b;">UBICACIÓN</div>
+            <div style="font-size:30px;font-weight:900;font-family:monospace;color:${completa ? '#16a34a' : '#94a3b8'};letter-spacing:2px;">${preview}</div>
+            <div style="font-size:9.5px;color:#94a3b8;">pasillo - rack - nivel - posición</div>
+          </div>
+          ${fila('PASILLO (A - F)', 'pasillo', ['A', 'B', 'C', 'D', 'E', 'F'], '#7c3aed')}
+          ${fila('RACK (1 - 8)', 'rack', ['1', '2', '3', '4', '5', '6', '7', '8'], '#1e40af')}
+          ${fila('NIVEL (1 - 4)', 'nivel', ['1', '2', '3', '4'], '#0891b2')}
+          ${fila('POSICIÓN (1 - 2)', 'pos', ['1', '2'], '#16a34a')}
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn-secondary" onclick="cerrarModal()">Cancelar</button>
+          <button class="btn-primary" onclick="window.ubiGuardar()" ${completa ? '' : 'disabled style="opacity:.5;"'}>📍 Guardar ubicación</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderInventarioAlmacen(almFijo) {
   const filtro = (state.filtros.stock_pt || '').toLowerCase();
   const _u = state.user || {};
@@ -24562,7 +24633,38 @@ function renderInventarioAlmacen(almFijo) {
     </div>`;
   }
 
-  return _tabBar + altaPanel + `
+  // 📍 Panel de ubicaciones (solo CEDIS MTY — así lo maneja el almacén)
+  let ubiPanel = '';
+  if (almFijo === 'CEDIS-MTY') {
+    const sinUbicar = tarimas.filter(t => !t.ubicacion_cedis);
+    const abiertoU = !!state.ubiPanelVer;
+    const fU = (state.filtros.ubicaciones || '').toLowerCase();
+    let listaU = tarimas.slice().sort((a, b) => ((a.ubicacion_cedis ? 1 : 0) - (b.ubicacion_cedis ? 1 : 0)) || String(a.ubicacion_cedis || '').localeCompare(String(b.ubicacion_cedis || '')));
+    if (fU) listaU = listaU.filter(t => ((t.codigo || '') + ' ' + (t.producto_codigo || '') + ' ' + (t.lote_codigo || '') + ' ' + (t.ubicacion_cedis || '')).toLowerCase().includes(fU));
+    ubiPanel = `
+    <div style="background:#fff;border:2px solid ${sinUbicar.length ? '#f59e0b' : '#16a34a'};border-radius:14px;padding:13px 16px;margin-bottom:14px;">
+      <div onclick="state.ubiPanelVer=!state.ubiPanelVer;render();" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+        <div style="font-weight:900;font-size:13.5px;">📍 Ubicaciones de almacén <span style="font-weight:600;color:#64748b;">· ${tarimas.length} tarima(s)</span> ${sinUbicar.length ? `<span style="background:#fffbeb;border:1px solid #fbbf24;color:#92400e;padding:1px 10px;border-radius:99px;font-size:10.5px;font-weight:800;">⚠ ${sinUbicar.length} SIN UBICAR</span>` : '<span style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;padding:1px 10px;border-radius:99px;font-size:10.5px;font-weight:800;">✅ todo ubicado</span>'}</div>
+        <span style="font-size:16px;transform:rotate(${abiertoU ? '90deg' : '0deg'});transition:transform .18s;">›</span>
+      </div>
+      ${abiertoU ? `
+      <div style="margin-top:10px;">
+        <input class="input" id="ubi-filtro" style="max-width:340px;margin-bottom:10px;" placeholder="Buscar tarima, producto, lote o ubicación (ej. B-5)..." value="${esc(state.filtros.ubicaciones || '')}" autocomplete="off" oninput="state.filtros.ubicaciones=this.value;window.forzarRender();window._cotFoco('ubi-filtro')" />
+        <div style="display:flex;flex-direction:column;gap:5px;max-height:420px;overflow-y:auto;">
+          ${listaU.slice(0, 60).map(t => `
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 10px;background:${t.ubicacion_cedis ? '#f8fafc' : '#fffbeb'};border:1px solid ${t.ubicacion_cedis ? '#e2e8f0' : '#fde68a'};border-radius:8px;">
+              <div style="flex:1;min-width:220px;font-size:11.5px;">
+                ${t.ubicacion_cedis ? `<span style="background:#7c3aed;color:#fff;padding:2px 10px;border-radius:7px;font-weight:900;font-family:monospace;font-size:12px;letter-spacing:1px;">📍 ${t.ubicacion_cedis}</span>` : '<span style="background:#f59e0b;color:#fff;padding:2px 10px;border-radius:7px;font-weight:800;font-size:10.5px;">SIN UBICAR</span>'}
+                <strong style="margin-left:6px;">${esc(t.codigo || '')}</strong> · ${esc(t.producto_codigo || '')} · lote ${esc(t.lote_codigo || '—')} · ${fmtCantidadUM(t.cantidad_actual ?? t.cantidad, t.um)}
+              </div>
+              <button onclick="window.ubiAbrir('${t.id}')" style="padding:6px 13px;background:${t.ubicacion_cedis ? '#fff' : '#7c3aed'};color:${t.ubicacion_cedis ? '#7c3aed' : '#fff'};border:1.5px solid #7c3aed;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;">📍 ${t.ubicacion_cedis ? 'Cambiar' : 'Ubicar'}</button>
+            </div>`).join('') || '<div style="font-size:12px;color:#94a3b8;padding:8px;">Sin tarimas con ese filtro</div>'}
+          ${listaU.length > 60 ? `<div style="font-size:10px;color:#94a3b8;text-align:center;">Mostrando 60 de ${listaU.length} — usa el buscador</div>` : ''}
+        </div>
+      </div>` : ''}
+    </div>`;
+  }
+  return _tabBar + altaPanel + ubiPanel + `
     <div style="padding:14px;background:#fff;border:2px solid #16a34a;border-radius:14px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-size:20px;">🔍</span>
@@ -31984,7 +32086,7 @@ window.pdfListaPreparacion = (cedis, pedidoFolio) => {
       lineas.forEach((o, i) => {
         const spec = window._specPreparacion(o.producto_codigo);
         const tars = (state.tarimas || []).filter(t => (o.tarimas_ids || []).includes(t.id));
-        const txtTars = tars.length ? 'Tomar tarima(s): ' + tars.map(t => `${t.codigo} (${fmtNum(t.cantidad_actual ?? t.cantidad)} ${t.um || ''})`).join(' / ') : '';
+        const txtTars = tars.length ? 'Tomar tarima(s): ' + tars.map(t => `${t.codigo}${t.ubicacion_cedis ? ' [' + t.ubicacion_cedis + ']' : ' [SIN UBICAR]'} (${fmtNum(t.cantidad_actual ?? t.cantidad)} ${t.um || ''})`).join(' / ') : '';
         const lDesc = docPDF.splitTextToSize(o.descripcion || '', 118);
         const lSpec = spec ? docPDF.splitTextToSize(spec, 118) : [];
         const lTars = txtTars ? docPDF.splitTextToSize(txtTars, 118) : [];
@@ -52175,7 +52277,7 @@ function modalAsignarTarimasOV() {
                     return `
                     <tr style="border-top:1px solid #f1f5f9;${sel ? 'background:#dcfce7;' : ''}">
                       <td style="padding:8px;text-align:center;"><input type="checkbox" ${sel ? 'checked' : ''} onchange="asignarOVToggleTarima('${t.id}')" style="width:16px;height:16px;cursor:pointer;" /></td>
-                      <td style="padding:8px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</td>
+                      <td style="padding:8px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}${t.ubicacion_cedis ? ` <span style="color:#7c3aed;font-weight:900;font-size:10px;font-family:monospace;">📍${t.ubicacion_cedis}</span>` : ''}</td>
                       <td style="padding:8px;" class="text-mono"><strong style="color:#3b82f6;">${t.pedido_folio || '—'}</strong></td>
                       <td style="padding:8px;" class="text-mono">${t.lote_codigo}</td>
                       <td style="padding:8px;" class="text-mono">${t.odp_folio || '—'}</td>
@@ -52444,7 +52546,7 @@ function modalDetalleOV() {
                 <tbody>
                   ${tarimas.map(t => `
                     <tr style="border-top:1px solid #f1f5f9;">
-                      <td style="padding:6px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</td>
+                      <td style="padding:6px;font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}${t.ubicacion_cedis ? ` <span style="color:#7c3aed;font-weight:900;font-size:10px;font-family:monospace;">📍${t.ubicacion_cedis}</span>` : ''}</td>
                       <td style="padding:6px;" class="text-mono">${t.lote_codigo}</td>
                       <td style="padding:6px;" class="text-mono">${t.odp_folio || '—'}</td>
                       <td style="padding:6px;font-size:10px;">${t.estatus}</td>
@@ -52729,7 +52831,7 @@ function modalCrearOTI() {
                   ${tarsCli.map(t => `
                     <div style="margin-left:10px;display:flex;justify-content:space-between;font-size:10.5px;">
                       <span>
-                        <span class="text-mono" style="font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</span>
+                        <span class="text-mono" style="font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}${t.ubicacion_cedis ? ` <span style="color:#7c3aed;font-weight:900;font-size:10px;">📍${t.ubicacion_cedis}</span>` : ''}</span>
                         ${t.pedido_folio ? `<span class="text-mono" style="margin-left:6px;color:#3b82f6;font-weight:700;">${t.pedido_folio}</span>` : ''}
                       </span>
                       <span style="color:#1e40af;font-weight:600;">${fmtCantidadUM(t.cantidad, t.um)}</span>
@@ -52740,7 +52842,7 @@ function modalCrearOTI() {
             }).join('') : seleccionadas.map(t => `
               <div style="margin-top:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
                 <span>
-                  <span class="text-mono" style="font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}</span>
+                  <span class="text-mono" style="font-weight:700;">T${String(t.numero_tarima).padStart(2,'0')}${t.ubicacion_cedis ? ` <span style="color:#7c3aed;font-weight:900;font-size:10px;">📍${t.ubicacion_cedis}</span>` : ''}</span>
                   ${t.pedido_folio ? `<span class="text-mono" style="margin-left:6px;color:#3b82f6;font-weight:700;">${t.pedido_folio}</span>` : ''}
                   <span class="text-mono" style="margin-left:6px;color:#64748b;">${t.lote_codigo}</span>
                 </span>
