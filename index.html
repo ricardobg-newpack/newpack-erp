@@ -5012,7 +5012,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B128-ubicaciones-cedis</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B129-crm-autonomo</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -5528,7 +5528,7 @@ function renderVista() {
   if (v === 'inv_mex') return renderInventarioAlmacen('CEDIS-MEX');
   if (v === 'salidas_dia') return renderSalidasDia();
   if (v === 'cotizador') return renderCotizador();
-  if (v === 'crm') return renderCRM();
+  if (v === 'crm') return (window._crmBannerHTML ? window._crmBannerHTML() : '') + renderCRM();
   if (v === 'directorio') return renderDirectorio();
   if (v === 'mapa_flujo') return renderMapaFlujo();
   if (v === 'indicadores') return renderIndicadores();
@@ -6136,6 +6136,8 @@ window.NP_AYUDA = [
   { p: '¿Cómo configuro las perforaciones para que salgan en el plano?', k: 'perforacion microperforada plano mecanico diametro filas distribucion bolsa', v: 'productos_pt', pasos: ['Editar Producto → sección "🕳 PERFORACIÓN"', 'Elige perforada o microperforada, Ø en mm, filas, perforaciones por fila y la zona de la bolsa', 'Guarda y saca el 📐 Plano Mecánico: el patrón se dibuja sobre la bolsa con su Ø acotado y la nota de distribución', 'Dale esa hoja al operador de bolseo — ve exactamente cómo van repartidas'] },
   { p: '¿Cómo doy de alta un chiller, compresor u otro equipo auxiliar?', k: 'chiller compresor secador intercambiador auxiliar equipo alta maquina mantenimiento', v: 'maquinas', pasos: ['Máquinas → ➕ Nueva máquina → categoría "⚙️ Equipo auxiliar"', 'Elige el tipo (chiller, compresor de aire, secador, intercambiador...) y su ubicación', 'Queda disponible para reportarle fallas y ver su historial de mantenimiento', 'NO aparece en Programación ni en el Panel Operador — solo en Mantenimiento'] },
   { p: '¿Cómo le asigno ubicación a una tarima en CEDIS?', k: 'ubicacion tarima pasillo rack nivel posicion cedis almacen ubicar pick', v: 'inv_mty', pasos: ['Inventario CEDIS MTY → panel "📍 Ubicaciones de almacén" (las SIN UBICAR salen primero en ámbar)', 'Pica "📍 Ubicar": 4 toques — pasillo A-F, rack 1-8, nivel 1-4, posición 1-2 (ej. B-5-2-1)', 'La ubicación aparece en las tablas de preparación y en el PDF de pick: "Tomar tarima T03 [B-5-2-1]"', 'Al armar pedidos ya no se busca — se va directo al rack'] },
+  { p: '¿Tengo que registrar la actividad cuando cotizo a un prospecto?', k: 'cotizar prospecto actividad automatica sincronizar crm etapa doble captura', v: 'crm', pasos: ['NO — al guardar la cotización, el CRM se actualiza SOLO', 'Se registra la actividad "📄 Cotización enviada" en la cuenta', 'Si hay oportunidad abierta, brinca sola a la etapa 🧮 Cotizada', 'Tú solo registra lo que el sistema no ve: llamadas, visitas y acuerdos'] },
+  { p: '¿Cómo se crean los productos de un prospecto que convertí a cliente?', k: 'convertir prospecto productos codigo automatico cotizacion pedido alta', v: 'crm', pasos: ['Al picar ✨ Convertir, el sistema revisa TODAS sus cotizaciones', 'Te propone crear los códigos de producto de lo cotizado (ficha básica automática)', 'Aceptas y los códigos quedan listos para capturar su primer pedido', 'Producción completa después el empaque y la ficha técnica'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -20407,7 +20409,19 @@ function modalFormCliente(cliente) {
                 <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;">
                   <div class="field"><label class="field-label">Colonia</label><input class="input" value="${l.colonia || ''}" oninput="cliLugarSet(${i},'colonia',this.value)" /></div>
                   <div class="field"><label class="field-label">CP</label><input class="input" value="${l.cp || ''}" oninput="cliLugarSet(${i},'cp',this.value)" /></div>
-                  <div class="field"><label class="field-label">Municipio</label><input class="input" list="dl-municipios-nl" value="${l.municipio || ''}" oninput="cliLugarSet(${i},'municipio',this.value)" placeholder="Escribe o elige" /></div>
+                  <div class="field"><label class="field-label">Municipio / Ciudad</label>
+                    ${(() => {
+                      const cds = window.CIUDADES_MX[l.estado || 'Nuevo León'] || [];
+                      const esOtra = l.municipio && !cds.includes(l.municipio);
+                      return `
+                      <select class="input" onchange="if(this.value==='__otra'){cliLugarSet(${i},'municipio','')}else{cliLugarSet(${i},'municipio',this.value)}">
+                        <option value="">— Elige —</option>
+                        ${cds.map(c => `<option value="${c}" ${l.municipio === c ? 'selected' : ''}>${c}</option>`).join('')}
+                        <option value="__otra" ${esOtra ? 'selected' : ''}>✏️ Otra...</option>
+                      </select>
+                      ${esOtra || (l.municipio === '' && l._munOtra) ? `<input class="input" style="margin-top:6px;" placeholder="Escribe el municipio" value="${l.municipio || ''}" oninput="cliLugarSet(${i},'municipio',this.value)" />` : ''}`;
+                    })()}
+                  </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                   <div class="field"><label class="field-label">Estado</label>
@@ -20415,7 +20429,11 @@ function modalFormCliente(cliente) {
                       ${ESTADOS_MX.map(e => `<option value="${e}" ${(l.estado || 'Nuevo León') === e ? 'selected' : ''}>${e}</option>`).join('')}
                     </select>
                   </div>
-                  <div class="field"><label class="field-label">País</label><input class="input" value="${l.pais || 'México'}" oninput="cliLugarSet(${i},'pais',this.value)" /></div>
+                  <div class="field"><label class="field-label">País</label>
+                    <select class="input" onchange="cliLugarSet(${i},'pais',this.value)">
+                      ${window.PAISES_NP.map(p2 => `<option value="${p2}" ${(l.pais || 'México') === p2 ? 'selected' : ''}>${p2}</option>`).join('')}
+                    </select>
+                  </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                   <div class="field"><label class="field-label">Quién recibe <span style="color:#94a3b8;font-weight:400;">(opcional)</span></label><input class="input" value="${l.contacto || ''}" oninput="cliLugarSet(${i},'contacto',this.value)" placeholder="Persona que recibe" /></div>
@@ -25083,6 +25101,92 @@ window.cotVaciar = () => { if (!confirm('¿Vaciar la cotización en curso? Se pi
 window.cotSetTab = (t) => { state.cotTab = t; render(); };
 window.cotFiltroLista = (v) => { state.filtros.cotizaciones = v; window.forzarRender(); window._cotFoco('cot-filtro-lista'); };
 
+// 🤖 SINCRONIZACIÓN COTIZACIÓN → CRM: actividad automática en la cuenta
+// + la oportunidad abierta brinca sola a 🧮 Cotizada. Sin dobles capturas.
+// 🔥 BANNER MOTIVACIONAL DEL CRM — el vendedor abre y siente el juego:
+// su marcador de hoy, el consejo del día y el pipeline vivo.
+window._crmBannerHTML = () => {
+  const u = state.user || {};
+  const hoy = window.hoyLocalISO();
+  const TIPS = [
+    'La venta se gana en el SEGUIMIENTO: el 80% cae después del 5º contacto. ¿A quién le toca hoy?',
+    'Cotiza HOY lo que te pidieron hoy — la primera cotización en llegar gana la mitad de las veces.',
+    'Pregunta al prospecto qué le duele de su proveedor actual: entregas, calidad o precio. Ahí está tu entrada.',
+    'Una muestra física vende más que 10 correos. Ofrece la muestra.',
+    'Registra CADA llamada con su próxima acción — lo que no se agenda, no existe.',
+    'El "no" de hoy es el cliente del próximo trimestre. Agenda re-contacto en 90 días.',
+    'Cliente pequeño que paga bien > cliente grande que no paga. Revisa el semáforo de crédito antes de prometer.',
+    'Visita la planta del prospecto: quien conoce su operación, cotiza lo que de verdad necesita.',
+    'Sube el ticket: si pide bolsa, ofrece también el rollo o la película del otro proceso.',
+    'Cierra la semana con el pipeline limpio: nada vencido, todo con próxima acción.',
+    'Habla de kilos y entregas, no de especificaciones — el cliente compra confianza.',
+    'El mejor momento para pedir referidos es cuando el cliente te acaba de dar las gracias.',
+  ];
+  const dia = Math.floor(new Date(hoy + 'T12:00:00').getTime() / 86400000);
+  const tip = TIPS[dia % TIPS.length];
+  const yo = window._ayudaNorm(u.nombre || '');
+  const acts = (state.crm_actividades || []).filter(a => a.fecha === hoy && (!yo || window._ayudaNorm(a.vendedor || a.creado_por_nombre || '') === yo || !a.vendedor));
+  const opps = (state.crm_oportunidades || []).filter(o => !o.ganada && !o.perdida);
+  const montoPipe = opps.reduce((s, o) => s + (Number(o.monto) || 0), 0);
+  return `
+  <div style="background:linear-gradient(120deg,#0b1b2e,#1e3a5f 60%,#0f766e);border-radius:16px;padding:16px 20px;margin-bottom:14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+    <img src="${window.NP_HORMIGA}" style="width:38px;" alt="" />
+    <div style="flex:1;min-width:240px;">
+      <div style="color:#fff;font-weight:900;font-size:14px;">💡 ${esc(tip)}</div>
+      <div style="color:#94c9ff;font-size:11px;margin-top:3px;">Consejo del día · cada gestión registrada es un paso hacia el cierre 🐜</div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <div style="background:rgba(255,255,255,.1);border-radius:11px;padding:8px 16px;text-align:center;">
+        <div style="color:#3fd34b;font-size:20px;font-weight:900;">${acts.length}</div>
+        <div style="color:#94c9ff;font-size:9.5px;font-weight:700;">GESTIONES HOY</div>
+      </div>
+      <div style="background:rgba(255,255,255,.1);border-radius:11px;padding:8px 16px;text-align:center;">
+        <div style="color:#fbbf24;font-size:20px;font-weight:900;">${opps.length}</div>
+        <div style="color:#94c9ff;font-size:9.5px;font-weight:700;">OPORTUNIDADES VIVAS</div>
+      </div>
+      <div style="background:rgba(255,255,255,.1);border-radius:11px;padding:8px 16px;text-align:center;">
+        <div style="color:#fff;font-size:20px;font-weight:900;">$${fmtNum((montoPipe / 1000).toFixed(0))}k</div>
+        <div style="color:#94c9ff;font-size:9.5px;font-weight:700;">PIPELINE</div>
+      </div>
+      <button onclick="state.vista='cotizador';render();" style="align-self:center;padding:12px 18px;background:#3fd34b;color:#0b1b2e;border:none;border-radius:11px;cursor:pointer;font-weight:900;font-size:12.5px;">🧮 Cotizar ahora</button>
+    </div>
+  </div>`;
+};
+
+window.crmSyncCotizacion = async (d, folio, total) => {
+  const u = state.user || {};
+  const norm = (s) => window._ayudaNorm(String(s || ''));
+  let key = '', nombre = '';
+  if (d.cliente_tipo === 'cliente' && d.cliente_codigo) {
+    key = 'C:' + d.cliente_codigo;
+    nombre = (state.clientes || []).find(c => c.codigo === d.cliente_codigo)?.nombre || d.cliente_codigo;
+  } else if (d.prospecto?.empresa) {
+    const pr = (state.crm_cuentas || []).find(x => norm(x.nombre) === norm(d.prospecto.empresa));
+    if (pr) { key = 'P:' + pr.id; nombre = pr.nombre; }
+  }
+  if (!key) return; // sin cuenta CRM ligada — nada que sincronizar
+  await addDoc(collection(db, 'crm_actividades'), {
+    cuenta_key: key, cuenta_nombre: nombre,
+    tipo: 'cotizacion', fecha: window.hoyLocalISO(),
+    resumen: `📄 Cotización ${folio} · $${fmtNum((Number(total) || 0).toFixed(2))} — registrada automáticamente al cotizar`,
+    auto: true,
+    vendedor: u.nombre || u.email || '', creado_por: u.id || '',
+    created_at: serverTimestamp(),
+  });
+  // Oportunidad abierta en etapa temprana → 🧮 Cotizada
+  const opp = (state.crm_oportunidades || []).find(o =>
+    o.cuenta_key === key && !o.ganada && !o.perdida && ['lead', 'contactado', 'muestra'].includes(o.etapa));
+  if (opp) {
+    await updateDoc(doc(db, 'crm_oportunidades', opp.id), {
+      etapa: 'cotizada', etapa_actualizada_at: serverTimestamp(),
+      ultima_cotizacion: folio, updated_at: serverTimestamp(),
+    });
+    toast(`🤖 CRM actualizado solo: actividad registrada + oportunidad de ${nombre} en 🧮 Cotizada`);
+  } else {
+    toast(`🤖 CRM: actividad de cotización registrada sola en ${nombre}`);
+  }
+};
+
 window.cotGuardar = async () => {
   const d = window._cotDraft();
   if (!d.lineas.length) { toast('Agrega al menos una línea a la cotización', 'error'); return; }
@@ -25128,6 +25232,9 @@ window.cotGuardar = async () => {
     state.cotDraft = null;
     state.cotTab = 'lista';
     toast(`✅ Cotización ${folio} guardada`);
+    // 🤖 CRM AUTÓNOMO: la cotización registra SOLA su actividad y mueve la etapa —
+    //    el vendedor no captura dos veces.
+    try { await window.crmSyncCotizacion(d, folio, subtotal + iva); } catch (eS) { console.error('sync CRM:', eS); }
     try { window._pdfCotizacion({ id: ref.id, ...docData }); } catch (e) { console.error('PDF cotización:', e); }
   } catch (e) { console.error(e); toast('Error guardando: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
@@ -26706,6 +26813,44 @@ window._crmContactosDe = (key) => (state.crm_contactos || []).filter(x => x.cuen
 //    La oportunidad es el NEGOCIO (separada de la cotización): una OPP puede
 //    agrupar N cotizaciones. Probabilidad sugerida por etapa, editable.
 // ============================================================
+// 🗺 MUNICIPIOS/CIUDADES clave por estado — para la cascada Estado→Ciudad
+// (sin texto libre: llenado rápido y datos limpios; "Otra..." permite excepción)
+window.CIUDADES_MX = {
+  'Aguascalientes': ['Aguascalientes', 'Jesús María', 'Calvillo', 'Rincón de Romos'],
+  'Baja California': ['Tijuana', 'Mexicali', 'Ensenada', 'Tecate', 'Rosarito'],
+  'Baja California Sur': ['La Paz', 'Los Cabos', 'Comondú', 'Loreto'],
+  'Campeche': ['Campeche', 'Ciudad del Carmen', 'Champotón'],
+  'Chiapas': ['Tuxtla Gutiérrez', 'Tapachula', 'San Cristóbal de las Casas', 'Comitán'],
+  'Chihuahua': ['Chihuahua', 'Ciudad Juárez', 'Delicias', 'Cuauhtémoc', 'Parral'],
+  'Ciudad de México': ['Álvaro Obregón', 'Azcapotzalco', 'Benito Juárez', 'Coyoacán', 'Cuauhtémoc', 'Gustavo A. Madero', 'Iztacalco', 'Iztapalapa', 'Miguel Hidalgo', 'Tlalpan', 'Venustiano Carranza', 'Xochimilco'],
+  'Coahuila': ['Saltillo', 'Torreón', 'Monclova', 'Piedras Negras', 'Ramos Arizpe', 'Acuña'],
+  'Colima': ['Colima', 'Manzanillo', 'Tecomán', 'Villa de Álvarez'],
+  'Durango': ['Durango', 'Gómez Palacio', 'Lerdo'],
+  'Estado de México': ['Toluca', 'Ecatepec', 'Naucalpan', 'Tlalnepantla', 'Cuautitlán Izcalli', 'Tultitlán', 'Lerma', 'Atizapán', 'Nezahualcóyotl', 'Tepotzotlán', 'Huehuetoca', 'Chalco'],
+  'Guanajuato': ['León', 'Irapuato', 'Celaya', 'Salamanca', 'Silao', 'Guanajuato', 'San Miguel de Allende', 'Apaseo el Grande'],
+  'Guerrero': ['Acapulco', 'Chilpancingo', 'Iguala', 'Zihuatanejo'],
+  'Hidalgo': ['Pachuca', 'Tulancingo', 'Tula de Allende', 'Tizayuca', 'Tepeji del Río'],
+  'Jalisco': ['Guadalajara', 'Zapopan', 'Tlaquepaque', 'Tonalá', 'Tlajomulco', 'El Salto', 'Puerto Vallarta', 'Lagos de Moreno', 'Ocotlán'],
+  'Michoacán': ['Morelia', 'Uruapan', 'Lázaro Cárdenas', 'Zamora'],
+  'Morelos': ['Cuernavaca', 'Jiutepec', 'Cuautla', 'Temixco'],
+  'Nayarit': ['Tepic', 'Bahía de Banderas', 'Xalisco'],
+  'Nuevo León': ['Monterrey', 'San Pedro Garza García', 'San Nicolás de los Garza', 'Guadalupe', 'Apodaca', 'Santa Catarina', 'General Escobedo', 'García', 'Juárez', 'Pesquería', 'Cadereyta', 'Ciénega de Flores', 'Salinas Victoria', 'El Carmen', 'Santiago', 'Linares', 'Montemorelos'],
+  'Oaxaca': ['Oaxaca de Juárez', 'Salina Cruz', 'Tuxtepec', 'Juchitán'],
+  'Puebla': ['Puebla', 'Tehuacán', 'San Martín Texmelucan', 'Atlixco', 'Cuautlancingo', 'Huejotzingo'],
+  'Querétaro': ['Querétaro', 'San Juan del Río', 'El Marqués', 'Corregidora', 'Colón', 'Pedro Escobedo'],
+  'Quintana Roo': ['Cancún', 'Playa del Carmen', 'Chetumal', 'Cozumel', 'Tulum'],
+  'San Luis Potosí': ['San Luis Potosí', 'Soledad', 'Ciudad Valles', 'Matehuala', 'Villa de Reyes'],
+  'Sinaloa': ['Culiacán', 'Mazatlán', 'Los Mochis', 'Guasave', 'Navolato'],
+  'Sonora': ['Hermosillo', 'Ciudad Obregón', 'Nogales', 'San Luis Río Colorado', 'Guaymas', 'Navojoa'],
+  'Tabasco': ['Villahermosa', 'Cárdenas', 'Comalcalco', 'Macuspana'],
+  'Tamaulipas': ['Reynosa', 'Matamoros', 'Nuevo Laredo', 'Tampico', 'Ciudad Victoria', 'Altamira', 'Ciudad Madero', 'Río Bravo'],
+  'Tlaxcala': ['Tlaxcala', 'Apizaco', 'Huamantla', 'Calpulalpan'],
+  'Veracruz': ['Veracruz', 'Xalapa', 'Coatzacoalcos', 'Córdoba', 'Orizaba', 'Poza Rica', 'Minatitlán', 'Boca del Río'],
+  'Yucatán': ['Mérida', 'Kanasín', 'Umán', 'Valladolid', 'Progreso'],
+  'Zacatecas': ['Zacatecas', 'Fresnillo', 'Guadalupe', 'Jerez'],
+};
+window.PAISES_NP = ['México', 'Estados Unidos', 'Canadá', 'Guatemala', 'Otro'];
+
 const CRM_ETAPAS = [
   { id: 'lead', nombre: '🌱 Lead', prob: 10, color: '#64748b' },
   { id: 'contactado', nombre: '📞 Contactado', prob: 20, color: '#0891b2' },
@@ -27052,6 +27197,48 @@ window.crmGuardarExp = async () => {
 };
 
 // ✨ Convertir prospecto CRM → cliente formal (mismo patrón que el cotizador)
+// 🪄 AL CONVERTIR: los productos COTIZADOS al prospecto nacen como productos PT
+// con su código oficial y ficha básica — al capturar su primer pedido, el código
+// ya existe. Producción llena después empaque y ficha técnica.
+window.crmProductosDeCotizaciones = async (nombreProspecto, codigoCliente) => {
+  const u = state.user || {};
+  const norm = (s) => window._ayudaNorm(String(s || ''));
+  const cots = (state.cotizaciones || []).filter(c => c.prospecto && norm(c.prospecto.empresa) === norm(nombreProspecto) && c.estado !== 'cancelada');
+  const candidatas = [];
+  cots.forEach(c => (c.lineas || []).forEach(l => {
+    if (!l.material || !l.tipo || !(Number(l.ancho) > 0) || !(Number(l.calibre) > 0)) return;
+    const codigo = window.generarCodigoPT({ material: l.material, tipo: l.tipo, ancho: l.ancho, fuelle: l.fuelle || 0, largo: l.largo || 0, calibre: l.calibre, color: l.color || 'Transparente', aditivo: l.aditivo || 'NINGUNO' });
+    if (!codigo) return;
+    if ((state.productos_pt || []).some(p => p.codigo === codigo)) return;          // ya existe
+    if (candidatas.some(x => x.codigo === codigo)) return;                          // repetida entre líneas
+    candidatas.push({ codigo, l, cotFolio: c.folio });
+  }));
+  if (!candidatas.length) return 0;
+  if (!confirm(`🪄 PRODUCTOS AUTOMÁTICOS desde sus cotizaciones\n\nSe crearán ${candidatas.length} código(s) de producto con ficha básica:\n${candidatas.map(x => '· ' + x.codigo).join('\n')}\n\nProducción llenará después empaque y ficha técnica.\n¿Crear?`)) return 0;
+  const b = writeBatch(db);
+  candidatas.forEach(({ codigo, l, cotFolio }) => {
+    b.set(doc(db, 'productos_pt', codigo), {
+      codigo,
+      material: l.material, tipo: l.tipo,
+      ancho: Number(l.ancho) || 0, fuelle: Number(l.fuelle) || 0, largo: Number(l.largo) || 0,
+      calibre: Number(l.calibre) || 0,
+      color: l.color || 'Transparente', aditivo: l.aditivo || 'NINGUNO',
+      impresion: l.impresion || '', tratado: l.tratado || '',
+      tratado_dinas: l.tratado === 'si' ? (Number(l.tratado_dinas) || 38) : 0,
+      um: l.modo === 'kg' ? 'kg' : 'millar',
+      descripcion: l.descripcion || `${l.material} ${l.tipo} ${l.ancho}${l.largo ? 'X' + l.largo : ''} CAL ${l.calibre} ${l.color || ''}`.trim().toUpperCase(),
+      activo: true, ficha_tecnica_completa: false,
+      origen: 'cotizacion_crm', cotizacion_origen: cotFolio, cliente_origen: codigoCliente,
+      creado_por: u.id || '', creado_por_nombre: u.nombre || u.email || '',
+      created_at: serverTimestamp(),
+    });
+  });
+  await b.commit();
+  candidatas.forEach(({ codigo, l }) => state.productos_pt.push({ id: codigo, codigo, material: l.material, tipo: l.tipo, ancho: Number(l.ancho) || 0, fuelle: Number(l.fuelle) || 0, largo: Number(l.largo) || 0, calibre: Number(l.calibre) || 0, activo: true }));
+  window.logAccion('productos_desde_cotizacion', codigoCliente, candidatas.map(x => x.codigo).join(', '));
+  return candidatas.length;
+};
+
 window.crmConvertir = async (prospectoId) => {
   if (!window._crmPuede()) { toast('🔒 Sin permiso de CRM', 'error'); return; }
   const p = (state.crm_cuentas || []).find(x => x.id === prospectoId);
@@ -27086,7 +27273,12 @@ window.crmConvertir = async (prospectoId) => {
     const snapCli = await getDocs(query(collection(db, 'clientes'), where('activo', '==', true), orderBy('codigo')));
     state.clientes = snapCli.docs.map(d2 => ({ id: d2.id, ...d2.data() }));
     window.logAccion('crm_prospecto_convertido', codU, `"${esc(p.nombre)}" ahora es cliente ${codU} · ${contactos.length} contacto(s) migrados`);
-    toast(`✅ Cliente ${codU} creado (completa RFC/dirección en Clientes cuando puedas)`); window.npCelebrar();
+    toast(`✅ Cliente ${codU} creado (completa RFC/dirección en Clientes cuando puedas)`);
+    // 🪄 Crear productos PT desde sus cotizaciones (código listo para el primer pedido)
+    try {
+      const nCreados = await window.crmProductosDeCotizaciones(p.nombre || '', codU);
+      if (nCreados) toast(`🪄 ${nCreados} código(s) de producto creados desde sus cotizaciones — listos para el primer pedido`);
+    } catch (eP) { console.error('productos desde cotización:', eP); } window.npCelebrar();
     state.crmExpForm = null;
   } catch (e) { toast('Error: ' + e.message, 'error'); }
   finally { state.loadingAccion = false; window.forzarRender(); }
