@@ -4533,6 +4533,10 @@ async function cargarTodo() {
         state.crm_contactos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
       }, () => {}),
+      onSnapshot(collection(db, 'crm_vendedores'), (snap) => {
+        state.crm_vendedores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (state.user) { state._renderDesdeSnapshot = true; render(); }
+      }),
       onSnapshot(collection(db, 'crm_oportunidades'), (snap) => {
         state.crm_oportunidades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (state.user) { state._renderDesdeSnapshot = true; render(); }
@@ -5012,7 +5016,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B130-estudio-mercado</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0820-B131-catalogo-vendedores</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6139,6 +6143,7 @@ window.NP_AYUDA = [
   { p: '¿Tengo que registrar la actividad cuando cotizo a un prospecto?', k: 'cotizar prospecto actividad automatica sincronizar crm etapa doble captura', v: 'crm', pasos: ['NO — al guardar la cotización, el CRM se actualiza SOLO', 'Se registra la actividad "📄 Cotización enviada" en la cuenta', 'Si hay oportunidad abierta, brinca sola a la etapa 🧮 Cotizada', 'Tú solo registra lo que el sistema no ve: llamadas, visitas y acuerdos'] },
   { p: '¿Cómo se crean los productos de un prospecto que convertí a cliente?', k: 'convertir prospecto productos codigo automatico cotizacion pedido alta', v: 'crm', pasos: ['Al picar ✨ Convertir, el sistema revisa TODAS sus cotizaciones', 'Te propone crear los códigos de producto de lo cotizado (ficha básica automática)', 'Aceptas y los códigos quedan listos para capturar su primer pedido', 'Producción completa después el empaque y la ficha técnica'] },
   { p: '¿Dónde veo las ventas por estado, industria o tamaño de empresa?', k: 'estudio mercado ventas estado ciudad industria tamano region diagramas junta', v: 'crm', pasos: ['CRM → pestaña 🗺 Mercado', 'Elige la dimensión (estado, ciudad, industria, tamaño, territorio, vendedor) y la métrica (ventas reales 12m, potencial o cuentas)', 'Las barras se rearman al instante — perfecto para la junta con Dirección', 'Los grupos "Sin dato" en rojo son cuentas por completar: el estudio vale lo que la captura'] },
+  { p: '¿Cómo doy de alta un vendedor externo o comisionista?', k: 'vendedor externo comisionista alta catalogo javier karla asignar', v: 'crm', pasos: ['En cualquier cuenta del CRM → campo "Vendedor asignado" → última opción "➕ Dar de alta vendedor nuevo..."', 'Escribe su nombre completo y listo', 'Aparece de inmediato en el CRM, en la ficha del cliente y en comisiones', 'Los usuarios del sistema (CS/KAM) entran solos a la lista — este alta es para los EXTERNOS'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -20555,7 +20560,7 @@ function modalFormCliente(cliente) {
               </div>
               <div class="field">
                 <label class="field-label">Vendedor / KAM</label>
-                <input class="input" id="cli-vendedor" value="${c.vendedor || ''}" placeholder="Nombre del vendedor" />
+                <input class="input" id="cli-vendedor" list="dl-vendedores-cat" value="${c.vendedor || ''}" placeholder="Elige del catálogo" /><datalist id="dl-vendedores-cat">${window._vendedoresTodos().map(v => `<option value="${v.replace(/"/g, '&quot;')}"></option>`).join('')}</datalist>
               </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;">
@@ -27110,6 +27115,27 @@ window.actHecha = async (id) => {
 
 window.crmTabSet = (t) => { state.crmTab = t; render(); };
 
+// 👥 CATÁLOGO DE VENDEDORES — internos (usuarios CS/KAM/CEO) + EXTERNOS
+// (comisionistas dados de alta aquí). Una sola lista para CRM, clientes y comisiones.
+window._vendedoresTodos = () => {
+  const internos = (state.usuarios_sistema || []).filter(x => x.activo !== false && ['CS', 'KAM', 'CEO'].includes(x.depto)).map(x => x.nombre || '');
+  const externos = (state.crm_vendedores || []).filter(v => v.activo !== false).map(v => v.nombre || '');
+  return [...new Set([...internos, ...externos])].filter(Boolean).sort((a, b) => a.localeCompare(b));
+};
+window.crmVendedorAlta = async () => {
+  const u = state.user || {};
+  if (!(u.rol === 'admin' || ['CS', 'KAM', 'CEO', 'ADMIN'].includes(u.depto))) { toast('🔒 Solo Comercial y Dirección dan de alta vendedores', 'error'); return; }
+  const nombre = prompt('👥 ALTA DE VENDEDOR (interno o externo/comisionista)\n\nNombre completo como aparecerá en cuentas y comisiones:', '');
+  if (nombre === null || !String(nombre).trim()) return;
+  const nom = String(nombre).trim();
+  if (window._vendedoresTodos().some(v => window._ayudaNorm(v) === window._ayudaNorm(nom))) { toast(`${nom} ya está en la lista`, 'info'); return; }
+  try {
+    await addDoc(collection(db, 'crm_vendedores'), { nombre: nom, externo: true, activo: true, creado_por: u.nombre || u.email || '', created_at: serverTimestamp() });
+    window.logAccion('vendedor_alta', nom, 'catálogo de vendedores');
+    toast(`👥 ${nom} agregado — ya aparece en todas las listas de vendedor`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+};
+
 // ═══════════════════════════════════════════════════════════
 // 🗺 ESTUDIO DE MERCADO — la vista de junta Comercial + Dirección:
 // potencial capturado y VENTAS REALES (facturas 12 meses) cruzados por
@@ -28021,7 +28047,16 @@ function renderCRM() {
           })()}</div>
         <div>${lbl('Territorio')}<input class="input" id="crm-terr" type="text" list="crm-dl-terr" value="${(f.territorio || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('territorio', this.value, 'crm-terr')" /><datalist id="crm-dl-terr">${['Norte', 'Bajío', 'Centro', 'Sur', 'Pacífico', 'Golfo', 'USA'].map(t => `<option value="${t}"></option>`).join('')}</datalist></div>
         <div>${lbl('Origen del lead')}<select class="input" onchange="window.crmSet('origen_lead', this.value)"><option value="">—</option>${selOpts(CRM_ORIGENES, f.origen_lead)}</select></div>
-        <div>${lbl('Vendedor asignado')}<input class="input" id="crm-ven" type="text" list="crm-dl-ven" value="${(f.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.crmSet('vendedor', this.value, 'crm-ven')" /><datalist id="crm-dl-ven">${(state.usuarios_sistema || []).filter(x => x.activo !== false && ['CS', 'KAM', 'CEO'].includes(x.depto)).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
+        <div>${lbl('Vendedor asignado')}
+          <div style="display:flex;gap:5px;">
+            <select class="input" style="flex:1;" onchange="if(this.value==='__alta'){window.crmVendedorAlta()}else{window.crmSet('vendedor', this.value)}">
+              <option value="">— Elige vendedor —</option>
+              ${window._vendedoresTodos().map(v => `<option value="${v.replace(/"/g, '&quot;')}" ${f.vendedor === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+              ${f.vendedor && !window._vendedoresTodos().includes(f.vendedor) ? `<option value="${(f.vendedor || '').replace(/"/g, '&quot;')}" selected>${esc(f.vendedor)} (histórico)</option>` : ''}
+              <option value="__alta">➕ Dar de alta vendedor nuevo...</option>
+            </select>
+          </div>
+        </div>
         <div style="grid-column:1/-1;display:flex;gap:8px;align-items:end;flex-wrap:wrap;">
           <div style="flex:2;min-width:140px;">${lbl('Prioridad')}<div style="display:flex;gap:6px;">${prioBtn('alta', '🔴 Alta', '#dc2626')}${prioBtn('media', '🟡 Media', '#f59e0b')}${prioBtn('baja', '⚪ Baja', '#64748b')}</div></div>
           <div style="flex:1;min-width:130px;">${lbl('Potencial ANUAL estimado')}<input class="input" id="crm-pot" type="text" inputmode="decimal" value="${f.potencial_anual || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.crmSet('potencial_anual', this.value, 'crm-pot')" placeholder="$ al año" /></div>
@@ -30903,7 +30938,7 @@ function renderFacturacion() {
           <div style="font-weight:800;font-size:12px;color:#9d174d;margin-bottom:6px;">👤 Datos del vendedor</div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">Vendedor *</label>
-              <input class="input" id="com-ven" type="text" list="com-dl-vendedores" value="${(cf.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.comSet('vendedor', this.value, 'com-ven')" placeholder="Nombre completo" />
+              <input class="input" id="com-ven" type="text" list="com-dl-vendedores" value="${(cf.vendedor || '').replace(/"/g, '&quot;')}" oninput="window.comSet('vendedor', this.value, 'com-ven')" placeholder="Nombre completo" /><datalist id="com-dl-vendedores">${window._vendedoresTodos().map(v => `<option value="${v.replace(/"/g, '&quot;')}"></option>`).join('')}</datalist>
               <datalist id="com-dl-vendedores">${(state.usuarios_sistema || []).filter(x => x.activo !== false).map(x => `<option value="${(x.nombre || '').replace(/"/g, '&quot;')}"></option>`).join('')}</datalist></div>
             <div><label style="display:block;font-size:11px;font-weight:800;color:#475569;margin-bottom:4px;">% base * <span style="font-weight:600;color:#94a3b8;">(cada cliente puede llevar el suyo)</span></label>
               <input class="input" id="com-pct" type="text" inputmode="decimal" value="${cf.pct || ''}" oninput="this.value=this.value.replace(/[^0-9.]/g,'');window.comSet('pct', this.value, 'com-pct')" placeholder="Ej: 2.5" /></div>
