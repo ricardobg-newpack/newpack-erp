@@ -1599,6 +1599,18 @@ window.procesoCorriendo = (odp, procCod) => window.estadoProceso(odp, procCod) =
 // ¿Este proceso está pausado? (true/false)
 window.procesoPausado = (odp, procCod) => window.estadoProceso(odp, procCod) === 'pausado';
 
+// 📦 Contenido TOTAL del empaque de venta de un producto PT.
+//    PAQUETE = contenedores_por_paquete × contenido de cada uno (ej. 2 rollos × 500 pza = 1,000 pza).
+//    ROLLO/BULTO/METROS = cant_empaque directo. Con fallbacks por productos antiguos.
+//    ÚSALO SIEMPRE que se necesite "cuánto trae un paquete" — leer cant_empaque directo
+//    fue el bug de "PAQUETE DE 500" cuando el paquete real traía 1,000.
+window.empaqueTotalPT = (p) => {
+  if (!p) return 0;
+  const base = Number(p.cant_empaque || p.piezas_por_paq || p.piezas_paq || p.contenido_paquete || 0) || 0;
+  const esPaquete = (p.tipo_empaque || '').toString().toUpperCase() === 'PAQUETE';
+  return base * (esPaquete ? (Number(p.contenedores_por_paquete) || 1) : 1);
+};
+
 
 // ============================================================
 // 🆕 FUNCIÓN CENTRAL DE ESTADO — única fuente de verdad para el Kanban/tableros.
@@ -5030,7 +5042,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="sidebar-brand">
           <img src="${DATOS_EMPRESA.logo_url}" alt="NewPack" />
-          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0821-B134-fix-pausa</span></div>
+          <div class="sidebar-brand-txt"><b>NewPack</b><span>ERP v6 · build 0821-B135-liberacion-empaque-parcial</span></div>
         </div>
         <div class="sidebar-ribbon"></div>
         ${!supervisorRestringido ? `
@@ -6158,6 +6170,7 @@ window.NP_AYUDA = [
   { p: '¿Cómo se crean los productos de un prospecto que convertí a cliente?', k: 'convertir prospecto productos codigo automatico cotizacion pedido alta', v: 'crm', pasos: ['Al picar ✨ Convertir, el sistema revisa TODAS sus cotizaciones', 'Te propone crear los códigos de producto de lo cotizado (ficha básica automática)', 'Aceptas y los códigos quedan listos para capturar su primer pedido', 'Producción completa después el empaque y la ficha técnica'] },
   { p: '¿Dónde veo las ventas por estado, industria o tamaño de empresa?', k: 'estudio mercado ventas estado ciudad industria tamano region diagramas junta', v: 'crm', pasos: ['CRM → pestaña 🗺 Mercado', 'Elige la dimensión (estado, ciudad, industria, tamaño, territorio, vendedor) y la métrica (ventas reales 12m, potencial o cuentas)', 'Las barras se rearman al instante — perfecto para la junta con Dirección', 'Los grupos "Sin dato" en rojo son cuentas por completar: el estudio vale lo que la captura'] },
   { p: '¿Cómo doy de alta un vendedor externo o comisionista?', k: 'vendedor externo comisionista alta catalogo javier karla asignar', v: 'crm', pasos: ['En cualquier cuenta del CRM → campo "Vendedor asignado" → última opción "➕ Dar de alta vendedor nuevo..."', 'Escribe su nombre completo y listo', 'Aparece de inmediato en el CRM, en la ficha del cliente y en comisiones', 'Los usuarios del sistema (CS/KAM) entran solos a la lista — este alta es para los EXTERNOS'] },
+  { p: '¿Cómo libero solo una parte de una orden (liberación parcial)?', k: 'liberacion parcial liberar parte calidad pendiente resto tarimas elegir cantidad', v: 'calidad', pasos: ['Liberación Calidad → abre la orden con "Liberar calidad"', 'En el recuadro morado "¿No vas a liberar todo ahorita?" teclea la cantidad que SÍ liberas y pica "🔹 Liberar solo esa parte"', 'El modal se recalcula con esa cantidad: paquetes, tarimas y pesos', 'Confirma normal — las tarimas salen marcadas PARCIAL y el resto queda pendiente en la misma orden (sin rechazos ni reposición)', 'Para liberar el resto, vuelve a abrir "Liberar calidad": el sistema abre solo con lo pendiente'] },
   { p: '¿Cómo doy la bienvenida a un cliente en la sala de juntas?', k: 'sala juntas bienvenida cliente visita pantalla tv presentacion', v: null, pasos: ['Presiona Ctrl+K y escribe "sala"', 'Elige "Sala de Juntas — Bienvenida a cliente"', 'Captura el nombre de la empresa y las personas', 'Pantalla completa con su nombre y las hormigas celebrando — ESC para cerrar'] },
 ];
 
@@ -47693,7 +47706,10 @@ function _renderHojaEspecificaciones(docPDF, odp, producto) {
   y += 12;
   
   _campo(colA, y, 'Tipo de empaque', producto?.tipo_empaque || '— SELECCIONAR —', wCol);
-  _campo(colB, y, 'Piezas por empaque', producto?.cant_empaque ? `${producto.cant_empaque} ${producto.um_empaque || ''}` : '', wCol);
+  // 🔧 B135: PAQUETE muestra la formula completa (2 rollos x 500 = 1,000 pza), no solo un rollo
+  const _empTotFT = window.empaqueTotalPT(producto);
+  const _multFT = (producto?.tipo_empaque || '').toString().toUpperCase() === 'PAQUETE' && Number(producto?.contenedores_por_paquete) > 1;
+  _campo(colB, y, 'Piezas por empaque', _empTotFT ? (_multFT ? `${producto.contenedores_por_paquete} ${producto.nombre_contenedor || 'rollo'}s x ${producto.cant_empaque} = ${fmtNum(_empTotFT)} ${producto.um_empaque || ''}` : `${producto.cant_empaque || _empTotFT} ${producto.um_empaque || ''}`) : '', wCol);
   y += 12;
   
   // Impresión / Sellado
@@ -49522,8 +49538,8 @@ window.imprimirCertificadoCalidadPDF = async (odpId, factura, pklFilter = null) 
     const filasCar = [];
 
     // Piezas por paquete: solo si UM aplica (pz/pza/millar) Y hay valor capturado
-    // 🔧 Fallback a cant_empaque (campo real del producto)
-    const piezasSpec = producto?.piezas_por_paq || producto?.cant_empaque || med.piezas_por_paq;
+    // 🔧 B135: total por paquete (contenedores × contenido), no el contenido de un solo rollo
+    const piezasSpec = window.empaqueTotalPT(producto) || med.piezas_por_paq;
     const aplicaPiezas = ['pz', 'pza', 'pieza', 'piezas', 'millar', 'millares'].includes(umOrig);
     if (aplicaPiezas && (piezasSpec || med.piezas_por_paq)) {
       filasCar.push([
@@ -53461,14 +53477,10 @@ function modalLiberarCalidad() {
   
   // 🆕 Producto del catálogo para conocer su empaque estándar
   const productoLib = state.productos_pt.find(pp => pp.codigo === odp.producto_codigo);
-  // 🔧 FALLBACK ROBUSTO: probar varios nombres por compatibilidad con productos antiguos
-  const cantEmpaqueStd = Number(
-    productoLib?.cant_empaque || 
-    productoLib?.piezas_por_paq || 
-    productoLib?.piezas_paq || 
-    productoLib?.contenido_paquete || 
-    0
-  ) || 0;
+  // 🔧 FIX B135: contenido TOTAL del empaque (PAQUETE = contenedores × contenido c/u).
+  //    Antes se usaba solo cant_empaque (el contenido de CADA rollo/bulto) y salían
+  //    el doble de paquetes (ej. "PAQUETE DE 500" cuando el paquete real trae 1,000).
+  const cantEmpaqueStd = window.empaqueTotalPT(productoLib);
   const tipoEmpaqueStd = (
     productoLib?.tipo_empaque || 
     productoLib?.empaque || 
@@ -53651,8 +53663,9 @@ function modalLiberarCalidad() {
             <span style="font-size:24px;">🔹</span>
             <div>
               <div style="font-weight:900;color:#6d28d9;font-size:15px;">LIBERACIÓN PARCIAL</div>
-              <div style="font-size:12px;color:#5b21b6;line-height:1.4;">Estás liberando <strong>${fmtNum(cantidadProducida)} ${um}${(Number(state.liberacionParcial?.kg)||0) > 0 ? ' · ' + fmtNum(Number(state.liberacionParcial.kg)) + ' kg' : ''}</strong> de la orden. La orden <strong>seguirá produciendo el resto</strong>. Las tarimas y su etiqueta quedarán marcadas como <strong>PARCIAL</strong>.</div>
+              <div style="font-size:12px;color:#5b21b6;line-height:1.4;">Estás liberando <strong>${fmtNum(cantidadProducida)} ${um}${(Number(state.liberacionParcial?.kg)||0) > 0 ? ' · ' + fmtNum(Number(state.liberacionParcial.kg)) + ' kg' : ''}</strong> de la orden. ${odp.estatus === 'pendiente_calidad' ? 'El resto queda <strong>pendiente por liberar</strong> en esta misma orden.' : 'La orden <strong>seguirá produciendo el resto</strong>.'} Las tarimas y su etiqueta quedarán marcadas como <strong>PARCIAL</strong>.</div>
             </div>
+            ${state.liberacionParcial?.manual ? `<button type="button" onclick="state.liberacionParcial=null;state.modalForm=null;window.forzarRender();" style="margin-left:auto;background:#fff;color:#6d28d9;border:1.5px solid #7c3aed;padding:8px 12px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11px;white-space:nowrap;">↩ Mejor liberar todo</button>` : ''}
           </div>` : ''}
           
           <div style="padding:12px;background:#fffbeb;border-radius:10px;margin-bottom:14px;font-size:12px;border-left:4px solid #f59e0b;">
@@ -53762,7 +53775,7 @@ function modalLiberarCalidad() {
             <div style="padding:8px;background:#f0fdf4;border-radius:8px;text-align:center;border:1.5px solid #86efac;">
               <div style="font-size:9px;color:#16a34a;font-weight:700;text-transform:uppercase;">Te entregaron</div>
               <div style="font-size:14px;font-weight:800;color:#16a34a;">${fmtCantidadUM(cantidadProducida, um)}</div>
-              ${um !== 'kg' && _prodFinal.kg > 0 ? `<div style="font-size:10px;color:#15803d;font-weight:700;">${fmtNum(_prodFinal.kg)} kg</div>` : ''}
+              ${(() => { const _kgBox = esParcialLib ? (Number(state.liberacionParcial?.kg) || 0) : _prodFinal.kg; return um !== 'kg' && _kgBox > 0 ? `<div style="font-size:10px;color:#15803d;font-weight:700;">${fmtNum(_kgBox)} kg</div>` : ''; })()}
             </div>
             <div style="padding:8px;background:#fee2e2;border-radius:8px;text-align:center;">
               <div style="font-size:9px;color:#dc2626;font-weight:700;text-transform:uppercase;">Mermas</div>
@@ -53770,8 +53783,18 @@ function modalLiberarCalidad() {
             </div>
           </div>
           ${!esParcialLib ? `
-          <div style="margin-bottom:14px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:11px;color:#1e40af;">
+          <div style="margin-bottom:8px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:11px;color:#1e40af;">
             💡 <strong>${(getProc(_prodFinal_procCod)?.nombre) || 'El proceso final'}</strong> registró y entregó <strong>${fmtCantidadUM(cantidadProducida, um)}${um !== 'kg' && _prodFinal.kg > 0 ? ' (' + fmtNum(_prodFinal.kg) + ' kg)' : ''}</strong>. Ajusta abajo solo si Calidad acepta una cantidad diferente.
+          </div>
+          <!-- 🔹 B135: liberación PARCIAL a elección — el resto queda pendiente, sin rechazos ni PI -->
+          <div style="margin-bottom:14px;padding:10px 12px;background:#f5f3ff;border:1.5px dashed #7c3aed;border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:210px;font-size:11.5px;color:#5b21b6;line-height:1.4;">
+              🔹 <strong>¿No vas a liberar todo ahorita?</strong> Teclea cuánto sí liberas y el resto queda pendiente en la orden (sin rechazarlo).
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input class="input" id="lib-parcial-cant" type="number" min="1" step="${stepCant}" placeholder="${UM_LABELS[um] || um}" style="width:130px;text-align:center;font-weight:800;" autocomplete="off" />
+              <button type="button" onclick="window.liberarParcialElegido('${odp.id}')" style="background:#7c3aed;color:#fff;border:none;padding:9px 14px;border-radius:7px;cursor:pointer;font-weight:800;font-size:11.5px;white-space:nowrap;">🔹 Liberar solo esa parte</button>
+            </div>
           </div>` : ''}
           
           <!-- Cantidad aceptada -->
@@ -54264,7 +54287,7 @@ function modalLiberarCalidad() {
                     ℹ️ Este producto se vende por <strong>${umLib.toUpperCase()}</strong>, no por piezas. No aplica "piezas por paquete".
                   </div>
                 `;
-                const piezasSpec = productoCal?.piezas_por_paq || productoCal?.cant_empaque;
+                const piezasSpec = window.empaqueTotalPT(productoCal); // B135: total por paquete
                 return `
                   <div class="field" style="margin-bottom:10px;">
                     <label class="field-label" style="font-size:10px;">Piezas por paquete real * <span style="font-weight:400;color:#64748b;">${piezasSpec ? `(esperado: ${piezasSpec} pz)` : ''}</span></label>
@@ -61932,6 +61955,33 @@ window.jalarParcialALiberar = async (odpId) => {
   window.abrirModal('liberar-calidad', odpId);
 };
 
+// 🔹 B135: LIBERAR SOLO UNA PARTE (a elección de Calidad). Toma la cantidad tecleada en el
+//    modal de Liberación y re-abre el MISMO modal en modo PARCIAL con esa cantidad usando
+//    el mecanismo probado (state.liberacionParcial). El resto NO se rechaza: queda pendiente
+//    en la orden para liberarlo después.
+window.liberarParcialElegido = (odpId) => {
+  const odp = (state.ordenes_produccion || []).find(o => o.id === odpId);
+  if (!odp) { toast('ODP no encontrada', 'error'); return; }
+  const um = (odp.um || 'kg').toLowerCase();
+  const umLbl = UM_LABELS[um] || um;
+  const cant = Number(document.getElementById('lib-parcial-cant')?.value) || 0;
+  // Lo entregado real: misma fuente que usa el modal ("TE ENTREGARON")
+  const _pf = window.cantidadProducidaFinalUM ? window.cantidadProducidaFinalUM(odp) : { um: 0, kg: 0 };
+  const totalUM = Number(_pf.um) || Number(odp.cantidad_producida_final) || 0;
+  const totalKg = Number(_pf.kg) || Number(odp.cantidad_producida_final_kg) || 0;
+  if (cant <= 0) { toast(`Teclea cuántas ${umLbl} vas a liberar ahora`, 'error'); document.getElementById('lib-parcial-cant')?.focus(); return; }
+  if (totalUM > 0 && cant >= totalUM) { toast(`Eso es todo lo entregado (${fmtNum(totalUM)} ${umLbl}) — continúa con la liberación normal`, 'info'); return; }
+  // kg proporcional a lo realmente producido; si no hay kg, conversión teórica del catálogo
+  const prodPT = window.getProductoPT ? window.getProductoPT(odp.producto_codigo) : null;
+  const kgParc = (totalKg > 0 && totalUM > 0)
+    ? Math.round(totalKg * (cant / totalUM) * 100) / 100
+    : (um === 'kg' ? cant : (window.convertirAKg(cant, um, prodPT) || 0));
+  state.liberacionParcial = { odpId, kg: kgParc, umAmount: cant, manual: true };
+  state.modalForm = null; // re-inicializa el form con la cantidad parcial (pre-llenados incluidos)
+  window.forzarRender(); // inmediato: en iPhone el botón no roba el foco y render() se diferiría 500ms
+  toast(`🔹 Vas a liberar ${fmtNum(cant)} ${umLbl} ahora · quedan ${fmtNum(totalUM - cant)} ${umLbl} pendientes en ${odp.folio}`, 'info');
+};
+
 // 🆕 JALAR Y LIBERAR (bien hecho): envía el material registrado a "Por liberar" (pendiente_calidad),
 //    donde Calidad hace "Liberar calidad" y genera tarimas → Embarques. Reusa el QC estándar.
 window.jalarYLiberarACalidad = async (odpId) => {
@@ -63643,8 +63693,10 @@ window.confirmarLiberarCalidad = async (odpId) => {
         }
       }
       await updateDoc(doc(db, 'ordenes_produccion', odpId), !cerrarComoTotal ? {
-        // 🔹 Liberación PARCIAL: la orden NO se detiene, sigue produciendo el resto.
-        estatus: 'en_produccion',
+        // 🔹 Liberación PARCIAL: si seguía produciendo, sigue produciendo el resto.
+        //    🔧 B135: si YA estaba en "Por liberar" (pendiente_calidad), se queda ahí
+        //    para que Calidad libere el resto después — no regresa a producción.
+        estatus: odp.estatus === 'pendiente_calidad' ? 'pendiente_calidad' : 'en_produccion',
         kg_liberado_parcial: (Number(odp.kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
         num_liberaciones_parciales: (Number(odp.num_liberaciones_parciales) || 0) + 1,
         tiene_liberaciones_parciales: true,
@@ -63728,7 +63780,7 @@ window.confirmarLiberarCalidad = async (odpId) => {
       if (odpIdx >= 0) {
         state.ordenes_produccion[odpIdx] = esParcialLib ? {
           ...state.ordenes_produccion[odpIdx],
-          estatus: 'en_produccion',
+          estatus: cerrarComoTotal ? 'liberada_empaque' : (odp.estatus === 'pendiente_calidad' ? 'pendiente_calidad' : 'en_produccion'),
           kg_liberado_parcial: (Number(state.ordenes_produccion[odpIdx].kg_liberado_parcial) || 0) + Number(totalPesoNeto.toFixed(2)),
           num_liberaciones_parciales: (Number(state.ordenes_produccion[odpIdx].num_liberaciones_parciales) || 0) + 1,
           tiene_liberaciones_parciales: true,
